@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blockfall:block",
+  "title": "Block definition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "hardness", "required_tier"],
+  "properties": {
+    "id": { "type": "integer", "minimum": 1, "maximum": 65535,
+            "description": "0 is reserved for air" },
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$",
+              "description": "original, non-trademarked id" },
+    "display_name": { "type": "string", "maxLength": 32 },
+    "hardness": { "type": "integer", "minimum": 0, "maximum": 255,
+                  "description": "base mining time units; 255 = unbreakable" },
+    "required_tier": { "type": "integer", "enum": [0, 1, 2, 3],
+                       "description": "0 hand,1 wood,2 stone,3 iron-equiv" },
+    "preferred_tool": { "type": "string",
+                        "enum": ["none", "pickaxe", "axe", "shovel"] },
+    "light_emit": { "type": "integer", "minimum": 0, "maximum": 15 },
+    "light_color": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 },
+                     "minItems": 3, "maxItems": 3 },
+    "gravity": { "type": "boolean", "default": false },
+    "transparent": { "type": "boolean", "default": false },
+    "liquid": { "type": "boolean", "default": false },
+    "functional": { "type": "string",
+                    "enum": ["none", "chest", "door", "crafting_table", "torch", "beacon"],
+                    "default": "none" },
+    "drop_item": { "type": "string", "description": "item name; defaults to self" },
+    "textures": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "all": { "type": "string" }, "top": { "type": "string" },
+        "bottom": { "type": "string" }, "side": { "type": "string" }
+      }
+    }
+  }
+}

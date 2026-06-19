@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blockfall:biome",
+  "title": "Biome definition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "surface_block", "filler_block"],
+  "properties": {
+    "id": { "type": "integer", "minimum": 0, "maximum": 65535 },
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "display_name": { "type": "string", "maxLength": 32 },
+    "surface_block": { "type": "string" },
+    "filler_block": { "type": "string" },
+    "underwater_block": { "type": "string" },
+    "height": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "base": { "type": "number" }, "amplitude": { "type": "number" },
+        "roughness": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "temperature": { "type": "number", "minimum": -1, "maximum": 1 },
+    "sky_top_color": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 }, "minItems": 3, "maxItems": 3 },
+    "sky_horizon_color": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 }, "minItems": 3, "maxItems": 3 },
+    "spawn_creatures": { "type": "array", "items": { "type": "string" } },
+    "decorations": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["structure", "chance"],
+        "properties": {
+          "structure": { "type": "string" },
+          "chance": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    }
+  }
+}

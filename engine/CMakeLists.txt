@@ -1,0 +1,43 @@
+cmake_minimum_required(VERSION 3.28)
+project(blockcore LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# arm64-only (spec §2/§4.11 — both ends Apple Silicon)
+if(APPLE)
+  set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "" FORCE)
+  # Match the Swift app's deployment floor (spec §5: macOS 14+).
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "" FORCE)
+endif()
+
+# Sanitizers wired for ci/check.sh (spec §5). Off by default; -DBF_SANITIZE=address/thread/undefined
+if(BF_SANITIZE)
+  add_compile_options(-fsanitize=${BF_SANITIZE} -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=${BF_SANITIZE})
+endif()
+
+add_library(blockcore STATIC
+  src/engine_stub.cpp
+)
+
+target_include_directories(blockcore
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../contract   # engine_c_api.h, interfaces
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_options(blockcore PRIVATE
+  -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+)
+
+# Optional: a tiny self-test harness that links blockcore (ci unit smoke).
+option(BF_BUILD_TESTS "Build engine unit smoke tests" OFF)
+if(BF_BUILD_TESTS)
+  enable_testing()
+  add_executable(blockcore_smoke ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/smoke_abi.cpp)
+  target_link_libraries(blockcore_smoke PRIVATE blockcore)
+  add_test(NAME abi_smoke COMMAND blockcore_smoke)
+endif()

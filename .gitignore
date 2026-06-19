@@ -1,0 +1,16 @@
+# Build outputs
+/build/
+/dist/
+app/.build/
+*.dmg
+
+# Copied from /contract by ci/build.sh (single source of truth is /contract)
+app/Sources/CBlockcore/include/engine_c_api.h
+
+# Local saves / scratch
+*.blockfall_save/
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc

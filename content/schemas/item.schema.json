@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blockfall:item",
+  "title": "Item definition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "max_stack"],
+  "properties": {
+    "id": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "display_name": { "type": "string", "maxLength": 32 },
+    "max_stack": { "type": "integer", "minimum": 1, "maximum": 999, "default": 64 },
+    "places_block": { "type": "string", "description": "block name this item places, if any" },
+    "tool": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "enum": ["pickaxe", "axe", "shovel", "sword", "none"] },
+        "tier": { "type": "integer", "enum": [1, 2, 3], "description": "wood/stone/iron-equiv" },
+        "durability": { "type": "integer", "minimum": 1 },
+        "mine_speed": { "type": "number", "minimum": 1.0 }
+      },
+      "required": ["kind", "tier"]
+    },
+    "edible": { "type": "integer", "minimum": 0, "maximum": 20,
+                "description": "hunger restored (hunger-lite)" },
+    "icon": { "type": "string" }
+  }
+}

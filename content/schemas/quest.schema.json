@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blockfall:quest",
+  "title": "Quest definition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "objectives"],
+  "properties": {
+    "id": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "title": { "type": "string", "maxLength": 63 },
+    "giver_npc": { "type": "string" },
+    "arc": { "type": "string", "enum": ["restore_color", "side", "procedural"],
+             "default": "side" },
+    "template": { "type": "string",
+      "enum": ["fetch", "build", "light_beacon", "befriend", "explore"],
+      "description": "set for procedurally generated quests" },
+    "objectives": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["trigger", "target", "count"],
+        "properties": {
+          "trigger": { "type": "string",
+            "enum": ["mine_block", "place_block", "craft_item", "collect_item",
+                     "light_beacon", "befriend_creature", "calm_boss",
+                     "reach_location", "restore_region"] },
+          "target": { "type": "string", "description": "block/item/creature/region name" },
+          "count": { "type": "integer", "minimum": 1 },
+          "objective_text": { "type": "string", "maxLength": 95 }
+        }
+      }
+    },
+    "rewards": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["item", "count"],
+        "properties": {
+          "item": { "type": "string" },
+          "count": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "next_quest": { "type": "integer", "description": "chained quest id, optional" }
+  }
+}

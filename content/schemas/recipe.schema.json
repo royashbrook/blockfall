@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blockfall:recipe",
+  "title": "Crafting recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "result", "grid"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "shapeless": { "type": "boolean", "default": false },
+    "grid_size": { "type": "integer", "enum": [2, 3], "default": 2,
+                   "description": "2x2 inventory or 3x3 table" },
+    "grid": {
+      "type": "array",
+      "description": "row-major item names; empty cell = null or \"\". Length must be grid_size^2.",
+      "items": { "type": ["string", "null"] },
+      "minItems": 4, "maxItems": 9
+    },
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["item"],
+      "properties": {
+        "item": { "type": "string" },
+        "count": { "type": "integer", "minimum": 1, "maximum": 64, "default": 1 }
+      }
+    }
+  }
+}

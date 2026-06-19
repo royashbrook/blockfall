@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blockfall:structure",
+  "title": "Structure / prefab definition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "size", "blocks"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "name": { "type": "string", "maxLength": 48 },
+    "kind": { "type": "string",
+      "enum": ["village", "dungeon_lite", "boss_arena", "beacon_shrine", "tree", "decoration"] },
+    "size": { "type": "array", "items": { "type": "integer", "minimum": 1, "maximum": 256 },
+              "minItems": 3, "maxItems": 3, "description": "x,y,z extent" },
+    "anchor": { "type": "string", "enum": ["surface", "underground", "floating"], "default": "surface" },
+    "palette": {
+      "type": "array",
+      "description": "index -> block name; cell values reference these indices",
+      "items": { "type": "string" }
+    },
+    "blocks": {
+      "type": "array",
+      "description": "sparse list of placed cells",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["p", "b"],
+        "properties": {
+          "p": { "type": "array", "items": { "type": "integer" }, "minItems": 3, "maxItems": 3 },
+          "b": { "type": "integer", "minimum": 0, "description": "palette index" }
+        }
+      }
+    },
+    "loot": { "type": "array", "items": { "type": "string" }, "description": "loot table ids for chests" },
+    "npcs": { "type": "array", "items": { "type": "string" } }
+  }
+}

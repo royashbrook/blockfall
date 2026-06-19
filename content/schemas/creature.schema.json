@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blockfall:creature",
+  "title": "Creature definition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "disposition", "max_health"],
+  "properties": {
+    "id": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "display_name": { "type": "string", "maxLength": 32 },
+    "disposition": { "type": "string",
+      "enum": ["passive", "skittish", "night_gentle", "boss"],
+      "description": "all resolutions are calm-not-kill (spec §1b)" },
+    "max_health": { "type": "integer", "minimum": 1, "maximum": 200 },
+    "move_speed": { "type": "number", "minimum": 0.0, "default": 2.0 },
+    "spawn_biomes": { "type": "array", "items": { "type": "string" } },
+    "spawn_light_max": { "type": "integer", "minimum": 0, "maximum": 15,
+                         "description": "night mobs spawn at/below this light" },
+    "breeds": { "type": "boolean", "default": false,
+                "description": "breed-lite passive animals" },
+    "befriend_item": { "type": "string", "description": "item that tames/befriends" },
+    "calm_reward": { "type": "string", "description": "loot table id on calm/sparkle" },
+    "boss_pattern": { "type": "string",
+      "enum": ["none", "stomp", "shieldwall", "summon_helpers"],
+      "default": "none", "description": "non-scary, readable telegraphs" }
+  }
+}
