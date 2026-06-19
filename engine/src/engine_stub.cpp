@@ -8,6 +8,7 @@
 #include "engine_c_api.h"
 #include "blockcore/world.hpp"
 #include "blockcore/mesher.hpp"
+#include "blockcore/worldgen.hpp"
 
 #include <cstring>
 #include <string>
@@ -23,7 +24,8 @@ void set_err(const char* m) { t_last_error = m; }
 struct bf_engine_s {
     bf_engine_config cfg{};
     bf::GreedyMesher mesher{};
-    bf::World        world{mesher};
+    bf::TerrainGen   worldgen{};
+    bf::World        world{mesher, &worldgen};
     bool             world_ready = false;
     double           clock = 0.0;
     bf_event_fn      evt_fn = nullptr;
@@ -60,14 +62,15 @@ const char* bf_last_error_global(void) { return g_create_error.c_str(); }
 
 bf_result bf_world_new(bf_engine e, uint64_t seed) {
     if (!e) { set_err("null engine"); return BF_ERR_BAD_ARG; }
-    e->cfg.world_seed = seed ? seed : e->cfg.world_seed;
-    e->world.generate_test_world();
+    uint64_t s = seed ? seed : (e->cfg.world_seed ? e->cfg.world_seed : 1337u);
+    e->cfg.world_seed = s;
+    e->world.init_world(s);           // procedural streaming world (Track C)
     e->world_ready = true;
     return BF_OK;
 }
 bf_result bf_world_load(bf_engine e) {
     if (!e) { set_err("null engine"); return BF_ERR_BAD_ARG; }
-    e->world.generate_test_world();   // save/load arrives in M2
+    e->world.init_world(e->cfg.world_seed ? e->cfg.world_seed : 1337u); // disk save/load: later in M2
     e->world_ready = true;
     return BF_OK;
 }

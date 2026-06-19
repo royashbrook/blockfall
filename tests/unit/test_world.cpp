@@ -65,7 +65,7 @@ int main() {
     // --- PLACE: select GLOW (hotbar slot 4), place onto the new top face ---
     world.update(zero, 0.016);                    // retarget (now dirt at y=6)
     CHECK(world.debug_block_at(8, 6, 8) == bf::DIRT, "exposed dirt below");
-    world.debug_set_selected(4);                  // GLOW
+    world.debug_set_selected(0);                  // GLOW (hotbar slot 0)
     bf_action place{}; place.kind = BF_ACT_PLACE;
     world.action(place);
     CHECK(world.debug_block_at(8, 7, 8) == bf::GLOW, "placed block appears");

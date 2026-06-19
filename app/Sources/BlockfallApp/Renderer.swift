@@ -239,7 +239,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     struct PackedVertex { uint pos; uint normuv; ushort material; uchar sky; uchar block; uint reserved; };
     struct Uniforms { float4x4 viewProj; float4 chunkOrigin; float4 sunDirTime; };
-    struct VOut { float4 position [[position]]; float3 color; float shade; };
+    struct VOut { float4 position [[position]]; float3 color; float shade; float sat; };
 
     static float3 normalFor(uint n) {
         switch (n) {
@@ -284,10 +284,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         o.position = u.viewProj * float4(world, 1.0);
         o.color = materialColor(uint(p.material));
         o.shade = shade;
+        o.sat = u.chunkOrigin.w;   // per-region Dim saturation (0=grey..1=full color)
         return o;
     }
     fragment float4 fmain(VOut in [[stage_in]]) {
-        return float4(in.color * in.shade, 1.0);
+        float3 col = in.color * in.shade;
+        // Dim regions drain toward grey; restoring (e.g. a glow block) brings
+        // the color back. Luminance-preserving desaturation.
+        float lum = dot(col, float3(0.299, 0.587, 0.114));
+        col = mix(float3(lum), col, clamp(in.sat, 0.0, 1.0));
+        return float4(col, 1.0);
     }
     """
 }
@@ -339,7 +345,7 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
 
     let clear = (0.30, 0.12, 0.22)
     var rendered = false
-    for f in 0..<4 {
+    for f in 0..<48 {   // let the procedural world stream in before the snapshot
         registry.currentFrame = f
         var input = bf_frame_input()
         _ = bf_frame_begin(e, &input, 1.0/60.0)
@@ -367,7 +373,7 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
             let d = frame.draws[i]
             guard d.index_count > 0, let vb = registry.lookup(d.vertex_buffer), let ib = registry.lookup(d.index_buffer) else { continue }
             var u = Uniforms(viewProj: viewProj,
-                             chunkOrigin: SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), 0),
+                             chunkOrigin: SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                              sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day))
             enc.setVertexBuffer(vb, offset: Int(d.vertex_offset), index: 0)
             enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)

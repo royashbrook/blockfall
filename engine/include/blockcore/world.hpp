@@ -1,12 +1,14 @@
 // ============================================================================
-// Blockfall — engine World (Track B+D+F+G integration for M1)
-// Owns the chunk store, drives (re)meshing into UMA GPU buffers via the
-// renderer's allocator, holds the player, and resolves the mine/place loop:
-// raycast the camera into the voxel grid, break/place blocks, mark dirty
-// chunks, remesh. The C-ABI layer (engine_c_api impl) is a thin translator
-// over this. Meshing is injected (IMesher&) so the mesher impl can evolve
-// independently. Remeshing is synchronous for M1 (a handful of chunks); the
-// job-system path is wired in a later milestone.
+// Blockfall — engine World (M1 core + M2 streaming/Dim)
+// Owns the chunk store, streams procedural chunks around the player (Track C
+// via injected IWorldGen), (re)meshes into tightly-sized UMA GPU buffers, and
+// resolves the mine/place loop. M2 adds: deterministic streaming with a per-
+// frame generation budget, chunk eviction, and per-region Dim saturation that
+// the renderer desaturates by (the "bring back the color" mechanic).
+//
+// Memory: meshes go through a single reusable scratch buffer, then into an
+// exact-sized GPU buffer (not the worst-case 1.5 MiB) so hundreds of streamed
+// chunks fit the Air's UMA budget (spec §10).
 // ============================================================================
 #pragma once
 #include "engine_c_api.h"
@@ -18,12 +20,11 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <algorithm>
 #include <cmath>
 
 namespace bf {
 
-// M1 block palette (ids the renderer maps to colors; aligns loosely with
-// /content but the engine doesn't load content yet at M1).
 enum M1Block : BlockId {
     AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, WOOD = 4, LEAF = 5,
     SAND = 6, GLOW = 7, BRICK = 8, WATER = 9
@@ -36,159 +37,179 @@ struct MeshRec {
     bool          has_buffers{false};
 };
 
+struct RegionKey { std::int32_t x, z; };
+inline bool operator==(const RegionKey& a, const RegionKey& b) { return a.x == b.x && a.z == b.z; }
+struct RegionKeyHash {
+    std::size_t operator()(const RegionKey& k) const noexcept {
+        return std::size_t(std::uint64_t(std::uint32_t(k.x)) * 0x9E3779B1u
+                         ^ std::uint64_t(std::uint32_t(k.z)) * 0x85EBCA77u);
+    }
+};
+
 class World {
 public:
-    explicit World(IMesher& mesher) : mesher_(mesher) {
+    static constexpr float  DIM_SAT      = 0.18f;  // unrestored regions: grey
+    static constexpr int    STREAM_R     = 6;      // horizontal radius (chunks)
+    static constexpr int    CY_MIN       = -1;     // vertical chunk band (terrain)
+    static constexpr int    CY_MAX       = 3;
+    static constexpr int    GEN_BUDGET   = 12;     // chunks generated per frame
+    static constexpr int    MESH_BUDGET  = 8;      // chunks remeshed per frame
+
+    explicit World(IMesher& mesher, IWorldGen* gen = nullptr)
+        : mesher_(mesher), gen_(gen) {
         for (int i = 0; i < BF_HOTBAR_SLOTS; ++i) hotbar_[i] = 0;
-        hotbar_[0] = GRASS; hotbar_[1] = STONE; hotbar_[2] = WOOD;
-        hotbar_[3] = BRICK; hotbar_[4] = GLOW;  hotbar_[5] = SAND;
+        hotbar_[0] = GLOW; hotbar_[1] = STONE; hotbar_[2] = WOOD;
+        hotbar_[3] = BRICK; hotbar_[4] = GRASS; hotbar_[5] = SAND;
     }
 
     void set_allocator(const bf_gpu_allocator& a) { alloc_ = a; has_alloc_ = true; }
     void set_mode(bf_game_mode m) { mode_ = m; }
+    void set_worldgen(IWorldGen* g) { gen_ = g; }
 
-    // ---- world bootstrap: a small flat themed patch to fly over + dig into --
+    // ---- M2: procedural spawn + streaming --------------------------------
+    void init_world(std::uint64_t seed) {
+        if (!gen_) { generate_test_world(); return; }
+        gen_->seed(seed);
+        // Find the surface at spawn column (0,0): generate the vertical band and
+        // scan from the top for the first solid block.
+        int surface = 8;
+        for (int cy = CY_MAX; cy >= CY_MIN; --cy) {
+            auto ch = std::make_unique<PaletteChunk>(ChunkCoord{0, cy, 0});
+            gen_->generate(ChunkCoord{0, cy, 0}, *ch);
+            for (int ly = kChunkDim - 1; ly >= 0; --ly) {
+                if (ch->get(0, ly, 0) != AIR) { surface = cy * kChunkDim + ly; goto found; }
+            }
+        }
+        found:
+        pos_ = V3{0.5f, float(surface) + 2.5f, 0.5f};
+        yaw_ = 0.6f; pitch_ = -0.25f;
+        restore_region(ChunkCoord{0, 0, 0});           // spawn region starts colorful
+        recompute_stream_set();
+    }
+
+    // ---- flat world (used by the deterministic mine/place test) ----------
     void generate_test_world() {
-        const int R = 2;                       // chunks in x/z around origin
+        const int R = 2;
         for (int cx = -R; cx <= R; ++cx)
         for (int cz = -R; cz <= R; ++cz) {
             ChunkCoord cc{cx, 0, cz};
             auto* ch = static_cast<PaletteChunk*>(store_.get_or_create(cc));
             for (int lx = 0; lx < kChunkDim; ++lx)
-            for (int lz = 0; lz < kChunkDim; ++lz) {
-                for (int ly = 0; ly < 8; ++ly) {
-                    BlockId b = (ly == 7) ? GRASS : (ly >= 4 ? DIRT : STONE);
-                    ch->set(lx, ly, lz, b);
-                }
-            }
+            for (int lz = 0; lz < kChunkDim; ++lz)
+                for (int ly = 0; ly < 8; ++ly)
+                    ch->set(lx, ly, lz, (ly == 7) ? GRASS : (ly >= 4 ? DIRT : STONE));
             dirty_.insert(cc);
+            restore_region(cc);
         }
-        // A couple of decorative blocks so there's something to mine immediately.
-        // A little structure to look at: a few decorative blocks on the surface.
-        set_block_internal(IVec3{6, 8, 4}, GLOW);
-        set_block_internal(IVec3{7, 8, 4}, BRICK);
-        set_block_internal(IVec3{7, 9, 4}, BRICK);
-        set_block_internal(IVec3{5, 8, 6}, WOOD);
-        set_block_internal(IVec3{5, 9, 6}, LEAF);
-        pos_ = V3{8.0f, 20.0f, 20.0f};           // elevated 3/4 vantage
-        yaw_ = 3.14159f; pitch_ = -0.78f;        // look down onto the field + build
+        pos_ = V3{8.0f, 12.0f, 8.0f}; yaw_ = 3.14159f; pitch_ = -0.5f;
     }
 
-    // ---- per-frame continuous update (movement + look + mining progress) ----
     void update(const bf_frame_input& in, double dt) {
         yaw_  += in.look_yaw_delta;
         pitch_ += in.look_pitch_delta;
-        const float lim = 1.5533f;             // ~89 degrees
-        if (pitch_ > lim) pitch_ = lim;
-        if (pitch_ < -lim) pitch_ = -lim;
+        const float lim = 1.5533f;
+        pitch_ = std::clamp(pitch_, -lim, lim);
 
         V3 fwd = forward_dir();
         V3 flat = normalize(V3{fwd.x, 0, fwd.z});
-        V3 right = normalize(cross(flat, V3{0,1,0}));
-        float speed = (in.sprint ? 16.0f : 8.0f) * float(dt);
-
+        V3 right = normalize(cross(flat, V3{0, 1, 0}));
+        float speed = (in.sprint ? 22.0f : 11.0f) * float(dt);
         V3 delta = flat * (in.move_forward * speed) + right * (in.move_strafe * speed);
-        // Creative / M1: free vertical via jump(up) + sneak(down) or fly keys.
-        float up = 0.0f;
-        if (in.jump || in.fly_ascend)  up += speed;
-        if (in.sneak || in.fly_descend) up -= speed;
-        delta.y += up;
+        if (in.jump || in.fly_ascend)   delta.y += speed;
+        if (in.sneak || in.fly_descend) delta.y -= speed;
         pos_ = pos_ + delta;
+
+        // Stream as the player crosses chunk boundaries.
+        ChunkCoord pc = to_chunk(IVec3{ifloor(pos_.x), ifloor(pos_.y), ifloor(pos_.z)});
+        if (!(pc == last_center_) || first_stream_) {
+            last_center_ = pc; first_stream_ = false;
+            recompute_stream_set();
+        }
+        stream_tick();
 
         raycast_target();
         if (mining_ && has_target_) {
             mine_progress_ += float(dt) / break_time(block_at(target_));
-            if (mine_progress_ >= 1.0f) {
-                set_block_internal(target_, AIR);
-                mine_progress_ = 0.0f;
-                raycast_target();
-            }
-        } else {
-            mine_progress_ = 0.0f;
-        }
+            if (mine_progress_ >= 1.0f) { set_block_internal(target_, AIR); mine_progress_ = 0.0f; raycast_target(); }
+        } else mine_progress_ = 0.0f;
     }
 
-    // ---- discrete actions (from bf_input_action) ---------------------------
     void action(const bf_action& a) {
         switch (a.kind) {
             case BF_ACT_MINE_START: mining_ = true; break;
             case BF_ACT_MINE_STOP:  mining_ = false; mine_progress_ = 0.0f; break;
             case BF_ACT_PLACE:
-                if (has_target_ && hotbar_[selected_] != 0)
-                    set_block_internal(place_, hotbar_[selected_]);
+                if (has_target_ && hotbar_[selected_] != 0) {
+                    BlockId b = hotbar_[selected_];
+                    set_block_internal(place_, b);
+                    if (b == GLOW) restore_region(to_chunk(place_));   // light up the Dim
+                }
                 break;
             case BF_ACT_HOTBAR_SELECT:
                 if (a.arg_i >= 0 && a.arg_i < BF_HOTBAR_SLOTS) selected_ = std::uint8_t(a.arg_i);
                 break;
             case BF_ACT_HOTBAR_SCROLL: {
-                int s = int(selected_) + (a.arg_i >= 0 ? 1 : -1);
-                s = (s % BF_HOTBAR_SLOTS + BF_HOTBAR_SLOTS) % BF_HOTBAR_SLOTS;
-                selected_ = std::uint8_t(s);
-                break;
+                int s = (int(selected_) + (a.arg_i >= 0 ? 1 : -1) + BF_HOTBAR_SLOTS) % BF_HOTBAR_SLOTS;
+                selected_ = std::uint8_t(s); break;
             }
             case BF_ACT_MODE_TOGGLE:
-                mode_ = (mode_ == BF_MODE_CREATIVE) ? BF_MODE_SURVIVAL : BF_MODE_CREATIVE;
-                break;
+                mode_ = (mode_ == BF_MODE_CREATIVE) ? BF_MODE_SURVIVAL : BF_MODE_CREATIVE; break;
             default: break;
         }
     }
 
-    // ---- build the render frame (remesh dirty, fill camera + HUD) -----------
     void build_frame(bf_render_frame& out, std::vector<bf_draw_item>& draws, double clock) {
         remesh_dirty();
-
         draws.clear();
+        std::vector<bf_region_dim> regions; // built lazily below
         for (auto& [cc, rec] : meshes_) {
             if (!rec.has_buffers || rec.index_count == 0) continue;
             bf_draw_item d{};
             d.vertex_buffer = rec.vbuf.handle;
             d.index_buffer  = rec.ibuf.handle;
             d.index_count   = rec.index_count;
-            d.material_id   = 0;
             d.chunk_origin  = bf_ivec3{cc.x * kChunkDim, cc.y * kChunkDim, cc.z * kChunkDim};
-            d.dim_saturation = 1.0f;
+            d.dim_saturation = region_sat(cc);
             draws.push_back(d);
         }
 
-        V3 fwd = forward_dir();
-        V3 eye = pos_;
-        V3 ctr = eye + fwd;
-        M4 view = look_at(eye, ctr, V3{0,1,0});
-        M4 proj = perspective(1.20f, 1.6f, 0.05f, 512.0f); // renderer may override aspect
-
+        V3 fwd = forward_dir(), eye = pos_, ctr = eye + fwd;
+        M4 view = look_at(eye, ctr, V3{0, 1, 0});
+        M4 proj = perspective(1.20f, 1.6f, 0.05f, 1024.0f);
         std::memcpy(out.camera.view.m, view.m, sizeof(float) * 16);
         std::memcpy(out.camera.proj.m, proj.m, sizeof(float) * 16);
         out.camera.position = bf_vec3{eye.x, eye.y, eye.z};
         out.camera.forward  = bf_vec3{fwd.x, fwd.y, fwd.z};
-        float t = float(std::fmod(clock * 0.01, 1.0));
+        float t = day_time(clock);
         out.camera.time_of_day = t;
         float ang = t * 6.2831853f;
-        out.camera.sun_dir = bf_vec3{std::cos(ang) * 0.5f, -0.8f, std::sin(ang) * 0.5f};
+        out.camera.sun_dir = bf_vec3{std::cos(ang) * 0.6f, -std::sin(ang) - 0.25f, 0.35f};
         out.interp_alpha = 0.0f;
         out.draws = draws.data();
         out.draw_count = std::uint32_t(draws.size());
         out.regions = nullptr; out.region_count = 0;
-
         fill_hud(out.hud);
     }
 
     bf_game_mode mode() const { return mode_; }
 
-    // ---- test/debug seams (headless integration tests) ---------------------
+    // ---- test/debug seams --------------------------------------------------
     void    debug_set_camera(float px, float py, float pz, float yaw, float pitch) {
         pos_ = V3{px, py, pz}; yaw_ = yaw; pitch_ = pitch;
     }
     BlockId debug_block_at(int x, int y, int z) const { return block_at(IVec3{x, y, z}); }
     bool    debug_has_target() const { return has_target_; }
     void    debug_set_selected(std::uint8_t s) { selected_ = s; }
+    std::size_t debug_resident_chunks() const { return store_.resident_count(); }
+    float   debug_region_sat(int cx, int cz) const { return region_sat(ChunkCoord{cx, 0, cz}); }
 
 private:
+    static float day_time(double clock) { return float(std::fmod(clock * 0.02, 1.0)); }
+
     V3 forward_dir() const {
-        return normalize(V3{ std::cos(pitch_) * std::sin(yaw_),
-                             std::sin(pitch_),
+        return normalize(V3{ std::cos(pitch_) * std::sin(yaw_), std::sin(pitch_),
                              std::cos(pitch_) * std::cos(yaw_) });
     }
-
     static float break_time(BlockId b) {
         switch (b) { case STONE: case BRICK: return 0.6f; case AIR: return 1e9f; default: return 0.3f; }
     }
@@ -196,95 +217,147 @@ private:
     BlockId block_at(IVec3 w) const {
         ChunkCoord cc = to_chunk(w);
         auto* ch = const_cast<ChunkStore&>(store_).get(cc);
-        if (!ch) return AIR;
-        return ch->get(mod16(w.x), mod16(w.y), mod16(w.z));
+        return ch ? ch->get(mod16(w.x), mod16(w.y), mod16(w.z)) : AIR;
     }
-
     void set_block_internal(IVec3 w, BlockId b) {
         ChunkCoord cc = to_chunk(w);
-        auto* ch = store_.get_or_create(cc);
-        ch->set(mod16(w.x), mod16(w.y), mod16(w.z), b);
+        store_.get_or_create(cc)->set(mod16(w.x), mod16(w.y), mod16(w.z), b);
         dirty_.insert(cc);
-        mark_neighbor_dirty(w, cc);
-    }
-
-    // If the edit sits on a chunk boundary, the adjacent chunk's faces change too.
-    void mark_neighbor_dirty(IVec3 w, ChunkCoord self) {
         const IVec3 dirs[6] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
         for (auto d : dirs) {
             ChunkCoord nc = to_chunk(IVec3{w.x + d.x, w.y + d.y, w.z + d.z});
-            if (!(nc == self)) dirty_.insert(nc);
+            if (!(nc == cc) && store_.is_resident(nc)) dirty_.insert(nc);
         }
     }
 
-    void raycast_target() {
-        // Amanatides-Woo voxel DDA from eye along forward, up to 6 blocks.
-        has_target_ = false;
-        V3 o = pos_;
-        V3 d = forward_dir();
-        IVec3 v{ ifloor(o.x), ifloor(o.y), ifloor(o.z) };
-        IVec3 step{ d.x > 0 ? 1 : -1, d.y > 0 ? 1 : -1, d.z > 0 ? 1 : -1 };
-        V3 tdelta{ d.x != 0 ? std::fabs(1.0f / d.x) : 1e30f,
-                   d.y != 0 ? std::fabs(1.0f / d.y) : 1e30f,
-                   d.z != 0 ? std::fabs(1.0f / d.z) : 1e30f };
-        auto frac = [](float f, int s) {
-            float fl = std::floor(f);
-            return s > 0 ? (fl + 1 - f) : (f - fl);
-        };
-        V3 tmax{ tdelta.x * frac(o.x, step.x),
-                 tdelta.y * frac(o.y, step.y),
-                 tdelta.z * frac(o.z, step.z) };
-        IVec3 prev = v;
-        for (int i = 0; i < 96; ++i) {
-            if (block_at(v) != AIR) {
-                has_target_ = true; target_ = v; place_ = prev; return;
+    // ---- streaming ---------------------------------------------------------
+    void recompute_stream_set() {
+        gen_queue_.clear();
+        ChunkCoord c = last_center_;
+        for (int cy = CY_MIN; cy <= CY_MAX; ++cy)
+        for (int dx = -STREAM_R; dx <= STREAM_R; ++dx)
+        for (int dz = -STREAM_R; dz <= STREAM_R; ++dz) {
+            ChunkCoord cc{c.x + dx, cy, c.z + dz};
+            if (!store_.is_resident(cc)) gen_queue_.push_back(cc);
+        }
+        // nearest-first so the world fills in around the player
+        std::sort(gen_queue_.begin(), gen_queue_.end(), [&](ChunkCoord a, ChunkCoord b) {
+            return dist2(a, c) < dist2(b, c);
+        });
+        evict_far();
+    }
+    static long dist2(ChunkCoord a, ChunkCoord c) {
+        long dx = a.x - c.x, dz = a.z - c.z; return dx*dx + dz*dz;
+    }
+    void evict_far() {
+        std::vector<ChunkCoord> drop;
+        for (auto& [cc, rec] : meshes_) {
+            if (std::abs(cc.x - last_center_.x) > STREAM_R + 1 ||
+                std::abs(cc.z - last_center_.z) > STREAM_R + 1) drop.push_back(cc);
+        }
+        for (auto cc : drop) {
+            auto& rec = meshes_[cc];
+            if (rec.has_buffers && has_alloc_) {
+                alloc_.free_(alloc_.user, rec.vbuf.handle);
+                alloc_.free_(alloc_.user, rec.ibuf.handle);
             }
-            prev = v;
-            if (tmax.x < tmax.y && tmax.x < tmax.z) { v.x += step.x; tmax.x += tdelta.x; }
-            else if (tmax.y < tmax.z)               { v.y += step.y; tmax.y += tdelta.y; }
-            else                                    { v.z += step.z; tmax.z += tdelta.z; }
+            meshes_.erase(cc);
+            store_.evict(cc);
+        }
+    }
+    void stream_tick() {
+        if (!gen_) return;
+        int made = 0;
+        while (!gen_queue_.empty() && made < GEN_BUDGET) {
+            ChunkCoord cc = gen_queue_.back(); gen_queue_.pop_back();
+            if (store_.is_resident(cc)) continue;
+            auto ch = std::make_unique<PaletteChunk>(cc);
+            gen_->generate(cc, *ch);
+            // Skip pure-air chunks (above terrain): they cost nothing as "not
+            // resident" and block_at() already returns AIR for them.
+            if (ch->is_uniform() && ch->get(0,0,0) == AIR) { ++made; continue; }
+            store_.insert(std::move(ch));
+            dirty_.insert(cc);
+            ++made;
         }
     }
 
     void remesh_dirty() {
-        if (!has_alloc_) return;
-        for (const ChunkCoord& cc : dirty_) {
+        if (!has_alloc_ || dirty_.empty()) return;
+        ensure_scratch();
+        // Remesh nearest dirty chunks first, budgeted per frame.
+        std::vector<ChunkCoord> todo(dirty_.begin(), dirty_.end());
+        std::sort(todo.begin(), todo.end(), [&](ChunkCoord a, ChunkCoord b) {
+            return dist2(a, last_center_) < dist2(b, last_center_);
+        });
+        int done = 0;
+        for (ChunkCoord cc : todo) {
+            if (done >= MESH_BUDGET) break;
+            dirty_.erase(cc);
             if (!store_.is_resident(cc)) continue;
-            MeshRec& rec = meshes_[cc];
-            // Free previous buffers (allocator guarantees GPU no longer reads).
-            if (rec.has_buffers) {
-                alloc_.free_(alloc_.user, rec.vbuf.handle);
-                alloc_.free_(alloc_.user, rec.ibuf.handle);
-                rec.has_buffers = false;
-            }
-            std::uint32_t vmax = mesher_.max_vertex_bytes();
-            std::uint32_t imax = mesher_.max_index_bytes();
-            bf_gpu_buffer vb = alloc_.alloc(alloc_.user, vmax);
-            bf_gpu_buffer ib = alloc_.alloc(alloc_.user, imax);
-            if (!vb.contents || !ib.contents) continue;
-            std::span<std::byte> vspan(static_cast<std::byte*>(vb.contents), vb.bytes);
-            std::span<std::byte> ispan(static_cast<std::byte*>(ib.contents), ib.bytes);
-            MeshResult mr = mesher_.mesh(cc, store_, vspan, ispan, false);
-            if (mr.empty || mr.index_count == 0) {
-                alloc_.free_(alloc_.user, vb.handle);
-                alloc_.free_(alloc_.user, ib.handle);
-                rec.index_count = 0; rec.has_buffers = false;
-            } else {
-                rec.vbuf = vb; rec.ibuf = ib;
-                rec.index_count = mr.index_count;
-                rec.has_buffers = true;
-            }
+            ++done;
+            remesh_one(cc);
         }
-        dirty_.clear();
     }
+    void remesh_one(ChunkCoord cc) {
+        MeshRec& rec = meshes_[cc];
+        std::span<std::byte> vs(vscratch_.data(), vscratch_.size());
+        std::span<std::byte> is(iscratch_.data(), iscratch_.size());
+        MeshResult mr = mesher_.mesh(cc, store_, vs, is, false);
+        if (rec.has_buffers) {
+            alloc_.free_(alloc_.user, rec.vbuf.handle);
+            alloc_.free_(alloc_.user, rec.ibuf.handle);
+            rec.has_buffers = false;
+        }
+        if (mr.empty || mr.index_count == 0) { rec.index_count = 0; return; }
+        // Tight allocation: exact size, not the worst case (memory, spec §10).
+        bf_gpu_buffer vb = alloc_.alloc(alloc_.user, mr.vertex_bytes);
+        bf_gpu_buffer ib = alloc_.alloc(alloc_.user, mr.index_bytes);
+        if (!vb.contents || !ib.contents) { rec.index_count = 0; return; }
+        std::memcpy(vb.contents, vscratch_.data(), mr.vertex_bytes);
+        std::memcpy(ib.contents, iscratch_.data(), mr.index_bytes);
+        rec.vbuf = vb; rec.ibuf = ib; rec.index_count = mr.index_count; rec.has_buffers = true;
+    }
+    void ensure_scratch() {
+        if (vscratch_.empty()) {
+            vscratch_.resize(mesher_.max_vertex_bytes());
+            iscratch_.resize(mesher_.max_index_bytes());
+        }
+    }
+
+    void raycast_target() {
+        has_target_ = false;
+        V3 o = pos_, d = forward_dir();
+        IVec3 v{ ifloor(o.x), ifloor(o.y), ifloor(o.z) };
+        IVec3 step{ d.x > 0 ? 1 : -1, d.y > 0 ? 1 : -1, d.z > 0 ? 1 : -1 };
+        V3 td{ d.x != 0 ? std::fabs(1.0f / d.x) : 1e30f, d.y != 0 ? std::fabs(1.0f / d.y) : 1e30f,
+               d.z != 0 ? std::fabs(1.0f / d.z) : 1e30f };
+        auto frac = [](float f, int s){ float fl = std::floor(f); return s > 0 ? (fl + 1 - f) : (f - fl); };
+        V3 tmax{ td.x * frac(o.x, step.x), td.y * frac(o.y, step.y), td.z * frac(o.z, step.z) };
+        IVec3 prev = v;
+        for (int i = 0; i < 128; ++i) {
+            if (block_at(v) != AIR) { has_target_ = true; target_ = v; place_ = prev; return; }
+            prev = v;
+            if (tmax.x < tmax.y && tmax.x < tmax.z) { v.x += step.x; tmax.x += td.x; }
+            else if (tmax.y < tmax.z)               { v.y += step.y; tmax.y += td.y; }
+            else                                    { v.z += step.z; tmax.z += td.z; }
+        }
+    }
+
+    // ---- Dim regions -------------------------------------------------------
+    static RegionKey region_key(ChunkCoord cc) {
+        return RegionKey{ floordiv(cc.x, kRegionChunks), floordiv(cc.z, kRegionChunks) };
+    }
+    float region_sat(ChunkCoord cc) const {
+        auto it = region_sat_.find(region_key(cc));
+        return it == region_sat_.end() ? DIM_SAT : it->second;
+    }
+    void restore_region(ChunkCoord cc) { region_sat_[region_key(cc)] = 1.0f; }
 
     void fill_hud(bf_hud_state& h) {
         h = bf_hud_state{};
-        h.mode = mode_;
-        h.selected_slot = selected_;
-        h.inventory_open = 0;
-        h.health = health_;
-        h.hunger = hunger_;
+        h.mode = mode_; h.selected_slot = selected_; h.inventory_open = 0;
+        h.health = health_; h.hunger = hunger_;
         for (int i = 0; i < BF_HOTBAR_SLOTS; ++i) {
             h.hotbar[i].item = hotbar_[i];
             h.hotbar[i].count = std::uint16_t(hotbar_[i] ? 64 : 0);
@@ -292,7 +365,7 @@ private:
         }
         h.active_quest_id = 1;
         std::strncpy(h.quest_title, "Bring back the color", sizeof(h.quest_title) - 1);
-        std::strncpy(h.quest_objective, "Mine and place to restore the Dim", sizeof(h.quest_objective) - 1);
+        std::strncpy(h.quest_objective, "Place a glow block in the grey Dim", sizeof(h.quest_objective) - 1);
         h.quest_progress = 0.0f;
         h.has_target = has_target_ ? 1 : 0;
         h.target_block = bf_ivec3{target_.x, target_.y, target_.z};
@@ -307,13 +380,18 @@ private:
     static int mod16(int a) { int m = a % kChunkDim; return m < 0 ? m + kChunkDim : m; }
 
     IMesher&    mesher_;
+    IWorldGen*  gen_{nullptr};
     ChunkStore  store_;
     bf_gpu_allocator alloc_{};
     bool        has_alloc_{false};
     std::unordered_map<ChunkCoord, MeshRec, ChunkCoordHash> meshes_;
     std::unordered_set<ChunkCoord, ChunkCoordHash> dirty_;
+    std::unordered_map<RegionKey, float, RegionKeyHash> region_sat_;
+    std::vector<ChunkCoord> gen_queue_;
+    std::vector<std::byte>  vscratch_, iscratch_;
+    ChunkCoord  last_center_{0, 0, 0};
+    bool        first_stream_{true};
 
-    // player
     V3            pos_{0, 12, 0};
     float         yaw_{0.0f}, pitch_{0.0f};
     bf_game_mode  mode_{BF_MODE_CREATIVE};
