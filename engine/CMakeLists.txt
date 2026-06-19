@@ -20,8 +20,9 @@ if(BF_SANITIZE)
 endif()
 
 add_library(blockcore STATIC
-  src/engine_stub.cpp
+  src/engine_stub.cpp   # C ABI impl over the World (M1 engine)
   src/jobs.cpp          # Track A — work-stealing job system
+  src/mesher.cpp        # Track D — greedy meshing
 )
 find_package(Threads REQUIRED)
 
@@ -42,7 +43,7 @@ option(BF_BUILD_TESTS "Build engine unit smoke tests" OFF)
 if(BF_BUILD_TESTS)
   enable_testing()
   set(BF_TEST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit)
-  foreach(t abi:smoke_abi arena:test_arena jobs:test_jobs)
+  foreach(t abi:smoke_abi arena:test_arena jobs:test_jobs chunk:test_chunk mesher:test_mesher winding:test_winding world:test_world)
     string(REPLACE ":" ";" parts ${t})
     list(GET parts 0 tname)
     list(GET parts 1 tsrc)

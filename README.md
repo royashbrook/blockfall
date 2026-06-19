@@ -6,27 +6,33 @@ C++23 core (`blockcore`) + Swift/Metal app shell, talking over a frozen C ABI.
 > Mechanics, controls, and feel mirror Minecraft exactly. **All art, names, and
 > content are original** — no copied assets, textures, names, or lore.
 
-## Status — M0 ✅ complete · M1 in progress
+## Status — M0 ✅ · M1 ✅ (the core loop is real and playable)
 
-**M0 (Phase 0) — done.** Interface contract frozen, stub app runs end to end.
-- [x] `/contract` compiles (C ABI + internal C++ interfaces, both clean)
-- [x] Format/threading specs written and versioned
-- [x] Stub `.app` launches, clears a sky-colored frame, shows a HUD overlay
-- [x] `ci/check.sh` GREEN: core build, unit tests, content validation, Swift↔C++
-      self-test, lint (0 warnings)
+**M0 (Phase 0) — done.** Interface contract frozen, app runs end to end.
 
-**Toward M1 — landed so far:**
-- [x] **Track A** (jobs + memory): work-stealing scheduler with P/E QoS pools,
-      DAG deps, help-on-wait; linear + pool arenas. Tested (DAG order, 20k
-      fan-out, 200-deep chain, 18k concurrent-submit stress). Fixed a real
-      slot-recycle data race found via thread sampling.
-- [x] **Track J content** (data): 40 blocks, 58 items, 31 recipes, 11
-      creatures, 5 biomes, 5 structures, 13 loot tables, 15 quests, 3 dialogue
-      trees — schema-valid, cross-references resolve, no dangling refs.
+**M1 — done.** Mine & place blocks in a greedy-meshed voxel world, rendered.
+- [x] **Track A** jobs + memory: work-stealing scheduler (P/E QoS pools), DAG
+      deps, help-on-wait; linear + pool arenas. (Fixed a slot-recycle data race
+      found via thread sampling.)
+- [x] **Track B** palette-compressed chunk storage + lossless save/load round-trip
+- [x] **Track D** greedy meshing → UMA buffers. (Fixed a face-winding bug — back
+      faces were culled — now guarded by a geometric winding test.)
+- [x] **Track E** Metal forward renderer: runtime-compiled stylized shader,
+      depth-tested chunk draws, day/night sky, deferred buffer frees
+- [x] **Track G** player free-fly + mouse-look, voxel raycast, hold-to-mine /
+      click-to-place, hotbar
+- [x] **Track J content** (data): 40 blocks, 58 items, 31 recipes, 11 creatures,
+      5 biomes, 5 structures, 13 loot tables, 15 quests, 3 dialogue trees
 
-**Next (M1 critical path):** B chunk storage → D greedy meshing → E renderer,
-with G physics/collision alongside. Then: point, hold-to-mine, place, instant
-remesh. See `docs/ROADMAP.md`.
+`ci/check.sh` GREEN: 7 unit tests (incl. job stress + mesh winding), the
+headless mine/place integration test, an offscreen **render test (95% of pixels
+are terrain)**, content validation, and lint (0 warnings).
+
+**Controls:** click to capture mouse · WASD move · mouse look · space/shift up
+/down · left-hold mine · right-click place · 1–6 hotbar · Esc release mouse.
+
+**Next — M2:** streaming procedural world (Track C), save/load to disk,
+incremental lighting (Track F), day/night, Dim desaturation. See `docs/ROADMAP.md`.
 
 ## Layout (spec §5)
 

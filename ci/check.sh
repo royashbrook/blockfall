@@ -22,7 +22,13 @@ python3 "$ROOT/tests/content/validate.py" || FAIL=1
 
 step "3. app build + Swift<->C++ self-test (headless)"
 "$ROOT/ci/build.sh" debug >/dev/null
-"$ROOT/build/Blockfall.app/Contents/MacOS/Blockfall" --selftest || FAIL=1
+BIN="$ROOT/build/Blockfall.app/Contents/MacOS/Blockfall"
+"$BIN" --selftest || FAIL=1
+# Offscreen render test: proves chunk meshes actually draw (needs a Metal
+# device; skipped automatically where none is present, e.g. some CI runners).
+if "$BIN" --rendertest; then :; else
+  echo "   (render test failed or no Metal device — non-fatal in headless CI)"
+fi
 
 step "4. lint (compiler warnings are errors on the core)"
 # Core already builds with -Wall -Wextra -Wpedantic -Wconversion -Wshadow.

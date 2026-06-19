@@ -36,12 +36,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             fatalError("No Metal device (this build targets Apple Silicon).")
         }
 
-        let mtkView = MTKView(frame: frame, device: device)
+        let mtkView = GameView(frame: frame, device: device)
         mtkView.colorPixelFormat = .bgra8Unorm
         mtkView.preferredFramesPerSecond = 60
 
         renderer = Renderer(view: mtkView, device: device)
         mtkView.delegate = renderer
+        window.acceptsMouseMovedEvents = true
 
         // HUD overlay drawn on top of the Metal view (AppKit, M0-simple).
         hud = HUDView(frame: frame)
@@ -54,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         container.addSubview(hud)
         window.contentView = container
         window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(mtkView)
 
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -70,6 +72,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 // C++ boundary on a machine with no display.
 if CommandLine.arguments.contains("--selftest") {
     let ok = runHeadlessSelfTest()
+    exit(ok ? 0 : 1)
+}
+if CommandLine.arguments.contains("--rendertest") {
+    let ok = runRenderSelfTest()
+    exit(ok ? 0 : 1)
+}
+if let idx = CommandLine.arguments.firstIndex(of: "--screenshot"), idx + 1 < CommandLine.arguments.count {
+    let ok = runRenderSelfTest(savePath: CommandLine.arguments[idx + 1], width: 960, height: 720)
     exit(ok ? 0 : 1)
 }
 
