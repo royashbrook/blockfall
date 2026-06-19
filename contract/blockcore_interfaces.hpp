@@ -83,6 +83,12 @@ struct IChunk {
     virtual void    set(int lx, int ly, int lz, BlockId b) = 0;
     virtual bool    is_uniform() const = 0;            // air/single-block fast path
     virtual std::uint32_t revision() const = 0;        // bumps on edit (remesh trigger)
+
+    // Per-voxel light (Track F, ADR 0004). Non-pure with lit defaults so
+    // light-agnostic implementations keep working. 0..15 each.
+    virtual std::uint8_t sky_light(int, int, int)   const { return 15; }
+    virtual std::uint8_t block_light(int, int, int) const { return 0; }
+    virtual void set_light(int, int, int, std::uint8_t /*sky*/, std::uint8_t /*block*/) {}
 };
 
 struct IChunkStore {

@@ -17,6 +17,7 @@
 #include <memory>
 #include <span>
 #include <cstring>
+#include <algorithm>
 
 namespace bf {
 
@@ -44,6 +45,22 @@ public:
 
     bool is_uniform() const override { return bits_ == 0; }
     std::uint32_t revision() const override { return revision_; }
+
+    // ---- per-voxel light (Track F, ADR 0004) ------------------------------
+    std::uint8_t sky_light(int lx, int ly, int lz) const override {
+        if (light_.empty()) return 15;
+        return std::uint8_t(light_[voxel(lx, ly, lz)] >> 4);
+    }
+    std::uint8_t block_light(int lx, int ly, int lz) const override {
+        if (light_.empty()) return 0;
+        return std::uint8_t(light_[voxel(lx, ly, lz)] & 0x0F);
+    }
+    void set_light(int lx, int ly, int lz, std::uint8_t sky, std::uint8_t block) override {
+        if (light_.empty()) light_.assign(kChunkVol, 0);
+        light_[voxel(lx, ly, lz)] = std::uint8_t((sky << 4) | (block & 0x0F));
+    }
+    void clear_light() { if (!light_.empty()) std::fill(light_.begin(), light_.end(), std::uint8_t(0)); }
+    bool has_light() const { return !light_.empty(); }
 
     ChunkCoord coord() const { return coord_; }
     std::uint32_t palette_size() const { return std::uint32_t(palette_.size()); }
@@ -155,6 +172,7 @@ private:
     ChunkCoord                 coord_;
     std::vector<BlockId>       palette_;
     std::vector<std::uint64_t> data_;       // empty when uniform
+    std::vector<std::uint8_t>  light_;      // empty until lit; sky<<4 | block
     std::uint8_t               bits_{0};
     std::uint32_t              revision_{0};
 };

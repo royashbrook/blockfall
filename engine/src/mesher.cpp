@@ -108,13 +108,40 @@ inline BlockId neighbour_block(IChunk* current_chunk, ChunkCoord cc,
     return neighbour->get(nx, ny, nz);
 }
 
+// Light (sky, block) of the air cell adjacent to a face (Track F, ADR 0004).
+// That cell is the visible side, so its light is what the face shows.
+inline void neighbour_light(IChunk* current_chunk, ChunkCoord cc, IChunkStore& store,
+                            const FaceDir& fd, int x, int y, int z,
+                            std::uint8_t& sky, std::uint8_t& blk) {
+    int nx = x, ny = y, nz = z;
+    if      (fd.axis == 0) nx += fd.sign;
+    else if (fd.axis == 1) ny += fd.sign;
+    else                   nz += fd.sign;
+    if (nx >= 0 && nx < kChunkDim && ny >= 0 && ny < kChunkDim && nz >= 0 && nz < kChunkDim) {
+        sky = current_chunk->sky_light(nx, ny, nz);
+        blk = current_chunk->block_light(nx, ny, nz);
+        return;
+    }
+    ChunkCoord nc = cc;
+    if      (nx < 0)          { nc.x -= 1; nx += kChunkDim; }
+    else if (nx >= kChunkDim) { nc.x += 1; nx -= kChunkDim; }
+    if      (ny < 0)          { nc.y -= 1; ny += kChunkDim; }
+    else if (ny >= kChunkDim) { nc.y += 1; ny -= kChunkDim; }
+    if      (nz < 0)          { nc.z -= 1; nz += kChunkDim; }
+    else if (nz >= kChunkDim) { nc.z += 1; nz -= kChunkDim; }
+    IChunk* nb = store.get(nc);
+    if (!nb) { sky = 15; blk = 0; return; }   // outside loaded area -> open sky
+    sky = nb->sky_light(nx, ny, nz);
+    blk = nb->block_light(nx, ny, nz);
+}
+
 // ---- quad emission ----------------------------------------------------------
 // Emit one quad at position (d,u,v) in axis space with width w along u_axis
 // and height h along v_axis.  Face points along fd.axis * fd.sign.
 // Returns false if vtx_out / idx_out lacks space (caller stops and returns).
 // base_vtx: current vertex count already emitted (for index offset).
 bool emit_quad(const FaceDir& fd, int d, int u, int v, int w, int h,
-               BlockId id,
+               BlockId id, std::uint8_t sky, std::uint8_t block,
                std::span<std::byte>& vtx_out, std::uint32_t& vtx_written,
                std::span<std::byte>& idx_out, std::uint32_t& idx_written,
                std::uint32_t base_vtx) {
@@ -160,11 +187,13 @@ bool emit_quad(const FaceDir& fd, int d, int u, int v, int w, int h,
     // For +sign faces we want CCW from the +axis direction.
     // For -sign faces we reverse the u winding.
     // Positions are always c0,c1,c2,c3 (texture u/v follow the same order).
+    // sky/block light come from the adjacent air cell (uniform across the quad
+    // because the greedy merge splits on differing light — ADR 0004).
     BFVertex verts[4] = {
-        bf_make_vertex(x0,y0,z0, fd.normal, 0, 0,  0,  mat, 15, 0),
-        bf_make_vertex(x1,y1,z1, fd.normal, 0, uw, 0,  mat, 15, 0),
-        bf_make_vertex(x2,y2,z2, fd.normal, 0, uw, vh, mat, 15, 0),
-        bf_make_vertex(x3,y3,z3, fd.normal, 0, 0,  vh, mat, 15, 0),
+        bf_make_vertex(x0,y0,z0, fd.normal, 0, 0,  0,  mat, sky, block),
+        bf_make_vertex(x1,y1,z1, fd.normal, 0, uw, 0,  mat, sky, block),
+        bf_make_vertex(x2,y2,z2, fd.normal, 0, uw, vh, mat, sky, block),
+        bf_make_vertex(x3,y3,z3, fd.normal, 0, 0,  vh, mat, sky, block),
     };
     std::memcpy(vtx_out.data() + vtx_written, verts, 4 * sizeof(BFVertex));
     vtx_written += static_cast<std::uint32_t>(4 * sizeof(BFVertex));
@@ -205,9 +234,12 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
     std::uint32_t idx_written = 0;
     std::uint32_t vtx_count  = 0;  // vertices (not bytes)
 
-    // Mask array reused across slices and directions.
-    // mask[u][v] = block id of visible face (0 = no face / already merged).
-    BlockId mask[kChunkDim][kChunkDim];
+    // Mask arrays reused across slices and directions.
+    // mask[u][v] = block id of visible face (0 = none); mask_sky/mask_blk carry
+    // the adjacent air cell's light so the greedy merge keeps light uniform.
+    BlockId      mask[kChunkDim][kChunkDim];
+    std::uint8_t mask_sky[kChunkDim][kChunkDim];
+    std::uint8_t mask_blk[kChunkDim][kChunkDim];
 
     for (const FaceDir& fd : kFaceDirs) {
         // Sweep the 16 slices along fd.axis.
@@ -220,6 +252,7 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
                     axes_to_xyz(fd, d, u, v, x, y, z);
 
                     BlockId here = chunk_get(chunk, x, y, z);
+                    mask_sky[u][v] = 15; mask_blk[u][v] = 0;
                     if (here == 0) {
                         mask[u][v] = 0;
                         continue;
@@ -228,7 +261,12 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
                     // Check the neighbour in the face direction.
                     BlockId nb = neighbour_block(chunk, c, store, fd, x, y, z);
                     // Face is visible if neighbour is air.
-                    mask[u][v] = (nb == 0) ? here : static_cast<BlockId>(0);
+                    if (nb == 0) {
+                        mask[u][v] = here;
+                        neighbour_light(chunk, c, store, fd, x, y, z, mask_sky[u][v], mask_blk[u][v]);
+                    } else {
+                        mask[u][v] = static_cast<BlockId>(0);
+                    }
                 }
             }
 
@@ -240,24 +278,22 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
                 for (int v = 0; v < kChunkDim; ++v) {
                     BlockId id = mask[u][v];
                     if (id == 0 || merged[u][v]) continue;
+                    std::uint8_t sky0 = mask_sky[u][v], blk0 = mask_blk[u][v];
+                    auto same = [&](int uu, int vv) {
+                        return mask[uu][vv] == id && !merged[uu][vv]
+                            && mask_sky[uu][vv] == sky0 && mask_blk[uu][vv] == blk0;
+                    };
 
-                    // Find max width w in +u direction.
+                    // Find max width w in +u direction (same id AND same light).
                     int w = 1;
-                    while (u + w < kChunkDim &&
-                           mask[u+w][v] == id &&
-                           !merged[u+w][v]) {
-                        ++w;
-                    }
+                    while (u + w < kChunkDim && same(u + w, v)) ++w;
 
                     // Find max height h in +v direction while entire row matches.
                     int h = 1;
                     bool row_ok = true;
                     while (v + h < kChunkDim && row_ok) {
                         for (int k = 0; k < w; ++k) {
-                            if (mask[u+k][v+h] != id || merged[u+k][v+h]) {
-                                row_ok = false;
-                                break;
-                            }
+                            if (!same(u + k, v + h)) { row_ok = false; break; }
                         }
                         if (row_ok) ++h;
                     }
@@ -268,7 +304,7 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
                             merged[u+ku][v+kv] = true;
 
                     // Emit quad; stop early if buffers full.
-                    bool ok = emit_quad(fd, d, u, v, w, h, id,
+                    bool ok = emit_quad(fd, d, u, v, w, h, id, sky0, blk0,
                                         vtx_out, vtx_written,
                                         idx_out, idx_written,
                                         vtx_count);

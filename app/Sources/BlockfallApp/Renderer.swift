@@ -279,12 +279,19 @@ final class Renderer: NSObject, MTKViewDelegate {
         float z = float((p.pos >> 12) & 0x3f);
         float3 world = u.chunkOrigin.xyz + float3(x, y, z);
         uint n = p.normuv & 7u;
-        float3 N = normalFor(n);
-        float ndl = max(0.0, dot(N, normalize(-u.sunDirTime.xyz)));
-        float shade = clamp(0.30 + 0.55 * faceShade(n) + 0.25 * ndl, 0.0, 1.0);
+        // Light = max(sky*day, blocklight), floored by ambient; modulated by a
+        // gentle per-face directional term. (Track F per-voxel light.)
+        float dayB = 0.15 + 0.85 * max(0.0, sin(u.sunDirTime.w * 3.14159265));
+        float skyC = (float(p.sky) / 15.0) * dayB;
+        float blockC = float(p.block) / 15.0;
+        float lightLevel = max(max(skyC, blockC), 0.08);
+        float facing = 0.62 + 0.38 * faceShade(n);
+        float shade = clamp(lightLevel * facing, 0.0, 1.0);
         VOut o;
         o.position = u.viewProj * float4(world, 1.0);
-        o.color = materialColor(uint(p.material));
+        // Warm tint where block light dominates (torches/glow feel cosy).
+        float3 base = materialColor(uint(p.material));
+        o.color = mix(base, base * float3(1.15, 1.02, 0.8), clamp(blockC - skyC, 0.0, 1.0));
         o.shade = shade;
         o.sat = u.chunkOrigin.w;   // per-region Dim saturation (0=grey..1=full color)
         return o;

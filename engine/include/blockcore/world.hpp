@@ -15,6 +15,7 @@
 #include "blockcore/chunk.hpp"
 #include "blockcore/vertex.hpp"
 #include "blockcore/mathx.hpp"
+#include "blockcore/lighting.hpp"
 #include "blockcore_interfaces.hpp"
 
 #include <unordered_map>
@@ -305,7 +306,8 @@ public:
     float   debug_region_sat(int cx, int cz) const { return region_sat(ChunkCoord{cx, 0, cz}); }
 
 private:
-    static float day_time(double clock) { return float(std::fmod(clock * 0.02, 1.0)); }
+    // Start in bright morning (+0.30) and cycle ~50 s/day.
+    static float day_time(double clock) { return float(std::fmod(clock * 0.02 + 0.30, 1.0)); }
 
     V3 forward_dir() const {
         return normalize(V3{ std::cos(pitch_) * std::sin(yaw_), std::sin(pitch_),
@@ -399,6 +401,17 @@ private:
             dirty_.erase(cc);
             if (!store_.is_resident(cc)) continue;
             ++done;
+            // Light before meshing (the mesher reads per-voxel light). If a
+            // boundary value changed, re-dirty neighbours so light bleeds across
+            // chunk seams and settles over the next few frames (Track F).
+            bool changed = FloodLighting::light_chunk(cc, store_);
+            if (changed) {
+                const IVec3 dirs[6] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+                for (auto d : dirs) {
+                    ChunkCoord nc{cc.x + d.x, cc.y + d.y, cc.z + d.z};
+                    if (store_.is_resident(nc)) dirty_.insert(nc);
+                }
+            }
             remesh_one(cc);
         }
     }
