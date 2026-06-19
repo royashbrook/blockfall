@@ -22,6 +22,10 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <string>
+#include <fstream>
+#include <filesystem>
+#include <cstdio>
 
 namespace bf {
 
@@ -68,6 +72,7 @@ public:
 
     // ---- M2: procedural spawn + streaming --------------------------------
     void init_world(std::uint64_t seed) {
+        seed_ = seed;
         if (!gen_) { generate_test_world(); return; }
         gen_->seed(seed);
         // Find the surface at spawn column (0,0): generate the vertical band and
@@ -85,6 +90,101 @@ public:
         yaw_ = 0.6f; pitch_ = -0.25f;
         restore_region(ChunkCoord{0, 0, 0});           // spawn region starts colorful
         recompute_stream_set();
+    }
+
+    // ---- M2: disk save/load ----------------------------------------------
+    // Only player-EDITED chunks are persisted; pure-procedural chunks regen
+    // from the seed (spec §6: region/save persists edits + player + regions).
+    bool save(const std::string& dir) {
+        std::error_code ec; std::filesystem::create_directories(dir, ec);
+        {
+            std::ofstream f(dir + "/world.meta", std::ios::binary);
+            if (!f) return false;
+            f.write("BFWM", 4);
+            f.write(reinterpret_cast<const char*>(&seed_), 8);
+            std::uint32_t rc = std::uint32_t(region_sat_.size());
+            f.write(reinterpret_cast<const char*>(&rc), 4);
+            for (auto& [k, v] : region_sat_) {
+                f.write(reinterpret_cast<const char*>(&k.x), 4);
+                f.write(reinterpret_cast<const char*>(&k.z), 4);
+                f.write(reinterpret_cast<const char*>(&v), 4);
+            }
+        }
+        {
+            std::ofstream f(dir + "/player.dat", std::ios::binary);
+            f.write("BFPL", 4);
+            f.write(reinterpret_cast<const char*>(&pos_), sizeof(pos_));
+            f.write(reinterpret_cast<const char*>(&yaw_), 4);
+            f.write(reinterpret_cast<const char*>(&pitch_), 4);
+            std::uint8_t m = std::uint8_t(mode_);
+            f.write(reinterpret_cast<const char*>(&m), 1);
+            f.write(reinterpret_cast<const char*>(&health_), 4);
+            f.write(reinterpret_cast<const char*>(&hunger_), 4);
+            f.write(reinterpret_cast<const char*>(&selected_), 1);
+            f.write(reinterpret_cast<const char*>(hotbar_), sizeof(hotbar_));
+        }
+        std::vector<std::byte> buf(1u << 20);
+        for (ChunkCoord cc : edited_) {
+            auto* ch = static_cast<PaletteChunk*>(store_.get(cc));
+            if (!ch) continue;
+            std::size_t n = ch->serialize(buf);
+            if (!n) continue;
+            char name[160];
+            std::snprintf(name, sizeof(name), "%s/c_%d_%d_%d.chunk", dir.c_str(), cc.x, cc.y, cc.z);
+            std::ofstream f(name, std::ios::binary);
+            f.write(reinterpret_cast<const char*>(buf.data()), std::streamsize(n));
+        }
+        return true;
+    }
+
+    bool load(const std::string& dir) {
+        std::ifstream meta(dir + "/world.meta", std::ios::binary);
+        if (!meta) return false;
+        char magic[4]; meta.read(magic, 4);
+        if (std::memcmp(magic, "BFWM", 4) != 0) return false;
+        meta.read(reinterpret_cast<char*>(&seed_), 8);
+        if (gen_) gen_->seed(seed_);
+        std::uint32_t rc = 0; meta.read(reinterpret_cast<char*>(&rc), 4);
+        region_sat_.clear();
+        for (std::uint32_t i = 0; i < rc; ++i) {
+            RegionKey k{}; float v = 0;
+            meta.read(reinterpret_cast<char*>(&k.x), 4);
+            meta.read(reinterpret_cast<char*>(&k.z), 4);
+            meta.read(reinterpret_cast<char*>(&v), 4);
+            region_sat_[k] = v;
+        }
+        std::ifstream pl(dir + "/player.dat", std::ios::binary);
+        if (pl) {
+            char m4[4]; pl.read(m4, 4);
+            if (std::memcmp(m4, "BFPL", 4) == 0) {
+                pl.read(reinterpret_cast<char*>(&pos_), sizeof(pos_));
+                pl.read(reinterpret_cast<char*>(&yaw_), 4);
+                pl.read(reinterpret_cast<char*>(&pitch_), 4);
+                std::uint8_t m = 0; pl.read(reinterpret_cast<char*>(&m), 1); mode_ = bf_game_mode(m);
+                pl.read(reinterpret_cast<char*>(&health_), 4);
+                pl.read(reinterpret_cast<char*>(&hunger_), 4);
+                pl.read(reinterpret_cast<char*>(&selected_), 1);
+                pl.read(reinterpret_cast<char*>(hotbar_), sizeof(hotbar_));
+            }
+        }
+        for (auto& e : std::filesystem::directory_iterator(dir)) {
+            if (e.path().extension() != ".chunk") continue;
+            std::ifstream f(e.path(), std::ios::binary | std::ios::ate);
+            std::streamsize sz = f.tellg(); f.seekg(0);
+            std::size_t n = std::size_t(sz);
+            std::vector<std::byte> buf(n);
+            f.read(reinterpret_cast<char*>(buf.data()), sz);
+            auto ch = PaletteChunk::deserialize(std::span<const std::byte>(buf.data(), buf.size()));
+            if (ch) {
+                ChunkCoord cc = ch->coord();
+                store_.insert(std::move(ch));
+                dirty_.insert(cc); edited_.insert(cc);
+            }
+        }
+        last_center_ = to_chunk(IVec3{ifloor(pos_.x), ifloor(pos_.y), ifloor(pos_.z)});
+        first_stream_ = true;
+        recompute_stream_set();
+        return true;
     }
 
     // ---- flat world (used by the deterministic mine/place test) ----------
@@ -198,6 +298,7 @@ public:
         pos_ = V3{px, py, pz}; yaw_ = yaw; pitch_ = pitch;
     }
     BlockId debug_block_at(int x, int y, int z) const { return block_at(IVec3{x, y, z}); }
+    void    debug_edit(int x, int y, int z, BlockId b) { set_block_internal(IVec3{x, y, z}, b); }
     bool    debug_has_target() const { return has_target_; }
     void    debug_set_selected(std::uint8_t s) { selected_ = s; }
     std::size_t debug_resident_chunks() const { return store_.resident_count(); }
@@ -223,6 +324,8 @@ private:
         ChunkCoord cc = to_chunk(w);
         store_.get_or_create(cc)->set(mod16(w.x), mod16(w.y), mod16(w.z), b);
         dirty_.insert(cc);
+        edited_.insert(cc);    // player-edited -> persisted on save
+
         const IVec3 dirs[6] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
         for (auto d : dirs) {
             ChunkCoord nc = to_chunk(IVec3{w.x + d.x, w.y + d.y, w.z + d.z});
@@ -387,10 +490,12 @@ private:
     std::unordered_map<ChunkCoord, MeshRec, ChunkCoordHash> meshes_;
     std::unordered_set<ChunkCoord, ChunkCoordHash> dirty_;
     std::unordered_map<RegionKey, float, RegionKeyHash> region_sat_;
+    std::unordered_set<ChunkCoord, ChunkCoordHash> edited_;   // player-edited (persisted)
     std::vector<ChunkCoord> gen_queue_;
     std::vector<std::byte>  vscratch_, iscratch_;
     ChunkCoord  last_center_{0, 0, 0};
     bool        first_stream_{true};
+    std::uint64_t seed_{0};
 
     V3            pos_{0, 12, 0};
     float         yaw_{0.0f}, pitch_{0.0f};

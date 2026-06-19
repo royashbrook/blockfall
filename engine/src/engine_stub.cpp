@@ -70,14 +70,17 @@ bf_result bf_world_new(bf_engine e, uint64_t seed) {
 }
 bf_result bf_world_load(bf_engine e) {
     if (!e) { set_err("null engine"); return BF_ERR_BAD_ARG; }
-    e->world.init_world(e->cfg.world_seed ? e->cfg.world_seed : 1337u); // disk save/load: later in M2
+    const char* dir = e->cfg.save_dir ? e->cfg.save_dir : "";
+    if (!e->world.load(dir))                       // no save yet -> fresh world
+        e->world.init_world(e->cfg.world_seed ? e->cfg.world_seed : 1337u);
     e->world_ready = true;
     return BF_OK;
 }
 bf_result bf_world_save(bf_engine e) {
     if (!e) { set_err("null engine"); return BF_ERR_BAD_ARG; }
-    if (e->evt_fn) { bf_event ev{}; ev.kind = BF_EVT_SAVE_DONE; e->evt_fn(e->evt_user, &ev); }
-    return BF_OK;
+    bool ok = e->world.save(e->cfg.save_dir ? e->cfg.save_dir : "");
+    if (e->evt_fn) { bf_event ev{}; ev.kind = BF_EVT_SAVE_DONE; ev.i = ok ? 0 : 1; e->evt_fn(e->evt_user, &ev); }
+    return ok ? BF_OK : BF_ERR_IO;
 }
 
 bf_result bf_frame_begin(bf_engine e, const bf_frame_input* in, double real_dt) {

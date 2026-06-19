@@ -129,10 +129,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         alloc.alloc = allocTrampoline
         alloc.free_ = freeTrampoline
         _ = bf_set_gpu_allocator(e, &alloc)
-        _ = bf_world_new(e, 1234)
+        _ = bf_world_load(e)              // restores a prior session, else generates
     }
 
-    func shutdown() { if let e = engine { bf_engine_destroy(e); engine = nil } }
+    func shutdown() {
+        if let e = engine { _ = bf_world_save(e); bf_engine_destroy(e); engine = nil }
+    }
     deinit { shutdown() }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
