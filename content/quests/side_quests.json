@@ -1,0 +1,68 @@
+[
+  {
+    "id": 101,
+    "title": "A Home for the Lamb",
+    "arc": "side",
+    "giver_npc": "herbalist_lena",
+    "objectives": [
+      {
+        "trigger": "befriend_creature",
+        "target": "woolly_lamb",
+        "count": 2,
+        "objective_text": "Befriend 2 woolly lambs using berry clusters."
+      },
+      {
+        "trigger": "place_block",
+        "target": "wool_block",
+        "count": 4,
+        "objective_text": "Use their wool to place 4 wool blocks."
+      }
+    ],
+    "rewards": [
+      { "item": "string_fiber", "count": 8 },
+      { "item": "berry_cluster", "count": 6 }
+    ]
+  },
+  {
+    "id": 102,
+    "title": "The Herbalist Needs Mushrooms",
+    "arc": "side",
+    "giver_npc": "herbalist_lena",
+    "objectives": [
+      {
+        "trigger": "collect_item",
+        "target": "mushroom",
+        "count": 8,
+        "objective_text": "Gather 8 mushrooms from the pine forest floor."
+      }
+    ],
+    "rewards": [
+      { "item": "mushroom_stew", "count": 3 },
+      { "item": "berry_cluster", "count": 8 }
+    ]
+  },
+  {
+    "id": 103,
+    "title": "Mine a Chest Full",
+    "arc": "side",
+    "giver_npc": "builder_tom",
+    "objectives": [
+      {
+        "trigger": "mine_block",
+        "target": "stone",
+        "count": 32,
+        "objective_text": "Mine 32 blocks of stone for the village walls."
+      },
+      {
+        "trigger": "craft_item",
+        "target": "stone_brick",
+        "count": 8,
+        "objective_text": "Craft 8 stone bricks from the cobblestone."
+      }
+    ],
+    "rewards": [
+      { "item": "iron_ingot", "count": 3 },
+      { "item": "coal", "count": 8 }
+    ]
+  }
+]

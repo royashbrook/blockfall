@@ -1,0 +1,38 @@
+[
+  {
+    "id": 7,
+    "name": "dim_wisp",
+    "display_name": "Dim Wisp",
+    "disposition": "night_gentle",
+    "max_health": 8,
+    "move_speed": 1.5,
+    "spawn_biomes": ["dim_barrens"],
+    "spawn_light_max": 4,
+    "befriend_item": "glow_dust",
+    "calm_reward": "wisp_drops"
+  },
+  {
+    "id": 8,
+    "name": "grey_shambler",
+    "display_name": "Grey Shambler",
+    "disposition": "night_gentle",
+    "max_health": 14,
+    "move_speed": 1.0,
+    "spawn_biomes": ["dim_barrens", "rolling_hills"],
+    "spawn_light_max": 5,
+    "befriend_item": "color_dust",
+    "calm_reward": "shambler_drops"
+  },
+  {
+    "id": 9,
+    "name": "shadow_puff",
+    "display_name": "Shadow Puff",
+    "disposition": "night_gentle",
+    "max_health": 6,
+    "move_speed": 2.0,
+    "spawn_biomes": ["dim_barrens"],
+    "spawn_light_max": 3,
+    "befriend_item": "torch",
+    "calm_reward": "puff_drops"
+  }
+]

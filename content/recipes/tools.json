@@ -1,0 +1,92 @@
+[
+  {
+    "id": "wood_pickaxe_recipe",
+    "grid_size": 3,
+    "grid": [
+      "oak_planks", "oak_planks", "oak_planks",
+      null,         "stick",      null,
+      null,         "stick",      null
+    ],
+    "result": { "item": "wood_pickaxe", "count": 1 }
+  },
+  {
+    "id": "wood_axe_recipe",
+    "grid_size": 3,
+    "grid": [
+      "oak_planks", "oak_planks", null,
+      "oak_planks", "stick",      null,
+      null,         "stick",      null
+    ],
+    "result": { "item": "wood_axe", "count": 1 }
+  },
+  {
+    "id": "wood_shovel_recipe",
+    "grid_size": 3,
+    "grid": [
+      null, "oak_planks", null,
+      null, "stick",      null,
+      null, "stick",      null
+    ],
+    "result": { "item": "wood_shovel", "count": 1 }
+  },
+  {
+    "id": "stone_pickaxe_recipe",
+    "grid_size": 3,
+    "grid": [
+      "cobblestone", "cobblestone", "cobblestone",
+      null,          "stick",       null,
+      null,          "stick",       null
+    ],
+    "result": { "item": "stone_pickaxe", "count": 1 }
+  },
+  {
+    "id": "stone_axe_recipe",
+    "grid_size": 3,
+    "grid": [
+      "cobblestone", "cobblestone", null,
+      "cobblestone", "stick",       null,
+      null,          "stick",       null
+    ],
+    "result": { "item": "stone_axe", "count": 1 }
+  },
+  {
+    "id": "stone_shovel_recipe",
+    "grid_size": 3,
+    "grid": [
+      null, "cobblestone", null,
+      null, "stick",       null,
+      null, "stick",       null
+    ],
+    "result": { "item": "stone_shovel", "count": 1 }
+  },
+  {
+    "id": "iron_pickaxe_recipe",
+    "grid_size": 3,
+    "grid": [
+      "iron_ingot", "iron_ingot", "iron_ingot",
+      null,         "stick",      null,
+      null,         "stick",      null
+    ],
+    "result": { "item": "iron_pickaxe", "count": 1 }
+  },
+  {
+    "id": "iron_axe_recipe",
+    "grid_size": 3,
+    "grid": [
+      "iron_ingot", "iron_ingot", null,
+      "iron_ingot", "stick",      null,
+      null,         "stick",      null
+    ],
+    "result": { "item": "iron_axe", "count": 1 }
+  },
+  {
+    "id": "iron_shovel_recipe",
+    "grid_size": 3,
+    "grid": [
+      null, "iron_ingot", null,
+      null, "stick",      null,
+      null, "stick",      null
+    ],
+    "result": { "item": "iron_shovel", "count": 1 }
+  }
+]

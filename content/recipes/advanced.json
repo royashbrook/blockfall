@@ -1,0 +1,90 @@
+[
+  {
+    "id": "beacon_block_recipe",
+    "grid_size": 3,
+    "grid": [
+      "glass_pane",  "glass_pane",  "glass_pane",
+      "glass_pane",  "crystal_shard","glass_pane",
+      "iron_ingot",  "iron_ingot",  "iron_ingot"
+    ],
+    "result": { "item": "beacon_block", "count": 1 }
+  },
+  {
+    "id": "glow_block_recipe",
+    "grid_size": 2,
+    "grid": ["cobblestone", "glow_dust", "cobblestone", "glow_dust"],
+    "result": { "item": "glow_block", "count": 2 }
+  },
+  {
+    "id": "crystal_lamp_recipe",
+    "grid_size": 3,
+    "grid": [
+      null,          "crystal_shard", null,
+      "crystal_shard","glow_block",  "crystal_shard",
+      null,          "crystal_shard", null
+    ],
+    "result": { "item": "crystal_lamp", "count": 1 }
+  },
+  {
+    "id": "colored_glass_recipe",
+    "grid_size": 3,
+    "grid": [
+      "glass_pane", "glass_pane", "glass_pane",
+      "glass_pane", "color_dust", "glass_pane",
+      "glass_pane", "glass_pane", "glass_pane"
+    ],
+    "result": { "item": "colored_glass", "count": 8 }
+  },
+  {
+    "id": "clay_brick_block_recipe",
+    "grid_size": 2,
+    "grid": ["clay_lump", "clay_lump", "clay_lump", "clay_lump"],
+    "result": { "item": "clay_brick", "count": 1 }
+  },
+  {
+    "id": "wool_block_recipe",
+    "grid_size": 2,
+    "grid": ["string_fiber", "string_fiber", "string_fiber", "string_fiber"],
+    "result": { "item": "wool_block", "count": 1 }
+  },
+  {
+    "id": "mushroom_stew_recipe",
+    "grid_size": 2,
+    "grid": ["mushroom", null, "clay_lump", null],
+    "result": { "item": "mushroom_stew", "count": 1 }
+  },
+  {
+    "id": "honey_cake_recipe",
+    "grid_size": 3,
+    "grid": [
+      "berry_cluster", "berry_cluster", "berry_cluster",
+      "string_fiber",  "mushroom",      "string_fiber",
+      "berry_cluster", "berry_cluster", "berry_cluster"
+    ],
+    "result": { "item": "honey_cake", "count": 1 }
+  },
+  {
+    "id": "crystal_shard_from_raw",
+    "grid_size": 2,
+    "grid": ["raw_crystal", null, null, null],
+    "result": { "item": "crystal_shard", "count": 2 }
+  },
+  {
+    "id": "iron_ingot_from_raw",
+    "grid_size": 2,
+    "grid": ["raw_iron", "coal", null, null],
+    "result": { "item": "iron_ingot", "count": 1 }
+  },
+  {
+    "id": "copper_ingot_from_raw",
+    "grid_size": 2,
+    "grid": ["raw_copper", "coal", null, null],
+    "result": { "item": "copper_ingot", "count": 1 }
+  },
+  {
+    "id": "color_dust_from_crystal",
+    "grid_size": 2,
+    "grid": ["color_crystal", null, null, null],
+    "result": { "item": "color_dust", "count": 4 }
+  }
+]

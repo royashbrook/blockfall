@@ -1,0 +1,16 @@
+[
+  { "id": 50, "name": "stick", "display_name": "Stick", "max_stack": 64 },
+  { "id": 51, "name": "coal", "display_name": "Coal", "max_stack": 64 },
+  { "id": 52, "name": "raw_copper", "display_name": "Raw Copper", "max_stack": 64 },
+  { "id": 53, "name": "raw_iron", "display_name": "Raw Iron", "max_stack": 64 },
+  { "id": 54, "name": "raw_crystal", "display_name": "Raw Crystal", "max_stack": 64 },
+  { "id": 55, "name": "copper_ingot", "display_name": "Copper Ingot", "max_stack": 64 },
+  { "id": 56, "name": "iron_ingot", "display_name": "Iron Ingot", "max_stack": 64 },
+  { "id": 57, "name": "crystal_shard", "display_name": "Crystal Shard", "max_stack": 64 },
+  { "id": 58, "name": "clay_lump", "display_name": "Clay Lump", "max_stack": 64 },
+  { "id": 59, "name": "string_fiber", "display_name": "String Fiber", "max_stack": 64 },
+  { "id": 60, "name": "feather", "display_name": "Feather", "max_stack": 64 },
+  { "id": 61, "name": "color_dust", "display_name": "Color Dust", "max_stack": 64 },
+  { "id": 62, "name": "glow_dust", "display_name": "Glow Dust", "max_stack": 64 },
+  { "id": 63, "name": "blank_book", "display_name": "Blank Book", "max_stack": 16 }
+]

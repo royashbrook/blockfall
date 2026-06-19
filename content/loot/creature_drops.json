@@ -1,0 +1,101 @@
+[
+  {
+    "id": "lamb_drops",
+    "rolls": 2,
+    "entries": [
+      { "item": "string_fiber", "weight": 5, "min": 1, "max": 3 },
+      { "item": "wool_block", "weight": 3, "min": 1, "max": 2 },
+      { "item": "nothing", "weight": 2 }
+    ]
+  },
+  {
+    "id": "rabbit_drops",
+    "rolls": 1,
+    "entries": [
+      { "item": "berry_cluster", "weight": 4, "min": 1, "max": 2 },
+      { "item": "feather", "weight": 3, "min": 1, "max": 1 },
+      { "item": "nothing", "weight": 3 }
+    ]
+  },
+  {
+    "id": "cow_drops",
+    "rolls": 2,
+    "entries": [
+      { "item": "string_fiber", "weight": 4, "min": 2, "max": 4 },
+      { "item": "clay_lump", "weight": 3, "min": 1, "max": 2 },
+      { "item": "nothing", "weight": 3 }
+    ]
+  },
+  {
+    "id": "duck_drops",
+    "rolls": 1,
+    "entries": [
+      { "item": "feather", "weight": 5, "min": 1, "max": 3 },
+      { "item": "berry_cluster", "weight": 3, "min": 1, "max": 1 },
+      { "item": "nothing", "weight": 2 }
+    ]
+  },
+  {
+    "id": "bee_drops",
+    "rolls": 1,
+    "entries": [
+      { "item": "color_dust", "weight": 4, "min": 1, "max": 2 },
+      { "item": "nothing", "weight": 6 }
+    ]
+  },
+  {
+    "id": "fox_drops",
+    "rolls": 1,
+    "entries": [
+      { "item": "string_fiber", "weight": 3, "min": 1, "max": 2 },
+      { "item": "feather", "weight": 4, "min": 1, "max": 2 },
+      { "item": "nothing", "weight": 3 }
+    ]
+  },
+  {
+    "id": "wisp_drops",
+    "rolls": 2,
+    "entries": [
+      { "item": "glow_dust", "weight": 5, "min": 1, "max": 3 },
+      { "item": "color_dust", "weight": 4, "min": 1, "max": 2 },
+      { "item": "nothing", "weight": 1 }
+    ]
+  },
+  {
+    "id": "shambler_drops",
+    "rolls": 2,
+    "entries": [
+      { "item": "color_dust", "weight": 4, "min": 1, "max": 3 },
+      { "item": "dim_stone", "weight": 3, "min": 1, "max": 2 },
+      { "item": "nothing", "weight": 3 }
+    ]
+  },
+  {
+    "id": "puff_drops",
+    "rolls": 1,
+    "entries": [
+      { "item": "glow_dust", "weight": 6, "min": 1, "max": 2 },
+      { "item": "nothing", "weight": 4 }
+    ]
+  },
+  {
+    "id": "colossus_drops",
+    "rolls": 4,
+    "entries": [
+      { "item": "cobblestone", "weight": 4, "min": 8, "max": 16 },
+      { "item": "stone_brick", "weight": 3, "min": 4, "max": 8 },
+      { "item": "iron_ingot", "weight": 2, "min": 1, "max": 3 },
+      { "item": "color_dust", "weight": 3, "min": 2, "max": 5 }
+    ]
+  },
+  {
+    "id": "herald_drops",
+    "rolls": 5,
+    "entries": [
+      { "item": "crystal_shard", "weight": 3, "min": 3, "max": 6 },
+      { "item": "color_dust", "weight": 4, "min": 4, "max": 8 },
+      { "item": "glow_dust", "weight": 3, "min": 2, "max": 4 },
+      { "item": "beacon_block", "weight": 1, "min": 1, "max": 1 }
+    ]
+  }
+]

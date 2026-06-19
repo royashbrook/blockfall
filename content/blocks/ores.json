@@ -1,0 +1,42 @@
+[
+  {
+    "id": 13,
+    "name": "coal_ore",
+    "display_name": "Coal Ore",
+    "hardness": 20,
+    "required_tier": 1,
+    "preferred_tool": "pickaxe",
+    "drop_item": "coal",
+    "textures": { "all": "coal_ore" }
+  },
+  {
+    "id": 14,
+    "name": "copper_ore",
+    "display_name": "Copper Ore",
+    "hardness": 25,
+    "required_tier": 2,
+    "preferred_tool": "pickaxe",
+    "drop_item": "raw_copper",
+    "textures": { "all": "copper_ore" }
+  },
+  {
+    "id": 15,
+    "name": "iron_ore",
+    "display_name": "Iron Ore",
+    "hardness": 30,
+    "required_tier": 2,
+    "preferred_tool": "pickaxe",
+    "drop_item": "raw_iron",
+    "textures": { "all": "iron_ore" }
+  },
+  {
+    "id": 16,
+    "name": "crystal_ore",
+    "display_name": "Crystal Ore",
+    "hardness": 35,
+    "required_tier": 3,
+    "preferred_tool": "pickaxe",
+    "drop_item": "raw_crystal",
+    "textures": { "all": "crystal_ore" }
+  }
+]

@@ -1,0 +1,70 @@
+[
+  {
+    "id": "oak_planks_from_log",
+    "grid_size": 2,
+    "grid": ["oak_log", null, null, null],
+    "result": { "item": "oak_planks", "count": 4 }
+  },
+  {
+    "id": "birch_planks_from_log",
+    "grid_size": 2,
+    "grid": ["birch_log", null, null, null],
+    "result": { "item": "birch_planks", "count": 4 }
+  },
+  {
+    "id": "sticks_from_oak_planks",
+    "grid_size": 2,
+    "grid": ["oak_planks", null, "oak_planks", null],
+    "result": { "item": "stick", "count": 4 }
+  },
+  {
+    "id": "sticks_from_birch_planks",
+    "grid_size": 2,
+    "grid": ["birch_planks", null, "birch_planks", null],
+    "result": { "item": "stick", "count": 4 }
+  },
+  {
+    "id": "crafting_table_from_planks",
+    "grid_size": 2,
+    "grid": ["oak_planks", "oak_planks", "oak_planks", "oak_planks"],
+    "result": { "item": "crafting_table", "count": 1 }
+  },
+  {
+    "id": "chest_from_planks",
+    "grid_size": 3,
+    "grid": [
+      "oak_planks", "oak_planks", "oak_planks",
+      "oak_planks", null,         "oak_planks",
+      "oak_planks", "oak_planks", "oak_planks"
+    ],
+    "result": { "item": "chest", "count": 1 }
+  },
+  {
+    "id": "torch_from_coal",
+    "grid_size": 2,
+    "grid": ["coal", null, "stick", null],
+    "result": { "item": "torch", "count": 4 }
+  },
+  {
+    "id": "oak_door_from_planks",
+    "grid_size": 3,
+    "grid": [
+      "oak_planks", "oak_planks", null,
+      "oak_planks", "oak_planks", null,
+      "oak_planks", "oak_planks", null
+    ],
+    "result": { "item": "oak_door", "count": 3 }
+  },
+  {
+    "id": "stone_brick_from_cobblestone",
+    "grid_size": 2,
+    "grid": ["cobblestone", "cobblestone", "cobblestone", "cobblestone"],
+    "result": { "item": "stone_brick", "count": 4 }
+  },
+  {
+    "id": "glass_from_sand",
+    "grid_size": 2,
+    "grid": ["sand", null, null, null],
+    "result": { "item": "glass_pane", "count": 1 }
+  }
+]

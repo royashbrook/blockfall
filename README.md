@@ -6,18 +6,27 @@ C++23 core (`blockcore`) + Swift/Metal app shell, talking over a frozen C ABI.
 > Mechanics, controls, and feel mirror Minecraft exactly. **All art, names, and
 > content are original** — no copied assets, textures, names, or lore.
 
-## Status — Milestone M0 ✅ (Phase 0 complete)
+## Status — M0 ✅ complete · M1 in progress
 
-The interface contract is frozen and the stub app runs end to end.
-
+**M0 (Phase 0) — done.** Interface contract frozen, stub app runs end to end.
 - [x] `/contract` compiles (C ABI + internal C++ interfaces, both clean)
 - [x] Format/threading specs written and versioned
 - [x] Stub `.app` launches, clears a sky-colored frame, shows a HUD overlay
-- [x] `ci/check.sh` GREEN: core build, unit test, content validation, Swift↔C++
+- [x] `ci/check.sh` GREEN: core build, unit tests, content validation, Swift↔C++
       self-test, lint (0 warnings)
 
-Next: **M1** — mine & place one block in a single chunk with greedy meshing and
-instant remesh (the core loop). See `docs/ROADMAP.md`.
+**Toward M1 — landed so far:**
+- [x] **Track A** (jobs + memory): work-stealing scheduler with P/E QoS pools,
+      DAG deps, help-on-wait; linear + pool arenas. Tested (DAG order, 20k
+      fan-out, 200-deep chain, 18k concurrent-submit stress). Fixed a real
+      slot-recycle data race found via thread sampling.
+- [x] **Track J content** (data): 40 blocks, 58 items, 31 recipes, 11
+      creatures, 5 biomes, 5 structures, 13 loot tables, 15 quests, 3 dialogue
+      trees — schema-valid, cross-references resolve, no dangling refs.
+
+**Next (M1 critical path):** B chunk storage → D greedy meshing → E renderer,
+with G physics/collision alongside. Then: point, hold-to-mine, place, instant
+remesh. See `docs/ROADMAP.md`.
 
 ## Layout (spec §5)
 

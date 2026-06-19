@@ -1,0 +1,85 @@
+[
+  {
+    "id": 0,
+    "name": "verdant_meadow",
+    "display_name": "Verdant Meadow",
+    "surface_block": "grass",
+    "filler_block": "dirt",
+    "underwater_block": "sand",
+    "height": { "base": 64.0, "amplitude": 4.0, "roughness": 0.2 },
+    "temperature": 0.6,
+    "sky_top_color": [100, 160, 240],
+    "sky_horizon_color": [180, 210, 255],
+    "spawn_creatures": ["woolly_lamb", "round_rabbit", "spotted_cow", "blossom_bee"],
+    "decorations": [
+      { "structure": "oak_tree", "chance": 0.05 },
+      { "structure": "starter_village", "chance": 0.002 }
+    ]
+  },
+  {
+    "id": 1,
+    "name": "pine_forest",
+    "display_name": "Pine Forest",
+    "surface_block": "grass",
+    "filler_block": "dirt",
+    "underwater_block": "gravel",
+    "height": { "base": 68.0, "amplitude": 8.0, "roughness": 0.4 },
+    "temperature": 0.3,
+    "sky_top_color": [80, 130, 210],
+    "sky_horizon_color": [160, 200, 240],
+    "spawn_creatures": ["round_rabbit", "forest_fox"],
+    "decorations": [
+      { "structure": "birch_tree", "chance": 0.12 },
+      { "structure": "oak_tree", "chance": 0.08 }
+    ]
+  },
+  {
+    "id": 2,
+    "name": "rolling_hills",
+    "display_name": "Rolling Hills",
+    "surface_block": "grass",
+    "filler_block": "dirt",
+    "underwater_block": "sand",
+    "height": { "base": 72.0, "amplitude": 16.0, "roughness": 0.5 },
+    "temperature": 0.5,
+    "sky_top_color": [110, 170, 245],
+    "sky_horizon_color": [185, 215, 255],
+    "spawn_creatures": ["woolly_lamb", "spotted_cow", "stone_colossus"],
+    "decorations": [
+      { "structure": "oak_tree", "chance": 0.04 },
+      { "structure": "beacon_shrine", "chance": 0.001 }
+    ]
+  },
+  {
+    "id": 3,
+    "name": "river_delta",
+    "display_name": "River Delta",
+    "surface_block": "sand",
+    "filler_block": "dirt",
+    "underwater_block": "gravel",
+    "height": { "base": 60.0, "amplitude": 2.0, "roughness": 0.1 },
+    "temperature": 0.7,
+    "sky_top_color": [120, 180, 250],
+    "sky_horizon_color": [190, 220, 255],
+    "spawn_creatures": ["pond_duck"],
+    "decorations": [
+      { "structure": "birch_tree", "chance": 0.03 }
+    ]
+  },
+  {
+    "id": 4,
+    "name": "dim_barrens",
+    "display_name": "Dim Barrens",
+    "surface_block": "dim_dirt",
+    "filler_block": "dim_stone",
+    "underwater_block": "gravel",
+    "height": { "base": 62.0, "amplitude": 6.0, "roughness": 0.35 },
+    "temperature": 0.1,
+    "sky_top_color": [80, 80, 100],
+    "sky_horizon_color": [120, 120, 140],
+    "spawn_creatures": ["dim_wisp", "grey_shambler", "shadow_puff", "dim_herald"],
+    "decorations": [
+      { "structure": "dim_dungeon", "chance": 0.003 }
+    ]
+  }
+]

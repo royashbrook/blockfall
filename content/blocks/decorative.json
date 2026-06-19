@@ -1,0 +1,50 @@
+[
+  {
+    "id": 36,
+    "name": "flower_red",
+    "display_name": "Red Flower",
+    "hardness": 0,
+    "required_tier": 0,
+    "transparent": true,
+    "textures": { "all": "flower_red" }
+  },
+  {
+    "id": 37,
+    "name": "flower_yellow",
+    "display_name": "Yellow Flower",
+    "hardness": 0,
+    "required_tier": 0,
+    "transparent": true,
+    "textures": { "all": "flower_yellow" }
+  },
+  {
+    "id": 38,
+    "name": "tall_grass_block",
+    "display_name": "Tall Grass",
+    "hardness": 0,
+    "required_tier": 0,
+    "transparent": true,
+    "textures": { "all": "tall_grass" }
+  },
+  {
+    "id": 39,
+    "name": "mushroom_block",
+    "display_name": "Mushroom",
+    "hardness": 0,
+    "required_tier": 0,
+    "transparent": true,
+    "textures": { "all": "mushroom_brown" }
+  },
+  {
+    "id": 40,
+    "name": "color_crystal",
+    "display_name": "Color Crystal",
+    "hardness": 12,
+    "required_tier": 1,
+    "preferred_tool": "pickaxe",
+    "light_emit": 8,
+    "light_color": [255, 100, 200],
+    "transparent": true,
+    "textures": { "all": "color_crystal" }
+  }
+]

@@ -1,0 +1,236 @@
+[
+  {
+    "id": 1,
+    "title": "First Light",
+    "arc": "restore_color",
+    "giver_npc": "elder_mira",
+    "objectives": [
+      {
+        "trigger": "craft_item",
+        "target": "torch",
+        "count": 4,
+        "objective_text": "Craft 4 torches to push back the grey."
+      }
+    ],
+    "rewards": [
+      { "item": "coal", "count": 8 },
+      { "item": "stick", "count": 16 }
+    ],
+    "next_quest": 2
+  },
+  {
+    "id": 2,
+    "title": "Brighten the Village",
+    "arc": "restore_color",
+    "giver_npc": "elder_mira",
+    "objectives": [
+      {
+        "trigger": "place_block",
+        "target": "torch",
+        "count": 8,
+        "objective_text": "Place 8 torches around the village."
+      }
+    ],
+    "rewards": [
+      { "item": "oak_planks", "count": 16 },
+      { "item": "berry_cluster", "count": 4 }
+    ],
+    "next_quest": 3
+  },
+  {
+    "id": 3,
+    "title": "Build a Crafting Table",
+    "arc": "restore_color",
+    "giver_npc": "builder_tom",
+    "objectives": [
+      {
+        "trigger": "craft_item",
+        "target": "crafting_table",
+        "count": 1,
+        "objective_text": "Craft a crafting table using oak planks."
+      }
+    ],
+    "rewards": [
+      { "item": "cobblestone", "count": 16 },
+      { "item": "stick", "count": 8 }
+    ],
+    "next_quest": 4
+  },
+  {
+    "id": 4,
+    "title": "Stone Tools",
+    "arc": "restore_color",
+    "giver_npc": "builder_tom",
+    "objectives": [
+      {
+        "trigger": "craft_item",
+        "target": "stone_pickaxe",
+        "count": 1,
+        "objective_text": "Craft a stone pickaxe to mine deeper."
+      },
+      {
+        "trigger": "craft_item",
+        "target": "stone_shovel",
+        "count": 1,
+        "objective_text": "Craft a stone shovel."
+      }
+    ],
+    "rewards": [
+      { "item": "coal", "count": 6 },
+      { "item": "iron_ingot", "count": 2 }
+    ],
+    "next_quest": 5
+  },
+  {
+    "id": 5,
+    "title": "Into the Dim",
+    "arc": "restore_color",
+    "giver_npc": "elder_mira",
+    "objectives": [
+      {
+        "trigger": "reach_location",
+        "target": "dim_barrens",
+        "count": 1,
+        "objective_text": "Travel to the Dim Barrens to see what steals the color."
+      }
+    ],
+    "rewards": [
+      { "item": "torch", "count": 16 },
+      { "item": "glow_block", "count": 4 }
+    ],
+    "next_quest": 6
+  },
+  {
+    "id": 6,
+    "title": "Friend in the Dark",
+    "arc": "restore_color",
+    "giver_npc": "elder_mira",
+    "objectives": [
+      {
+        "trigger": "befriend_creature",
+        "target": "dim_wisp",
+        "count": 1,
+        "objective_text": "Befriend a Dim Wisp with glow dust — they know the way."
+      }
+    ],
+    "rewards": [
+      { "item": "glow_dust", "count": 8 },
+      { "item": "crystal_shard", "count": 3 }
+    ],
+    "next_quest": 7
+  },
+  {
+    "id": 7,
+    "title": "Collect the Colors",
+    "arc": "restore_color",
+    "giver_npc": "elder_mira",
+    "objectives": [
+      {
+        "trigger": "collect_item",
+        "target": "color_dust",
+        "count": 16,
+        "objective_text": "Gather 16 color dust from color crystals and bees."
+      }
+    ],
+    "rewards": [
+      { "item": "colored_glass", "count": 8 },
+      { "item": "color_crystal", "count": 4 }
+    ],
+    "next_quest": 8
+  },
+  {
+    "id": 8,
+    "title": "Calm the Colossus",
+    "arc": "restore_color",
+    "giver_npc": "elder_mira",
+    "objectives": [
+      {
+        "trigger": "calm_boss",
+        "target": "stone_colossus",
+        "count": 1,
+        "objective_text": "Calm the Stone Colossus blocking the color springs."
+      }
+    ],
+    "rewards": [
+      { "item": "iron_ingot", "count": 6 },
+      { "item": "crystal_shard", "count": 4 }
+    ],
+    "next_quest": 9
+  },
+  {
+    "id": 9,
+    "title": "Build a Beacon",
+    "arc": "restore_color",
+    "giver_npc": "elder_mira",
+    "objectives": [
+      {
+        "trigger": "craft_item",
+        "target": "beacon_block",
+        "count": 1,
+        "objective_text": "Craft a beacon to channel color back into the land."
+      }
+    ],
+    "rewards": [
+      { "item": "glow_dust", "count": 12 },
+      { "item": "color_dust", "count": 12 }
+    ],
+    "next_quest": 10
+  },
+  {
+    "id": 10,
+    "title": "Light the First Beacon",
+    "arc": "restore_color",
+    "giver_npc": "elder_mira",
+    "objectives": [
+      {
+        "trigger": "light_beacon",
+        "target": "beacon_block",
+        "count": 1,
+        "objective_text": "Place and light the beacon at the heart of the Dim Barrens."
+      }
+    ],
+    "rewards": [
+      { "item": "crystal_lamp", "count": 4 },
+      { "item": "honey_cake", "count": 2 }
+    ],
+    "next_quest": 11
+  },
+  {
+    "id": 11,
+    "title": "Herald of Dim",
+    "arc": "restore_color",
+    "giver_npc": "elder_mira",
+    "objectives": [
+      {
+        "trigger": "calm_boss",
+        "target": "dim_herald",
+        "count": 1,
+        "objective_text": "Calm the Dim Herald and restore the final zone of color."
+      }
+    ],
+    "rewards": [
+      { "item": "beacon_block", "count": 2 },
+      { "item": "crystal_shard", "count": 8 }
+    ],
+    "next_quest": 12
+  },
+  {
+    "id": 12,
+    "title": "Restore the World",
+    "arc": "restore_color",
+    "giver_npc": "elder_mira",
+    "objectives": [
+      {
+        "trigger": "restore_region",
+        "target": "dim_barrens",
+        "count": 1,
+        "objective_text": "Light three beacons to restore color to the Dim Barrens forever."
+      }
+    ],
+    "rewards": [
+      { "item": "honey_cake", "count": 4 },
+      { "item": "color_crystal", "count": 8 },
+      { "item": "crystal_lamp", "count": 8 }
+    ]
+  }
+]

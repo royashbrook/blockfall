@@ -1,0 +1,72 @@
+[
+  {
+    "id": 1,
+    "name": "woolly_lamb",
+    "display_name": "Woolly Lamb",
+    "disposition": "passive",
+    "max_health": 10,
+    "move_speed": 1.5,
+    "spawn_biomes": ["verdant_meadow", "rolling_hills"],
+    "breeds": true,
+    "befriend_item": "berry_cluster",
+    "calm_reward": "lamb_drops"
+  },
+  {
+    "id": 2,
+    "name": "round_rabbit",
+    "display_name": "Round Rabbit",
+    "disposition": "skittish",
+    "max_health": 6,
+    "move_speed": 3.0,
+    "spawn_biomes": ["verdant_meadow", "pine_forest"],
+    "breeds": true,
+    "befriend_item": "berry_cluster",
+    "calm_reward": "rabbit_drops"
+  },
+  {
+    "id": 3,
+    "name": "spotted_cow",
+    "display_name": "Spotted Cow",
+    "disposition": "passive",
+    "max_health": 14,
+    "move_speed": 1.2,
+    "spawn_biomes": ["verdant_meadow", "rolling_hills"],
+    "breeds": true,
+    "befriend_item": "berry_cluster",
+    "calm_reward": "cow_drops"
+  },
+  {
+    "id": 4,
+    "name": "pond_duck",
+    "display_name": "Pond Duck",
+    "disposition": "passive",
+    "max_health": 8,
+    "move_speed": 2.0,
+    "spawn_biomes": ["river_delta"],
+    "breeds": true,
+    "befriend_item": "berry_cluster",
+    "calm_reward": "duck_drops"
+  },
+  {
+    "id": 5,
+    "name": "blossom_bee",
+    "display_name": "Blossom Bee",
+    "disposition": "passive",
+    "max_health": 4,
+    "move_speed": 2.5,
+    "spawn_biomes": ["verdant_meadow"],
+    "befriend_item": "flower_yellow",
+    "calm_reward": "bee_drops"
+  },
+  {
+    "id": 6,
+    "name": "forest_fox",
+    "display_name": "Forest Fox",
+    "disposition": "skittish",
+    "max_health": 12,
+    "move_speed": 3.5,
+    "spawn_biomes": ["pine_forest"],
+    "befriend_item": "berry_cluster",
+    "calm_reward": "fox_drops"
+  }
+]

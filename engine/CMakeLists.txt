@@ -21,13 +21,17 @@ endif()
 
 add_library(blockcore STATIC
   src/engine_stub.cpp
+  src/jobs.cpp          # Track A — work-stealing job system
 )
+find_package(Threads REQUIRED)
 
 target_include_directories(blockcore
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../contract   # engine_c_api.h, interfaces
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+
+target_link_libraries(blockcore PUBLIC Threads::Threads)
 
 target_compile_options(blockcore PRIVATE
   -Wall -Wextra -Wpedantic -Wconversion -Wshadow
@@ -37,7 +41,13 @@ target_compile_options(blockcore PRIVATE
 option(BF_BUILD_TESTS "Build engine unit smoke tests" OFF)
 if(BF_BUILD_TESTS)
   enable_testing()
-  add_executable(blockcore_smoke ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/smoke_abi.cpp)
-  target_link_libraries(blockcore_smoke PRIVATE blockcore)
-  add_test(NAME abi_smoke COMMAND blockcore_smoke)
+  set(BF_TEST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit)
+  foreach(t abi:smoke_abi arena:test_arena jobs:test_jobs)
+    string(REPLACE ":" ";" parts ${t})
+    list(GET parts 0 tname)
+    list(GET parts 1 tsrc)
+    add_executable(blockcore_${tname} ${BF_TEST_DIR}/${tsrc}.cpp)
+    target_link_libraries(blockcore_${tname} PRIVATE blockcore)
+    add_test(NAME ${tname} COMMAND blockcore_${tname})
+  endforeach()
 endif()

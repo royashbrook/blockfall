@@ -1,0 +1,24 @@
+[
+  {
+    "id": 10,
+    "name": "stone_colossus",
+    "display_name": "Stone Colossus",
+    "disposition": "boss",
+    "max_health": 120,
+    "move_speed": 0.8,
+    "spawn_biomes": ["rolling_hills"],
+    "boss_pattern": "stomp",
+    "calm_reward": "colossus_drops"
+  },
+  {
+    "id": 11,
+    "name": "dim_herald",
+    "display_name": "Dim Herald",
+    "disposition": "boss",
+    "max_health": 150,
+    "move_speed": 1.5,
+    "spawn_biomes": ["dim_barrens"],
+    "boss_pattern": "summon_helpers",
+    "calm_reward": "herald_drops"
+  }
+]

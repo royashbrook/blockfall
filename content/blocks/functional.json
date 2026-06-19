@@ -1,0 +1,81 @@
+[
+  {
+    "id": 29,
+    "name": "crafting_table",
+    "display_name": "Crafting Table",
+    "hardness": 10,
+    "required_tier": 0,
+    "preferred_tool": "axe",
+    "functional": "crafting_table",
+    "textures": { "top": "crafting_table_top", "side": "crafting_table_side", "bottom": "oak_planks" }
+  },
+  {
+    "id": 30,
+    "name": "chest",
+    "display_name": "Chest",
+    "hardness": 10,
+    "required_tier": 0,
+    "preferred_tool": "axe",
+    "functional": "chest",
+    "textures": { "top": "chest_top", "side": "chest_side", "bottom": "chest_bottom" }
+  },
+  {
+    "id": 31,
+    "name": "torch",
+    "display_name": "Torch",
+    "hardness": 0,
+    "required_tier": 0,
+    "functional": "torch",
+    "light_emit": 14,
+    "light_color": [255, 210, 140],
+    "transparent": true,
+    "textures": { "all": "torch" }
+  },
+  {
+    "id": 32,
+    "name": "oak_door",
+    "display_name": "Oak Door",
+    "hardness": 10,
+    "required_tier": 0,
+    "preferred_tool": "axe",
+    "functional": "door",
+    "transparent": true,
+    "textures": { "all": "oak_door" }
+  },
+  {
+    "id": 33,
+    "name": "beacon_block",
+    "display_name": "Beacon",
+    "hardness": 50,
+    "required_tier": 2,
+    "preferred_tool": "pickaxe",
+    "functional": "beacon",
+    "light_emit": 15,
+    "light_color": [180, 255, 255],
+    "transparent": true,
+    "textures": { "all": "beacon" }
+  },
+  {
+    "id": 34,
+    "name": "glow_block",
+    "display_name": "Glow Block",
+    "hardness": 15,
+    "required_tier": 1,
+    "preferred_tool": "pickaxe",
+    "light_emit": 12,
+    "light_color": [255, 240, 100],
+    "textures": { "all": "glow_block" }
+  },
+  {
+    "id": 35,
+    "name": "crystal_lamp",
+    "display_name": "Crystal Lamp",
+    "hardness": 10,
+    "required_tier": 1,
+    "preferred_tool": "pickaxe",
+    "light_emit": 15,
+    "light_color": [200, 180, 255],
+    "transparent": true,
+    "textures": { "all": "crystal_lamp" }
+  }
+]

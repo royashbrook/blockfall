@@ -1,0 +1,27 @@
+[
+  {
+    "id": "village_chest",
+    "rolls": 3,
+    "entries": [
+      { "item": "oak_planks", "weight": 4, "min": 4, "max": 8 },
+      { "item": "torch", "weight": 4, "min": 2, "max": 6 },
+      { "item": "berry_cluster", "weight": 3, "min": 2, "max": 4 },
+      { "item": "stick", "weight": 3, "min": 4, "max": 8 },
+      { "item": "coal", "weight": 2, "min": 1, "max": 3 },
+      { "item": "nothing", "weight": 2 }
+    ]
+  },
+  {
+    "id": "dungeon_chest",
+    "rolls": 4,
+    "entries": [
+      { "item": "cobblestone", "weight": 3, "min": 8, "max": 16 },
+      { "item": "iron_ingot", "weight": 2, "min": 1, "max": 2 },
+      { "item": "crystal_shard", "weight": 2, "min": 1, "max": 3 },
+      { "item": "color_dust", "weight": 3, "min": 2, "max": 5 },
+      { "item": "glow_dust", "weight": 2, "min": 1, "max": 3 },
+      { "item": "torch", "weight": 3, "min": 4, "max": 8 },
+      { "item": "nothing", "weight": 1 }
+    ]
+  }
+]

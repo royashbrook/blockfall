@@ -1,0 +1,104 @@
+[
+  {
+    "npc_id": 1,
+    "name": "Elder Mira",
+    "root": 0,
+    "nodes": [
+      {
+        "id": 0,
+        "text": "Hello there, young builder! Our world has lost its colors. Grey is swallowing everything. But I believe you can help us bring it back!",
+        "choices": [
+          { "label": "How can I help?", "goto": 1 },
+          { "label": "What happened?", "goto": 2 },
+          { "label": "Maybe later.", "goto": -1 }
+        ]
+      },
+      {
+        "id": 1,
+        "text": "Start small — light drives back the grey. Craft some torches and place them around our village. Here, let me give you a task.",
+        "gives_quest": 1,
+        "choices": [
+          { "label": "I will do it!", "goto": -1 }
+        ]
+      },
+      {
+        "id": 2,
+        "text": "The Dim Barrens grew from the east. Color just drains away there. Ancient beacons once kept the world bright, but they have gone dark.",
+        "choices": [
+          { "label": "Tell me more.", "goto": 3 },
+          { "label": "I will help!", "goto": 1 }
+        ]
+      },
+      {
+        "id": 3,
+        "text": "The beacons need crystal shards and iron to rebuild. Explore, gather, and when you are ready, we will light them together. The world is counting on us!",
+        "choices": [
+          { "label": "Let us begin.", "goto": -1 }
+        ]
+      }
+    ]
+  },
+  {
+    "npc_id": 2,
+    "name": "Builder Tom",
+    "root": 0,
+    "nodes": [
+      {
+        "id": 0,
+        "text": "Hey! Good timing. I am trying to fix up the village but we are short on supplies. Can you help me out?",
+        "choices": [
+          { "label": "Sure, what do you need?", "goto": 1 },
+          { "label": "Not right now.", "goto": -1 }
+        ]
+      },
+      {
+        "id": 1,
+        "text": "First things first: you need a crafting table. Four planks in a square. Once you have one, stone tools and proper building becomes possible.",
+        "gives_quest": 3,
+        "choices": [
+          { "label": "On it!", "goto": -1 }
+        ]
+      },
+      {
+        "id": 2,
+        "text": "Nice work! With stone tools you can mine proper stone. Bring me some stone bricks for the walls — they look much better than cobblestone.",
+        "gives_quest": 103,
+        "choices": [
+          { "label": "I will get right on it.", "goto": -1 }
+        ]
+      }
+    ]
+  },
+  {
+    "npc_id": 3,
+    "name": "Herbalist Lena",
+    "root": 0,
+    "nodes": [
+      {
+        "id": 0,
+        "text": "Welcome! I study the plants and creatures of our land. The grey has been hard on them too — the animals seem frightened and lost.",
+        "choices": [
+          { "label": "How can I help the animals?", "goto": 1 },
+          { "label": "What else do you study?", "goto": 2 },
+          { "label": "Good to know.", "goto": -1 }
+        ]
+      },
+      {
+        "id": 1,
+        "text": "You can befriend them with food! Woolly lambs love berry clusters. Befriend two and use their wool — I think it helps the lambs feel safe.",
+        "gives_quest": 101,
+        "choices": [
+          { "label": "That sounds wonderful!", "goto": -1 }
+        ]
+      },
+      {
+        "id": 2,
+        "text": "I make healing stews from mushrooms. The pine forest has plenty, but I am too busy here. Could you collect some for me?",
+        "gives_quest": 102,
+        "choices": [
+          { "label": "Of course!", "goto": -1 }
+        ]
+      }
+    ]
+  }
+]
