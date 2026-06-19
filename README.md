@@ -6,10 +6,24 @@ C++23 core (`blockcore`) + Swift/Metal app shell, talking over a frozen C ABI.
 > Mechanics, controls, and feel mirror Minecraft exactly. **All art, names, and
 > content are original** — no copied assets, textures, names, or lore.
 
-## Status — M0 ✅ · M1 ✅ (the core loop is real and playable)
+## Status — M0 ✅ · M1 ✅ · M2 ◑ (streaming procedural world + Dim + save/load)
 
-**M0 (Phase 0) — done.** Interface contract frozen, app runs end to end.
+**M2 — mostly done.** Procedural streaming world with the color-restoration
+mechanic and persistence.
+- [x] **Track C** deterministic worldgen: value-noise fBm terrain, 3 biomes
+      (plains/hills/desert), water + sand beaches, 3D-noise caves; seam-free,
+      hash-verified deterministic
+- [x] **Streaming**: generate chunks around the player (budgeted, nearest-first),
+      evict distant ones; tight per-chunk GPU allocation (Air memory budget)
+- [x] **Dim mechanic**: per-region saturation → luminance-preserving shader
+      desaturation; grey unrestored regions bloom to color when restored (spawn,
+      or place a glow block)
+- [x] **Day/night** sun-driven shading; **save/load** (edits + player + regions
+      persist; procedural chunks regen from seed)
+- [ ] **Track F** incremental lighting (sun + block-light flood-fill) — the
+      remaining M2 piece
 
+**M0 — done.** Interface contract frozen, app runs end to end.
 **M1 — done.** Mine & place blocks in a greedy-meshed voxel world, rendered.
 - [x] **Track A** jobs + memory: work-stealing scheduler (P/E QoS pools), DAG
       deps, help-on-wait; linear + pool arenas. (Fixed a slot-recycle data race
