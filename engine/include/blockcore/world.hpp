@@ -325,8 +325,17 @@ public:
             // Survival: walk with AABB voxel collision + gravity + jump.
             pos_.x += hmove.x; if (box_collides(pos_)) pos_.x -= hmove.x;
             pos_.z += hmove.z; if (box_collides(pos_)) pos_.z -= hmove.z;
-            if (in.jump && on_ground_) { vy_ = 8.4f; fx(3, player_voxel()); }
-            vy_ = std::max(vy_ - 28.0f * float(dt), -64.0f);
+            // Swim when the body is in water: hold Space to rise out, Shift to dive,
+            // otherwise float gently (buoyancy) instead of sinking like a stone.
+            bool in_water = block_at(IVec3{ifloor(pos_.x), ifloor(pos_.y + 0.4f), ifloor(pos_.z)}) == WATER;
+            if (in_water) {
+                if      (in.jump)  vy_ = 4.6f;                                 // swim up
+                else if (in.sneak) vy_ = -4.6f;                               // dive
+                else               vy_ = std::max(vy_ - 6.0f * float(dt), -2.0f); // slow sink
+            } else {
+                if (in.jump && on_ground_) { vy_ = 8.4f; fx(3, player_voxel()); }
+                vy_ = std::max(vy_ - 28.0f * float(dt), -64.0f);
+            }
             float dy = vy_ * float(dt);
             pos_.y += dy;
             on_ground_ = false;

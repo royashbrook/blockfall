@@ -45,20 +45,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         audio.setAmbienceEnabled(true)
 
         // Show the main menu first; start the game when a world is chosen.
-        menu.onPlayWorld = { [weak self] saveDir, _, _ in self?.startGame(saveDir: saveDir) }
+        menu.onPlayWorld = { [weak self] saveDir, _, isNew, seed in
+            self?.startGame(saveDir: saveDir, fresh: isNew, seed: seed)
+        }
         menu.onQuit = { NSApp.terminate(nil) }
         window.contentView = menu.rootView
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func startGame(saveDir: String) {
+    private func startGame(saveDir: String, fresh: Bool = false, seed: UInt64 = 0) {
         let frame = window.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         let mtkView = GameView(frame: frame, device: device)
         mtkView.colorPixelFormat = .bgra8Unorm
         mtkView.preferredFramesPerSecond = 60
 
-        let r = Renderer(view: mtkView, device: device, saveDir: saveDir, audio: audio)
+        let r = Renderer(view: mtkView, device: device, saveDir: saveDir, audio: audio,
+                         fresh: fresh, seed: seed)
         mtkView.delegate = r
         mtkView.onHost = { [weak r] in r?.startHost() }
         mtkView.onJoin = { [weak r] in r?.joinLAN() }

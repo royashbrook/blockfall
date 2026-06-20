@@ -499,16 +499,22 @@ private final class NewWorldPanel: NSView {
         let worldName = rawName.isEmpty ? "My World" : rawName
         let seed = seedField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let saveDir = MenuController.worldsRoot.appendingPathComponent(worldName).path
+        // Pick a folder that doesn't already exist, so each new world is distinct
+        // (re-using a name was collapsing the whole list to one world).
+        let fm = FileManager.default
+        var uniqueName = worldName
+        var n = 2
+        while fm.fileExists(atPath: MenuController.worldsRoot.appendingPathComponent(uniqueName).path) {
+            uniqueName = "\(worldName) \(n)"; n += 1
+        }
+        let saveDir = MenuController.worldsRoot.appendingPathComponent(uniqueName).path
         do {
-            try FileManager.default.createDirectory(atPath: saveDir,
-                                                    withIntermediateDirectories: true,
-                                                    attributes: nil)
+            try fm.createDirectory(atPath: saveDir, withIntermediateDirectories: true, attributes: nil)
         } catch {
             showError("Couldn't create world folder: \(error.localizedDescription)")
             return
         }
-        delegate?.newWorldDidCreate(name: worldName, seed: seed, saveDir: saveDir)
+        delegate?.newWorldDidCreate(name: uniqueName, seed: seed, saveDir: saveDir)
     }
 
     @objc private func cancelTapped() {
@@ -541,7 +547,7 @@ final class MenuController: NSObject {
     /// - saveDir: absolute path to the world's folder (create/pass to engine)
     /// - worldName: display name
     /// - isNew: true when freshly created
-    var onPlayWorld: ((_ saveDir: String, _ worldName: String, _ isNew: Bool) -> Void)?
+    var onPlayWorld: ((_ saveDir: String, _ worldName: String, _ isNew: Bool, _ seed: UInt64) -> Void)?
 
     /// Called when the player taps Quit.
     var onQuit: (() -> Void)?
@@ -833,7 +839,7 @@ final class MenuController: NSObject {
 extension MenuController: WorldRowDelegate {
 
     func worldRowDidTapPlay(name: String, saveDir: String) {
-        onPlayWorld?(saveDir, name, false)
+        onPlayWorld?(saveDir, name, false, 0)   // existing world → load its save
     }
 
     func worldRowDidTapDelete(name: String, saveDir: String) {
@@ -852,7 +858,18 @@ extension MenuController: NewWorldPanelDelegate {
 
     func newWorldDidCreate(name: String, seed: String, saveDir: String) {
         newWorldPanel.isHidden = true
-        onPlayWorld?(saveDir, name, true)
+        onPlayWorld?(saveDir, name, true, MenuController.parseSeed(seed))
+    }
+
+    /// Turn the seed text box into a world seed: numeric → that number; any other
+    /// text → a stable hash; blank → a random seed (each new world is different).
+    static func parseSeed(_ s: String) -> UInt64 {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return UInt64.random(in: 1...UInt64.max) }
+        if let n = UInt64(t) { return n == 0 ? 1 : n }
+        var h: UInt64 = 1469598103934665603        // FNV-1a
+        for b in t.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
+        return h == 0 ? 1 : h
     }
 
     func newWorldDidCancel() {

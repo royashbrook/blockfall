@@ -163,6 +163,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     weak var audio: GameAudio?
     private var lastUnderwater = false
     private let saveDir: String
+    private let freshWorld: Bool       // true = start a brand-new world (ignore any save)
+    private let worldSeed: UInt64
 
     // ---- HDR offscreen textures (rebuilt on resize) --------------------------
     private var hdrColor: MTLTexture?     // rgba16Float  — scene rendered here
@@ -181,12 +183,15 @@ final class Renderer: NSObject, MTKViewDelegate {
     // ---- No-write depth state (sky + bloom quads) ----------------------------
     private var noDepthState: MTLDepthStencilState!
 
-    init(view: MTKView, device: MTLDevice, saveDir: String, audio: GameAudio?) {
+    init(view: MTKView, device: MTLDevice, saveDir: String, audio: GameAudio?,
+         fresh: Bool = false, seed: UInt64 = 0) {
         self.device = device
         self.queue = device.makeCommandQueue()!
         self.registry = BufferRegistry(device: device)
         self.gameView = view as? GameView
         self.saveDir = saveDir
+        self.freshWorld = fresh
+        self.worldSeed = seed
         self.audio = audio
         super.init()
         view.depthStencilPixelFormat = .depth32Float
@@ -384,7 +389,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         alloc.free_ = freeTrampoline
         _ = bf_set_gpu_allocator(e, &alloc)
         bf_set_event_callback(e, eventTrampoline, Unmanaged.passUnretained(self).toOpaque())
-        _ = bf_world_load(e)
+        // A brand-new world starts fresh (ignore any stale save in this folder);
+        // an existing world loads its save.
+        if freshWorld {
+            _ = bf_world_new(e, worldSeed)
+            _ = bf_world_save(e)          // write an initial save so the world persists immediately
+        } else {
+            _ = bf_world_load(e)
+        }
     }
 
     private let discovery = NetDiscovery()
@@ -684,7 +696,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor,    index: 0)
                 enc.setFragmentTexture(bloomBright, index: 1)
-                var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.55, satBoost: 1.12, pad: 0)
+                var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.30, pad: 0)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 enc.endEncoding()
@@ -1112,12 +1124,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     //   0.4 = leaves                   (subtle rustle)
     //   0.3 = mushroom                 (minimal, stiff cap)
     static float foliageFactor(uint matID) {
-        // Grasses & flowers: ids 36(flower_red), 37(flower_yellow), 38(tall_grass_block)
-        if (matID == 36u || matID == 37u || matID == 38u) return 1.0;
-        // Leaves: 5(oak_leaves), 27(birch_leaves)
-        if (matID == 5u  || matID == 27u)                  return 0.4;
-        // Mushroom: 39
-        if (matID == 39u)                                  return 0.3;
+        // Only ISOLATED decorative plants sway — these are single cubes, so a
+        // gentle drift reads as a plant in the breeze. Leaves (5,27) and
+        // mushrooms (39) are full/connected cubes that slide apart and look like
+        // they're "rotating", so they do NOT sway.
+        if (matID == 36u || matID == 37u || matID == 38u) return 1.0;  // flowers, tall grass
         return 0.0;
     }
 
@@ -1141,8 +1152,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         // share the same phase (no seam at chunk boundaries).
         float wx = sin(worldPos.x * 0.15 + worldPos.z * 0.10 + T * 1.30);
         float wz = cos(worldPos.z * 0.17                      + T * 1.10);
-        // Base amplitude: ~0.18 blocks for full-factor foliage.
-        float amp = 0.18 * ff * (1.0 + rainStr * 0.6);
+        // Base amplitude: subtle, so plants drift in the breeze without sliding
+        // far off their grid cell.
+        float amp = 0.10 * ff * (1.0 + rainStr * 0.6);
         return float2(wx, wz) * amp;
     }
 
@@ -1670,6 +1682,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Saturation boost
         float lumSat = dot(tonemapped, float3(0.2126, 0.7152, 0.0722));
         tonemapped   = mix(float3(lumSat), tonemapped, pu.satBoost);
+        // Mild S-curve contrast so the scene reads punchy, not washed/flat.
+        tonemapped   = clamp((tonemapped - 0.5) * 1.12 + 0.5, 0.0, 1.0);
         tonemapped   = clamp(tonemapped, 0.0, 1.0);
 
         // Vignette: smooth falloff toward screen edges
@@ -2090,7 +2104,7 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
                 enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor,  index: 0)
                 enc.setFragmentTexture(bloomBrt,  index: 1)
-                var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.55, satBoost: 1.12, pad: 0)
+                var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.30, pad: 0)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 enc.endEncoding()
