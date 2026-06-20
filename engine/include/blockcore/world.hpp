@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <cstdio>
 #include <optional>
+#include <functional>
 
 namespace bf {
 
@@ -91,6 +92,18 @@ public:
     void set_allocator(const bf_gpu_allocator& a) { alloc_ = a; has_alloc_ = true; }
     void set_mode(bf_game_mode m) { mode_ = m; }
     void set_worldgen(IWorldGen* g) { gen_ = g; }
+
+    // ---- co-op hooks (Track H) -------------------------------------------
+    // Fired on every LOCAL player edit (place/mine) so the net session can
+    // replicate it. Remote edits (applied via apply_remote_edit) do NOT fire it.
+    void set_edit_callback(std::function<void(IVec3, BlockId)> cb) { edit_cb_ = std::move(cb); }
+    void apply_remote_edit(IVec3 w, BlockId b) { set_block_internal(w, b, /*from_remote=*/true); }
+    void get_player(float& x, float& y, float& z, float& yaw) const {
+        x = pos_.x; y = pos_.y; z = pos_.z; yaw = yaw_;
+    }
+    std::uint64_t world_seed() const { return seed_; }
+    // Other players' avatars to draw (set each frame by the net session).
+    void set_remote_avatars(const std::vector<bf_entity_draw>& a) { remote_avatars_ = a; }
 
     // Wire the loaded content (Track J). Builds the inventory + crafting and
     // resolves the block ids gameplay needs by name (so the engine never
@@ -418,6 +431,8 @@ public:
             e.sat = region_sat(to_chunk(IVec3{ifloor(cr.pos.x), ifloor(cr.pos.y), ifloor(cr.pos.z)}));
             entities_.push_back(e);
         }
+        // Other players (co-op) drawn as taller avatars.
+        for (const auto& a : remote_avatars_) entities_.push_back(a);
         out.entities = entities_.data();
         out.entity_count = std::uint32_t(entities_.size());
 
@@ -566,11 +581,12 @@ private:
         auto* ch = const_cast<ChunkStore&>(store_).get(cc);
         return ch ? ch->get(mod16(w.x), mod16(w.y), mod16(w.z)) : AIR;
     }
-    void set_block_internal(IVec3 w, BlockId b) {
+    void set_block_internal(IVec3 w, BlockId b, bool from_remote = false) {
         ChunkCoord cc = to_chunk(w);
         store_.get_or_create(cc)->set(mod16(w.x), mod16(w.y), mod16(w.z), b);
         dirty_.insert(cc);
         edited_.insert(cc);    // player-edited -> persisted on save
+        if (!from_remote && edit_cb_) edit_cb_(w, b);   // replicate to peers
 
         const IVec3 dirs[6] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
         for (auto d : dirs) {
@@ -792,6 +808,10 @@ private:
     int                           regions_restored_{0};
     int                           creatures_befriended_{0};
     int                           creatures_calmed_{0};
+
+    // Co-op (Track H).
+    std::function<void(IVec3, BlockId)> edit_cb_;
+    std::vector<bf_entity_draw>         remote_avatars_;
     float         mine_progress_{0.0f};
     bool          has_target_{false};
     IVec3         target_{}, place_{};

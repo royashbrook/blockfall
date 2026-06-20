@@ -42,6 +42,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         renderer = Renderer(view: mtkView, device: device)
         mtkView.delegate = renderer
+        mtkView.onHost = { [weak self] in self?.renderer.startHost() }   // 'H'
+        mtkView.onJoin = { [weak self] in self?.renderer.joinLAN() }     // 'J'
         window.acceptsMouseMovedEvents = true
 
         // HUD overlay drawn on top of the Metal view (AppKit, M0-simple).

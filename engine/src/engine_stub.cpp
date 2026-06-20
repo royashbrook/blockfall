@@ -9,11 +9,14 @@
 #include "blockcore/world.hpp"
 #include "blockcore/mesher.hpp"
 #include "blockcore/worldgen.hpp"
+#include "blockcore/net.hpp"
+#include "blockcore/session.hpp"
 
 #include <cstring>
 #include <string>
 #include <vector>
 #include <new>
+#include <optional>
 
 namespace {
 thread_local std::string t_last_error = "ok";
@@ -34,7 +37,23 @@ struct bf_engine_s {
     std::vector<bf_draw_item> draws;     // backing store for the borrowed frame
     bf_render_frame  frame{};
     bool             borrowed = false;
+    std::optional<bf::UdpTransport> transport;   // co-op (Track H)
+    std::optional<bf::NetSession>   session;
 };
+
+namespace {
+// Wire a freshly-created transport+session pair together.
+void wire_net(bf_engine e) {
+    e->transport->set_receive_callback(
+        [e](std::uint32_t peer, bf::NetChannel ch, std::span<const std::byte> d) {
+            if (e->session) e->session->on_payload(std::uint16_t(peer), ch, d);
+        });
+    e->session->set_sender(
+        [e](std::uint16_t peer, bf::NetChannel ch, std::span<const std::byte> d) {
+            if (e->transport) e->transport->send(ch, d, peer);
+        });
+}
+} // namespace
 
 extern "C" {
 
@@ -91,6 +110,8 @@ bf_result bf_frame_begin(bf_engine e, const bf_frame_input* in, double real_dt) 
     if (!e || !in) { set_err("null arg"); return BF_ERR_BAD_ARG; }
     e->clock += real_dt;
     if (e->world_ready) e->world.update(*in, real_dt);
+    if (e->transport) e->transport->poll();          // pump sockets -> session
+    if (e->session)   e->session->update(real_dt);   // 20 Hz position snapshots
     return BF_OK;
 }
 
@@ -129,9 +150,31 @@ bf_result bf_set_event_callback(bf_engine e, bf_event_fn fn, void* user) {
     return BF_OK;
 }
 
-bf_result bf_net_host_start(bf_engine e, uint16_t)                   { return e ? BF_OK : BF_ERR_BAD_ARG; }
-bf_result bf_net_client_connect(bf_engine e, const char*, uint16_t)  { return e ? BF_OK : BF_ERR_BAD_ARG; }
-bf_result bf_net_stop(bf_engine e)                                   { return e ? BF_OK : BF_ERR_BAD_ARG; }
-uint32_t  bf_net_peer_count(bf_engine)                               { return 0; }
+bf_result bf_net_host_start(bf_engine e, uint16_t port) {
+    if (!e) return BF_ERR_BAD_ARG;
+    e->transport.emplace();
+    e->session.emplace(e->world, bf::NetRole::Host);
+    wire_net(e);
+    if (!e->transport->start_host(port)) { e->session.reset(); e->transport.reset(); return BF_ERR_NET; }
+    return BF_OK;
+}
+bf_result bf_net_client_connect(bf_engine e, const char* host, uint16_t port) {
+    if (!e || !host) return BF_ERR_BAD_ARG;
+    e->transport.emplace();
+    e->session.emplace(e->world, bf::NetRole::Client);
+    wire_net(e);
+    if (!e->transport->connect(host, port)) { e->session.reset(); e->transport.reset(); return BF_ERR_NET; }
+    e->session->on_peer_join(1);   // host is peer 1; sends HELLO -> WELCOME(seed)
+    return BF_OK;
+}
+bf_result bf_net_stop(bf_engine e) {
+    if (!e) return BF_ERR_BAD_ARG;
+    if (e->transport) e->transport->stop();
+    e->session.reset();
+    e->transport.reset();
+    e->world.set_edit_callback(nullptr);   // drop the dangling replicate hook
+    return BF_OK;
+}
+uint32_t  bf_net_peer_count(bf_engine e) { return (e && e->transport) ? e->transport->peer_count() : 0u; }
 
 } // extern "C"

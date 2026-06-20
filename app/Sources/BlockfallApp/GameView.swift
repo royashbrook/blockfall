@@ -13,6 +13,10 @@ final class GameView: MTKView {
     private var shiftDown = false
     private var captured = false
 
+    // App-level co-op hooks (wired by the app delegate).
+    var onHost: (() -> Void)?
+    var onJoin: (() -> Void)?
+
     // Accumulated mouse look since the last frame (consumed by Renderer).
     private(set) var lookDX: Float = 0
     private(set) var lookDY: Float = 0
@@ -56,6 +60,8 @@ final class GameView: MTKView {
         if e.keyCode == 14 { toggleInventory(); return }   // 'E' — inventory
         if e.keyCode == 8 { queue(BF_ACT_MODE_TOGGLE); return } // 'C' — creative/survival
         if e.keyCode == 12 { queue(BF_ACT_CRAFT); return }      // 'Q' — craft first available
+        if e.keyCode == 4  { onHost?(); return }                // 'H' — host LAN co-op
+        if e.keyCode == 38 { onJoin?(); return }                // 'J' — join a LAN host
         // Hotbar 1..9
         let nums: [UInt16: Int32] = [18:0, 19:1, 20:2, 21:3, 23:4, 22:5, 26:6, 28:7, 25:8]
         if let slot = nums[e.keyCode] { queue(BF_ACT_HOTBAR_SELECT, slot) }

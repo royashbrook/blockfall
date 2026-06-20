@@ -134,6 +134,25 @@ final class Renderer: NSObject, MTKViewDelegate {
         _ = bf_world_load(e)              // restores a prior session, else generates
     }
 
+    private let discovery = NetDiscovery()
+    private let coopPort: Int32 = 27355
+
+    func startHost() {
+        guard let e = engine else { return }
+        _ = bf_net_host_start(e, UInt16(coopPort))
+        discovery.publish(port: coopPort)
+    }
+    func joinLAN() {
+        discovery.onHostFound = { [weak self] ip, port in
+            DispatchQueue.main.async {
+                guard let self = self, let e = self.engine else { return }
+                ip.withCString { _ = bf_net_client_connect(e, $0, port) }
+                NSLog("Blockfall: joining \(ip):\(port)")
+            }
+        }
+        discovery.browse()
+    }
+
     func shutdown() {
         if let e = engine { _ = bf_world_save(e); bf_engine_destroy(e); engine = nil }
     }
