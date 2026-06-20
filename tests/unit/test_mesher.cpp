@@ -367,6 +367,135 @@ static void test_ao_occluded_corners() {
     CHECK(wrong == 0, "ao-test: all triangles front-facing after AO flip-quad");
 }
 
+// ----------------------------------------------------------------------------
+// Test 8: water transparency — solid block adjacent to water emits a face on
+// the water-facing side (the previously-broken case).
+//
+// Setup:
+//   Solid block (id=1) at (7,7,7).
+//   Water block (id=9) at (8,7,7) — neighbour in +X direction.
+//
+// Before the fix: the mesher treated water as solid, so the +X face of (7,7,7)
+// was suppressed (both sides occupied).  Now water is NON-opaque, so the solid
+// block MUST emit a +X face.
+//
+// Additionally:
+//   Water vs air: the water block at (8,7,7) has no block on its +X side (9,7,7)
+//   is air, so the water's +X surface face MUST be emitted.
+//
+//   Water vs water: add a second water block at (9,7,7). The shared X-face
+//   between (8,7,7) and (9,7,7) must NOT be emitted (water-against-water
+//   produces no face).
+//
+//   Water vs solid: the -X face of the water block (8,7,7) borders the solid
+//   block at (7,7,7). The water must NOT emit a -X face there (solid already
+//   drew the wall; no double-draw).
+//
+// Face accounting for the final scene {solid(7,7,7), water(8,7,7), water(9,7,7)}:
+//   solid(7,7,7) — 6 faces, all neighbours air EXCEPT +X which is water:
+//     +X: neighbour=water -> non-opaque -> emit.          (1)
+//     -X,-Y,+Y,-Z,+Z: neighbours=air -> emit.             (5)
+//     Total solid quads: 6.
+//   water(8,7,7) — only emits where neighbour is AIR:
+//     -X: neighbour=solid(7,7,7) -> NOT air -> NO emit.
+//     +X: neighbour=water(9,7,7) -> NOT air -> NO emit.
+//     -Y,+Y,-Z,+Z: neighbours=air -> would emit 4, BUT greedy merges
+//       each direction with the identical cell on water(9,7,7) into one
+//       2×1 quad.  So these 4 directions yield 4 merged quads total.
+//     Total water quads (both cells combined): 4 merged + 1 (+X of @9 vs air) = 5.
+//   water(9,7,7) — only emits where neighbour is AIR:
+//     -X: neighbour=water(8,7,7) -> NOT air -> NO emit.
+//     +X: neighbour=air -> emit (1, NOT merged because @8 has no +X face).
+//     -Y,+Y,-Z,+Z: merged with @8 above.
+//   Grand total quads: 6 (solid) + 4 (merged water Y/Z) + 1 (water +X vs air)
+//                    = 11 quads, indices = 11*6 = 66, vertices = 11*4 = 44.
+// ----------------------------------------------------------------------------
+static void test_water_transparency() {
+    bf::GreedyMesher gm;
+    FakeChunk chunk;
+    chunk.set(7, 7, 7, 1);  // solid block
+    chunk.set(8, 7, 7, 9);  // water block adjacent in +X
+    chunk.set(9, 7, 7, 9);  // second water block (water-against-water)
+
+    FakeStore store;
+    store.target_coord = {0, 0, 0};
+    store.chunk        = &chunk;
+
+    auto r = do_mesh(gm, {0,0,0}, store);
+    CHECK(!r.empty, "water: mesh not empty");
+
+    // Total should be 11 quads = 66 indices, 44 vertices.
+    // 6 solid faces + 4 greedy-merged water Y/Z faces + 1 water +X vs air.
+    CHECK(r.index_count == 66, "water: 66 indices (11 quads: 6 solid + 4 merged water-YZ + 1 water-airX)");
+    std::uint32_t nv = r.vertex_bytes / static_cast<std::uint32_t>(sizeof(bf::BFVertex));
+    CHECK(nv == 44, "water: 44 vertices (11 quads * 4 verts)");
+
+    // Unpack helpers.
+    auto* V = reinterpret_cast<const bf::BFVertex*>(g_vtx_buf.data());
+    auto vx = [](const bf::BFVertex& v){ return int(v.pos_packed & 0x3Fu); };
+    auto vy = [](const bf::BFVertex& v){ return int((v.pos_packed >> 6) & 0x3Fu); };
+    auto vz = [](const bf::BFVertex& v){ return int((v.pos_packed >> 12) & 0x3Fu); };
+    auto vn = [](const bf::BFVertex& v){ return v.normal_uv & 0x7u; };
+
+    // BF_NX_POS=0, BF_NX_NEG=1
+    constexpr std::uint32_t NX_POS = 0u;
+    constexpr std::uint32_t NX_NEG = 1u;
+
+    // Extract material from vertex (bits 16..31 of normal_uv, or separate field).
+    // BFVertex layout: we need to check which face belongs to the solid vs water.
+    // We can identify by checking which vertex positions map to the water block's
+    // face.  The solid block +X face has face_d=8 (x=8), y in {7,8}, z in {7,8}.
+    // The water -X face (if wrongly emitted) would also be at x=8.
+    // The water +X face of (8,7,7) vs water(9,7,7): face_d=9 (x=9), same y/z range.
+
+    // Assert: solid block emits a +X face (face at x=8, y∈{7,8}, z∈{7,8}).
+    bool solid_plus_x = false;
+    for (std::uint32_t i = 0; i < nv; ++i) {
+        if (vn(V[i]) != NX_POS) continue;
+        if (vx(V[i]) == 8 && vy(V[i]) >= 7 && vy(V[i]) <= 8 && vz(V[i]) >= 7 && vz(V[i]) <= 8) {
+            solid_plus_x = true; break;
+        }
+    }
+    CHECK(solid_plus_x, "water: solid block emits +X face into water neighbour");
+
+    // Assert: water-against-water does NOT produce an internal face.
+    // The shared face would be at x=9 (face_d for +X of water@8) pointing +X,
+    // but the neighbour is water so no face should be there from water@8.
+    // More directly: water@9 has its -X face at x=9 pointing -X (NX_NEG).
+    // That should NOT appear because its neighbour is water@8 (not air).
+    bool water_water_internal = false;
+    for (std::uint32_t i = 0; i < nv; ++i) {
+        if (vn(V[i]) != NX_NEG) continue;
+        // -X face of water@9 would be at x=9, y∈{7,8}, z∈{7,8}.
+        if (vx(V[i]) == 9 && vy(V[i]) >= 7 && vy(V[i]) <= 8 && vz(V[i]) >= 7 && vz(V[i]) <= 8) {
+            water_water_internal = true; break;
+        }
+    }
+    CHECK(!water_water_internal, "water: water-against-water does not emit internal face");
+
+    // Assert: water does NOT emit a face where it borders the solid block.
+    // That would be the -X face of water@8 at x=8 pointing -X (NX_NEG).
+    bool water_solid_double = false;
+    for (std::uint32_t i = 0; i < nv; ++i) {
+        if (vn(V[i]) != NX_NEG) continue;
+        // -X face of water@8 would be at x=8, y∈{7,8}, z∈{7,8}.
+        if (vx(V[i]) == 8 && vy(V[i]) >= 7 && vy(V[i]) <= 8 && vz(V[i]) >= 7 && vz(V[i]) <= 8) {
+            water_solid_double = true; break;
+        }
+    }
+    CHECK(!water_solid_double, "water: water does not double-emit face against solid block");
+
+    // Assert: water surface vs air IS emitted: water@9 +X face at x=10, y/z∈{7,8}.
+    bool water_air_surface = false;
+    for (std::uint32_t i = 0; i < nv; ++i) {
+        if (vn(V[i]) != NX_POS) continue;
+        if (vx(V[i]) == 10 && vy(V[i]) >= 7 && vy(V[i]) <= 8 && vz(V[i]) >= 7 && vz(V[i]) <= 8) {
+            water_air_surface = true; break;
+        }
+    }
+    CHECK(water_air_surface, "water: water emits surface face against air");
+}
+
 int main() {
     test_all_air();
     test_single_block();
@@ -375,6 +504,7 @@ int main() {
     test_tiny_buffer_no_overflow();
     test_bounds();
     test_ao_occluded_corners();
+    test_water_transparency();
 
     if (fails == 0) std::printf("OK: mesher tests\n");
     return fails == 0 ? 0 : 1;

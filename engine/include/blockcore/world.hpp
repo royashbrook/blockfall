@@ -50,9 +50,11 @@ struct Creature {
     V3    color{0.9f, 0.8f, 0.5f};
     float scale{0.8f};
     float speed{1.6f};
-    int   hp{3};            // calm hits remaining (bosses take more)
+    int   hp{3};            // hits remaining (bosses/monsters take more)
     bool  is_boss{false};
     bool  friendly{false};
+    bool  hostile{false};   // night monster: chases + hurts the player (kind 5)
+    float atk_cd{0};        // cooldown between hits on the player
     float wander{0};
     int   shape{0};         // renderer model variant (0..3 animals)
     std::string name;       // content creature name (quest befriend target)
@@ -98,8 +100,8 @@ public:
     void set_extra(const ContentExtra* x) { extra_ = x; }
     // Gameplay effects for the app (audio + particles). code: 0 break,1 place,
     // 2 step,3 jump,4 craft,5 befriend,6 quest-complete.
-    void set_fx_callback(std::function<void(int, IVec3)> cb) { fx_cb_ = std::move(cb); }
-    void fx(int code, IVec3 p) { if (fx_cb_) fx_cb_(code, p); }
+    void set_fx_callback(std::function<void(int, IVec3, int)> cb) { fx_cb_ = std::move(cb); }
+    void fx(int code, IVec3 p, int extra = 0) { if (fx_cb_) fx_cb_(code, p, extra); }
     void get_player(float& x, float& y, float& z, float& yaw) const {
         x = pos_.x; y = pos_.y; z = pos_.z; yaw = yaw_;
     }
@@ -167,6 +169,7 @@ public:
             }
         }
         pos_ = V3{0.5f, float(surface) + 2.5f, 0.5f};
+        spawn_ = pos_;                                  // respawn here on defeat
         yaw_ = 0.6f; pitch_ = -0.25f;
         restore_region(ChunkCoord{0, 0, 0});           // spawn region starts colorful
         recompute_stream_set();
@@ -264,6 +267,8 @@ public:
                 }
             }
         }
+        spawn_ = pos_;                                   // respawn at the saved location
+        if (health_ <= 0.0f) health_ = 20.0f;            // never load in dead
         for (auto& e : std::filesystem::directory_iterator(dir)) {
             if (e.path().extension() != ".chunk") continue;
             std::ifstream f(e.path(), std::ios::binary | std::ios::ate);
@@ -305,6 +310,13 @@ public:
     }
 
     void update(const bf_frame_input& in, double dt) {
+        world_clock_ += dt;
+        // Combat timers + slow health regeneration (kid-friendly: you bounce back).
+        if (hurt_cd_  > 0) hurt_cd_  -= float(dt);
+        if (regen_cd_ > 0) regen_cd_ -= float(dt);
+        else if (health_ < 20.0f) health_ = std::min(20.0f, health_ + 1.2f * float(dt));
+        if (health_ <= 0.0f) respawn();
+
         yaw_  += in.look_yaw_delta;
         pitch_ += in.look_pitch_delta;
         const float lim = 1.5533f;
@@ -355,7 +367,7 @@ public:
             mine_progress_ += float(dt) / break_time(block_at(target_));
             if (mine_progress_ >= 1.0f) {
                 BlockId broken = block_at(target_);
-                fx(0, target_);                       // break sound + particles
+                fx(0, target_, sound_class_for(broken)); // break sound (by material) + particles
                 notify_quest("mine_block", block_name(broken));
                 // The broken block drops an item into the inventory (both modes,
                 // so you always get the block you mined).
@@ -390,7 +402,12 @@ public:
 
     void action(const bf_action& a) {
         switch (a.kind) {
-            case BF_ACT_MINE_START: mining_ = true; break;
+            case BF_ACT_MINE_START: {
+                // Left-click a creature in reach to hit it; otherwise start mining.
+                int idx = creature_in_view();
+                if (idx >= 0) attack_creature(idx); else mining_ = true;
+                break;
+            }
             case BF_ACT_MINE_STOP:  mining_ = false; mine_progress_ = 0.0f; break;
             case BF_ACT_PLACE: {
                 if (!has_target_ || !inv_) break;
@@ -414,18 +431,9 @@ public:
             case BF_ACT_CRAFT:      craft_index(a.arg_i); break;
             case BF_ACT_INV_OPEN:   inv_open_ = true;  break;
             case BF_ACT_INV_CLOSE:  inv_open_ = false; break;
-            case BF_ACT_ATTACK: {                  // calm -> puff away (no death)
+            case BF_ACT_ATTACK: {
                 int idx = creature_in_view();
-                if (idx >= 0) {
-                    Creature& cr = creatures_[std::size_t(idx)];
-                    if (--cr.hp <= 0) {
-                        bool boss = cr.is_boss; std::string nm = cr.name;
-                        creatures_.erase(creatures_.begin() + std::ptrdiff_t(idx));
-                        ++creatures_calmed_;
-                        fx(5, player_voxel());            // befriend sparkle
-                        notify_quest(boss ? "calm_boss" : "befriend_creature", nm);
-                    }
-                }
+                if (idx >= 0) attack_creature(idx);
                 break;
             }
             case BF_ACT_INTERACT: {                // befriend
@@ -498,7 +506,7 @@ public:
             e.yaw = cr.yaw;
             e.color = bf_vec3{col.x, col.y, col.z};
             e.scale = cr.scale;
-            e.kind = cr.is_boss ? 4u : std::uint32_t(cr.shape & 3);   // 0..3 animals, 4 boss
+            e.kind = cr.hostile ? 5u : (cr.is_boss ? 4u : std::uint32_t(cr.shape & 3)); // 0-3 animals, 4 boss, 5 monster
             e.sat = region_sat(to_chunk(IVec3{ifloor(cr.pos.x), ifloor(cr.pos.y), ifloor(cr.pos.z)}));
             entities_.push_back(e);
         }
@@ -529,6 +537,11 @@ public:
         if (inv_) for (int i = 0; i < BF_INVENTORY_SLOTS; ++i) inv_->set(std::size_t(i), ItemStack{});
     }
     int     debug_creature_count() const { return int(creatures_.size()); }
+    int     debug_hostile_count() const {
+        int n = 0; for (auto& c : creatures_) if (c.hostile) ++n; return n;
+    }
+    float   debug_health() const { return health_; }
+    float   debug_day_time() const { return day_time(world_clock_); }
     int     debug_quests_completed() const { return quests_completed_; }
     std::uint32_t debug_active_quest() const {
         return (extra_ && active_quest_ < extra_->quests().size() && !all_quests_done_)
@@ -599,6 +612,20 @@ private:
     }
     std::string item_name(ItemId i) const {
         const ItemDef* d = items_ ? items_->by_id(i) : nullptr; return d ? std::string(d->name) : std::string();
+    }
+    // Sound class for break audio (matches GameAudio.playBreak materialClass):
+    // 0 generic, 1 stone, 2 wood, 3 dirt/grass, 4 sand/gravel, 5 glass, 6 leaf, 7 ore.
+    static int sound_class_for(BlockId b) {
+        switch (b) {
+            case 3: case 8: case 10: case 15: case 29: return 1;   // stone family
+            case 21: case 22: case 4: case 23: case 30: case 31: case 33: return 2; // wood
+            case 1: case 2: case 14: case 16: case 12: return 3;   // dirt/grass/clay/snow
+            case 6: case 11: return 4;                             // sand/gravel
+            case 25: case 26: case 13: return 5;                   // glass/ice
+            case 5: case 27: case 36: case 37: case 38: case 39: return 6; // leaves/plants
+            case 17: case 18: case 19: case 20: return 7;          // ores
+            default: return 0;
+        }
     }
     ItemId item_that_places(BlockId b) const {
         if (!items_ || b == 0) return 0;
@@ -714,6 +741,63 @@ private:
         creatures_.push_back(c);
         return true;
     }
+
+    // A scary night monster that hunts the player (renders as kind 5).
+    bool spawn_hostile(float rmin, float rmax) {
+        float ang = rand01() * 6.2831853f, r = rmin + rand01() * (rmax - rmin);
+        float cx = pos_.x + std::cos(ang) * r, cz = pos_.z + std::sin(ang) * r;
+        int gy = floor_below(ifloor(cx), int(pos_.y) + 30, ifloor(cz));
+        if (gy == kNoFloor) return false;
+        Creature c;
+        c.pos = V3{cx, float(gy), cz}; c.yaw = rand01() * 6.2831853f;
+        c.hostile = true; c.speed = 2.6f; c.hp = 4; c.scale = 1.0f;
+        c.color = V3{0.12f, 0.10f, 0.16f}; c.name = "monster";
+        creatures_.push_back(c);
+        return true;
+    }
+
+    // Player melee: chip the creature's hp; on defeat drop loot + a poof.
+    void attack_creature(int idx) {
+        Creature& cr = creatures_[std::size_t(idx)];
+        IVec3 cv{ifloor(cr.pos.x), ifloor(cr.pos.y), ifloor(cr.pos.z)};
+        cr.hp -= 3;
+        fx(8, cv);                                       // hit thwack
+        if (cr.hp <= 0) {
+            bool boss = cr.is_boss, hostile = cr.hostile; std::string nm = cr.name;
+            drop_creature_loot(cr);
+            creatures_.erase(creatures_.begin() + std::ptrdiff_t(idx));
+            ++creatures_calmed_;
+            fx(5, player_voxel());                       // poof
+            notify_quest(boss ? "calm_boss" : (hostile ? "defeat_monster" : "befriend_creature"), nm);
+        }
+    }
+
+    void drop_creature_loot(const Creature& cr) {
+        if (!inv_) return;
+        auto give = [&](const char* nm, int n) {
+            if (ItemId id = item_id_by_name(nm)) inv_->add(ItemStack{id, std::uint16_t(n), 0xFFFF});
+        };
+        if (cr.hostile)      { give("glow_dust", 1 + int(rand01() * 2.0f)); if (rand01() < 0.5f) give("coal", 1); }
+        else if (cr.is_boss) { give("crystal_shard", 2 + int(rand01() * 2.0f)); }
+        else                 { give("feather", 1 + int(rand01() * 2.0f)); if (rand01() < 0.4f) give("berry_cluster", 1); }
+        fx(7, player_voxel());                           // pickup chime
+    }
+
+    void hurt_player(float dmg) {
+        if (hurt_cd_ > 0.0f) return;
+        health_ = std::max(0.0f, health_ - dmg);
+        hurt_cd_ = 0.6f; regen_cd_ = 5.0f;
+        fx(9, player_voxel());                           // ouch
+    }
+
+    void respawn() {
+        pos_ = spawn_; vy_ = 0.0f; health_ = 20.0f;
+        hurt_cd_ = 1.5f; regen_cd_ = 0.0f;
+        creatures_.erase(std::remove_if(creatures_.begin(), creatures_.end(),
+            [](const Creature& c){ return c.hostile; }), creatures_.end());
+        fx(6, player_voxel());                           // respawn chime
+    }
+
     // Keep a population near the player: despawn far ones, spawn fresh ones in a
     // ring just out of view as you explore (fixes "same animals follow forever").
     void maintain_creatures(float dt) {
@@ -726,20 +810,37 @@ private:
                 float dx = c.pos.x - pos_.x, dz = c.pos.z - pos_.z;
                 return (dx*dx + dz*dz) > kDespawn2;
             }), creatures_.end());
-        int ambient = 0, bosses = 0;
-        for (auto& c : creatures_) (c.is_boss ? bosses : ambient)++;
+        float t = day_time(world_clock_);
+        bool night = (t < 0.20f || t > 0.80f);
+        // At daybreak the monsters flee the light.
+        if (!night)
+            creatures_.erase(std::remove_if(creatures_.begin(), creatures_.end(),
+                [](const Creature& c){ return c.hostile; }), creatures_.end());
+        int ambient = 0, bosses = 0, hostiles = 0;
+        for (auto& c : creatures_) { if (c.hostile) ++hostiles; else if (c.is_boss) ++bosses; else ++ambient; }
         // Fill the area quickly at first (small timer), then top up slowly.
-        creature_timer_ = (ambient < 4) ? 0.08f : 0.5f;
-        // Spawn in view range so you actually meet them.
-        if (ambient < 9)      spawn_ring_creature(false, 8.0f, 26.0f);
-        else if (bosses < 2)  spawn_ring_creature(true,  18.0f, 40.0f);
+        creature_timer_ = ((night ? hostiles : ambient) < 4) ? 0.08f : 0.5f;
+        // Night: scary monsters. Day: friendly animals + the occasional boss.
+        if (night) {
+            if (hostiles < 7) spawn_hostile(8.0f, 24.0f);
+        } else if (ambient < 9) {
+            spawn_ring_creature(false, 8.0f, 26.0f);
+        } else if (bosses < 2) {
+            spawn_ring_creature(true, 18.0f, 40.0f);
+        }
     }
 
     void update_creatures(float dt) {
         for (auto& c : creatures_) {
             c.wander -= dt;
             V3 toPlayer = pos_ - c.pos;
-            if (c.friendly) {
+            if (c.hostile) {
+                // Night monster: relentlessly chases the player and bites on contact.
+                float d = std::sqrt(dot(toPlayer, toPlayer));
+                if (d > 0.01f) c.yaw = std::atan2(toPlayer.x, toPlayer.z);
+                if (c.atk_cd > 0) c.atk_cd -= dt;
+                if (d < 1.5f && c.atk_cd <= 0.0f) { hurt_player(3.0f); c.atk_cd = 1.0f; }
+            } else if (c.friendly) {
                 // follow the player when not too close
                 float d = std::sqrt(dot(toPlayer, toPlayer));
                 if (d > 2.5f) c.yaw = std::atan2(toPlayer.x, toPlayer.z);
@@ -749,11 +850,13 @@ private:
             }
             V3 dir{std::sin(c.yaw), 0, std::cos(c.yaw)};
             V3 next = c.pos + dir * (c.speed * dt);
-            // turn away from walls
-            if (block_at(IVec3{ifloor(next.x), ifloor(next.y), ifloor(next.z)}) != AIR) {
-                c.yaw += 2.4f; c.wander = 0.5f;
+            IVec3 nv{ifloor(next.x), ifloor(next.y), ifloor(next.z)};
+            if (block_at(nv) == AIR) {
+                c.pos.x = next.x; c.pos.z = next.z;                       // clear path
+            } else if (block_at(IVec3{nv.x, nv.y + 1, nv.z}) == AIR) {
+                c.pos.x = next.x; c.pos.z = next.z; c.pos.y += 1.0f;      // step up a 1-block ledge
             } else {
-                c.pos.x = next.x; c.pos.z = next.z;
+                c.yaw += 2.4f; c.wander = 0.5f;                          // turn away from a wall
             }
             // gravity, then land on the floor below (never pushed upward).
             c.vy -= 24.0f * dt;
@@ -1018,6 +1121,10 @@ private:
     float         vy_{0.0f};            // vertical velocity (survival walk)
     bool          on_ground_{false};
     float         bob_phase_{0.0f}, bob_amt_{0.0f};   // view bob
+    double        world_clock_{0.0};   // accumulates dt; drives day/night for spawns
+    V3            spawn_{0, 12, 0};     // respawn point
+    float         hurt_cd_{0.0f};       // i-frames after taking damage
+    float         regen_cd_{0.0f};      // delay before health regenerates
 
     // Track J content + gameplay state.
     const ContentRegistry*        content_{nullptr};
@@ -1047,7 +1154,7 @@ private:
 
     // Co-op (Track H).
     std::function<void(IVec3, BlockId)> edit_cb_;
-    std::function<void(int, IVec3)>     fx_cb_;          // audio/particles
+    std::function<void(int, IVec3, int)> fx_cb_;         // audio/particles (extra = sound class)
     float                               step_timer_{0.0f};
     std::vector<bf_entity_draw>         remote_avatars_;
     float         mine_progress_{0.0f};

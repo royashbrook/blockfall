@@ -421,7 +421,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     func handleEvent(_ ev: bf_event) {
         guard ev.kind == BF_EVT_SFX else { return }
         switch ev.i {
-        case 0: audio?.play(.breakBlock); spawnBreakParticles(ev.pos)
+        case 0: audio?.playBreak(materialClass: Int(ev.j)); spawnBreakParticles(ev.pos)
         case 1: audio?.play(.place)
         case 2: audio?.play(.step)
         case 3: audio?.play(.jump)
@@ -429,6 +429,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         case 5: audio?.play(.befriend)
         case 6: audio?.play(.questComplete)
         case 7: audio?.play(.pickup)
+        case 8: audio?.play(.mine)         // melee hit on a creature
+        case 9: audio?.play(.placeFail)    // player took damage
         default: break
         }
     }
@@ -1038,7 +1040,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     // =========================================================
-    // PROCEDURAL TEXTURE HELPERS (unchanged)
+    // PROCEDURAL TEXTURE HELPERS
     // =========================================================
 
     static float uhash(uint v) {
@@ -1064,54 +1066,290 @@ final class Renderer: NSObject, MTKViewDelegate {
     static float fbm2(float2 p) {
         return noise2(p)*0.60 + noise2(p*2.1+float2(3.7,1.1))*0.30 + noise2(p*4.3+float2(1.3,5.7))*0.10;
     }
+    // Project world pos to 2D UV by dominant face axis (face 0/1=YZ, 2/3=XZ, 4/5=XY)
     static float2 faceUV(float3 wp, uint face) {
         if (face == 0u || face == 1u) return wp.yz;
         if (face == 2u || face == 3u) return wp.xz;
         return wp.xy;
     }
 
-    static float blockDetail(float3 worldPos, uint face, uint matID) {
-        int3 vi = int3(floor(worldPos));
-        float vHash = voxelHash(vi);
-        float jitter = (vHash - 0.5) * 0.16;
-        float2 uv = faceUV(worldPos, face);
-        float grain;
-        if (matID==3u||matID==8u||matID==10u||matID==11u||
-            matID==15u||matID==17u||matID==18u||matID==19u||
-            matID==20u||matID==29u) {
-            float fine  = (noise2(uv * 8.0) - 0.5) * 0.22;
-            float coarse= (noise2(uv * 2.5 + float2(5.1, 2.3)) - 0.5) * 0.10;
-            grain = fine + coarse;
-        } else if (matID==1u||matID==5u||matID==27u||matID==38u) {
-            float a = (fbm2(uv * 5.5) - 0.5) * 0.20;
-            float b2 = (noise2(uv * 14.0 + float2(1.7, 3.3)) - 0.5) * 0.08;
-            grain = a + b2;
-        } else if (matID==4u||matID==21u||matID==22u||matID==23u||
-                   matID==30u||matID==31u||matID==33u) {
-            float2 ruv = float2(uv.x+uv.y, uv.x-uv.y) * 3.5;
-            float ring  = (noise2(ruv) - 0.5) * 0.16;
-            float stripe= sin((uv.x + uv.y) * 6.28318f * 1.2f) * 0.05;
-            grain = ring + stripe;
-        } else if (matID==6u||matID==14u) {
-            float coarse = (noise2(uv * 5.0) - 0.5) * 0.14;
-            float grit   = (noise2(uv * 18.0 + float2(2.2, 7.1)) - 0.5) * 0.10;
-            grain = coarse + grit;
-        } else if (matID==12u||matID==13u) {
-            grain = (noise2(uv * 11.0) - 0.5) * 0.08;
-        } else if (matID==7u||matID==32u||matID==34u||matID==35u||matID==40u) {
-            grain = 0.0;
-        } else if (matID==24u) {
-            float bx = fract(uv.x * 2.0);
-            float by = fract(uv.y * 1.0);
-            float mortar = smoothstep(0.0, 0.08, bx) * smoothstep(0.0, 0.08, 1.0-bx)
-                         * smoothstep(0.0, 0.10, by) * smoothstep(0.0, 0.10, 1.0-by);
-            grain = (mortar - 0.5) * 0.22 + (noise2(uv * 7.0) - 0.5) * 0.06;
-        } else if (matID==15u||matID==16u) {
-            grain = (fbm2(uv * 4.0) - 0.5) * 0.24;
-        } else {
-            grain = (noise2(uv * 5.0) - 0.5) * 0.10;
+    // Cheap 2D Voronoi: returns distance to nearest cell centre (3x3 neighborhood).
+    // p is already in "cell" coordinates (scale before calling).
+    // Returns float2(distToNearest, distToSecondNearest) so caller can compute edge dist.
+    static float2 voronoi2(float2 p) {
+        int2 ip = int2(floor(p));
+        float2 fp = fract(p);
+        float d0 = 1e9, d1 = 1e9;
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                int2 nb = ip + int2(dx, dy);
+                // jitter cell centre
+                uint hx = uint(nb.x) * 1664525u + uint(nb.y) * 1013904223u;
+                float jx = uhash(hx)         * 0.8 + 0.1;
+                float jy = uhash(hx ^ 987u)  * 0.8 + 0.1;
+                float2 diff = float2(float(dx) + jx, float(dy) + jy) - fp;
+                float dist = dot(diff, diff);   // squared dist, fine for comparison
+                if (dist < d0) { d1 = d0; d0 = dist; }
+                else if (dist < d1) { d1 = dist; }
+            }
         }
-        return 1.0 + jitter + grain;
+        return float2(sqrt(d0), sqrt(d1));
+    }
+
+    // Returns 0 near cell edges, 1 at cell centres.  edgeWidth in [0,1] (pre-sqrt scale).
+    static float voronoiCell(float2 p, float scale) {
+        float2 d = voronoi2(p * scale);
+        float edge = d.y - d.x;         // wide in open areas, narrow at edges
+        return smoothstep(0.0, 0.15, edge);
+    }
+
+    // ---- Per-material surface texture: returns float3 colour multiplier -------
+    // Range roughly 0.78 .. 1.22.  Modulates base colour via multiply in fmain.
+    // face: 2=top, 3=bottom, 0/1/4/5=sides.  worldPos is continuous across quads.
+    static float3 blockDetail(float3 worldPos, uint face, uint matID) {
+        float2 uv   = faceUV(worldPos, face);
+        bool isTop  = (face == 2u);
+        bool isBot  = (face == 3u);
+        bool isSide = !isTop && !isBot;
+
+        // Per-voxel random seed (adds block-level variation so adjacent blocks differ)
+        int3  vi    = int3(floor(worldPos));
+        float vH    = voxelHash(vi);                        // 0..1
+
+        // ---- STONE / COBBLESTONE / ORES  (3,10,8,29,17-20) --------------------
+        // Stone (3): mottled grey value noise + Voronoi crack lines
+        if (matID == 3u) {
+            // Base mottled noise
+            float mot  = noise2(uv * 6.5) * 0.55 + noise2(uv * 13.0 + float2(4.1, 2.3)) * 0.30
+                       + noise2(uv * 26.0 + float2(1.9, 6.7)) * 0.15;
+            // Voronoi cracks: dark lines between cells
+            float2 vd  = voronoi2(uv * 2.8 + float2(vH * 3.0, vH * 2.1));
+            float crack = 1.0 - smoothstep(0.0, 0.18, vd.y - vd.x);   // 1=on crack
+            // Combine: mottled brightness + darker cracks
+            float bri  = mix(0.82, 1.18, mot);
+            bri       -= crack * 0.28;
+            return float3(clamp(bri, 0.78, 1.20));
+        }
+
+        // Cobblestone (10): rounded pebble cells with highlight on top
+        if (matID == 10u) {
+            float2 vd = voronoi2(uv * 2.2 + float2(vH * 2.0, vH * 1.5));
+            float d0  = vd.x;
+            // Pebble: light centre, dark edge ring, dark mortar gap
+            float pebble = smoothstep(0.0, 0.38, d0);  // 0=mortar, 1=stone
+            float highlight = smoothstep(0.24, 0.42, d0) * smoothstep(0.60, 0.35, d0) * (isTop ? 0.18 : 0.09);
+            float grain  = (noise2(uv * 9.0) - 0.5) * 0.10;
+            float bri  = mix(0.72, 1.08, pebble) + highlight + grain;
+            return float3(clamp(bri, 0.72, 1.18));
+        }
+
+        // Ores (17-20, 29): stone base + bright mineral specks in ore hue
+        if (matID==17u||matID==18u||matID==19u||matID==20u||matID==29u) {
+            // Stone base (same as stone but slightly tighter)
+            float mot  = noise2(uv * 7.0) * 0.55 + noise2(uv * 15.0 + float2(3.1, 1.7)) * 0.45;
+            float2 vd  = voronoi2(uv * 3.0 + float2(vH * 2.5, vH * 1.9));
+            float crack = 1.0 - smoothstep(0.0, 0.15, vd.y - vd.x);
+            float stBase = mix(0.83, 1.15, mot) - crack * 0.22;
+
+            // Mineral specks: small bright high-frequency dots
+            float speck = noise2(uv * 22.0 + float2(vH * 5.0, 1.3));
+            float mineralMask = step(0.78, speck);     // only bright dots
+            // Each ore gets a distinct hue push on the speck
+            float3 oreHue;
+            if      (matID == 17u) oreHue = float3(0.6, 0.6, 0.7);   // silver/iron
+            else if (matID == 18u) oreHue = float3(0.9, 0.7, 0.3);   // gold
+            else if (matID == 19u) oreHue = float3(0.5, 0.8, 0.6);   // emerald
+            else if (matID == 20u) oreHue = float3(0.7, 0.5, 1.0);   // amethyst
+            else                   oreHue = float3(0.5, 0.8, 0.5);   // moss ore (29)
+            float3 col = float3(clamp(stBase, 0.78, 1.18));
+            col = mix(col, col * oreHue * 1.35, mineralMask * 0.65);
+            return clamp(col, 0.75, 1.28);
+        }
+
+        // Mossy / decorated stone (15,16): irregular organic overgrowth noise
+        if (matID==15u||matID==16u) {
+            float blotch = fbm2(uv * 3.5 + float2(vH * 2.0, vH * 1.5));
+            float grain  = (noise2(uv * 9.0) - 0.5) * 0.12;
+            float bri    = mix(0.78, 1.22, blotch) + grain;
+            // Mossy green tint in the darker blotches
+            float mossy  = clamp(1.0 - blotch, 0.0, 0.6) * 0.30;
+            float3 col   = float3(clamp(bri, 0.78, 1.20));
+            col.g       += mossy;
+            return clamp(col, 0.75, 1.25);
+        }
+
+        // ---- DIRT / GRAVEL / CLAY  (2, 11, 14) --------------------------------
+        if (matID==2u||matID==11u||matID==14u) {
+            // Coarse speckled noise + fine grit
+            float coarse = fbm2(uv * 4.0 + float2(vH * 1.5, 0.7));
+            float grit   = noise2(uv * 18.0 + float2(2.2, 7.1)) * 0.5
+                         + noise2(uv * 26.0 + float2(5.0, 1.3)) * 0.5;
+            float pebble = step(0.72, noise2(uv * 7.0 + float2(vH * 3.0, 2.1)));  // small pebble speck
+            float bri    = mix(0.80, 1.15, coarse) + (grit - 0.5) * 0.10 + pebble * 0.06;
+            // Clay (14) gets a slight blue-grey desaturation
+            if (matID == 14u) {
+                return clamp(float3(bri * 1.00, bri * 1.00, bri * 1.04), 0.78, 1.18);
+            }
+            return float3(clamp(bri, 0.78, 1.18));
+        }
+
+        // ---- GRASS  (1) -------------------------------------------------------
+        if (matID == 1u) {
+            if (isTop) {
+                // Blade-noise: fine striped pattern at high frequency, green variation
+                float blades = noise2(uv * 12.0 + float2(vH * 3.0, 0.9)) * 0.60
+                             + noise2(uv * 24.0 + float2(1.3, vH * 2.5)) * 0.40;
+                float hue    = (noise2(uv * 5.5) - 0.5) * 0.14;  // slight yellowing
+                float bri    = mix(0.85, 1.18, blades);
+                float3 col   = float3(bri + hue * (-0.03), bri + hue * (-0.06), bri + hue * 0.01);
+                return clamp(col, 0.78, 1.22);
+            } else {
+                // Side: dirt base with grassy fringe at the very top edge of the block
+                float dirt = fbm2(uv * 4.5 + float2(vH * 1.5, 0.7));
+                float bri  = mix(0.82, 1.12, dirt);
+                // uv.y fractional position on block side: near 0 = top of block face
+                float localY = fract(worldPos.y);   // 0=bottom of block, 1=top
+                float fringe = smoothstep(0.70, 0.95, localY);  // green at top edge
+                float blades = noise2(uv * 10.0 + float2(vH * 2.0, 1.1));
+                float3 col   = float3(bri);
+                // blend green grass fringe
+                col.g += fringe * blades * 0.22;
+                col.r -= fringe * 0.08;
+                col.b -= fringe * 0.04;
+                return clamp(col, 0.78, 1.22);
+            }
+        }
+
+        // ---- SAND  (6) --------------------------------------------------------
+        if (matID == 6u) {
+            // Dune micro-ripples: two overlapping sine waves at slight angles
+            float ripple1 = sin((uv.x * 0.97 + uv.y * 0.25) * 12.0) * 0.5 + 0.5;
+            float ripple2 = sin((uv.x * 0.18 + uv.y * 1.02) * 7.5 + 1.3) * 0.5 + 0.5;
+            float ripple  = ripple1 * 0.55 + ripple2 * 0.45;
+            // Fine grain over the ripple
+            float grain   = noise2(uv * 20.0 + float2(vH * 4.0, 1.7)) * 0.30
+                          + noise2(uv * 10.0 + float2(2.1, vH * 2.0)) * 0.70;
+            float bri     = mix(0.85, 1.14, ripple) + (grain - 0.5) * 0.08;
+            return float3(clamp(bri, 0.82, 1.15));
+        }
+
+        // ---- WOOD LOGS  (21, 22) ----------------------------------------------
+        if (matID==21u||matID==22u) {
+            if (isTop || isBot) {
+                // End grain: concentric rings centred on block centre
+                float2 ctr  = fract(worldPos.xz) - 0.5;   // -0.5..0.5 relative to block
+                float  r    = length(ctr);
+                // Ring spacing ~0.18 world units; noise wobbles the rings
+                float wobble = (noise2(ctr * 5.0 + float2(vH * 2.0, 1.1)) - 0.5) * 0.06;
+                float rings  = sin((r + wobble) * 28.0) * 0.5 + 0.5;
+                float grain  = noise2(uv * 14.0 + float2(vH * 3.0, 2.1)) * 0.25;
+                float bri    = mix(0.82, 1.18, rings * 0.65 + grain * 0.35);
+                return float3(clamp(bri, 0.80, 1.18));
+            } else {
+                // Side faces: vertical grain lines
+                float2 grainUV = float2(uv.x, worldPos.y);   // isolate X-axis for grain
+                float stripe = sin(grainUV.x * 22.0) * 0.5 + 0.5;
+                float vein   = noise2(float2(grainUV.x * 5.5, grainUV.y * 2.5 + vH * 3.0));
+                float knot   = (1.0 - smoothstep(0.05, 0.25, abs(noise2(grainUV * float2(2.0, 0.5) + vH) - 0.5)))
+                               * 0.15;
+                float bri    = mix(0.84, 1.16, stripe * 0.40 + vein * 0.60) + knot;
+                return float3(clamp(bri, 0.80, 1.18));
+            }
+        }
+
+        // ---- PLANKS  (4, 23) --------------------------------------------------
+        if (matID==4u||matID==23u) {
+            // Plank seams: vertical lines every 0.33 units on sides, horizontal on top
+            float plankU   = (isSide) ? uv.x : uv.x;
+            float seam     = 1.0 - step(0.93, fract(plankU * 3.0));       // dark gap at seam
+            float grain    = noise2(float2(uv.x * 4.0, worldPos.y * 0.8 + vH * 2.0)) * 0.55
+                           + noise2(float2(uv.x * 9.0, worldPos.y * 2.0 + vH * 1.3)) * 0.45;
+            float bri      = mix(0.85, 1.15, grain) * mix(0.82, 1.0, seam);
+            return float3(clamp(bri, 0.79, 1.16));
+        }
+
+        // ---- LEAVES  (5, 27) --------------------------------------------------
+        if (matID==5u||matID==27u) {
+            // Clustered leafy blotches: large low-freq + medium detail + fine speck
+            float blotch1 = noise2(uv * 3.5 + float2(vH * 2.5, 1.1));
+            float blotch2 = noise2(uv * 7.0 + float2(1.7, vH * 1.8));
+            float speck   = noise2(uv * 16.0 + float2(vH * 4.0, 2.3));
+            float leaf    = blotch1 * 0.50 + blotch2 * 0.35 + speck * 0.15;
+            // Hue: lighter patches are yellow-green, darker are deep green
+            float bri     = mix(0.78, 1.22, leaf);
+            float3 col    = float3(bri);
+            float yellowing = (leaf - 0.5) * 0.14;
+            col.r += yellowing * 0.8;
+            col.g += yellowing * 0.1;
+            col.b -= yellowing * 0.5;
+            return clamp(col, 0.75, 1.25);
+        }
+
+        // ---- SNOW  (12) -------------------------------------------------------
+        if (matID == 12u) {
+            // Base compression noise + sparkle specks (bright white)
+            float base  = noise2(uv * 8.0 + float2(vH * 2.5, 1.3)) * 0.60
+                        + noise2(uv * 18.0 + float2(1.7, vH * 2.0)) * 0.40;
+            float spk   = step(0.88, noise2(uv * 28.0 + float2(vH * 5.0, 3.1)));  // bright specks
+            float bri   = mix(0.92, 1.10, base) + spk * 0.12;
+            // Sparkles are slightly blue-white
+            float3 col  = float3(bri);
+            col.b      += spk * 0.06;
+            return clamp(col, 0.88, 1.22);
+        }
+
+        // ---- ICE  (13) --------------------------------------------------------
+        if (matID == 13u) {
+            // Mostly smooth with faint blue-tinted Voronoi cracks
+            float2 vd   = voronoi2(uv * 2.0 + float2(vH * 1.5, 0.8));
+            float crack = 1.0 - smoothstep(0.0, 0.12, vd.y - vd.x);   // 1=on crack
+            // Subtle surface gloss (high-freq noise, very low amplitude)
+            float gloss = noise2(uv * 22.0 + float2(vH * 3.0, 2.1));
+            float bri   = 1.0 + (gloss - 0.5) * 0.06 - crack * 0.18;
+            float3 col  = float3(bri);
+            // Cracks push slightly blue
+            col.b      += crack * 0.06;
+            col.r      -= crack * 0.04;
+            return clamp(col, 0.82, 1.12);
+        }
+
+        // ---- BRICKS  (8, 24) --------------------------------------------------
+        if (matID==8u||matID==24u) {
+            // Offset brick courses: stagger alternate rows by half a brick
+            float2 brickScale = float2(2.2, 1.1);
+            float2 brickUV    = uv * brickScale;
+            // Row offset: even rows stagger half a brick
+            float row     = floor(brickUV.y);
+            float offset  = fmod(row, 2.0) * 0.5;
+            float2 cell   = fract(float2(brickUV.x + offset, brickUV.y));
+            // Mortar lines: thin gap at cell edges
+            float mortarX = smoothstep(0.0, 0.07, cell.x) * smoothstep(0.0, 0.07, 1.0 - cell.x);
+            float mortarY = smoothstep(0.0, 0.10, cell.y) * smoothstep(0.0, 0.10, 1.0 - cell.y);
+            float mortar  = mortarX * mortarY;  // 1=brick, 0=mortar
+            // Brick surface variation
+            uint  cellID  = uint(floor(brickUV.x + offset)) * 7u + uint(floor(brickUV.y)) * 13u;
+            float bGrain  = uhash(cellID + uint(matID) * 31u);
+            float surf    = (noise2(uv * 8.0) - 0.5) * 0.09;
+            float bri     = mix(0.68, 1.08, bGrain) * mix(0.72, 1.0, mortar) + surf;
+            return float3(clamp(bri, 0.70, 1.15));
+        }
+
+        // ---- GLASS  (25, 26) --------------------------------------------------
+        if (matID==25u||matID==26u) {
+            // Almost featureless; faint highlight sheen band
+            float sheen = noise2(uv * 3.5 + float2(vH * 2.0, 1.3));
+            float bri   = 1.0 + (sheen - 0.5) * 0.06;
+            return float3(clamp(bri, 0.94, 1.06));
+        }
+
+        // ---- EMISSIVE / SMOOTH blocks (7,32,34,35,40) — no texture needed ----
+        if (matID==7u||matID==32u||matID==34u||matID==35u||matID==40u) {
+            return float3(1.0);
+        }
+
+        // ---- DEFAULT: gentle value noise for anything else --------------------
+        float n = noise2(uv * 5.0 + float2(vH * 2.0, 1.1));
+        return float3(mix(0.88, 1.12, n));
     }
 
     // =========================================================
@@ -1334,10 +1572,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         // ---- Standard block path ----
-        float detail = blockDetail(in.worldPos, in.faceNorm, in.material);
+        float3 detail = blockDetail(in.worldPos, in.faceNorm, in.material);
 
-        // Combined: shade * AO * shadow * detail
-        float3 col = in.color * in.shade * aoFactor * shadowFactor * clamp(detail, 0.75, 1.28);
+        // Combined: shade * AO * shadow * detail (detail is float3 colour multiplier ~0.78..1.22)
+        float3 col = in.color * detail * in.shade * aoFactor * shadowFactor;
 
         // Emissive blocks bloom in HDR: push them above 1.0
         if (isEmissive) {

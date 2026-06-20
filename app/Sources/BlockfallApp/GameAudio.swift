@@ -12,6 +12,10 @@
 //   Sfx: + splash, pickup, openInventory, placeFail
 //   func setAmbienceEnabled(_ on: Bool)
 //   func setTimeOfDay(_ t: Float)   // 0.0 = midnight, 0.5 = noon, 1.0 = midnight
+//   func playBreak(materialClass: Int)
+//         0=generic  1=stone/rock  2=wood   3=dirt/grass
+//         4=sand/gravel  5=glass   6=leaves/plant  7=metal/ore
+//   play(.breakBlock) routes to playBreak(materialClass:0) automatically.
 // ============================================================================
 import Foundation
 import AVFoundation
@@ -143,6 +147,14 @@ final class GameAudio {
 
     func play(_ sfx: Sfx) {
         guard sfxEnabled, let engine, engine.isRunning else { return }
+
+        // Route breakBlock through the per-material path so legacy callers
+        // automatically get the punchier generic sound + variant cycling.
+        if sfx == .breakBlock {
+            playBreak(materialClass: 0)
+            return
+        }
+
         guard let buffer = sfxBuffers[sfx] else { return }
 
         let node = idleSfxNode()
@@ -218,7 +230,9 @@ final class GameAudio {
     }
     private var sfxVariantBuffers: [SfxVariantKey: AVAudioPCMBuffer] = [:]
     private var variantCounters:   [Sfx: Int] = [:]
-    private let variantSfxCases: [Sfx] = [.mine, .place, .breakBlock, .step]
+    // breakBlock is intercepted in play(_:) and handled via playBreak(materialClass:0);
+    // its SFX variant pre-render is not needed here.
+    private let variantSfxCases: [Sfx] = [.mine, .place, .step]
 
     // -----------------------------------------------------------------------
     // MARK: Engine setup
@@ -726,13 +740,259 @@ final class GameAudio {
     }
 
     // -----------------------------------------------------------------------
+    // MARK: Per-material break sounds
+    // -----------------------------------------------------------------------
+    //
+    // materialClass: 0=generic, 1=stone/rock, 2=wood, 3=dirt/grass,
+    //                4=sand/gravel, 5=glass, 6=leaves/plant, 7=metal/ore
+    //
+    // Each class has kBreakVariants pre-rendered pitch variants so rapid
+    // repeated hits sound different from one another.
+
+    private let kBreakVariants = 4
+    // breakMaterialBuffers[materialClass][variantIndex]
+    private var breakMaterialBuffers: [[AVAudioPCMBuffer]] = []
+    private var breakVariantCounters: [Int] = []
+
+    /// Call from the renderer when a block of a given material class breaks.
+    /// materialClass out of range → falls back to 0.
+    func playBreak(materialClass: Int) {
+        guard sfxEnabled, let engine, engine.isRunning else { return }
+        let cls = (materialClass >= 0 && materialClass < breakMaterialBuffers.count)
+                  ? materialClass : 0
+        guard !breakMaterialBuffers[cls].isEmpty else { return }
+
+        let varIdx = breakVariantCounters[cls] % kBreakVariants
+        breakVariantCounters[cls] = varIdx + 1
+        let buf = breakMaterialBuffers[cls][varIdx % breakMaterialBuffers[cls].count]
+
+        let node = idleSfxNode()
+        node.scheduleBuffer(buf, completionHandler: nil)
+        node.play()
+    }
+
+    private func buildBreakMaterialBuffers() {
+        let makers: [() -> AVAudioPCMBuffer?] = [
+            makeBreakGeneric,    // 0
+            makeBreakStone,      // 1
+            makeBreakWood,       // 2
+            makeBreakDirt,       // 3
+            makeBreakSand,       // 4
+            makeBreakGlass,      // 5
+            makeBreakLeaves,     // 6
+            makeBreakMetal,      // 7
+        ]
+
+        // Pitch-shift ratios for 4 variants (in semitones: -2, -0.7, +0.7, +2)
+        let ratios: [Float] = [
+            pow(2, -2.0/12),
+            pow(2, -0.7/12),
+            pow(2,  0.7/12),
+            pow(2,  2.0/12),
+        ]
+
+        breakMaterialBuffers = []
+        breakVariantCounters = Array(repeating: 0, count: makers.count)
+
+        for make in makers {
+            var variants: [AVAudioPCMBuffer] = []
+            if let base = make() {
+                for ratio in ratios {
+                    if let v = pitchShift(base, ratio: ratio) {
+                        variants.append(v)
+                    }
+                }
+                if variants.isEmpty { variants.append(base) }
+            }
+            breakMaterialBuffers.append(variants)
+        }
+    }
+
+    // MARK: Generic break (class 0) — punchy crumble: layered noise burst + pitched thud
+    private func makeBreakGeneric() -> AVAudioPCMBuffer? {
+        let dur: Float = 0.22
+        return synthesize(duration: dur) { i, sr in
+            let t   = Float(i) / sr
+            // Two-stage envelope: sharp initial crack + short tail
+            let crackEnv = self.envelope(t, a: 0.002, d: 0.03, s: 0.0, sLen: 0.0, r: 0.04, total: 0.07)
+            let tailEnv  = self.envelope(t, a: 0.01,  d: 0.06, s: 0.2, sLen: 0.04, r: 0.09, total: dur)
+            // Pitched thud sweeping down
+            let hz    = Float(280) * pow(0.25, t * 5)
+            let tone  = 0.45 * sin(2 * .pi * hz * t)
+            // Noise with band emphasis
+            let noise = 0.55 * self.whitenoise()
+            let crack = crackEnv * noise * 0.9
+            let body  = tailEnv  * (tone + noise * 0.4)
+            return (crack + body) * 0.80
+        }
+    }
+
+    // MARK: Stone (class 1) — sharp cracky crunch + low thud + gravel rattle tail
+    private func makeBreakStone() -> AVAudioPCMBuffer? {
+        let dur: Float = 0.28
+        return synthesize(duration: dur) { i, sr in
+            let t   = Float(i) / sr
+            // Crack transient: very fast bright noise spike
+            let crackEnv = self.envelope(t, a: 0.001, d: 0.025, s: 0.0, sLen: 0.0, r: 0.03, total: 0.06)
+            // Low thud body: low sine sweeping down, medium noise
+            let thudEnv  = self.envelope(t, a: 0.003, d: 0.05, s: 0.25, sLen: 0.05, r: 0.10, total: dur)
+            // Gravel rattle tail (starts at 0.08 s)
+            let rattleT  = t - 0.08
+            let rattleEnv: Float = rattleT > 0
+                ? self.envelope(rattleT, a: 0.005, d: 0.04, s: 0.15, sLen: 0.06, r: 0.07, total: 0.19)
+                : 0
+            let hz    = Float(180) * pow(0.18, t * 4)
+            let tone  = 0.50 * sin(2 * .pi * hz * t)
+            // High-pass character via subtracting LP-like content (approximate with raw - slow noise)
+            let rawNoise = self.whitenoise()
+            let crack = crackEnv * rawNoise * 1.0
+            let thud  = thudEnv  * (tone * 0.7 + rawNoise * 0.45)
+            let rattle = rattleEnv * rawNoise * 0.30
+            return (crack + thud + rattle) * 0.82
+        }
+    }
+
+    // MARK: Wood (class 2) — hollow woody snap/crack: resonant body + knock
+    private func makeBreakWood() -> AVAudioPCMBuffer? {
+        let dur: Float = 0.24
+        return synthesize(duration: dur) { i, sr in
+            let t = Float(i) / sr
+            // Sharp initial snap transient (very short noise burst)
+            let snapEnv = self.envelope(t, a: 0.001, d: 0.015, s: 0.0, sLen: 0.0, r: 0.02, total: 0.04)
+            // Resonant hollow body: two sine tones (fundamental + 2nd harmonic of wood)
+            let bodyEnv = self.envelope(t, a: 0.003, d: 0.04, s: 0.30, sLen: 0.06, r: 0.11, total: dur)
+            // Wood hollow resonance ~ 220–280 Hz range, sweeps down
+            let hz1   = Float(240) * pow(0.40, t * 3)
+            let hz2   = hz1 * 1.5   // hollow box mode
+            let body  = bodyEnv * (0.55 * sin(2 * .pi * hz1 * t) + 0.25 * sin(2 * .pi * hz2 * t))
+            let snap  = snapEnv * self.whitenoise() * 0.60
+            // Short woody noise burst at start
+            let woodNoise = self.envelope(t, a: 0.002, d: 0.03, s: 0.0, sLen: 0.0, r: 0.04, total: 0.07)
+                            * self.whitenoise() * 0.35
+            return (snap + body + woodNoise) * 0.85
+        }
+    }
+
+    // MARK: Dirt/grass (class 3) — soft muffled crumble/thud
+    private func makeBreakDirt() -> AVAudioPCMBuffer? {
+        let dur: Float = 0.20
+        var prevLP: Float = 0
+        return synthesize(duration: dur) { i, sr in
+            let t   = Float(i) / sr
+            let env = self.envelope(t, a: 0.005, d: 0.04, s: 0.35, sLen: 0.05, r: 0.10, total: dur)
+            // Heavy low-pass filter → muffled, earthy
+            let alpha: Float = 0.025
+            let raw = self.whitenoise()
+            prevLP = alpha * raw + (1 - alpha) * prevLP
+            // Very low fundamental thud (70–100 Hz)
+            let hz   = Float(85) * pow(0.30, t * 3)
+            let tone = 0.40 * sin(2 * .pi * hz * t)
+            // Quiet mid noise for texture
+            let midNoise = 0.20 * self.whitenoise()
+            return env * (prevLP * 3.5 * 0.55 + tone + midNoise) * 0.80
+        }
+    }
+
+    // MARK: Sand/gravel (class 4) — granular hiss + soft pour
+    private func makeBreakSand() -> AVAudioPCMBuffer? {
+        let dur: Float = 0.30
+        var prevLPState: Float = 0   // one-pole LP filter state
+        return synthesize(duration: dur) { i, sr in
+            let t    = Float(i) / sr
+            // Main body: rising then falling (pour shape)
+            let env  = self.envelope(t, a: 0.02, d: 0.08, s: 0.40, sLen: 0.08, r: 0.10, total: dur)
+            // High-pass emphasis for graininess (1-pole HP: hp = raw - LP(raw))
+            let raw  = self.whitenoise()
+            let lp   = 0.15 * raw + 0.85 * prevLPState
+            prevLPState = lp
+            let hp   = raw - lp   // approximate HP
+            // Mix: mostly high-freq hiss (granular), small amount of low pour thump
+            let thump = 0.15 * sin(2 * .pi * Float(60) * pow(0.5, t * 4) * t)
+            return env * (hp * 0.65 + raw * 0.20 + thump) * 0.80
+        }
+    }
+
+    // MARK: Glass (class 5) — bright shatter: high-freq noise burst + tinkle partials
+    private func makeBreakGlass() -> AVAudioPCMBuffer? {
+        let dur: Float = 0.35
+        // Tinkle frequencies (high, slightly inharmonic — shard modes)
+        let tinkleHz: [Float] = [3200, 4700, 5900, 7100, 8300]
+        return synthesize(duration: dur) { i, sr in
+            let t   = Float(i) / sr
+            // Initial shatter burst: very sharp, bright
+            let shatterEnv = self.envelope(t, a: 0.001, d: 0.02, s: 0.0, sLen: 0.0, r: 0.03, total: 0.05)
+            // Tinkle partials: multiple high-pitched decaying sines staggered in onset
+            var tinkle: Float = 0
+            for (idx, hz) in tinkleHz.enumerated() {
+                let onset = Float(idx) * 0.015
+                let nt    = t - onset
+                guard nt >= 0 else { continue }
+                let decay = exp(-nt * (8.0 + Float(idx) * 3.0))
+                tinkle   += decay * 0.12 * sin(2 * .pi * hz * nt)
+            }
+            // Brief noise burst
+            let burst = shatterEnv * self.whitenoise() * 0.85
+            return (burst + tinkle) * 0.90
+        }
+    }
+
+    // MARK: Leaves/plant (class 6) — light rustly crunch
+    private func makeBreakLeaves() -> AVAudioPCMBuffer? {
+        let dur: Float = 0.18
+        var prevMid: Float = 0
+        return synthesize(duration: dur) { i, sr in
+            let t   = Float(i) / sr
+            let env = self.envelope(t, a: 0.004, d: 0.03, s: 0.30, sLen: 0.06, r: 0.08, total: dur)
+            // Band-pass emphasis: mid-high crinkle (0.08 LP - heavy LP → band)
+            let raw = self.whitenoise()
+            let lp1  = 0.06 * raw + 0.94 * prevMid
+            prevMid  = lp1
+            let hp   = raw - lp1            // HP component
+            // Very soft low thud for stem snap
+            let thud = 0.15 * sin(2 * .pi * Float(130) * t) * max(0, 1 - t * 12)
+            // Random amplitude flutter (leaf flutter texture)
+            let flutter: Float = 0.75 + 0.25 * self.whitenoise()
+            return env * (hp * 0.60 * flutter + thud) * 0.75
+        }
+    }
+
+    // MARK: Metal/ore (class 7) — clink/clang over stone-like crunch
+    private func makeBreakMetal() -> AVAudioPCMBuffer? {
+        let dur: Float = 0.32
+        // Two metallic ring partials (inharmonic, mid-high)
+        let ringHz: [Float] = [1050, 1640, 2380]
+        return synthesize(duration: dur) { i, sr in
+            let t   = Float(i) / sr
+            // Stone-like crack layer (same as stone but shorter)
+            let crackEnv = self.envelope(t, a: 0.001, d: 0.02, s: 0.0, sLen: 0.0, r: 0.025, total: 0.05)
+            let thudEnv  = self.envelope(t, a: 0.003, d: 0.04, s: 0.20, sLen: 0.04, r: 0.08, total: dur)
+            let hz    = Float(160) * pow(0.20, t * 4)
+            let thud  = thudEnv * (0.45 * sin(2 * .pi * hz * t) + 0.30 * self.whitenoise())
+            let crack = crackEnv * self.whitenoise() * 0.85
+            // Metallic ring: fast-decaying sine partials
+            var ring: Float = 0
+            for (idx, rHz) in ringHz.enumerated() {
+                let onset  = Float(idx) * 0.008
+                let nt     = t - onset
+                guard nt >= 0 else { continue }
+                let decay  = exp(-nt * (5.0 + Float(idx) * 2.5))
+                ring      += decay * 0.18 * sin(2 * .pi * rHz * nt)
+            }
+            return (crack + thud + ring) * 0.85
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // MARK: SFX synthesis — original 8 + 4 new
     // -----------------------------------------------------------------------
 
     private func buildAllSfxBuffers() {
         sfxBuffers[.mine]          = makeMineBuffer()
         sfxBuffers[.place]         = makePlaceBuffer()
-        sfxBuffers[.breakBlock]    = makeBreakBlockBuffer()
+        // play(.breakBlock) is intercepted before this buffer is used; it routes
+        // to playBreak(materialClass:0). Buffer retained so sfxBuffers dict lookup
+        // doesn't silently drop any future path that checks for it.
+        sfxBuffers[.breakBlock]    = makeBreakGeneric()
         sfxBuffers[.step]          = makeStepBuffer()
         sfxBuffers[.jump]          = makeJumpBuffer()
         sfxBuffers[.craft]         = makeCraftBuffer()
@@ -743,6 +1003,8 @@ final class GameAudio {
         sfxBuffers[.pickup]        = makePickupBuffer()
         sfxBuffers[.openInventory] = makeOpenInventoryBuffer()
         sfxBuffers[.placeFail]     = makePlaceFailBuffer()
+        // Build per-material break buffers
+        buildBreakMaterialBuffers()
     }
 
     // MARK: Pitch-variant pre-render
@@ -823,19 +1085,6 @@ final class GameAudio {
             let hz   = Float(200) * pow(0.5, t * 8)
             let tone  = 0.7 * sin(2 * .pi * hz * t)
             let noise = 0.1 * self.whitenoise()
-            return env * (tone + noise)
-        }
-    }
-
-    /// breakBlock — brighter crumble/pop: mid-freq tone + noise burst, ~180 ms
-    private func makeBreakBlockBuffer() -> AVAudioPCMBuffer? {
-        let dur: Float = 0.18
-        return synthesize(duration: dur) { i, sr in
-            let t   = Float(i) / sr
-            let env = self.envelope(t, a: 0.003, d: 0.05, s: 0.35, sLen: 0.06, r: 0.07, total: dur)
-            let hz   = Float(400) * pow(0.4, t * 4)
-            let tone  = 0.4 * self.osc(.triangle, phase: hz * t)
-            let noise = 0.45 * self.whitenoise()
             return env * (tone + noise)
         }
     }

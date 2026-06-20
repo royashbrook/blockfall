@@ -146,6 +146,14 @@ inline void neighbour_light(IChunk* current_chunk, ChunkCoord cc, IChunkStore& s
     blk = nb->block_light(nx, ny, nz);
 }
 
+// ---- opacity / transparency helpers -----------------------------------------
+
+// A cell is OPAQUE if it is non-air AND not water (id 9).
+// Air (0) and water (9) are NON-opaque (transparent).
+inline bool is_opaque(BlockId id) {
+    return id != 0 && id != 9;
+}
+
 // ---- AO helpers -------------------------------------------------------------
 
 // Is this block id an AO-occluder?  Air (0) and water (9) do not occlude.
@@ -415,8 +423,24 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
 
                     // Check the neighbour in the face direction.
                     BlockId nb = neighbour_block(chunk, c, store, fd, x, y, z);
-                    // Face is visible if neighbour is air.
-                    if (nb == 0) {
+
+                    // Opacity rules:
+                    //   OPAQUE block (non-air, non-water): emit face when neighbour
+                    //     is NON-opaque (air OR water).  This makes terrain walls
+                    //     visible from inside water and water-side-walls visible.
+                    //   WATER block (id 9): emit face only when neighbour is AIR.
+                    //     Water-against-water and water-against-opaque do not emit
+                    //     (opaque block already drew its wall; no internal faces).
+                    bool emit = false;
+                    if (is_opaque(here)) {
+                        // Solid terrain: face visible against any non-opaque cell.
+                        emit = !is_opaque(nb);      // nb is air (0) or water (9)
+                    } else if (here == 9) {
+                        // Water surface: only against air.
+                        emit = (nb == 0);
+                    }
+
+                    if (emit) {
                         std::uint8_t sky = 15, blk = 0;
                         neighbour_light(chunk, c, store, fd, x, y, z, sky, blk);
 
