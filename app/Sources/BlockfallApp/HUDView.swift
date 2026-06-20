@@ -24,6 +24,9 @@ final class HUDView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let b = bounds
 
+        // When the inventory is open it replaces the in-world HUD.
+        if hud.inventory_open != 0 { drawInventory(in: b); return }
+
         // --- Crosshair ---
         if crosshair {
             let cx = b.midX, cy = b.midY, s: CGFloat = 8
@@ -86,6 +89,56 @@ final class HUDView: NSView {
         let modeStr = (hud.mode == BF_MODE_CREATIVE) ? "CREATIVE" : "SURVIVAL"
         drawText(modeStr, at: NSPoint(x: b.maxX - 110, y: b.maxY - 32), size: 13,
                  color: (hud.mode == BF_MODE_CREATIVE) ? .systemTeal : .systemOrange, bold: true)
+    }
+
+    // Inventory screen: 27 main slots (3x9) + the 9-slot hotbar row, with a
+    // 2x2 crafting grid + result preview at the top. Populated from
+    // bf_hud_state.inventory (engine fills it when open).
+    private func drawInventory(in b: NSRect) {
+        NSColor.black.withAlphaComponent(0.55).setFill()
+        b.fill()
+        let slot: CGFloat = 46, gap: CGFloat = 5
+        let cols = 9
+        let gridW = CGFloat(cols) * slot + CGFloat(cols - 1) * gap
+        let originX = b.midX - gridW / 2
+
+        func cell(_ rect: NSRect, _ s: bf_hud_slot, sel: Bool) {
+            (sel ? NSColor.white : NSColor.black.withAlphaComponent(0.5)).setFill()
+            let rr = NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5)
+            rr.fill()
+            NSColor.white.withAlphaComponent(sel ? 1 : 0.4).setStroke()
+            rr.lineWidth = sel ? 2.5 : 1
+            rr.stroke()
+            if s.item != 0 { drawCenteredItem(id: s.item, count: s.count, in: rect, selected: sel) }
+        }
+
+        drawText("Inventory", at: NSPoint(x: originX, y: b.midY + 175), size: 20, color: .white, bold: true)
+        drawText("Crafting", at: NSPoint(x: originX + gridW - 220, y: b.midY + 175), size: 14, color: .white, bold: false)
+
+        withUnsafeBytes(of: hud.inventory) { raw in
+            let inv = raw.bindMemory(to: bf_hud_slot.self)
+            // Main inventory: slots 9..35 in 3 rows of 9, above the hotbar row.
+            var topY = b.midY + 120
+            for row in 0..<3 {
+                var x = originX
+                for col in 0..<cols {
+                    let i = 9 + row * 9 + col
+                    cell(NSRect(x: x, y: topY, width: slot, height: slot), inv[i], sel: false)
+                    x += slot + gap
+                }
+                topY -= slot + gap
+            }
+            // Hotbar row (slots 0..8) a little below, highlighting the selection.
+            let hy = topY - 12
+            var hx = originX
+            for col in 0..<9 {
+                cell(NSRect(x: hx, y: hy, width: slot, height: slot), inv[col],
+                     sel: Int(hud.selected_slot) == col)
+                hx += slot + gap
+            }
+        }
+
+        drawText("Esc / E to close", at: NSPoint(x: originX, y: b.midY - 130), size: 12, color: .white, bold: false)
     }
 
     private func drawCenteredItem(id: bf_item_id, count: UInt16, in rect: NSRect, selected: Bool) {

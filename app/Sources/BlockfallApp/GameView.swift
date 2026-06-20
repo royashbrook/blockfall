@@ -52,11 +52,20 @@ final class GameView: MTKView {
 
     // ---- keyboard ----------------------------------------------------------
     override func keyDown(with e: NSEvent) {
-        if e.keyCode == K.esc { releasePointer(); return }
-        // Hotbar 1..6
-        let nums: [UInt16: Int32] = [18:0, 19:1, 20:2, 21:3, 23:4, 22:5]
+        if e.keyCode == K.esc { if invOpen { toggleInventory() } else { releasePointer() }; return }
+        if e.keyCode == 14 { toggleInventory(); return }   // 'E' — inventory
+        if e.keyCode == 8 { queue(BF_ACT_MODE_TOGGLE); return } // 'C' — creative/survival
+        // Hotbar 1..9
+        let nums: [UInt16: Int32] = [18:0, 19:1, 20:2, 21:3, 23:4, 22:5, 26:6, 28:7, 25:8]
         if let slot = nums[e.keyCode] { queue(BF_ACT_HOTBAR_SELECT, slot) }
         pressed.insert(e.keyCode)
+    }
+
+    private var invOpen = false
+    private func toggleInventory() {
+        invOpen.toggle()
+        queue(invOpen ? BF_ACT_INV_OPEN : BF_ACT_INV_CLOSE)
+        if invOpen { releasePointer() } else { capturePointer() }
     }
     override func keyUp(with e: NSEvent) { pressed.remove(e.keyCode) }
     override func flagsChanged(with e: NSEvent) { shiftDown = e.modifierFlags.contains(.shift) }

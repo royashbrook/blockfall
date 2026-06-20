@@ -24,6 +24,7 @@ add_library(blockcore STATIC
   src/jobs.cpp          # Track A — work-stealing job system
   src/mesher.cpp        # Track D — greedy meshing
   src/worldgen.cpp      # Track C — procedural generation
+  src/content.cpp       # Track J — content registries (blocks/items/recipes)
 )
 find_package(Threads REQUIRED)
 
@@ -44,7 +45,7 @@ option(BF_BUILD_TESTS "Build engine unit smoke tests" OFF)
 if(BF_BUILD_TESTS)
   enable_testing()
   set(BF_TEST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit)
-  foreach(t abi:smoke_abi arena:test_arena jobs:test_jobs chunk:test_chunk mesher:test_mesher winding:test_winding worldgen:test_worldgen lighting:test_lighting world:test_world saveload:test_saveload)
+  foreach(t abi:smoke_abi arena:test_arena jobs:test_jobs chunk:test_chunk mesher:test_mesher winding:test_winding worldgen:test_worldgen lighting:test_lighting content:test_content inventory:test_inventory world:test_world saveload:test_saveload)
     string(REPLACE ":" ";" parts ${t})
     list(GET parts 0 tname)
     list(GET parts 1 tsrc)
