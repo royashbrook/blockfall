@@ -10,15 +10,26 @@
 //       - non-zero (= block id) when the voxel at (d,u,v) is SOLID and the
 //         neighbour in the face direction (d±1, u, v) is AIR.
 //       - 0 (no face) otherwise.
-//     Greedy-merge mask into maximal same-id rectangles:
+//     Greedy-merge mask into maximal same-id rectangles (also matching light
+//     and per-corner AO — any difference splits the merge):
 //       Scan in (u,v) order; on each unmerged non-zero cell:
-//         Extend width w in +u while mask[u+w][v] == same id and unmerged.
+//         Extend width w in +u while mask[u+w][v] == same key and unmerged.
 //         Extend height h in +v while entire row [u..u+w-1][v+h] matches.
 //         Mark the w×h region merged (set mask to 0).
 //         Emit one quad (4 BFVertex + 6 uint32 indices).
 //
 // Vertex positions are within-chunk corners (0..16 inclusive).
 // Winding: CCW as seen from outside (consistent with Metal front-face = CCW).
+//
+// Per-vertex AO (Mikola Lysenko "0fps" method):
+//   For each of the 4 quad corners, sample 3 neighbours in the tangent plane
+//   one step out along the face normal.  For corner (du, dv) ∈ {(0,0),(1,0),
+//   (1,1),(0,1)}, the two edge neighbours and one diagonal:
+//     s1 = solid(n + du_tangent), s2 = solid(n + dv_tangent),
+//     c  = solid(n + du_tangent + dv_tangent)
+//   If s1 && s2 => ao=0; else ao = 3 - s1 - s2 - c.
+//   3 = fully open, 0 = fully occluded.
+//   WATER (id 9) does NOT occlude.
 // ============================================================================
 #include "blockcore/mesher.hpp"
 #include "blockcore/vertex.hpp"
@@ -135,13 +146,134 @@ inline void neighbour_light(IChunk* current_chunk, ChunkCoord cc, IChunkStore& s
     blk = nb->block_light(nx, ny, nz);
 }
 
+// ---- AO helpers -------------------------------------------------------------
+
+// Is this block id an AO-occluder?  Air (0) and water (9) do not occlude.
+inline bool is_occluder(BlockId id) {
+    return id != 0 && id != 9;
+}
+
+// Sample a block at an arbitrary world offset from (x,y,z) in chunk cc.
+// Used for AO neighbour lookups — may cross chunk boundaries.
+inline BlockId sample_block(IChunk* current_chunk, ChunkCoord cc,
+                            IChunkStore& store, int x, int y, int z) {
+    if (x >= 0 && x < kChunkDim &&
+        y >= 0 && y < kChunkDim &&
+        z >= 0 && z < kChunkDim) {
+        return chunk_get(current_chunk, x, y, z);
+    }
+    ChunkCoord nc = cc;
+    int nx = x, ny = y, nz = z;
+    if      (nx < 0)          { nc.x -= 1; nx += kChunkDim; }
+    else if (nx >= kChunkDim) { nc.x += 1; nx -= kChunkDim; }
+    if      (ny < 0)          { nc.y -= 1; ny += kChunkDim; }
+    else if (ny >= kChunkDim) { nc.y += 1; ny -= kChunkDim; }
+    if      (nz < 0)          { nc.z -= 1; nz += kChunkDim; }
+    else if (nz >= kChunkDim) { nc.z += 1; nz -= kChunkDim; }
+    IChunk* nb = store.get(nc);
+    if (!nb) return 0;
+    return nb->get(nx, ny, nz);
+}
+
+// Compute the AO value (0..3) for one quad corner.
+//
+// Parameters:
+//   face_origin: the voxel whose face we are shading (in chunk-local coords)
+//   face_sign  : fd.sign (+1 or -1) — which direction the face points
+//   norm_axis  : fd.axis (which world axis the face normal is along)
+//   u_axis     : fd.u_axis (first tangent axis)
+//   v_axis     : fd.v_axis (second tangent axis)
+//   du, dv     : corner offsets in tangent plane: 0 or +1 for the lo corner,
+//                or -1/0 when the corner is at the hi end.
+//
+// The AO sample point is one step out along the normal, at the corner where
+// the two tangent-plane edges meet.  We examine the 3 voxels in that plane:
+//   side1 = (norm_step) + (du_step)        [edge along u]
+//   side2 = (norm_step) + (dv_step)        [edge along v]
+//   corner= (norm_step) + (du_step) + (dv_step)
+//
+// Lysenko formula: if s1 && s2 -> ao=0; else ao = 3 - s1 - s2 - corner.
+inline std::uint32_t compute_ao(IChunk* chunk, ChunkCoord cc, IChunkStore& store,
+                                int bx, int by, int bz,
+                                int norm_axis, int face_sign,
+                                int u_axis, int v_axis,
+                                int du, int dv) {
+    // Step one voxel out along the face normal (into the air).
+    int step[3] = {0, 0, 0};
+    step[norm_axis] = face_sign;
+
+    // Tangent steps for this corner.
+    int su[3] = {0, 0, 0};
+    int sv[3] = {0, 0, 0};
+    su[u_axis] = du;
+    sv[v_axis] = dv;
+
+    // The three AO-sample positions.
+    int s1x = bx + step[0] + su[0];
+    int s1y = by + step[1] + su[1];
+    int s1z = bz + step[2] + su[2];
+
+    int s2x = bx + step[0] + sv[0];
+    int s2y = by + step[1] + sv[1];
+    int s2z = bz + step[2] + sv[2];
+
+    int scx = bx + step[0] + su[0] + sv[0];
+    int scy = by + step[1] + su[1] + sv[1];
+    int scz = bz + step[2] + su[2] + sv[2];
+
+    bool s1 = is_occluder(sample_block(chunk, cc, store, s1x, s1y, s1z));
+    bool s2 = is_occluder(sample_block(chunk, cc, store, s2x, s2y, s2z));
+    bool c  = is_occluder(sample_block(chunk, cc, store, scx, scy, scz));
+
+    if (s1 && s2) return 0u;
+    return 3u - (s1 ? 1u : 0u) - (s2 ? 1u : 0u) - (c ? 1u : 0u);
+}
+
+// Compute all 4 corner AO values for a face on block (bx,by,bz).
+// The 4 corners correspond to (du,dv) pairs for the quad corners c0..c3:
+//   c0 = (u,   v  ) -> tangent offsets relative to the lo-u, lo-v corner
+//   c1 = (u+1, v  )
+//   c2 = (u+1, v+1)
+//   c3 = (u,   v+1)
+//
+// For a face at position (u,v) in the mask, the block occupies the cell.
+// The corner samples use du ∈ {-1,+1} and dv ∈ {-1,+1} because the corners
+// are at the edges of the voxel face.  Specifically:
+//   c0: side toward -u, -v  -> du=-1, dv=-1
+//   c1: side toward +u, -v  -> du=+1, dv=-1
+//   c2: side toward +u, +v  -> du=+1, dv=+1
+//   c3: side toward -u, +v  -> du=-1, dv=+1
+struct AOCorners { std::uint32_t a0, a1, a2, a3; };
+
+inline AOCorners compute_face_ao(IChunk* chunk, ChunkCoord cc, IChunkStore& store,
+                                 const FaceDir& fd, int bx, int by, int bz) {
+    AOCorners ao;
+    ao.a0 = compute_ao(chunk, cc, store, bx, by, bz,
+                       fd.axis, fd.sign, fd.u_axis, fd.v_axis, -1, -1);
+    ao.a1 = compute_ao(chunk, cc, store, bx, by, bz,
+                       fd.axis, fd.sign, fd.u_axis, fd.v_axis, +1, -1);
+    ao.a2 = compute_ao(chunk, cc, store, bx, by, bz,
+                       fd.axis, fd.sign, fd.u_axis, fd.v_axis, +1, +1);
+    ao.a3 = compute_ao(chunk, cc, store, bx, by, bz,
+                       fd.axis, fd.sign, fd.u_axis, fd.v_axis, -1, +1);
+    return ao;
+}
+
+// Pack 4 AO corner values (each 0..3, 2 bits) into 8 bits for the merge key.
+inline std::uint8_t pack_ao(const AOCorners& ao) {
+    return static_cast<std::uint8_t>(
+        (ao.a0 & 0x3u) | ((ao.a1 & 0x3u) << 2) | ((ao.a2 & 0x3u) << 4) | ((ao.a3 & 0x3u) << 6));
+}
+
 // ---- quad emission ----------------------------------------------------------
 // Emit one quad at position (d,u,v) in axis space with width w along u_axis
 // and height h along v_axis.  Face points along fd.axis * fd.sign.
 // Returns false if vtx_out / idx_out lacks space (caller stops and returns).
 // base_vtx: current vertex count already emitted (for index offset).
+// ao0..ao3: AO values for corners c0,c1,c2,c3 respectively.
 bool emit_quad(const FaceDir& fd, int d, int u, int v, int w, int h,
                BlockId id, std::uint8_t sky, std::uint8_t block,
+               std::uint32_t ao0, std::uint32_t ao1, std::uint32_t ao2, std::uint32_t ao3,
                std::span<std::byte>& vtx_out, std::uint32_t& vtx_written,
                std::span<std::byte>& idx_out, std::uint32_t& idx_written,
                std::uint32_t base_vtx) {
@@ -183,17 +315,12 @@ bool emit_quad(const FaceDir& fd, int d, int u, int v, int w, int h,
     std::uint32_t vh = static_cast<std::uint32_t>(h);
     std::uint16_t mat = static_cast<std::uint16_t>(id);
 
-    // Build vertices.  CCW winding as seen from the outside.
-    // For +sign faces we want CCW from the +axis direction.
-    // For -sign faces we reverse the u winding.
-    // Positions are always c0,c1,c2,c3 (texture u/v follow the same order).
-    // sky/block light come from the adjacent air cell (uniform across the quad
-    // because the greedy merge splits on differing light — ADR 0004).
+    // Build vertices with per-corner AO.
     BFVertex verts[4] = {
-        bf_make_vertex(x0,y0,z0, fd.normal, 0, 0,  0,  mat, sky, block),
-        bf_make_vertex(x1,y1,z1, fd.normal, 0, uw, 0,  mat, sky, block),
-        bf_make_vertex(x2,y2,z2, fd.normal, 0, uw, vh, mat, sky, block),
-        bf_make_vertex(x3,y3,z3, fd.normal, 0, 0,  vh, mat, sky, block),
+        bf_make_vertex(x0,y0,z0, fd.normal, ao0, 0,  0,  mat, sky, block),
+        bf_make_vertex(x1,y1,z1, fd.normal, ao1, uw, 0,  mat, sky, block),
+        bf_make_vertex(x2,y2,z2, fd.normal, ao2, uw, vh, mat, sky, block),
+        bf_make_vertex(x3,y3,z3, fd.normal, ao3, 0,  vh, mat, sky, block),
     };
     std::memcpy(vtx_out.data() + vtx_written, verts, 4 * sizeof(BFVertex));
     vtx_written += static_cast<std::uint32_t>(4 * sizeof(BFVertex));
@@ -201,14 +328,46 @@ bool emit_quad(const FaceDir& fd, int d, int u, int v, int w, int h,
     // The WINDING is what makes a face front- or back-facing. For faces whose
     // (u_axis,v_axis,outward) basis is left-handed ({-X,+Y,-Z}, fd.reverse),
     // emit the triangles in reversed order so the quad is CCW from outside.
+    //
+    // AO flip-quad: if the AO gradient is asymmetric (a0+a2 != a1+a3), flip
+    // the diagonal so the interpolation follows the dominant gradient direction,
+    // avoiding a hard seam along the wrong diagonal.
+    //   Normal triangulation: tri0=(0,1,2), tri1=(0,2,3)
+    //   Flipped triangulation: tri0=(0,1,3), tri1=(1,2,3)
+    bool flip_diag = (ao0 + ao2) != (ao1 + ao3);
+
     std::uint32_t b = base_vtx;
-    std::uint32_t fwd[6] = {b+0, b+1, b+2,  b+0, b+2, b+3};
-    std::uint32_t rev[6] = {b+0, b+2, b+1,  b+0, b+3, b+2};
-    std::memcpy(idx_out.data() + idx_written, fd.reverse ? rev : fwd, 6 * sizeof(std::uint32_t));
+    // Indices for normal and flipped diagonals (forward winding):
+    std::uint32_t fwd_normal[6] = {b+0, b+1, b+2,  b+0, b+2, b+3};
+    std::uint32_t fwd_flip[6]   = {b+0, b+1, b+3,  b+1, b+2, b+3};
+    // Reversed winding variants:
+    std::uint32_t rev_normal[6] = {b+0, b+2, b+1,  b+0, b+3, b+2};
+    std::uint32_t rev_flip[6]   = {b+0, b+3, b+1,  b+1, b+3, b+2};
+
+    const std::uint32_t* idx_pattern;
+    if (fd.reverse) {
+        idx_pattern = flip_diag ? rev_flip : rev_normal;
+    } else {
+        idx_pattern = flip_diag ? fwd_flip : fwd_normal;
+    }
+    std::memcpy(idx_out.data() + idx_written, idx_pattern, 6 * sizeof(std::uint32_t));
     idx_written += static_cast<std::uint32_t>(6 * sizeof(std::uint32_t));
 
     return true;
 }
+
+// ---- mask cell: combines material id, light values, and AO signature --------
+// Two cells can only be greedy-merged if ALL fields match.
+struct MaskCell {
+    BlockId      id;
+    std::uint8_t sky;
+    std::uint8_t blk;
+    std::uint8_t ao_packed; // pack_ao(AOCorners)
+
+    bool operator==(const MaskCell& o) const {
+        return id == o.id && sky == o.sky && blk == o.blk && ao_packed == o.ao_packed;
+    }
+};
 
 } // anonymous namespace
 
@@ -235,11 +394,10 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
     std::uint32_t vtx_count  = 0;  // vertices (not bytes)
 
     // Mask arrays reused across slices and directions.
-    // mask[u][v] = block id of visible face (0 = none); mask_sky/mask_blk carry
-    // the adjacent air cell's light so the greedy merge keeps light uniform.
-    BlockId      mask[kChunkDim][kChunkDim];
-    std::uint8_t mask_sky[kChunkDim][kChunkDim];
-    std::uint8_t mask_blk[kChunkDim][kChunkDim];
+    // mask[u][v] carries material, light, and AO for each visible face cell.
+    // ao_corners[u][v] keeps the unpacked AOCorners for emit_quad.
+    MaskCell  mask[kChunkDim][kChunkDim];
+    AOCorners ao_corners[kChunkDim][kChunkDim];
 
     for (const FaceDir& fd : kFaceDirs) {
         // Sweep the 16 slices along fd.axis.
@@ -252,21 +410,23 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
                     axes_to_xyz(fd, d, u, v, x, y, z);
 
                     BlockId here = chunk_get(chunk, x, y, z);
-                    mask_sky[u][v] = 15; mask_blk[u][v] = 0;
-                    if (here == 0) {
-                        mask[u][v] = 0;
-                        continue;
-                    }
+                    mask[u][v] = {0, 15, 0, 0};
+                    if (here == 0) continue;
 
                     // Check the neighbour in the face direction.
                     BlockId nb = neighbour_block(chunk, c, store, fd, x, y, z);
                     // Face is visible if neighbour is air.
                     if (nb == 0) {
-                        mask[u][v] = here;
-                        neighbour_light(chunk, c, store, fd, x, y, z, mask_sky[u][v], mask_blk[u][v]);
-                    } else {
-                        mask[u][v] = static_cast<BlockId>(0);
+                        std::uint8_t sky = 15, blk = 0;
+                        neighbour_light(chunk, c, store, fd, x, y, z, sky, blk);
+
+                        // Compute per-corner AO for this face.
+                        AOCorners ao = compute_face_ao(chunk, c, store, fd, x, y, z);
+                        ao_corners[u][v] = ao;
+
+                        mask[u][v] = {here, sky, blk, pack_ao(ao)};
                     }
+                    // else mask stays {0,...} = no face
                 }
             }
 
@@ -276,15 +436,14 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
 
             for (int u = 0; u < kChunkDim; ++u) {
                 for (int v = 0; v < kChunkDim; ++v) {
-                    BlockId id = mask[u][v];
-                    if (id == 0 || merged[u][v]) continue;
-                    std::uint8_t sky0 = mask_sky[u][v], blk0 = mask_blk[u][v];
+                    MaskCell cell = mask[u][v];
+                    if (cell.id == 0 || merged[u][v]) continue;
+
                     auto same = [&](int uu, int vv) {
-                        return mask[uu][vv] == id && !merged[uu][vv]
-                            && mask_sky[uu][vv] == sky0 && mask_blk[uu][vv] == blk0;
+                        return mask[uu][vv] == cell && !merged[uu][vv];
                     };
 
-                    // Find max width w in +u direction (same id AND same light).
+                    // Find max width w in +u direction (same key).
                     int w = 1;
                     while (u + w < kChunkDim && same(u + w, v)) ++w;
 
@@ -303,8 +462,14 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
                         for (int kv = 0; kv < h; ++kv)
                             merged[u+ku][v+kv] = true;
 
+                    // The AO corner values for this quad come from the single
+                    // representative cell (u,v) — all merged cells have the
+                    // same AO signature (enforced by same() above).
+                    AOCorners ao = ao_corners[u][v];
+
                     // Emit quad; stop early if buffers full.
-                    bool ok = emit_quad(fd, d, u, v, w, h, id, sky0, blk0,
+                    bool ok = emit_quad(fd, d, u, v, w, h, cell.id, cell.sky, cell.blk,
+                                        ao.a0, ao.a1, ao.a2, ao.a3,
                                         vtx_out, vtx_written,
                                         idx_out, idx_written,
                                         vtx_count);
