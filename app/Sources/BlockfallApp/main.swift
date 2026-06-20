@@ -78,6 +78,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let h = HUDView(frame: frame)
         h.autoresizingMask = [.width, .height]
+        h.onMove = { [weak mtkView] from, to, count in
+            mtkView?.enqueueMove(from: from, to: to, count: count)
+        }
         r.hud = h
 
         let container = NSView(frame: frame)

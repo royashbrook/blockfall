@@ -332,7 +332,20 @@ public:
         if (hurt_cd_  > 0) hurt_cd_  -= float(dt);
         if (regen_cd_ > 0) regen_cd_ -= float(dt);
         else if (health_ < 20.0f) health_ = std::min(20.0f, health_ + 1.2f * float(dt));
-        if (health_ <= 0.0f) respawn();
+        // Oxygen / drowning: a submerged head drains air over ~16 s; once it's
+        // empty you take steady drowning damage until you surface.
+        bool head_under = block_at(player_voxel()) == WATER;
+        if (head_under) {
+            oxygen_ = std::max(0.0f, oxygen_ - float(dt) / 16.0f);
+            if (oxygen_ <= 0.0f) {
+                drown_cd_ -= float(dt);
+                if (drown_cd_ <= 0.0f) { health_ = std::max(0.0f, health_ - 2.0f); fx(9, player_voxel()); drown_cd_ = 1.0f; regen_cd_ = 4.0f; }
+            }
+        } else {
+            oxygen_ = std::min(1.0f, oxygen_ + float(dt) * 0.7f);
+            drown_cd_ = 0.0f;
+        }
+        if (health_ <= 0.0f) { oxygen_ = 1.0f; respawn(); }
 
         yaw_  += in.look_yaw_delta;
         pitch_ += in.look_pitch_delta;
@@ -356,7 +369,8 @@ public:
             pos_.z += hmove.z; if (box_collides(pos_)) pos_.z -= hmove.z;
             // Swim when the body is in water: hold Space to rise out, Shift to dive,
             // otherwise float gently (buoyancy) instead of sinking like a stone.
-            bool in_water = block_at(IVec3{ifloor(pos_.x), ifloor(pos_.y + 0.4f), ifloor(pos_.z)}) == WATER;
+            // pos_ is the EYE, so check the chest (~0.8 below) for submersion.
+            bool in_water = block_at(IVec3{ifloor(pos_.x), ifloor(pos_.y - 0.8f), ifloor(pos_.z)}) == WATER;
             if (in_water) {
                 if      (in.jump)  vy_ = 4.6f;                                 // swim up
                 else if (in.sneak) vy_ = -4.6f;                               // dive
@@ -436,6 +450,10 @@ public:
             case BF_ACT_CRAFT:      craft_index(a.arg_i); break;
             case BF_ACT_INV_OPEN:   inv_open_ = true;  break;
             case BF_ACT_INV_CLOSE:  inv_open_ = false; break;
+            case BF_ACT_INV_MOVE:
+                if (inv_) inv_->move(std::size_t(a.arg_i), std::size_t(a.arg_j),
+                                     std::uint16_t(a.arg_k > 0 ? a.arg_k : 64));
+                break;
             case BF_ACT_ATTACK: {
                 int idx = creature_in_view();
                 if (idx >= 0) attack_creature(idx);
@@ -704,9 +722,11 @@ private:
     }
 
     // Is a block solid for player collision? (air + water are passable.)
+    // Cross-plants (grass/flowers/mushroom) are decorative — you walk through them.
+    static bool is_plant(BlockId b) { return b == 36 || b == 37 || b == 38 || b == 39; }
     bool collide_solid(int x, int y, int z) const {
         BlockId b = block_at(IVec3{x, y, z});
-        return b != AIR && b != WATER;
+        return b != AIR && b != WATER && !is_plant(b);
     }
     // Player AABB (0.6 wide, ~1.8 tall; pos_ is the eye). Returns true if it
     // overlaps any solid voxel.
@@ -1242,6 +1262,17 @@ private:
         h.has_target = has_target_ ? 1 : 0;
         h.target_block = bf_ivec3{target_.x, target_.y, target_.z};
         h.mine_progress = mine_progress_;
+        h.oxygen = oxygen_;
+        // Look-at name: a creature under the crosshair takes priority, else the
+        // targeted block. Drives the "what am I looking at" label.
+        h.look_name[0] = '\0';
+        int ci = creature_in_view();
+        if (ci >= 0 && !creatures_[std::size_t(ci)].name.empty())
+            std::strncpy(h.look_name, creatures_[std::size_t(ci)].name.c_str(), sizeof(h.look_name) - 1);
+        else if (has_target_) {
+            std::string bn = block_name(block_at(target_));
+            if (!bn.empty()) std::strncpy(h.look_name, bn.c_str(), sizeof(h.look_name) - 1);
+        }
     }
 
     static int ifloor(float f) { return int(std::floor(f)); }
@@ -1280,6 +1311,8 @@ private:
     V3            spawn_{0, 12, 0};     // respawn point
     float         hurt_cd_{0.0f};       // i-frames after taking damage
     float         regen_cd_{0.0f};      // delay before health regenerates
+    float         oxygen_{1.0f};        // 1 = full air; drains while the head is submerged
+    float         drown_cd_{0.0f};      // cooldown between drowning ticks
 
     // Track J content + gameplay state.
     const ContentRegistry*        content_{nullptr};

@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 3u   /* v3: craftable-recipe HUD list (ADR 0006) */
+#define BF_ABI_VERSION 4u   /* v4: HUD oxygen + look-at name (ADR 0007) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -265,6 +265,9 @@ typedef struct bf_hud_state {
      * craft with number keys -> BF_ACT_CRAFT arg_i (ABI v3, ADR 0006).      */
     bf_hud_slot  craftable[8];
     uint8_t      craftable_count;
+    /* v4 additions */
+    float        oxygen;            /* 0..1 air remaining underwater (1 = full) */
+    char         look_name[40];     /* name of the block/creature under the crosshair, "" if none */
 } bf_hud_state;
 
 /* The whole frame, borrowed from the engine between acquire/end. */

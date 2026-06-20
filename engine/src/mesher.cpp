@@ -146,19 +146,29 @@ inline void neighbour_light(IChunk* current_chunk, ChunkCoord cc, IChunkStore& s
     blk = nb->block_light(nx, ny, nz);
 }
 
+// ---- plant helpers ----------------------------------------------------------
+
+// Cross-plant block ids: flower_red(36), flower_yellow(37), tall_grass(38), mushroom(39).
+// Plants are non-opaque (like air/water) for face culling purposes: a solid block
+// next to a plant must still emit its face.  Plants are also non-occluders for AO.
+// They emit cross-billboard geometry instead of cube faces.
+inline bool is_cross_plant(BlockId id) {
+    return id == 36 || id == 37 || id == 38 || id == 39;
+}
+
 // ---- opacity / transparency helpers -----------------------------------------
 
-// A cell is OPAQUE if it is non-air AND not water (id 9).
-// Air (0) and water (9) are NON-opaque (transparent).
+// A cell is OPAQUE if it is non-air, not water (id 9), and not a cross-plant.
+// Air (0), water (9), and plants (36-39) are NON-opaque (transparent).
 inline bool is_opaque(BlockId id) {
-    return id != 0 && id != 9;
+    return id != 0 && id != 9 && !is_cross_plant(id);
 }
 
 // ---- AO helpers -------------------------------------------------------------
 
-// Is this block id an AO-occluder?  Air (0) and water (9) do not occlude.
+// Is this block id an AO-occluder?  Air (0), water (9), and plants do not occlude.
 inline bool is_occluder(BlockId id) {
-    return id != 0 && id != 9;
+    return id != 0 && id != 9 && !is_cross_plant(id);
 }
 
 // Sample a block at an arbitrary world offset from (x,y,z) in chunk cc.
@@ -377,6 +387,98 @@ struct MaskCell {
     }
 };
 
+// ---- cross-plant billboard emission -----------------------------------------
+// Emit an X-shaped billboard for a single plant cell at (bx, by, bz).
+// Two quads along the cell's two XZ diagonals, each emitted twice with opposite
+// winding (4 quads total = 16 verts = 8 triangles = 48 indices), so the plant
+// is visible from all directions under back-face culling.
+//
+// Diagonal A: XZ (0,0)-(1,1) — corners at:
+//   p0 = (bx,   by,   bz  )   p1 = (bx+1, by,   bz+1)
+//   p2 = (bx+1, by+1, bz+1)   p3 = (bx,   by+1, bz  )
+// Diagonal B: XZ (1,0)-(0,1) — corners at:
+//   p0 = (bx+1, by,   bz  )   p1 = (bx,   by,   bz+1)
+//   p2 = (bx,   by+1, bz+1)   p3 = (bx+1, by+1, bz  )
+//
+// Each diagonal: emit winding (0,1,2),(0,2,3) then reverse (0,2,1),(0,3,2).
+// UVs: U along the diagonal (0 at lo-X end, 1 at hi-X end), V along height (0=bottom,1=top).
+// Normal: BF_NY_POS (used as a sentinel; the fragment shader keys off material_id).
+// AO: 3 (fully unoccluded).  Light: sampled from the plant cell itself.
+//
+// Returns false if buffers are full (caller stops).
+bool emit_cross_plant(int bx, int by, int bz,
+                      BlockId id, std::uint8_t sky, std::uint8_t blk,
+                      std::span<std::byte>& vtx_out, std::uint32_t& vtx_written,
+                      std::span<std::byte>& idx_out, std::uint32_t& idx_written,
+                      std::uint32_t& vtx_count) {
+    // Need 16 verts + 48 indices (4 quads × 4 verts, 4 quads × 2 tris × 3 idx).
+    if (vtx_out.size() - vtx_written < 16 * sizeof(BFVertex))        return false;
+    if (idx_out.size()  - idx_written < 48 * sizeof(std::uint32_t))  return false;
+
+    constexpr std::uint32_t AO   = 3u;
+    constexpr std::uint32_t NORM = static_cast<std::uint32_t>(BF_NY_POS); // shader uses mat_id, not normal
+    const std::uint16_t     mat  = static_cast<std::uint16_t>(id);
+
+    // Integer corner coordinates (fits in 6-bit pos field, values 0..16).
+    std::uint32_t x0 = static_cast<std::uint32_t>(bx);
+    std::uint32_t x1 = static_cast<std::uint32_t>(bx + 1);
+    std::uint32_t y0 = static_cast<std::uint32_t>(by);
+    std::uint32_t y1 = static_cast<std::uint32_t>(by + 1);
+    std::uint32_t z0 = static_cast<std::uint32_t>(bz);
+    std::uint32_t z1 = static_cast<std::uint32_t>(bz + 1);
+
+    // Emit a single quad + its back-face twin.
+    // v0..v3: the four corners, with UVs (u0v0, u1v0, u1v1, u0v1).
+    // Forward winding: (0,1,2),(0,2,3) — CCW from one side.
+    // Reverse winding: (0,2,1),(0,3,2) — CCW from the other side.
+    auto emit_both_faces = [&](
+        std::uint32_t px0, std::uint32_t py0, std::uint32_t pz0,  // corner (U=0,V=0)
+        std::uint32_t px1, std::uint32_t py1, std::uint32_t pz1,  // corner (U=1,V=0)
+        std::uint32_t px2, std::uint32_t py2, std::uint32_t pz2,  // corner (U=1,V=1)
+        std::uint32_t px3, std::uint32_t py3, std::uint32_t pz3   // corner (U=0,V=1)
+    ) -> bool {
+        BFVertex v0 = bf_make_vertex(px0,py0,pz0, NORM, AO, 0u, 0u, mat, sky, blk);
+        BFVertex v1 = bf_make_vertex(px1,py1,pz1, NORM, AO, 1u, 0u, mat, sky, blk);
+        BFVertex v2 = bf_make_vertex(px2,py2,pz2, NORM, AO, 1u, 1u, mat, sky, blk);
+        BFVertex v3 = bf_make_vertex(px3,py3,pz3, NORM, AO, 0u, 1u, mat, sky, blk);
+
+        // Write 4 verts for the forward quad.
+        std::uint32_t b = vtx_count;
+        std::memcpy(vtx_out.data() + vtx_written, &v0, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        std::memcpy(vtx_out.data() + vtx_written, &v1, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        std::memcpy(vtx_out.data() + vtx_written, &v2, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        std::memcpy(vtx_out.data() + vtx_written, &v3, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        vtx_count += 4;
+
+        // Forward winding indices.
+        std::uint32_t fwd[6] = {b+0,b+1,b+2, b+0,b+2,b+3};
+        std::memcpy(idx_out.data() + idx_written, fwd, 6 * sizeof(std::uint32_t));
+        idx_written += static_cast<std::uint32_t>(6 * sizeof(std::uint32_t));
+
+        // Write 4 verts again for the reverse quad (same positions, opposite winding).
+        b = vtx_count;
+        std::memcpy(vtx_out.data() + vtx_written, &v0, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        std::memcpy(vtx_out.data() + vtx_written, &v1, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        std::memcpy(vtx_out.data() + vtx_written, &v2, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        std::memcpy(vtx_out.data() + vtx_written, &v3, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        vtx_count += 4;
+
+        // Reverse winding indices.
+        std::uint32_t rev[6] = {b+0,b+2,b+1, b+0,b+3,b+2};
+        std::memcpy(idx_out.data() + idx_written, rev, 6 * sizeof(std::uint32_t));
+        idx_written += static_cast<std::uint32_t>(6 * sizeof(std::uint32_t));
+
+        return true;
+    };
+
+    // Diagonal A: (bx,bz)-(bx+1,bz+1).
+    if (!emit_both_faces(x0,y0,z0,  x1,y0,z1,  x1,y1,z1,  x0,y1,z0)) return false;
+    // Diagonal B: (bx+1,bz)-(bx,bz+1).
+    if (!emit_both_faces(x1,y0,z0,  x0,y0,z1,  x0,y1,z1,  x1,y1,z0)) return false;
+
+    return true;
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -503,6 +605,31 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
                         return MeshResult{vtx_written, idx_written, ic, false};
                     }
                     vtx_count += 4;
+                }
+            }
+        }
+    }
+
+    // ---- Cross-plant billboard pass ----------------------------------------
+    // Scan every cell; for each cross-plant, emit the X-shaped billboard.
+    // This is done after the greedy cube meshing so plant geometry is appended.
+    for (int y = 0; y < kChunkDim; ++y) {
+        for (int x = 0; x < kChunkDim; ++x) {
+            for (int z = 0; z < kChunkDim; ++z) {
+                BlockId here = chunk_get(chunk, x, y, z);
+                if (!is_cross_plant(here)) continue;
+
+                // Sample light from the plant cell itself (not an adjacent air face).
+                std::uint8_t sky = chunk->sky_light(x, y, z);
+                std::uint8_t blk = chunk->block_light(x, y, z);
+
+                bool ok = emit_cross_plant(x, y, z, here, sky, blk,
+                                           vtx_out, vtx_written,
+                                           idx_out, idx_written,
+                                           vtx_count);
+                if (!ok) {
+                    std::uint32_t ic2 = idx_written / static_cast<std::uint32_t>(sizeof(std::uint32_t));
+                    return MeshResult{vtx_written, idx_written, ic2, false};
                 }
             }
         }

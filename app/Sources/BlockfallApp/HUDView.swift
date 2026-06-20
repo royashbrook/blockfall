@@ -81,13 +81,97 @@ final class HUDView: NSView {
     private var hud = bf_hud_state()
     private var crosshair = true
 
+    // --- Interactive inventory state ---
+    // Closure the lead wires to BF_ACT_INV_MOVE (arg_i=from, arg_j=to, arg_k=count).
+    var onMove: ((_ from: Int, _ to: Int, _ count: Int) -> Void)?
+    // Slot-index (0..35) of a "picked up" stack, or nil when nothing is held.
+    private var heldSlot: Int? = nil
+    private var heldItem: bf_item_id = 0
+    private var heldCount: UInt16 = 0
+    // Last 36 slot rects we drew (index == inventory index). Empty when closed.
+    private var slotRects: [NSRect] = []
+    // Current mouse position in view coords (for tooltip + held-stack ghost).
+    private var mousePos: NSPoint = .zero
+    private var mouseInside = false
+    private var trackingAreaRef: NSTrackingArea?
+
     override var isFlipped: Bool { false }
     override var isOpaque: Bool { false }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil } // click-through
+
+    // Click-through during play; capture clicks only when the inventory is open.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        hud.inventory_open != 0 ? self : nil
+    }
+    override var acceptsFirstResponder: Bool { hud.inventory_open != 0 }
 
     func update(from h: bf_hud_state) {
+        let wasOpen = hud.inventory_open != 0
         hud = h
+        // If the inventory just closed, drop any picked-up stack.
+        if wasOpen && hud.inventory_open == 0 { clearHeld() }
         needsDisplay = true
+    }
+
+    private func clearHeld() {
+        heldSlot = nil; heldItem = 0; heldCount = 0
+    }
+
+    // ----- Mouse handling (active only while the inventory is open) -----
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = trackingAreaRef { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: bounds,
+                               options: [.activeAlways, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
+                               owner: self, userInfo: nil)
+        addTrackingArea(t)
+        trackingAreaRef = t
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        mouseInside = true
+        mousePos = convert(event.locationInWindow, from: nil)
+        if hud.inventory_open != 0 { needsDisplay = true }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        mouseInside = false
+        if hud.inventory_open != 0 { needsDisplay = true }
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        mouseInside = true
+        mousePos = convert(event.locationInWindow, from: nil)
+        // Repaint only when the inventory is open (tooltip / held-stack ghost);
+        // during play the in-world HUD doesn't track the mouse.
+        if hud.inventory_open != 0 { needsDisplay = true }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard hud.inventory_open != 0 else { return }   // gameplay: ignore
+        let p = convert(event.locationInWindow, from: nil)
+        mousePos = p
+        guard let idx = slotIndex(at: p) else {
+            // Click on empty space cancels a pending pickup.
+            if heldSlot != nil { clearHeld(); needsDisplay = true }
+            return
+        }
+        if let src = heldSlot {
+            if idx == src {
+                clearHeld()                              // same slot -> cancel
+            } else {
+                onMove?(src, idx, Int(heldCount))        // place onto target
+                clearHeld()                              // engine refreshes next frame
+            }
+            needsDisplay = true
+        } else {
+            // First click: pick up the whole stack if the slot is non-empty.
+            let s = inventorySlot(idx)
+            if s.item != 0 {
+                heldSlot = idx; heldItem = s.item; heldCount = s.count
+                needsDisplay = true
+            }
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -105,6 +189,21 @@ final class HUDView: NSView {
             path.move(to: NSPoint(x: cx - s, y: cy)); path.line(to: NSPoint(x: cx + s, y: cy))
             path.move(to: NSPoint(x: cx, y: cy - s)); path.line(to: NSPoint(x: cx, y: cy + s))
             path.stroke()
+        }
+
+        // --- Look-at name (what the crosshair is pointing at), under crosshair ---
+        let lookName = withUnsafeBytes(of: hud.look_name) { raw -> String in
+            // Guaranteed NUL-terminated by the engine; bind as CChar and read.
+            String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+        }
+        if !lookName.isEmpty {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: 14), .foregroundColor: NSColor.white,
+                .strokeColor: NSColor.black, .strokeWidth: -3.0,
+            ]
+            let sz = (lookName as NSString).size(withAttributes: attrs)
+            (lookName as NSString).draw(at: NSPoint(x: b.midX - sz.width / 2, y: b.midY - 28),
+                                        withAttributes: attrs)
         }
 
         // --- Hotbar (9 slots, centered along the bottom) ---
@@ -149,7 +248,12 @@ final class HUDView: NSView {
 
         // --- Health hearts (survival) ---
         if hud.mode == BF_MODE_SURVIVAL {
-            drawHearts(value: hud.health, max: 20, at: NSPoint(x: b.midX - total / 2, y: y + slot + 34))
+            let heartsY = y + slot + 34
+            drawHearts(value: hud.health, max: 20, at: NSPoint(x: b.midX - total / 2, y: heartsY))
+            // Oxygen bubbles above the hearts, only while underwater (not full).
+            if hud.oxygen < 0.999 {
+                drawBubbles(value: hud.oxygen, at: NSPoint(x: b.midX - total / 2, y: heartsY + 18))
+            }
         }
 
         // --- Active quest (top-left) ---
@@ -175,6 +279,38 @@ final class HUDView: NSView {
                  color: (hud.mode == BF_MODE_CREATIVE) ? .systemTeal : .systemOrange, bold: true)
     }
 
+    // Inventory grid geometry — single source of truth for both drawing and
+    // hit-testing. Returns 36 rects indexed by inventory slot (0..8 hotbar row,
+    // 9..35 main grid), matching the bf_hud_state.inventory layout we draw.
+    private func inventorySlotRects(in b: NSRect) -> [NSRect] {
+        let slot: CGFloat = 46, gap: CGFloat = 5
+        let cols = 9
+        let gridW = CGFloat(cols) * slot + CGFloat(cols - 1) * gap
+        let originX = b.midX - gridW / 2
+
+        // Pre-size so we can assign by index regardless of fill order.
+        var rects = [NSRect](repeating: .zero, count: 36)
+        // Main inventory: slots 9..35 in 3 rows of 9, above the hotbar row.
+        var topY = b.midY + 120
+        for row in 0..<3 {
+            var x = originX
+            for col in 0..<cols {
+                let i = 9 + row * 9 + col
+                rects[i] = NSRect(x: x, y: topY, width: slot, height: slot)
+                x += slot + gap
+            }
+            topY -= slot + gap
+        }
+        // Hotbar row (slots 0..8) a little below the main grid.
+        let hy = topY - 12
+        var hx = originX
+        for col in 0..<9 {
+            rects[col] = NSRect(x: hx, y: hy, width: slot, height: slot)
+            hx += slot + gap
+        }
+        return rects
+    }
+
     // Inventory screen: 27 main slots (3x9) + the 9-slot hotbar row, with a
     // 2x2 crafting grid + result preview at the top. Populated from
     // bf_hud_state.inventory (engine fills it when open).
@@ -186,14 +322,21 @@ final class HUDView: NSView {
         let gridW = CGFloat(cols) * slot + CGFloat(cols - 1) * gap
         let originX = b.midX - gridW / 2
 
-        func cell(_ rect: NSRect, _ s: bf_hud_slot, sel: Bool) {
+        // Record geometry so mouseDown/mouseMoved can hit-test against it.
+        let rects = inventorySlotRects(in: b)
+        slotRects = rects
+
+        func cell(_ rect: NSRect, _ s: bf_hud_slot, sel: Bool, picked: Bool) {
             (sel ? NSColor.white : NSColor.black.withAlphaComponent(0.5)).setFill()
             let rr = NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5)
             rr.fill()
-            NSColor.white.withAlphaComponent(sel ? 1 : 0.4).setStroke()
-            rr.lineWidth = sel ? 2.5 : 1
+            (picked ? NSColor.systemYellow : NSColor.white.withAlphaComponent(sel ? 1 : 0.4)).setStroke()
+            rr.lineWidth = (picked || sel) ? 2.5 : 1
             rr.stroke()
-            if s.item != 0 { drawCenteredItem(id: s.item, count: s.count, in: rect, selected: sel) }
+            // The picked-up slot is drawn empty (its stack rides the cursor).
+            if s.item != 0 && !picked {
+                drawCenteredItem(id: s.item, count: s.count, in: rect, selected: sel)
+            }
         }
 
         drawText("Inventory", at: NSPoint(x: originX, y: b.midY + 175), size: 20, color: .white, bold: true)
@@ -201,24 +344,14 @@ final class HUDView: NSView {
 
         withUnsafeBytes(of: hud.inventory) { raw in
             let inv = raw.bindMemory(to: bf_hud_slot.self)
-            // Main inventory: slots 9..35 in 3 rows of 9, above the hotbar row.
-            var topY = b.midY + 120
-            for row in 0..<3 {
-                var x = originX
-                for col in 0..<cols {
-                    let i = 9 + row * 9 + col
-                    cell(NSRect(x: x, y: topY, width: slot, height: slot), inv[i], sel: false)
-                    x += slot + gap
-                }
-                topY -= slot + gap
+            // Main inventory: slots 9..35.
+            for i in 9..<36 {
+                cell(rects[i], inv[i], sel: false, picked: heldSlot == i)
             }
-            // Hotbar row (slots 0..8) a little below, highlighting the selection.
-            let hy = topY - 12
-            var hx = originX
+            // Hotbar row (slots 0..8), highlighting the selection.
             for col in 0..<9 {
-                cell(NSRect(x: hx, y: hy, width: slot, height: slot), inv[col],
-                     sel: Int(hud.selected_slot) == col)
-                hx += slot + gap
+                cell(rects[col], inv[col], sel: Int(hud.selected_slot) == col,
+                     picked: heldSlot == col)
             }
         }
 
@@ -247,7 +380,52 @@ final class HUDView: NSView {
             }
         }
 
-        drawText("Esc / E to close", at: NSPoint(x: originX, y: b.midY - 130), size: 12, color: .white, bold: false)
+        drawText("Esc / E to close   •   click a stack to pick it up, click a slot to place it",
+                 at: NSPoint(x: originX, y: b.midY - 130), size: 12, color: .white, bold: false)
+
+        // --- Hover tooltip: item name + count under the cursor (only when not
+        //     carrying a stack, so the tooltip doesn't fight the ghost). ---
+        if mouseInside && heldSlot == nil {
+            if let i = slotIndex(at: mousePos) {
+                let s = inventorySlot(i)
+                if s.item != 0 { drawTooltip(name: itemName(s.item), count: s.count, near: mousePos) }
+            }
+        }
+
+        // --- Picked-up stack ghost following the cursor. ---
+        if heldSlot != nil && heldItem != 0 {
+            let g = NSRect(x: mousePos.x - 18, y: mousePos.y - 18, width: 36, height: 36)
+            drawCenteredItem(id: heldItem, count: heldCount, in: g, selected: false)
+        }
+    }
+
+    private func inventorySlot(_ i: Int) -> bf_hud_slot {
+        guard i >= 0 && i < 36 else { return bf_hud_slot() }
+        return withUnsafeBytes(of: hud.inventory) { raw in
+            raw.bindMemory(to: bf_hud_slot.self)[i]
+        }
+    }
+
+    private func slotIndex(at p: NSPoint) -> Int? {
+        for (i, r) in slotRects.enumerated() where r.contains(p) { return i }
+        return nil
+    }
+
+    private func drawTooltip(name: String, count: UInt16, near p: NSPoint) {
+        let label = count > 1 ? "\(name)  ×\(count)" : name
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: 13), .foregroundColor: NSColor.white,
+        ]
+        let sz = (label as NSString).size(withAttributes: attrs)
+        let pad: CGFloat = 6
+        var box = NSRect(x: p.x + 14, y: p.y + 14, width: sz.width + pad * 2, height: sz.height + pad)
+        // Keep the tooltip on-screen (view isn't flipped: +x right, +y up).
+        if box.maxX > bounds.maxX { box.origin.x = p.x - box.width - 6 }
+        if box.maxY > bounds.maxY { box.origin.y = p.y - box.height - 6 }
+        NSColor.black.withAlphaComponent(0.85).setFill()
+        let rr = NSBezierPath(roundedRect: box, xRadius: 4, yRadius: 4); rr.fill()
+        NSColor.white.withAlphaComponent(0.25).setStroke(); rr.lineWidth = 1; rr.stroke()
+        (label as NSString).draw(at: NSPoint(x: box.minX + pad, y: box.minY + pad / 2), withAttributes: attrs)
     }
 
     private func drawCenteredItem(id: bf_item_id, count: UInt16, in rect: NSRect, selected: Bool) {
@@ -271,6 +449,23 @@ final class HUDView: NSView {
             (filled ? NSColor.systemRed : NSColor.black.withAlphaComponent(0.4)).setFill()
             let r = NSRect(x: origin.x + CGFloat(i) * 16, y: origin.y, width: 12, height: 12)
             NSBezierPath(ovalIn: r).fill()
+        }
+    }
+
+    private func drawBubbles(value: Float, at origin: NSPoint) {
+        // 10 air bubbles; fill count tracks remaining oxygen (1 = full).
+        let count = 10
+        let filled = Int((max(0, min(1, value)) * Float(count)).rounded())
+        for i in 0..<count {
+            let r = NSRect(x: origin.x + CGFloat(i) * 16, y: origin.y, width: 12, height: 12)
+            if i < filled {
+                NSColor.systemBlue.setFill(); NSBezierPath(ovalIn: r).fill()
+                NSColor.white.withAlphaComponent(0.6).setStroke()
+                let p = NSBezierPath(ovalIn: r); p.lineWidth = 1; p.stroke()
+            } else {
+                NSColor.black.withAlphaComponent(0.4).setFill()
+                NSBezierPath(ovalIn: r).fill()
+            }
         }
     }
 

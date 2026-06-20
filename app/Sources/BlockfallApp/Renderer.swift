@@ -1608,6 +1608,150 @@ final class Renderer: NSObject, MTKViewDelegate {
             return float4(col, 1.0);
         }
 
+        // =========================================================
+        // PLANT ALPHA-TESTED PATH (material ids 36-39)
+        // The mesher emits CROSS billboards for these; we render them
+        // as procedural alpha-tested shapes on the quad UV.
+        // UV derivation: V = fract(worldPos.y) gives 0(bottom)..1(top);
+        // U = fract of the dominant horizontal axis for this face normal.
+        // =========================================================
+        bool isPlant = (mat==36u||mat==37u||mat==38u||mat==39u);
+        if (isPlant) {
+            // Derive plant UV from worldPos: V = vertical (0=bottom, 1=top of block)
+            float plantV = fract(in.worldPos.y);
+            // U: use whichever horizontal axis is more "across" this face.
+            // For face normals 0/1 (±X), use Z; for 4/5 (±Z), use X; for top/bot use X.
+            float plantU;
+            uint fn = in.faceNorm;
+            if (fn == 0u || fn == 1u)      plantU = fract(in.worldPos.z);
+            else if (fn == 4u || fn == 5u) plantU = fract(in.worldPos.x);
+            else                            plantU = fract(in.worldPos.x);
+
+            float alpha = 0.0;
+            float3 plantCol = float3(0.0);
+
+            if (mat == 38u) {
+                // ---- TALL GRASS: several thin vertical blades ----
+                // 4 blades spaced across U at ~0.15, 0.32, 0.58, 0.75
+                // Each blade is a thin strip, tapers to a point at the top (plantV near 1).
+                float3 grassBase = float3(0.28, 0.72, 0.18);
+                float bladeMask = 0.0;
+                float3 hue = float3(0.0);
+                // Blade parameters: centre positions, slight hue variation per blade
+                const float centres[4] = {0.15, 0.32, 0.58, 0.75};
+                const float hues[4]    = {0.04, -0.03, 0.05, -0.04};
+                for (int bi = 0; bi < 4; ++bi) {
+                    float cx = centres[bi];
+                    // Width tapers from 0.06 at base to 0 at top
+                    float bladeWidth = 0.055 * (1.0 - plantV * plantV);
+                    float dx = abs(plantU - cx);
+                    float inBlade = smoothstep(bladeWidth + 0.012, bladeWidth, dx);
+                    // Only draw where V > small value (blade starts a bit above ground)
+                    float baseStart = smoothstep(0.0, 0.06, plantV);
+                    inBlade *= baseStart;
+                    if (inBlade > bladeMask) {
+                        bladeMask = inBlade;
+                        hue = float3(-hues[bi]*0.5, hues[bi], -hues[bi]*0.3);
+                    }
+                }
+                alpha = bladeMask;
+                plantCol = clamp(grassBase + hue, 0.0, 1.0);
+                // Apply gentle lighting: mostly ambient (bright) with a little shade
+                float lightMix = mix(0.75, 1.0, in.shade);
+                plantCol *= lightMix;
+
+            } else if (mat == 36u || mat == 37u) {
+                // ---- FLOWER (red 36 / yellow 37) ----
+                float3 stemCol   = float3(0.22, 0.60, 0.14);
+                float3 bloomCol  = (mat == 36u) ? float3(0.92, 0.12, 0.12)
+                                                : float3(1.00, 0.90, 0.08);
+
+                // Stem: thin vertical strip in the middle, lower 60% of V
+                float stemMask = 0.0;
+                {
+                    float dx = abs(plantU - 0.50);
+                    float inStem = smoothstep(0.035, 0.018, dx);
+                    float stemRange = smoothstep(0.0, 0.04, plantV)
+                                    * smoothstep(0.62, 0.56, plantV);
+                    stemMask = inStem * stemRange;
+                }
+
+                // Bloom: cluster of petals at top (V > 0.55)
+                // 5 petals around the centre at radius 0.14, plus a centre disc
+                float bloomMask = 0.0;
+                {
+                    float bloomV = smoothstep(0.55, 0.60, plantV);
+                    // Centre disc
+                    float2 ctr = float2(plantU - 0.50, plantV - 0.78);
+                    float centreD = length(ctr);
+                    float centreMask = smoothstep(0.12, 0.06, centreD);
+                    // 5 petals
+                    float petalMask = 0.0;
+                    for (int pi = 0; pi < 5; ++pi) {
+                        float angle = float(pi) * (6.2831853 / 5.0);
+                        float2 pCtr = float2(cos(angle) * 0.14, sin(angle) * 0.10) + float2(0.50, 0.78);
+                        float pd = length(float2(plantU, plantV) - pCtr);
+                        petalMask = max(petalMask, smoothstep(0.10, 0.04, pd));
+                    }
+                    bloomMask = max(centreMask, petalMask) * bloomV;
+                }
+
+                alpha = max(stemMask, bloomMask);
+                plantCol = (bloomMask > stemMask) ? bloomCol : stemCol;
+                float lightMix = mix(0.70, 1.0, in.shade);
+                plantCol *= lightMix;
+
+            } else if (mat == 39u) {
+                // ---- MUSHROOM: short pale stem + domed red cap with speckles ----
+                float3 stemCol = float3(0.88, 0.84, 0.76);
+                float3 capCol  = float3(0.88, 0.14, 0.10);
+
+                // Stem: narrow, lower 40% of height
+                float stemMask = 0.0;
+                {
+                    float dx = abs(plantU - 0.50);
+                    float inStem = smoothstep(0.045, 0.022, dx);
+                    float stemRange = smoothstep(0.0, 0.04, plantV)
+                                    * smoothstep(0.42, 0.36, plantV);
+                    stemMask = inStem * stemRange;
+                }
+
+                // Cap: dome shape, upper 50% of height
+                float capMask = 0.0;
+                {
+                    // Dome: circular cross-section, centred at (0.5, 0.70)
+                    float2 ctr = float2(plantU - 0.50, plantV - 0.68);
+                    // Scale Y so the dome is wider than tall
+                    float2 scaled = float2(ctr.x * 1.0, ctr.y * 1.8);
+                    float d = length(scaled);
+                    capMask = smoothstep(0.34, 0.26, d)
+                            * smoothstep(0.38, 0.42, plantV);  // only upper half
+                    // White speckles on cap
+                    float speckN = step(0.80, noise2(float2(plantU, plantV) * 14.0));
+                    capMask = max(capMask, capMask * speckN * 0.0);   // mask stays same for alpha
+                }
+
+                alpha = max(stemMask, capMask);
+                if (capMask > stemMask) {
+                    // Speckle colouring on cap
+                    float speckN = step(0.80, noise2(float2(plantU, plantV) * 14.0));
+                    plantCol = mix(capCol, float3(0.95, 0.90, 0.85), speckN * 0.55);
+                } else {
+                    plantCol = stemCol;
+                }
+                float lightMix = mix(0.65, 0.95, in.shade);
+                plantCol *= lightMix;
+            }
+
+            // Alpha test: discard background quads
+            if (alpha < 0.5) discard_fragment();
+
+            // Dim desaturation (match normal block path)
+            float lumP = dot(plantCol, float3(0.299, 0.587, 0.114));
+            plantCol = mix(float3(lumP), plantCol, clamp(in.sat, 0.0, 1.0));
+            return float4(plantCol, 1.0);
+        }
+
         // ---- Standard block path ----
         float3 detail = blockDetail(in.worldPos, in.faceNorm, in.material);
 
@@ -1617,30 +1761,33 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Only applies the bump to the sun (directional) lighting term, not AO/shadow,
         // keeping the effect subtle and tasteful.
         // Skip on emissive and water (they have their own shading).
+        // FIX (#7): bumpStrength clamped so shade*bump never exceeds 1.0 on a
+        // normally-lit face. The old clamp(sunTilt, 0.78, 1.22) allowed the bump
+        // to push HDR output above 1.0, causing view-dependent bloom wash-out.
+        // New: sunTilt capped at 1.0 so the bump can only darken, never brighten.
         float bumpLight = 1.0;
         {
             const float eps = 0.06;   // finite-difference step in world units
             float2 uv0 = faceUV(in.worldPos, in.faceNorm);
-            // Sample height field = luminance of detail noise (cheap, already computed).
-            // We use a separate high-frequency noise to avoid re-running blockDetail.
             float h00 = noise2(uv0 * 7.5);
             float h10 = noise2((uv0 + float2(eps, 0.0)) * 7.5);
             float h01 = noise2((uv0 + float2(0.0, eps)) * 7.5);
             float dHdX = (h10 - h00) / eps;
             float dHdY = (h01 - h00) / eps;
-            // Build perturbed normal in tangent space: N_perturbed = normalize(-dH, -dH, 1)
-            // then map to world-space sun contribution.
-            // Sun direction (light-space; we have su.sunDirTime in VOut but not here directly).
-            // We just compute how "sun-facing" the perturbed normal is along the face's normal.
-            // Intensity of bump: scale to 0.08 max so it's a subtle emboss, not harsh.
-            float bumpStrength = 0.09;
-            float sunTilt = clamp(1.0 - (dHdX + dHdY) * bumpStrength, 0.78, 1.22);
-            // Only top / side faces get bump; bottom faces don't face the sun.
+            // bumpStrength reduced to 0.06 (was 0.09) so the perturbation stays subtle.
+            // sunTilt clamped to [0.82, 1.00] — bump can darken corners but never
+            // pushes lit surfaces above 1.0 HDR, preventing bloom wash-out.
+            float bumpStrength = 0.06;
+            float sunTilt = clamp(1.0 - (dHdX + dHdY) * bumpStrength, 0.82, 1.00);
             bumpLight = (in.faceNorm == 3u) ? 1.0 : sunTilt;
         }
 
         // Combined: shade * AO * shadow * bump * detail
+        // FIX (#7): clamp pre-bloom output to 1.0 for non-emissive blocks so
+        // ordinary sunlit terrain never crosses the bloom bright-pass threshold.
+        // Emissive blocks are still allowed to go overbright (they SHOULD bloom).
         float3 col = in.color * detail * (in.shade * bumpLight) * aoFactor * shadowFactor;
+        if (!isEmissive) col = clamp(col, 0.0, 1.0);
 
         // Emissive blocks bloom in HDR: push them above 1.0
         if (isEmissive) {
@@ -1662,12 +1809,15 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         // Underwater distance fog
+        // FIX (#4): Use a stable camera-to-fragment distance (worldPos minus the
+        // camera world position passed via wu.cameraPosW — this never spikes).
+        // Decay constant k = 0.046 gives ~50% scene colour at 15 blocks and
+        // ~30% at 20 blocks, matching "clear/translucent ~15-20 block visibility."
+        // Old value (0.12) left only 16% scene colour at 15 blocks — too opaque.
         if (wu.underwater > 0.5) {
             float dist = length(in.worldPos - UW_CAM_POS(wu));
-            // Gentle distance fog: water reads as translucent (you can see ~15-20
-            // blocks) with a blue-green tint, not an opaque wall of fog.
-            float fogFactor = clamp(exp(-0.12 * dist), 0.0, 1.0);
-            float3 waterFogColor = float3(0.10, 0.34, 0.46);
+            float fogFactor = clamp(exp(-0.046 * dist), 0.0, 1.0);
+            float3 waterFogColor = float3(0.08, 0.28, 0.40);
             col = mix(waterFogColor, col, fogFactor);
         }
 
@@ -1855,25 +2005,28 @@ final class Renderer: NSObject, MTKViewDelegate {
         return o;
     }
 
+    // FIX (#4): Underwater overlay is now a CONSISTENT light blue tint.
+    // Old version had large position-varying alpha (edgeMod up to 0.22, depthMod
+    // up to 0.18) which made underwater fog heavy and inconsistent depending on
+    // where you looked. New version uses a flat baseFog with only small caustic
+    // variation — the terrain distance fog (in fmain) handles depth-based
+    // occlusion, so this overlay only provides the constant blue tint + caustics.
     fragment float4 underwaterFmain(UWVOut in [[stage_in]],
                                     constant WaterUniforms& wu [[buffer(0)]]) {
         float uw = wu.underwater;
         if (uw < 0.01) { discard_fragment(); }
         float t = wu.wallClockSecs;
+        // Animated caustic light patterns — subtle, not heavy
         float2 cUV1 = in.uv * float2(3.0, 2.5) + float2(t * 0.08, t * 0.05);
         float2 cUV2 = in.uv * float2(2.2, 3.1) + float2(-t * 0.06, t * 0.09);
         float caustic = noise2(cUV1) * 0.6 + noise2(cUV2) * 0.4;
-        caustic = smoothstep(0.52, 0.78, caustic) * 0.18;
-        float edgeFog = 1.0 - 4.0 * (in.uv.x - 0.5) * (in.uv.x - 0.5)
-                             - 4.0 * (in.uv.y - 0.5) * (in.uv.y - 0.5);
-        edgeFog = clamp(edgeFog, 0.0, 1.0);
-        float depthFog = 1.0 - smoothstep(0.0, 0.7, in.uv.y);
-        float3 uwColor = float3(0.10, 0.34, 0.50);
-        float baseFog  = 0.20;                       // translucent tint, not an opaque overlay
-        float edgeMod  = (1.0 - edgeFog) * 0.22;
-        float depthMod = depthFog * 0.18;
-        float totalAlpha = clamp((baseFog + edgeMod + depthMod) * uw, 0.0, 0.46);
-        float3 col = uwColor + float3(caustic * 0.8, caustic * 1.0, caustic * 0.6);
+        caustic = smoothstep(0.55, 0.80, caustic) * 0.10;   // reduced from 0.18
+        float3 uwColor = float3(0.08, 0.28, 0.44);
+        // Flat, stable alpha: just a light tint (0.14) + small caustic variation.
+        // No position-dependent fog modifiers — those caused the inconsistency.
+        // Capped at 0.22 so it never becomes heavy/opaque.
+        float totalAlpha = clamp((0.14 + caustic * 0.5) * uw, 0.0, 0.22);
+        float3 col = uwColor + float3(caustic * 0.6, caustic * 0.8, caustic * 0.5);
         return float4(col, totalAlpha);
     }
 
@@ -1985,10 +2138,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         return inX * inY * (0.4 + colH * 0.6);  // varying brightness
     }
 
-    // Snow: returns 0..1 flake intensity. Flakes drift downward + slight side drift.
+    // Snow: returns 0..1 flake intensity. Flakes fall downward + gentle sideways drift.
+    // FIX (#8): Metal UV has V=0 at top, V=1 at bottom. To make flakes fall
+    // downward (increasing V over time) we SUBTRACT T from the Y cell offset so
+    // that as time advances the cell coordinate moves in the -Y direction, which
+    // means the flake pattern scrolls downward across the screen.
     static float snowFlake(float2 uv, float T, float cellScale) {
         float2 cell = float2(uv.x * cellScale + T * 0.08,   // gentle sideways drift
-                              uv.y * cellScale + T * 0.9);   // falling speed
+                              uv.y * cellScale - T * 0.9);   // fall DOWN (subtract T)
         float2 cellI = floor(cell);
         float2 cellF = fract(cell);
         // Per-flake hash

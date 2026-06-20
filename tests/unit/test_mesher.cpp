@@ -496,6 +496,88 @@ static void test_water_transparency() {
     CHECK(water_air_surface, "water: water emits surface face against air");
 }
 
+// ----------------------------------------------------------------------------
+// Test 9: cross-plant billboard geometry.
+//
+// A single tall_grass block (id=38) at (4,4,4) in an otherwise-air chunk.
+//
+// Expected: 4 quads (2 diagonals × 2 windings) = 16 verts, 48 indices.
+// No cube faces must appear for the plant itself.
+//
+// A solid block at (5,4,4) adjacent to the plant must still emit its -X face
+// (the face toward x=4 where the plant is).  The solid block with no other
+// neighbours emits 6 cube faces, so total quads = 6 (solid) + 4 (plant) = 10
+// quads, 60 indices, 40 vertices.
+//
+// AO: the plant must NOT occlude the AO of its solid neighbour.  The solid
+// block at (5,4,4) has its -X face pointing toward (4,4,4).  In the tangent
+// plane (Y,Z) one step at x=4, the only voxel is the plant itself — which
+// does not occlude.  So all 4 AO corners of the solid -X face must be 3.
+// ----------------------------------------------------------------------------
+static void test_cross_plant() {
+    bf::GreedyMesher gm;
+    FakeChunk chunk;
+    chunk.set(4, 4, 4, 38);  // tall_grass
+    chunk.set(5, 4, 4, 1);   // solid block adjacent in +X direction
+
+    FakeStore store;
+    store.target_coord = {0, 0, 0};
+    store.chunk        = &chunk;
+
+    auto r = do_mesh(gm, {0,0,0}, store);
+    CHECK(!r.empty, "plant: mesh not empty");
+
+    // 6 solid cube quads + 4 plant cross quads = 10 quads.
+    CHECK(r.index_count == 60, "plant: 60 indices (6 solid + 4 plant cross quads * 6 idx each)");
+    std::uint32_t nv = r.vertex_bytes / static_cast<std::uint32_t>(sizeof(bf::BFVertex));
+    CHECK(nv == 40, "plant: 40 vertices (10 quads * 4 verts)");
+
+    // Verify: plant cell emits cross geometry, not cube faces.
+    // Plant cross verts will have material_id == 38.
+    // Cube quads from plant itself (if wrongly emitted) would have mat==38 AND
+    // axis-aligned normals that form the 6 cube face directions.
+    // We check that material_id==38 vertices come in exactly 16 (4 quads × 4 verts).
+    auto* V = reinterpret_cast<const bf::BFVertex*>(g_vtx_buf.data());
+    int plant_verts = 0;
+    for (std::uint32_t i = 0; i < nv; ++i) {
+        if (V[i].material_id == 38) ++plant_verts;
+    }
+    CHECK(plant_verts == 16, "plant: exactly 16 verts with mat_id=38 (4 cross quads)");
+
+    // Verify: solid block still emits a face toward the plant.
+    // The -X face of solid(5,4,4) has face_d=5 (x=5), normal BF_NX_NEG(=1),
+    // corners at y∈{4,5}, z∈{4,5}.
+    auto vx = [](const bf::BFVertex& v){ return int(v.pos_packed & 0x3Fu); };
+    auto vy = [](const bf::BFVertex& v){ return int((v.pos_packed >> 6) & 0x3Fu); };
+    auto vz = [](const bf::BFVertex& v){ return int((v.pos_packed >> 12) & 0x3Fu); };
+    auto vn = [](const bf::BFVertex& v){ return v.normal_uv & 0x7u; };
+
+    constexpr std::uint32_t NX_NEG = 1u;
+    bool solid_minus_x = false;
+    for (std::uint32_t i = 0; i < nv; ++i) {
+        if (vn(V[i]) != NX_NEG) continue;
+        if (vx(V[i]) == 5 && vy(V[i]) >= 4 && vy(V[i]) <= 5 && vz(V[i]) >= 4 && vz(V[i]) <= 5) {
+            solid_minus_x = true; break;
+        }
+    }
+    CHECK(solid_minus_x, "plant: solid block emits -X face into plant neighbour");
+
+    // Verify: plant does not occlude AO of solid neighbour's -X face.
+    // All 4 corners of that -X face must have AO=3.
+    // The -X face of solid(5,4,4) has vertices at x=5, y∈{4,5}, z∈{4,5}.
+    // material_id for the solid block is 1.
+    bool neg_x_all_ao3 = true;
+    for (std::uint32_t i = 0; i < nv; ++i) {
+        const bf::BFVertex& v = V[i];
+        if (vn(v) != NX_NEG) continue;
+        if (v.material_id != 1) continue;
+        if (vx(v) == 5 && vy(v) >= 4 && vy(v) <= 5 && vz(v) >= 4 && vz(v) <= 5) {
+            if (vertex_ao(v) != 3) { neg_x_all_ao3 = false; break; }
+        }
+    }
+    CHECK(neg_x_all_ao3, "plant: plant does not occlude AO of adjacent solid block");
+}
+
 int main() {
     test_all_air();
     test_single_block();
@@ -505,6 +587,7 @@ int main() {
     test_bounds();
     test_ao_occluded_corners();
     test_water_transparency();
+    test_cross_plant();
 
     if (fails == 0) std::printf("OK: mesher tests\n");
     return fails == 0 ? 0 : 1;

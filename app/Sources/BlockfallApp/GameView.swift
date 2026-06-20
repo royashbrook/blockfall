@@ -67,6 +67,13 @@ final class GameView: MTKView {
         actionQueue.append(a)
     }
 
+    // Inventory move from the HUD (BF_ACT_INV_MOVE: from, to, count).
+    func enqueueMove(from: Int, to: Int, count: Int) {
+        var a = bf_action(); a.kind = BF_ACT_INV_MOVE
+        a.arg_i = Int32(from); a.arg_j = Int32(to); a.arg_k = Int32(count)
+        actionQueue.append(a)
+    }
+
     // ---- keyboard ----------------------------------------------------------
     override func keyDown(with e: NSEvent) {
         if e.keyCode == K.esc { if invOpen { toggleInventory() } else { onPause?() }; return }
