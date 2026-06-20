@@ -71,6 +71,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let registry: BufferRegistry
     private var pipeline: MTLRenderPipelineState!
     private var depthState: MTLDepthStencilState!
+    private var entityRenderer: EntityRenderer!
     private var engine: OpaquePointer?
     private var lastTime: CFTimeInterval = CACurrentMediaTime()
     private var frameCounter = 0
@@ -85,6 +86,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         super.init()
         view.depthStencilPixelFormat = .depth32Float
         buildPipeline(colorFormat: view.colorPixelFormat)
+        entityRenderer = EntityRenderer(device: device, colorFormat: view.colorPixelFormat)
         createEngine()
     }
 
@@ -196,6 +198,9 @@ final class Renderer: NSObject, MTKViewDelegate {
                                           indexType: .uint32, indexBuffer: ibuf,
                                           indexBufferOffset: Int(d.index_offset))
             }
+            // Creatures on top of the world (re-binds its own pipeline).
+            enc.setDepthStencilState(depthState)
+            entityRenderer.encode(enc, viewProj: viewProj, entities: frame.entities, count: Int(frame.entity_count))
             enc.endEncoding()
             cmd.present(drawable)
             cmd.commit()
@@ -336,6 +341,7 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
     }
     let dsd = MTLDepthStencilDescriptor(); dsd.depthCompareFunction = .less; dsd.isDepthWriteEnabled = true
     let depthState = device.makeDepthStencilState(descriptor: dsd)
+    let entR = EntityRenderer(device: device, colorFormat: .bgra8Unorm)
 
     // engine
     var cfg = bf_engine_config()
@@ -398,6 +404,8 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
                                       indexType: .uint32, indexBuffer: ib, indexBufferOffset: Int(d.index_offset))
             rendered = true
         }
+        enc.setDepthStencilState(depthState)
+        entR.encode(enc, viewProj: viewProj, entities: frame.entities, count: Int(frame.entity_count))
         enc.endEncoding(); cmd.commit(); cmd.waitUntilCompleted()
         bf_frame_end(e); registry.collect()
     }

@@ -58,6 +58,17 @@ int main() {
     CHECK(world.debug_item_count(planks) > planksBefore, "crafting produced planks");
     CHECK(world.debug_item_count(log) < 4, "crafting consumed a log");
 
-    if (fails == 0) std::printf("OK: M3 gameplay (survival drops + crafting)\n");
+    // --- creatures: spawn after streaming, calm one by aiming + attacking ---
+    bf::GreedyMesher m2; bf::TerrainGen g2; bf::World cw(m2, &g2);
+    cw.set_allocator(alloc); cw.set_content(&content); cw.init_world(5);
+    for (int i = 0; i < 40 && cw.debug_creature_count() == 0; ++i) cw.update(zero, 0.05);
+    CHECK(cw.debug_creature_count() == 8, "8 animals spawned after the area streamed in");
+    int before = cw.debug_creature_count();
+    CHECK(cw.debug_aim_at_creature0(), "aimed at an animal");
+    cw.update(zero, 0.016);
+    bf_action attack{}; attack.kind = BF_ACT_ATTACK; cw.action(attack);
+    CHECK(cw.debug_creature_count() == before - 1, "calming an aimed animal removes it (puff)");
+
+    if (fails == 0) std::printf("OK: M3 gameplay (drops + crafting + creatures)\n");
     return fails == 0 ? 0 : 1;
 }

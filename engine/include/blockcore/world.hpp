@@ -39,6 +39,27 @@ enum M1Block : BlockId {
     SAND = 6, GLOW = 7, BRICK = 8, WATER = 9
 };
 
+// Passive animals (M3). Original, bright, non-scary. (Content-driven creature
+// loading is a later refinement; M3 uses this small table.)
+struct CreatureType { V3 color; float speed; float scale; };
+inline const CreatureType& creature_type(unsigned k) {
+    static const CreatureType kinds[] = {
+        {{0.95f, 0.85f, 0.55f}, 1.6f, 0.8f},   // 0 fluffy meadow-hopper
+        {{0.70f, 0.85f, 0.95f}, 2.2f, 0.7f},   // 1 sky-tufted skipper
+        {{0.85f, 0.55f, 0.85f}, 1.3f, 0.9f},   // 2 mossy plodder
+        {{0.55f, 0.90f, 0.65f}, 1.9f, 0.75f},  // 3 leafback
+    };
+    return kinds[k % 4];
+}
+struct Creature {
+    V3    pos{};
+    float yaw{0};
+    float vy{0};       // vertical velocity (gravity)
+    unsigned kind{0};
+    float wander{0};
+    bool  friendly{false};
+};
+
 struct MeshRec {
     bf_gpu_buffer vbuf{};
     bf_gpu_buffer ibuf{};
@@ -127,6 +148,8 @@ public:
         yaw_ = 0.6f; pitch_ = -0.25f;
         restore_region(ChunkCoord{0, 0, 0});           // spawn region starts colorful
         recompute_stream_set();
+        creatures_.clear();
+        creatures_spawned_ = false;                     // spawn once the area streams in
     }
 
     // ---- M2: disk save/load ----------------------------------------------
@@ -233,6 +256,8 @@ public:
         }
         last_center_ = to_chunk(IVec3{ifloor(pos_.x), ifloor(pos_.y), ifloor(pos_.z)});
         first_stream_ = true;
+        creatures_.clear();
+        creatures_spawned_ = false;
         recompute_stream_set();
         return true;
     }
@@ -292,6 +317,14 @@ public:
                 mine_progress_ = 0.0f; raycast_target();
             }
         } else mine_progress_ = 0.0f;
+
+        // Spawn animals once the area around the player has streamed in (so the
+        // ground exists to place them on).
+        if (gen_ && !creatures_spawned_ && store_.resident_count() > 30) {
+            spawn_creatures();
+            creatures_spawned_ = true;
+        }
+        update_creatures(float(dt));
     }
 
     void action(const bf_action& a) {
@@ -307,12 +340,26 @@ public:
                 if (pb == 0) break;                    // not a placeable item
                 if (mode_ == BF_MODE_SURVIVAL && !inv_->remove_item(sel.item, 1)) break;
                 set_block_internal(place_, pb);
-                if (pb == glow_id_) restore_region(to_chunk(place_));  // light up the Dim
+                if (pb == glow_id_) {
+                    ChunkCoord rc = to_chunk(place_);
+                    if (region_sat(rc) < 0.99f) ++regions_restored_;   // brought a Dim region back
+                    restore_region(rc);
+                }
                 break;
             }
             case BF_ACT_CRAFT:      try_craft_available(); break;
             case BF_ACT_INV_OPEN:   inv_open_ = true;  break;
             case BF_ACT_INV_CLOSE:  inv_open_ = false; break;
+            case BF_ACT_ATTACK: {                  // calm -> puff away (no death)
+                int idx = creature_in_view();
+                if (idx >= 0) { creatures_.erase(creatures_.begin() + std::ptrdiff_t(idx)); ++creatures_calmed_; }
+                break;
+            }
+            case BF_ACT_INTERACT: {                // befriend
+                int idx = creature_in_view();
+                if (idx >= 0) { creatures_[std::size_t(idx)].friendly = true; ++creatures_befriended_; }
+                break;
+            }
             case BF_ACT_HOTBAR_SELECT:
                 if (a.arg_i >= 0 && a.arg_i < BF_HOTBAR_SLOTS) selected_ = std::uint8_t(a.arg_i);
                 break;
@@ -356,6 +403,24 @@ public:
         out.draws = draws.data();
         out.draw_count = std::uint32_t(draws.size());
         out.regions = nullptr; out.region_count = 0;
+
+        // Creatures (ABI v2 entity draws).
+        entities_.clear();
+        for (auto& cr : creatures_) {
+            const CreatureType& ct = creature_type(cr.kind);
+            V3 col = cr.friendly ? V3{1.0f, 0.92f, 0.55f} : ct.color;
+            bf_entity_draw e{};
+            e.position = bf_vec3{cr.pos.x, cr.pos.y, cr.pos.z};
+            e.yaw = cr.yaw;
+            e.color = bf_vec3{col.x, col.y, col.z};
+            e.scale = ct.scale;
+            e.kind = cr.kind;
+            e.sat = region_sat(to_chunk(IVec3{ifloor(cr.pos.x), ifloor(cr.pos.y), ifloor(cr.pos.z)}));
+            entities_.push_back(e);
+        }
+        out.entities = entities_.data();
+        out.entity_count = std::uint32_t(entities_.size());
+
         fill_hud(out.hud);
     }
 
@@ -376,6 +441,14 @@ public:
     void    debug_give(ItemId id, std::uint16_t n) { if (inv_) inv_->add(ItemStack{id, n, 0xFFFF}); }
     void    debug_clear_inventory() {
         if (inv_) for (int i = 0; i < BF_INVENTORY_SLOTS; ++i) inv_->set(std::size_t(i), ItemStack{});
+    }
+    int     debug_creature_count() const { return int(creatures_.size()); }
+    bool    debug_aim_at_creature0() {
+        if (creatures_.empty()) return false;
+        V3 d = normalize((creatures_[0].pos + V3{0, 0.5f, 0}) - pos_);
+        pitch_ = std::asin(std::clamp(d.y, -0.999f, 0.999f));
+        yaw_ = std::atan2(d.x, d.z);
+        return true;
     }
 
 private:
@@ -409,6 +482,83 @@ private:
                                r.grid_size))
                 return;   // crafted the first recipe the player can make
         }
+    }
+
+    // ---- creatures (Track G, M3) ------------------------------------------
+    float rand01() { rng_ = rng_ * 1664525u + 1013904223u; return float(rng_ >> 8) / 16777216.0f; }
+
+    static constexpr int kNoFloor = -1000000;
+    // Standable surface (top of the first solid block) scanning DOWN from yTop,
+    // or kNoFloor if none found (e.g. chunk not resident) — callers must NOT
+    // treat "no floor" as ground, or entities drift upward.
+    int floor_below(int x, int yTop, int z) const {
+        for (int y = yTop; y > yTop - 80; --y)
+            if (block_at(IVec3{x, y, z}) != AIR) return y + 1;
+        return kNoFloor;
+    }
+
+    void spawn_creatures() {
+        creatures_.clear();
+        for (int i = 0; i < 8; ++i) {
+            float ang = rand01() * 6.2831853f;
+            float r = 3.0f + rand01() * 7.0f;          // close enough to see + meet
+            float cx = pos_.x + std::cos(ang) * r;
+            float cz = pos_.z + std::sin(ang) * r;
+            // Chunks are resident now; find the surface near the player's level.
+            int gy = floor_below(ifloor(cx), int(pos_.y) + 30, ifloor(cz));
+            Creature c;
+            c.pos = V3{cx, (gy == kNoFloor) ? pos_.y : float(gy), cz};
+            c.kind = unsigned(rand01() * 4.0f);
+            c.yaw = rand01() * 6.2831853f;
+            c.wander = 1.0f + rand01() * 2.0f;
+            creatures_.push_back(c);
+        }
+    }
+
+    void update_creatures(float dt) {
+        for (auto& c : creatures_) {
+            c.wander -= dt;
+            V3 toPlayer = pos_ - c.pos;
+            if (c.friendly) {
+                // follow the player when not too close
+                float d = std::sqrt(dot(toPlayer, toPlayer));
+                if (d > 2.5f) c.yaw = std::atan2(toPlayer.x, toPlayer.z);
+            } else if (c.wander <= 0.0f) {
+                c.yaw = rand01() * 6.2831853f;
+                c.wander = 1.5f + rand01() * 2.5f;
+            }
+            V3 dir{std::sin(c.yaw), 0, std::cos(c.yaw)};
+            float spd = creature_type(c.kind).speed;
+            V3 next = c.pos + dir * (spd * dt);
+            // turn away from walls
+            if (block_at(IVec3{ifloor(next.x), ifloor(next.y), ifloor(next.z)}) != AIR) {
+                c.yaw += 2.4f; c.wander = 0.5f;
+            } else {
+                c.pos.x = next.x; c.pos.z = next.z;
+            }
+            // gravity, then land on the floor below (never pushed upward).
+            c.vy -= 24.0f * dt;
+            c.pos.y += c.vy * dt;
+            int fy = floor_below(ifloor(c.pos.x), int(std::floor(c.pos.y)) + 1, ifloor(c.pos.z));
+            if (fy != kNoFloor && c.pos.y <= float(fy)) { c.pos.y = float(fy); c.vy = 0.0f; }
+            else if (fy == kNoFloor) c.vy = 0.0f;   // no ground yet (streaming) -> hover
+        }
+    }
+
+    // The creature most in line with the camera within reach (or -1).
+    int creature_in_view() {
+        V3 o = pos_, d = forward_dir();
+        int best = -1; float bestT = 5.0f;
+        for (std::size_t i = 0; i < creatures_.size(); ++i) {
+            V3 cc = creatures_[i].pos + V3{0, 0.5f, 0};
+            V3 rel = cc - o;
+            float t = dot(rel, d);
+            if (t < 0 || t > bestT) continue;
+            V3 closest = o + d * t;
+            V3 off = cc - closest;
+            if (dot(off, off) < 0.7f) { bestT = t; best = int(i); }
+        }
+        return best;
     }
 
     BlockId block_at(IVec3 w) const {
@@ -581,8 +731,15 @@ private:
         }
         h.active_quest_id = 1;
         std::strncpy(h.quest_title, "Bring back the color", sizeof(h.quest_title) - 1);
-        std::strncpy(h.quest_objective, "Place a glow block in the grey Dim", sizeof(h.quest_objective) - 1);
-        h.quest_progress = 0.0f;
+        if (regions_restored_ > 0) {
+            std::strncpy(h.quest_objective, "Done! The Dim is fading. Befriend an animal!",
+                         sizeof(h.quest_objective) - 1);
+            h.quest_progress = (creatures_befriended_ > 0) ? 1.0f : 0.6f;
+        } else {
+            std::strncpy(h.quest_objective, "Place a glow block in the grey Dim",
+                         sizeof(h.quest_objective) - 1);
+            h.quest_progress = 0.0f;
+        }
         h.has_target = has_target_ ? 1 : 0;
         h.target_block = bf_ivec3{target_.x, target_.y, target_.z};
         h.mine_progress = mine_progress_;
@@ -626,6 +783,15 @@ private:
     std::optional<CraftingSystem> craft_;
     BlockId                       glow_id_{GLOW};
     bool                          inv_open_{false};
+
+    // Creatures + quest state (M3).
+    std::vector<Creature>         creatures_;
+    std::vector<bf_entity_draw>   entities_;
+    bool                          creatures_spawned_{false};
+    std::uint32_t                 rng_{0x1234567u};
+    int                           regions_restored_{0};
+    int                           creatures_befriended_{0};
+    int                           creatures_calmed_{0};
     float         mine_progress_{0.0f};
     bool          has_target_{false};
     IVec3         target_{}, place_{};

@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 1u
+#define BF_ABI_VERSION 2u   /* v2: entity render data (ADR 0005) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -211,6 +211,17 @@ typedef struct bf_region_dim {
     float    fog_density;     /* 0..1 cheap distance/Dim fog                  */
 } bf_region_dim;
 
+/* One creature/entity to draw (ABI v2, ADR 0005). Engine-owned, borrowed. */
+typedef struct bf_entity_draw {
+    bf_vec3  position;
+    float    yaw;
+    bf_vec3  color;       /* base tint                                       */
+    float    scale;       /* model scale (world units)                       */
+    uint32_t kind;        /* archetype id (renderer may vary the model)      */
+    float    sat;         /* per-region Dim saturation at the entity         */
+    uint32_t _pad;
+} bf_entity_draw;
+
 typedef struct bf_camera {
     bf_mat4 view;
     bf_mat4 proj;
@@ -260,6 +271,8 @@ typedef struct bf_render_frame {
     uint32_t              draw_count;
     const bf_region_dim*  regions;       /* engine-owned array               */
     uint32_t              region_count;
+    const bf_entity_draw* entities;      /* engine-owned array (ABI v2)       */
+    uint32_t              entity_count;
     bf_hud_state          hud;           /* value copy, always valid         */
 } bf_render_frame;
 
