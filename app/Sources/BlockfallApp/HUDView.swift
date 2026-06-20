@@ -8,6 +8,75 @@
 import AppKit
 import CBlockcore
 
+// Item id -> (display name, chip colour). Mirrors content/items so the HUD can
+// label and colour items without an ABI change. Keep in sync with content.
+private struct ItemInfo { let name: String; let color: NSColor }
+private func itemColor(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor {
+    NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
+}
+private let kItemTable: [UInt16: ItemInfo] = [
+    1:  .init(name: "Dirt",          color: itemColor(0.55, 0.40, 0.26)),
+    2:  .init(name: "Grass Block",   color: itemColor(0.40, 0.68, 0.32)),
+    3:  .init(name: "Stone",         color: itemColor(0.55, 0.55, 0.57)),
+    4:  .init(name: "Cobblestone",   color: itemColor(0.48, 0.48, 0.50)),
+    5:  .init(name: "Sand",          color: itemColor(0.85, 0.78, 0.55)),
+    6:  .init(name: "Gravel",        color: itemColor(0.52, 0.50, 0.48)),
+    7:  .init(name: "Snow",          color: itemColor(0.92, 0.95, 0.98)),
+    8:  .init(name: "Ice",           color: itemColor(0.68, 0.82, 0.95)),
+    9:  .init(name: "Clay",          color: itemColor(0.62, 0.64, 0.68)),
+    10: .init(name: "Dim Stone",     color: itemColor(0.30, 0.30, 0.36)),
+    11: .init(name: "Dim Dirt",      color: itemColor(0.30, 0.26, 0.24)),
+    12: .init(name: "Oak Log",       color: itemColor(0.52, 0.37, 0.20)),
+    13: .init(name: "Oak Planks",    color: itemColor(0.74, 0.57, 0.34)),
+    14: .init(name: "Birch Log",     color: itemColor(0.80, 0.74, 0.58)),
+    15: .init(name: "Birch Planks",  color: itemColor(0.85, 0.78, 0.62)),
+    16: .init(name: "Stone Brick",   color: itemColor(0.55, 0.55, 0.57)),
+    17: .init(name: "Clay Brick",    color: itemColor(0.78, 0.45, 0.34)),
+    18: .init(name: "Glass Pane",    color: itemColor(0.74, 0.86, 0.92)),
+    19: .init(name: "Colored Glass", color: itemColor(0.40, 0.72, 0.85)),
+    20: .init(name: "Wool",          color: itemColor(0.92, 0.92, 0.92)),
+    21: .init(name: "Mossy Stone",   color: itemColor(0.42, 0.52, 0.36)),
+    22: .init(name: "Crafting Table",color: itemColor(0.60, 0.42, 0.24)),
+    23: .init(name: "Chest",         color: itemColor(0.62, 0.45, 0.24)),
+    24: .init(name: "Torch",         color: itemColor(0.95, 0.72, 0.30)),
+    25: .init(name: "Oak Door",      color: itemColor(0.56, 0.40, 0.22)),
+    26: .init(name: "Beacon",        color: itemColor(0.40, 0.85, 0.90)),
+    27: .init(name: "Glow Block",    color: itemColor(1.00, 0.90, 0.45)),
+    28: .init(name: "Crystal Lamp",  color: itemColor(0.85, 0.55, 0.95)),
+    29: .init(name: "Red Flower",    color: itemColor(0.88, 0.25, 0.25)),
+    30: .init(name: "Yellow Flower", color: itemColor(0.95, 0.85, 0.25)),
+    31: .init(name: "Color Crystal", color: itemColor(0.80, 0.45, 0.95)),
+    50: .init(name: "Stick",         color: itemColor(0.60, 0.44, 0.26)),
+    51: .init(name: "Coal",          color: itemColor(0.18, 0.18, 0.20)),
+    52: .init(name: "Raw Copper",    color: itemColor(0.80, 0.50, 0.32)),
+    53: .init(name: "Raw Iron",      color: itemColor(0.78, 0.70, 0.62)),
+    54: .init(name: "Raw Crystal",   color: itemColor(0.55, 0.80, 0.90)),
+    55: .init(name: "Copper Ingot",  color: itemColor(0.85, 0.55, 0.38)),
+    56: .init(name: "Iron Ingot",    color: itemColor(0.82, 0.82, 0.85)),
+    57: .init(name: "Crystal Shard", color: itemColor(0.60, 0.85, 0.95)),
+    58: .init(name: "Clay Lump",     color: itemColor(0.62, 0.64, 0.68)),
+    59: .init(name: "String",        color: itemColor(0.92, 0.92, 0.88)),
+    60: .init(name: "Feather",       color: itemColor(0.95, 0.95, 0.95)),
+    61: .init(name: "Color Dust",    color: itemColor(0.80, 0.45, 0.95)),
+    62: .init(name: "Glow Dust",     color: itemColor(1.00, 0.92, 0.50)),
+    63: .init(name: "Blank Book",    color: itemColor(0.80, 0.72, 0.55)),
+    70: .init(name: "Wood Pickaxe",  color: itemColor(0.60, 0.44, 0.26)),
+    71: .init(name: "Wood Axe",      color: itemColor(0.60, 0.44, 0.26)),
+    72: .init(name: "Wood Shovel",   color: itemColor(0.60, 0.44, 0.26)),
+    73: .init(name: "Stone Pickaxe", color: itemColor(0.55, 0.55, 0.57)),
+    74: .init(name: "Stone Axe",     color: itemColor(0.55, 0.55, 0.57)),
+    75: .init(name: "Stone Shovel",  color: itemColor(0.55, 0.55, 0.57)),
+    76: .init(name: "Iron Pickaxe",  color: itemColor(0.82, 0.82, 0.85)),
+    77: .init(name: "Iron Axe",      color: itemColor(0.82, 0.82, 0.85)),
+    78: .init(name: "Iron Shovel",   color: itemColor(0.82, 0.82, 0.85)),
+    90: .init(name: "Berries",       color: itemColor(0.80, 0.20, 0.35)),
+    91: .init(name: "Mushroom Stew", color: itemColor(0.70, 0.50, 0.34)),
+    92: .init(name: "Honey Cake",    color: itemColor(0.92, 0.70, 0.28)),
+    93: .init(name: "Mushroom",      color: itemColor(0.78, 0.36, 0.32)),
+]
+private func itemName(_ id: UInt16) -> String { kItemTable[id]?.name ?? "Item \(id)" }
+private func itemChipColor(_ id: UInt16) -> NSColor { kItemTable[id]?.color ?? NSColor(hue: CGFloat(id % 12)/12, saturation: 0.6, brightness: 0.9, alpha: 1) }
+
 final class HUDView: NSView {
     private var hud = bf_hud_state()
     private var crosshair = true
@@ -63,9 +132,24 @@ final class HUDView: NSView {
             }
         }
 
+        // --- Held item name (above the hotbar, centered) ---
+        let heldName: String = withUnsafeBytes(of: hud.hotbar) { raw in
+            let slots = raw.bindMemory(to: bf_hud_slot.self)
+            let s = slots[Int(hud.selected_slot)]
+            return s.item != 0 ? itemName(s.item) : ""
+        }
+        if !heldName.isEmpty {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: 15), .foregroundColor: NSColor.white,
+                .strokeColor: NSColor.black, .strokeWidth: -3.0,
+            ]
+            let sz = (heldName as NSString).size(withAttributes: attrs)
+            (heldName as NSString).draw(at: NSPoint(x: b.midX - sz.width / 2, y: y + slot + 8), withAttributes: attrs)
+        }
+
         // --- Health hearts (survival) ---
         if hud.mode == BF_MODE_SURVIVAL {
-            drawHearts(value: hud.health, max: 20, at: NSPoint(x: b.midX - total / 2, y: y + slot + 10))
+            drawHearts(value: hud.health, max: 20, at: NSPoint(x: b.midX - total / 2, y: y + slot + 34))
         }
 
         // --- Active quest (top-left) ---
@@ -154,7 +238,10 @@ final class HUDView: NSView {
                 NSColor.black.withAlphaComponent(0.5).setFill()
                 let rr = NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5); rr.fill()
                 NSColor.systemYellow.withAlphaComponent(0.7).setStroke(); rr.lineWidth = 1.5; rr.stroke()
-                if cr[i].item != 0 { drawCenteredItem(id: cr[i].item, count: cr[i].count, in: rect, selected: false) }
+                if cr[i].item != 0 {
+                    drawCenteredItem(id: cr[i].item, count: cr[i].count, in: rect, selected: false)
+                    drawText(itemName(cr[i].item), at: NSPoint(x: cx - 6, y: cy - 16), size: 10, color: .white, bold: false)
+                }
                 drawText("\(i+1)", at: NSPoint(x: cx + 3, y: cy + slot - 16), size: 12, color: .systemYellow, bold: true)
                 cx += slot + gap
             }
@@ -164,14 +251,16 @@ final class HUDView: NSView {
     }
 
     private func drawCenteredItem(id: bf_item_id, count: UInt16, in rect: NSRect, selected: Bool) {
-        // No icons yet (Track E/assets) — show a colored chip + count as a stand-in.
-        let hue = CGFloat(id % 12) / 12.0
-        NSColor(hue: hue, saturation: 0.6, brightness: 0.9, alpha: 1).setFill()
-        let chip = rect.insetBy(dx: 10, dy: 10)
-        NSBezierPath(roundedRect: chip, xRadius: 4, yRadius: 4).fill()
+        // No icon art yet — a colour-coded chip (matching the block's colour) +
+        // count. The held-item name is shown above the hotbar.
+        itemChipColor(id).setFill()
+        let chip = rect.insetBy(dx: 9, dy: 9)
+        let rr = NSBezierPath(roundedRect: chip, xRadius: 4, yRadius: 4)
+        rr.fill()
+        NSColor.black.withAlphaComponent(0.35).setStroke(); rr.lineWidth = 1; rr.stroke()
         if count > 1 {
             drawText("\(count)", at: NSPoint(x: rect.maxX - 18, y: rect.minY + 3),
-                     size: 12, color: selected ? .black : .white, bold: true)
+                     size: 12, color: .white, bold: true)
         }
     }
 

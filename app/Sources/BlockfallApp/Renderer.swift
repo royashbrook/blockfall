@@ -1664,8 +1664,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Underwater distance fog
         if (wu.underwater > 0.5) {
             float dist = length(in.worldPos - UW_CAM_POS(wu));
-            float fogFactor = clamp(exp(-0.50 * dist), 0.0, 1.0);
-            float3 waterFogColor = float3(0.04, 0.22, 0.38);
+            // Gentle distance fog: water reads as translucent (you can see ~15-20
+            // blocks) with a blue-green tint, not an opaque wall of fog.
+            float fogFactor = clamp(exp(-0.12 * dist), 0.0, 1.0);
+            float3 waterFogColor = float3(0.10, 0.34, 0.46);
             col = mix(waterFogColor, col, fogFactor);
         }
 
@@ -1866,11 +1868,11 @@ final class Renderer: NSObject, MTKViewDelegate {
                              - 4.0 * (in.uv.y - 0.5) * (in.uv.y - 0.5);
         edgeFog = clamp(edgeFog, 0.0, 1.0);
         float depthFog = 1.0 - smoothstep(0.0, 0.7, in.uv.y);
-        float3 uwColor = float3(0.06, 0.28, 0.45);
-        float baseFog  = 0.40;
-        float edgeMod  = (1.0 - edgeFog) * 0.30;
-        float depthMod = depthFog * 0.28;
-        float totalAlpha = clamp((baseFog + edgeMod + depthMod) * uw, 0.0, 0.78);
+        float3 uwColor = float3(0.10, 0.34, 0.50);
+        float baseFog  = 0.20;                       // translucent tint, not an opaque overlay
+        float edgeMod  = (1.0 - edgeFog) * 0.22;
+        float depthMod = depthFog * 0.18;
+        float totalAlpha = clamp((baseFog + edgeMod + depthMod) * uw, 0.0, 0.46);
         float3 col = uwColor + float3(caustic * 0.8, caustic * 1.0, caustic * 0.6);
         return float4(col, totalAlpha);
     }

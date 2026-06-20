@@ -395,8 +395,10 @@ public:
             bob_phase_ += float(dt) * 9.5f;
             bob_amt_ = std::min(bob_amt_ + float(dt) * 5.0f, 1.0f);
             step_timer_ -= float(dt);
-            if (step_timer_ <= 0.0f) { step_timer_ = 0.34f; fx(2, player_voxel()); }   // footstep
-        } else { bob_amt_ = std::max(bob_amt_ - float(dt) * 7.0f, 0.0f); step_timer_ = 0.0f; }
+            if (step_timer_ <= 0.0f) { step_timer_ = 0.45f; fx(2, player_voxel()); }   // footstep
+        } else { bob_amt_ = std::max(bob_amt_ - float(dt) * 7.0f, 0.0f); }
+        // (Don't reset step_timer_ when momentarily not walking — that caused the
+        // footstep to re-trigger instantly and sound jittery on bumpy ground.)
 
         maintain_creatures(float(dt));   // spawn near the player, despawn far away
         update_creatures(float(dt));
@@ -889,7 +891,7 @@ private:
     void fell_tree(IVec3 base) {
         std::vector<IVec3> logs, stack{base};
         std::set<std::tuple<int,int,int>> seen{{base.x, base.y, base.z}};
-        while (!stack.empty() && logs.size() < 20) {       // cap work to avoid a lag spike
+        while (!stack.empty() && logs.size() < 12) {       // cap work to avoid a lag spike
             IVec3 w = stack.back(); stack.pop_back();
             logs.push_back(w);
             for (int dx = -1; dx <= 1; ++dx)
@@ -911,17 +913,19 @@ private:
         }
         // Attached leaves are removed; emit only a FEW particle bursts (capped)
         // so a big canopy doesn't spawn hundreds of debris at once (lag spike).
-        int leaf_bursts = 0;
-        for (IVec3 lw : logs)
+        int leaf_bursts = 0, leaves_removed = 0;
+        for (IVec3 lw : logs) {
+            if (leaves_removed >= 40) break;             // cap blocks changed → smaller remesh
             for (int dx = -2; dx <= 2; ++dx)
             for (int dy = -1; dy <= 2; ++dy)
             for (int dz = -2; dz <= 2; ++dz) {
                 IVec3 n{lw.x + dx, lw.y + dy, lw.z + dz};
                 BlockId lf = block_at(n);
                 if (!is_leaf(lf)) continue;
-                set_block_internal(n, AIR);
-                if (leaf_bursts < 10) { fx(0, n, (int(lf) << 4) | 6); ++leaf_bursts; }
+                set_block_internal(n, AIR); ++leaves_removed;
+                if (leaf_bursts < 6) { fx(0, n, (int(lf) << 4) | 6); ++leaf_bursts; }
             }
+        }
         fx(2, base);                                     // "timber" thud
     }
     void update_falling(float dt) {

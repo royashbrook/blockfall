@@ -84,9 +84,18 @@ final class GameView: MTKView {
         let nums: [UInt16: Int32] = [18:0, 19:1, 20:2, 21:3, 23:4, 22:5, 26:6, 28:7, 25:8]
         if let slot = nums[e.keyCode] {
             if invOpen { if slot < 8 { queue(BF_ACT_CRAFT, slot) } }
-            else { queue(BF_ACT_HOTBAR_SELECT, slot) }
+            else { hotbarSel = slot; queue(BF_ACT_HOTBAR_SELECT, slot) }
         }
         pressed.insert(e.keyCode)
+    }
+
+    // Mouse wheel cycles the selected hotbar slot (Minecraft-style).
+    private var hotbarSel: Int32 = 0
+    override func scrollWheel(with e: NSEvent) {
+        guard captured && !invOpen && !gamePaused else { return }
+        let dir: Int32 = e.scrollingDeltaY > 0 ? -1 : 1
+        hotbarSel = (hotbarSel + dir + 9) % 9
+        queue(BF_ACT_HOTBAR_SELECT, hotbarSel)
     }
 
     private var invOpen = false
@@ -109,17 +118,24 @@ final class GameView: MTKView {
     override func mouseDragged(with e: NSEvent) { if captured { lookDX += Float(e.deltaX); lookDY += Float(e.deltaY) } }
     override func rightMouseDragged(with e: NSEvent) { if captured { lookDX += Float(e.deltaX); lookDY += Float(e.deltaY) } }
 
+    private var cursorHidden = false   // keep hide/unhide balanced so the cursor never gets stuck
     private func capturePointer() {
         captured = true
         CGAssociateMouseAndMouseCursorPosition(0)
-        NSCursor.hide()
+        if !cursorHidden { NSCursor.hide(); cursorHidden = true }
         window?.acceptsMouseMovedEvents = true
         window?.makeFirstResponder(self)
     }
     private func releasePointer() {
         captured = false
         CGAssociateMouseAndMouseCursorPosition(1)
-        NSCursor.unhide()
+        if cursorHidden { NSCursor.unhide(); cursorHidden = false }
+        // Warp the cursor to the window centre so it's visible and on the overlay.
+        if let w = window, let scr = w.screen {
+            let p = CGPoint(x: w.frame.midX, y: scr.frame.maxY - w.frame.midY)
+            CGWarpMouseCursorPosition(p)
+            CGAssociateMouseAndMouseCursorPosition(1)
+        }
     }
     var isCaptured: Bool { captured }
 }
