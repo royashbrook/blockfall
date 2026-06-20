@@ -237,7 +237,8 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
                 enc.setRenderPipelineState(cp); enc.setDepthStencilState(noDepthState); enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor, index: 0)
                 enc.setFragmentTexture(bloomBrt, index: 1)
-                var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.30, pad: 0)
+                var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.30,
+                                      rainStrength: 0, wallClockSecs: 0)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 enc.endEncoding()

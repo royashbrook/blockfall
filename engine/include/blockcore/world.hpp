@@ -57,6 +57,7 @@ struct Creature {
     bool  friendly{false};
     bool  hostile{false};   // night monster: chases + hurts the player (kind 5)
     float atk_cd{0};        // cooldown between hits on the player
+    float hit_flash{0};     // brief white flash when the player hits it
     float wander{0};
     int   shape{0};         // renderer model variant (0..3 animals)
     std::string name;       // content creature name (quest befriend target)
@@ -503,6 +504,10 @@ public:
         entities_.clear();
         for (auto& cr : creatures_) {
             V3 col = cr.friendly ? V3{1.0f, 0.92f, 0.55f} : cr.color;
+            if (cr.hit_flash > 0.0f) {                    // flash white toward the camera on a hit
+                float f = std::min(1.0f, cr.hit_flash / 0.22f) * 0.85f;
+                col = V3{col.x + (1.0f - col.x) * f, col.y + (1.0f - col.y) * f, col.z + (1.0f - col.z) * f};
+            }
             bf_entity_draw e{};
             e.position = bf_vec3{cr.pos.x, cr.pos.y, cr.pos.z};
             e.yaw = cr.yaw;
@@ -752,7 +757,7 @@ private:
             c.color = color_for(boss ? "boss" : "passive", std::uint16_t(creatures_.size() + 1));
             c.speed = boss ? 1.2f : 1.6f; c.name = boss ? "guardian" : "critter";
         }
-        c.scale = boss ? 2.0f : 0.8f; c.hp = boss ? 4 : 1;
+        c.scale = boss ? 2.0f : 0.8f; c.hp = boss ? 10 : 5;   // multiple hits to defeat
         creatures_.push_back(c);
         return true;
     }
@@ -765,7 +770,7 @@ private:
         if (gy == kNoFloor) return false;
         Creature c;
         c.pos = V3{cx, float(gy), cz}; c.yaw = rand01() * 6.2831853f;
-        c.hostile = true; c.speed = 2.6f; c.hp = 4; c.scale = 1.0f;
+        c.hostile = true; c.speed = 2.6f; c.hp = 6; c.scale = 1.0f;
         c.color = V3{0.12f, 0.10f, 0.16f}; c.name = "monster";
         creatures_.push_back(c);
         return true;
@@ -775,7 +780,13 @@ private:
     void attack_creature(int idx) {
         Creature& cr = creatures_[std::size_t(idx)];
         IVec3 cv{ifloor(cr.pos.x), ifloor(cr.pos.y), ifloor(cr.pos.z)};
-        cr.hp -= 3;
+        cr.hp -= 2;
+        cr.hit_flash = 0.22f;                            // visible white flash
+        // Knockback away from the player so hits read as impacts.
+        float ax = cr.pos.x - pos_.x, az = cr.pos.z - pos_.z;
+        float ad = std::sqrt(ax*ax + az*az);
+        if (ad > 0.01f) { cr.pos.x += ax/ad * 1.3f; cr.pos.z += az/ad * 1.3f; }
+        cr.vy = 3.0f;                                    // little hop on hit
         fx(8, cv);                                       // hit thwack
         if (cr.hp <= 0) {
             bool boss = cr.is_boss, hostile = cr.hostile; std::string nm = cr.name;
@@ -878,7 +889,7 @@ private:
     void fell_tree(IVec3 base) {
         std::vector<IVec3> logs, stack{base};
         std::set<std::tuple<int,int,int>> seen{{base.x, base.y, base.z}};
-        while (!stack.empty() && logs.size() < 48) {
+        while (!stack.empty() && logs.size() < 20) {       // cap work to avoid a lag spike
             IVec3 w = stack.back(); stack.pop_back();
             logs.push_back(w);
             for (int dx = -1; dx <= 1; ++dx)
@@ -898,13 +909,18 @@ private:
             V3 vel{(rand01() - 0.5f) * 2.0f, 1.5f + h * 0.4f, (rand01() - 0.5f) * 2.0f};
             spawn_falling(w, b, /*as_item=*/true, vel);
         }
-        // Attached leaves shatter into particles.
+        // Attached leaves are removed; emit only a FEW particle bursts (capped)
+        // so a big canopy doesn't spawn hundreds of debris at once (lag spike).
+        int leaf_bursts = 0;
         for (IVec3 lw : logs)
             for (int dx = -2; dx <= 2; ++dx)
             for (int dy = -1; dy <= 2; ++dy)
             for (int dz = -2; dz <= 2; ++dz) {
                 IVec3 n{lw.x + dx, lw.y + dy, lw.z + dz};
-                if (is_leaf(block_at(n))) { BlockId lf = block_at(n); set_block_internal(n, AIR); fx(0, n, (int(lf) << 4) | 6); }
+                BlockId lf = block_at(n);
+                if (!is_leaf(lf)) continue;
+                set_block_internal(n, AIR);
+                if (leaf_bursts < 10) { fx(0, n, (int(lf) << 4) | 6); ++leaf_bursts; }
             }
         fx(2, base);                                     // "timber" thud
     }
@@ -944,7 +960,7 @@ private:
                 return (dx*dx + dz*dz) > kDespawn2;
             }), creatures_.end());
         float t = day_time(world_clock_);
-        bool night = (t < 0.20f || t > 0.80f);
+        bool night = (t < 0.20f || t > 0.80f) && mode_ == BF_MODE_SURVIVAL;  // monsters only menace in Survival
         // At daybreak the monsters flee the light.
         if (!night)
             creatures_.erase(std::remove_if(creatures_.begin(), creatures_.end(),
@@ -966,8 +982,10 @@ private:
     void update_creatures(float dt) {
         for (auto& c : creatures_) {
             c.wander -= dt;
+            if (c.hit_flash > 0) c.hit_flash -= dt;
             V3 toPlayer = pos_ - c.pos;
-            if (c.hostile) {
+            // In Creative the monsters leave you alone (no chase, no damage).
+            if (c.hostile && mode_ == BF_MODE_SURVIVAL) {
                 // Night monster: relentlessly chases the player and bites on contact.
                 float d = std::sqrt(dot(toPlayer, toPlayer));
                 if (d > 0.01f) c.yaw = std::atan2(toPlayer.x, toPlayer.z);

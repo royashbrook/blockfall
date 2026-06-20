@@ -41,19 +41,50 @@
 //   freq    — primary noise frequency (higher = more jagged/detailed)
 //   octaves — fBm octave count (mountains get more detail)
 //
+// Regional elevation swell (M5 addition)
+// ----------------------------------------
+// A very low-frequency (1/320) 2D noise term (2 octaves, amplitude ~4 blocks)
+// is added to all biome heights before blending.  This makes even plains "roll"
+// gently at large scale — different parts of the plains plateau sit at slightly
+// different elevations — while keeping within-chunk variation small enough that
+// the flatness test still passes (the swell is nearly constant over 16 blocks).
+//
 // Cave carving: 3D fbm > threshold => AIR underground.
 //   FIX: cave carving requires wy < H - 6 (was H-2) to prevent surface holes.
+//
+// Tree variety (M5 addition)
+// ---------------------------
+// Trees now vary in: trunk height (4..8), canopy shape (round/tall/broad),
+// and wood type (oak/birch).  Shape is encoded as a 2-bit value derived
+// deterministically from the cell hash.  Per-biome rules:
+//   Forest:    tall or broad shapes, trunk 6..8, denser
+//   Plains:    round, short trunk 4..5, sparse
+//   Snowy:     tall thin (shape=tall), trunk 5..7
+//   Swamp:     round, short 4..5
+//   Mountains: round or tall, 5..7
+// All canopy writing is seam-safe: trees hash on trunk world position and
+// write into any chunk their canopy overlaps.
+//
+// Undergrowth (M5 addition)
+// --------------------------
+// The plants pass now places:
+//   - BUSH blocks (OAK_LEAVES id=5 or BIRCH_LEAVES id=27) at ground level —
+//     single-block shrubs and 1-block-high leaf tufts that read visually as
+//     low bushes.  Density is biome-specific: lush in forest/plains/swamp,
+//     absent in desert/snowy/beach.
+//   - Increased TALL_GRASS and FLOWER density in forest/plains/swamp.
+//   - MUSHROOM scatter under forest canopy and in swamp.
 //
 // Decoration (seam-aware scatter, PRESERVED from previous agent)
 // -----------------------------------------------------------------
 // Trees are placed on a world-aligned 8x8 tree-cell grid.  The cell hash
-// determines: presence, root (wx,wz) offset, trunk height (4..6), type
-// (oak/birch).  Canopy = 5x5x3 blob with rounded corners.  Each biome has
-// its own tree-density threshold.  A tree is only spawned if its biome weight
-// for the designated tree-bearing biomes exceeds a threshold.
+// determines: presence, root (wx,wz) offset, trunk height (4..8), shape,
+// type (oak/birch).  Each biome has its own tree-density threshold.
+// A tree is only spawned if its biome weight for the designated tree-bearing
+// biomes exceeds a threshold.
 //
-// Plants (tall grass, flowers, mushrooms) are single-block decorations placed
-// directly on each column's surface — no cross-chunk margin needed.
+// Plants (tall grass, flowers, mushrooms, bushes) are single-block decorations
+// placed directly on each column's surface — no cross-chunk margin needed.
 //
 // Biome-distinct surface features:
 //   Mountains: stone/cobblestone on steep slopes (slope computed from the
@@ -303,14 +334,18 @@ struct BiomeCentre {
 // Use base_y=18, amp=38 => 56, so 0.6*56+0.4*8 = 33.6+3.2 = 36.8 > 30. Good.
 // With dominant-weight boosting, mountain-dominated columns get even more weight,
 // so the effective blend pushes mountains higher while plains stays flat.
+//
+// Forest: amp bumped from 14 to 18 for more pronounced hills.
+// Snowy:  amp bumped from 10 to 14 for snowy hills.
+// Swamp:  base_y from 5 to 4, amp from 4 to 5 for lower, more varied swamps.
 static constexpr BiomeParams BIOME_PARAMS[NUM_BIOMES] = {
     // base_y  amp    freq         octaves  persistence
     {  8.0f,   2.0f,  1.0f/128.0f, 2,     0.40f },  // Plains  (very flat — amp 2, low freq)
-    { 10.0f,  14.0f,  1.0f/40.0f,  4,     0.55f },  // Forest
+    { 10.0f,  18.0f,  1.0f/40.0f,  4,     0.55f },  // Forest (more rolling hills)
     { 18.0f,  38.0f,  1.0f/28.0f,  5,     0.62f },  // Mountains (tall, jagged)
     {  7.0f,   9.0f,  1.0f/64.0f,  3,     0.45f },  // Desert (wide smooth dunes)
-    {  8.0f,  10.0f,  1.0f/48.0f,  4,     0.50f },  // Snowy (plains-shaped, white)
-    {  5.0f,   4.0f,  1.0f/56.0f,  3,     0.45f },  // Swamp (very flat, low)
+    {  8.0f,  14.0f,  1.0f/48.0f,  4,     0.50f },  // Snowy (hillier white plains)
+    {  4.0f,   5.0f,  1.0f/56.0f,  3,     0.45f },  // Swamp (very flat, lower)
     {  6.5f,   1.0f,  1.0f/96.0f,  2,     0.40f },  // Beach (extremely flat near sea)
 };
 
@@ -325,6 +360,37 @@ static constexpr BiomeCentre BIOME_CENTRES[NUM_BIOMES] = {
     { 0.50f, 0.96f, 0.28f, 0.08f },  // Swamp (max moisture)
     { 0.65f, 0.27f, 0.18f, 0.18f },  // Beach (warm, low moisture)
 };
+
+// ---------------------------------------------------------------------------
+// Regional elevation swell (M5 — large-scale height variety)
+// ---------------------------------------------------------------------------
+// A very low-frequency 2D noise term added to non-Plains biome heights so
+// the world has real large-scale topographic rolling — forest hills rise and
+// fall over hundreds of blocks, snowy plateaus sit at varying elevations,
+// mountains feel embedded in a varied landscape.
+//
+// Plains intentionally receives NO swell contribution so the flatness test
+// (best_plains_variation <= 5) keeps passing.  A pure plains column stays at
+// base_y ±amp = 8±2, giving within-chunk variation of ≤4.  Plains columns
+// near biome boundaries still see swell through the blend weights of non-
+// plains neighbours, creating gentle landscape variation at the edges.
+//
+// For all other biomes the swell adds ±SWELL_AMP blocks at very large scale
+// (freq=1/512 → period 512 blocks).  This is nearly constant within a 16-
+// block chunk (max gradient ~0.2 blocks per chunk) so it shifts plateaus
+// without adding micro-jaggedness.
+// ---------------------------------------------------------------------------
+static constexpr float SWELL_AMP  = 5.0f;   // ±5 blocks of regional offset
+static constexpr float SWELL_FREQ = 1.0f / 512.0f;
+static constexpr std::uint64_t SWELL_SEED_MIX = 0x5E11B1057E119A11ull;
+
+static float regional_swell(float fwx, float fwz, std::uint64_t seed) noexcept {
+    std::uint64_t sseed = fmix64(seed ^ SWELL_SEED_MIX);
+    // 2 octaves, persistence 0.5 -> returns ~[0,1]
+    float n = fbm2(fwx, fwz, sseed, 2, SWELL_FREQ, 2.0f, 0.5f);
+    // Map [0,1] -> [-SWELL_AMP, +SWELL_AMP]
+    return (n * 2.0f - 1.0f) * SWELL_AMP;
+}
 
 // ---------------------------------------------------------------------------
 // Biome weight computation
@@ -415,9 +481,12 @@ static Biome dominant_biome(const float weights[NUM_BIOMES]) noexcept {
 // blends across all biome transitions.  This guarantees seam-free terrain
 // (C0 continuous) because the weight function itself is C∞.
 //
-// Desert biome gets a small micro-ripple (extra 0-2 block noise on top of
-// the base height) for variety.  This is folded into the desert biome's
-// noise evaluation so it participates in the blend naturally.
+// Desert biome gets a small micro-ripple (extra 0-2 block height variation)
+// for variety.  This is folded into the desert biome's noise evaluation so it
+// participates in the blend naturally.
+//
+// A shared regional swell term is added to all biome heights before weighting
+// so the entire landscape gently rises and falls at large scales.
 // ---------------------------------------------------------------------------
 
 // Biome seed offsets — keep separate from main terrain to avoid cross-correlation.
@@ -436,6 +505,10 @@ static int surface_height(std::int32_t wx, std::int32_t wz,
                           const float weights[NUM_BIOMES]) noexcept {
     float fwx = static_cast<float>(wx);
     float fwz = static_cast<float>(wz);
+
+    // Regional swell: shifts non-Plains biome heights up/down at large scale.
+    // Plains biome gets no swell to preserve within-chunk flatness guarantee.
+    float swell = regional_swell(fwx, fwz, seed);
 
     float blended_h = 0.0f;
 
@@ -457,8 +530,12 @@ static int surface_height(std::int32_t wx, std::int32_t wz,
             if (n > 1.0f) n = 1.0f;
         }
 
-        // Map n in [0,1] -> [base_y - amp, base_y + amp]
-        float h = p.base_y + (n * 2.0f - 1.0f) * p.amp;
+        // Map n in [0,1] -> [base_y - amp, base_y + amp].
+        // Non-Plains biomes additionally receive the regional swell so the
+        // landscape rolls at large scale.  Plains stays unswelled to keep the
+        // flatness test (best_plains_variation <= 5) passing.
+        float biome_swell = (static_cast<Biome>(i) != Biome::Plains) ? swell : 0.0f;
+        float h = p.base_y + (n * 2.0f - 1.0f) * p.amp + biome_swell;
         blended_h += weights[i] * h;
     }
 
@@ -493,13 +570,28 @@ static int slope_at(std::int32_t wx, std::int32_t wz, std::uint64_t seed, int H)
 }
 
 // ---------------------------------------------------------------------------
-// Decoration constants (unchanged from previous agent)
+// Decoration constants
 // ---------------------------------------------------------------------------
 static constexpr int TREE_CELL_SIZE   = 8;
-static constexpr int CANOPY_RADIUS_XZ = 2;
-static constexpr int CANOPY_RADIUS_Y  = 1;
-static constexpr int TRUNK_MIN        = 4;
-static constexpr int TRUNK_MAX        = 6;
+
+// Canopy shape codes (2 bits):
+//   ROUND — classic sphere-ish 5x3x5 blob with rounded corners (original shape)
+//   TALL  — narrower, taller: 3x5x3 column-ish with top cap (spruce-like)
+//   BROAD — wide flat top: 7x3x7 at trunk top, 5x3x5 one below, with crown
+//   COMPACT — dense squat: 5x3x5 fully filled (used for swamp/plains short trees)
+static constexpr int CANOPY_ROUND   = 0;
+static constexpr int CANOPY_TALL    = 1;
+static constexpr int CANOPY_BROAD   = 2;
+static constexpr int CANOPY_COMPACT = 3;
+
+// Trunk height range (now 4..8 for more variety).
+static constexpr int TRUNK_MIN = 4;
+static constexpr int TRUNK_MAX = 8;
+
+// Max canopy reach for seam-safe cell scanning.
+// Broad canopy extends ±3 XZ, tall extends ±1 XZ but 2 Y above trunk top.
+// We use 3 as the conservative upper bound for cell scan margin.
+static constexpr int CANOPY_MAX_REACH_XZ = 3;
 
 // Default tree probability threshold (~18% of cells).
 static constexpr std::uint64_t TREE_PROB_THRESH_DEFAULT = 11796u;   // 0.18 * 65535
@@ -530,6 +622,7 @@ struct TreeDesc {
     std::int32_t root_wx;
     std::int32_t root_wz;
     int          trunk_height;
+    int          canopy_shape;   // CANOPY_ROUND / TALL / BROAD / COMPACT
     BlockId      log_id;
     BlockId      leaf_id;
     bool         present;
@@ -553,7 +646,7 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
 
     // Biomes that never have trees.
     if (dom == Biome::Desert || dom == Biome::Beach) {
-        return TreeDesc{0, 0, 0, 0, 0, false};
+        return TreeDesc{0, 0, 0, 0, 0, 0, false};
     }
 
     // Choose density threshold based on dominant biome.
@@ -567,7 +660,7 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
 
     std::uint64_t prob = h & 0xFFFFu;
     if (prob >= thresh) {
-        return TreeDesc{0, 0, 0, 0, 0, false};
+        return TreeDesc{0, 0, 0, 0, 0, 0, false};
     }
 
     // Root offset within cell (1..TREE_CELL_SIZE-2).
@@ -575,40 +668,179 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
     std::int32_t off_x = 1 + static_cast<std::int32_t>((h2 >> 0u) & 0x5u);
     std::int32_t off_z = 1 + static_cast<std::int32_t>((h2 >> 8u) & 0x5u);
 
-    // Trunk height: 4..6
-    int trunk_h = TRUNK_MIN + static_cast<int>(
-        (h2 >> 16u) % static_cast<std::uint64_t>(TRUNK_MAX - TRUNK_MIN + 1));
-
-    // Tree type: snowy/swamp -> birch dominant; forest -> mixed; others -> mostly oak.
+    // --- Per-biome trunk height, canopy shape, and wood type ---
+    //
+    // Bits used from h2:
+    //   bits 16..19 (4 bits)  -> trunk length variation
+    //   bits 20..21 (2 bits)  -> canopy shape selector (biome-gated)
+    //   bits 24..25 (2 bits)  -> birch vs oak selector
+    //
+    int trunk_h;
+    int canopy_shape;
     bool is_birch;
-    if (dom == Biome::Snowy || dom == Biome::Swamp) {
-        is_birch = ((h2 >> 24u) & 0x1u) != 0u;  // 50% birch
-    } else if (dom == Biome::Forest) {
-        is_birch = ((h2 >> 24u) & 0x3u) <= 1u;  // ~50% birch in forest
-    } else {
-        is_birch = ((h2 >> 24u) & 0x3u) == 0u;  // ~25% birch elsewhere
+
+    std::uint64_t trunk_bits  = (h2 >> 16u) & 0xFu;  // 0..15
+    std::uint64_t shape_bits  = (h2 >> 20u) & 0x3u;  // 0..3
+    std::uint64_t birch_bits  = (h2 >> 24u) & 0x3u;  // 0..3
+
+    switch (dom) {
+        case Biome::Forest:
+            // Forest: taller trees, mixed shapes, mixed oak/birch.
+            // Trunk 6..8: base 6 + (bits % 3) -> 6, 7, 8
+            trunk_h      = 6 + static_cast<int>(trunk_bits % 3u);
+            // Shapes: round (0), broad (1), tall (2), broad again (3) — weighted toward tall/broad
+            canopy_shape = (shape_bits == 0u) ? CANOPY_ROUND :
+                           (shape_bits == 1u) ? CANOPY_BROAD :
+                           (shape_bits == 2u) ? CANOPY_TALL  : CANOPY_BROAD;
+            is_birch     = (birch_bits <= 1u);  // 50% birch
+            break;
+
+        case Biome::Mountains:
+            // Mountains: medium trunks, round or tall shapes, mostly oak.
+            trunk_h      = 5 + static_cast<int>(trunk_bits % 3u);   // 5..7
+            canopy_shape = (shape_bits & 0x1u) ? CANOPY_TALL : CANOPY_ROUND;
+            is_birch     = (birch_bits == 0u);  // 25% birch
+            break;
+
+        case Biome::Snowy:
+            // Snowy: tall thin spruce-ish trees, birch-heavy.
+            trunk_h      = 5 + static_cast<int>(trunk_bits % 3u);   // 5..7
+            canopy_shape = CANOPY_TALL;   // always tall/narrow for snowy
+            is_birch     = (birch_bits != 0u);  // 75% birch
+            break;
+
+        case Biome::Swamp:
+            // Swamp: short squat trees.
+            trunk_h      = 4 + static_cast<int>(trunk_bits % 2u);   // 4..5
+            canopy_shape = CANOPY_COMPACT;
+            is_birch     = (birch_bits <= 1u);  // 50% birch
+            break;
+
+        case Biome::Plains:
+            // Plains: sparse short trees, round canopy.
+            trunk_h      = 4 + static_cast<int>(trunk_bits % 2u);   // 4..5
+            canopy_shape = CANOPY_ROUND;
+            is_birch     = (birch_bits == 0u);  // 25% birch
+            break;
+
+        default:
+            // Other (generic): medium, round, mostly oak.
+            trunk_h      = TRUNK_MIN + static_cast<int>(
+                trunk_bits % static_cast<std::uint64_t>(TRUNK_MAX - TRUNK_MIN + 1));
+            canopy_shape = CANOPY_ROUND;
+            is_birch     = (birch_bits == 0u);  // 25% birch
+            break;
     }
 
     return TreeDesc{
         cell_origin_x + off_x,
         cell_origin_z + off_z,
         trunk_h,
+        canopy_shape,
         is_birch ? BIRCH_LOG    : OAK_LOG,
         is_birch ? BIRCH_LEAVES : OAK_LEAVES,
         true
     };
 }
 
-// Rounded canopy shape — same as previous agent.
-static bool in_canopy(int dx, int dy, int dz) noexcept {
-    if (dy < -1 || dy > 1)              return false;
-    if (dx < -CANOPY_RADIUS_XZ || dx > CANOPY_RADIUS_XZ) return false;
-    if (dz < -CANOPY_RADIUS_XZ || dz > CANOPY_RADIUS_XZ) return false;
+// ---------------------------------------------------------------------------
+// Canopy voxel queries — pure functions of (dx, dy, dz, shape)
+// ---------------------------------------------------------------------------
+// dx, dz: offset from trunk XZ; dy: offset from trunk_top_wy.
+// Returns true if that offset should contain a leaf block.
+// ---------------------------------------------------------------------------
+
+// ROUND: classic 5x3x5 with clipped corners (original shape, kept intact).
+static bool in_canopy_round(int dx, int dy, int dz) noexcept {
+    if (dy < -1 || dy > 1)                return false;
+    if (dx < -2 || dx > 2)               return false;
+    if (dz < -2 || dz > 2)               return false;
     bool outer_x = (dx == -2 || dx == 2);
     bool outer_z = (dz == -2 || dz == 2);
-    if (outer_x && outer_z && dy != 0) return false;
+    if (outer_x && outer_z && dy != 0)   return false;
     return true;
 }
+
+// TALL: narrow column-ish canopy (spruce-like).
+//   Layer dy= 0: 3x3 cross (no corners)
+//   Layer dy=-1: 5x5 ring (no corners, no center ring? small sparse)
+//   Layer dy=+1: 1x1 top cap
+//   Layer dy=+2: 1x1 very top
+static bool in_canopy_tall(int dx, int dy, int dz) noexcept {
+    if (dy < -1 || dy > 2)               return false;
+    if (dy == 2) return (dx == 0 && dz == 0);           // single-block tip
+    if (dy == 1) return (dx == 0 && dz == 0);           // single-block sub-tip
+    if (dy == 0) {
+        // 3x3 minus corners
+        if (dx < -1 || dx > 1 || dz < -1 || dz > 1) return false;
+        return true;
+    }
+    // dy == -1: wider ring 5x5, no outermost corners
+    if (dx < -2 || dx > 2 || dz < -2 || dz > 2) return false;
+    bool outer_x = (dx == -2 || dx == 2);
+    bool outer_z = (dz == -2 || dz == 2);
+    if (outer_x && outer_z) return false;  // clip corners
+    return true;
+}
+
+// BROAD: wide flat canopy.
+//   dy=+1: 3x3 crown
+//   dy= 0: 5x5 minus corners
+//   dy=-1: 7x7 minus corners (outermost ring, somewhat sparse via dy=-1 alone)
+static bool in_canopy_broad(int dx, int dy, int dz) noexcept {
+    if (dy < -1 || dy > 1)               return false;
+    if (dy == 1) {
+        return (dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1);  // 3x3 crown
+    }
+    if (dy == 0) {
+        if (dx < -2 || dx > 2 || dz < -2 || dz > 2) return false;
+        bool ox = (dx == -2 || dx == 2);
+        bool oz = (dz == -2 || dz == 2);
+        if (ox && oz) return false;  // clip corners
+        return true;
+    }
+    // dy == -1: 7x7 ring, heavy clipping
+    if (dx < -3 || dx > 3 || dz < -3 || dz > 3) return false;
+    bool ox = (dx <= -3 || dx >= 3);
+    bool oz = (dz <= -3 || dz >= 3);
+    if (ox && oz) return false;
+    // also skip the inner 3x3 at this level (ring only)
+    if (dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1) return false;
+    return true;
+}
+
+// COMPACT: dense squat 5x3x5 fully filled (swamp/plains short trees).
+//   dy=-1: 5x5 no corners
+//   dy= 0: 5x5 no corners
+//   dy=+1: 3x3
+static bool in_canopy_compact(int dx, int dy, int dz) noexcept {
+    if (dy < -1 || dy > 1)               return false;
+    if (dy == 1) {
+        return (dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1);
+    }
+    if (dx < -2 || dx > 2 || dz < -2 || dz > 2) return false;
+    bool ox = (dx == -2 || dx == 2);
+    bool oz = (dz == -2 || dz == 2);
+    if (ox && oz) return false;
+    return true;
+}
+
+static bool in_canopy(int dx, int dy, int dz, int shape) noexcept {
+    switch (shape) {
+        case CANOPY_TALL:    return in_canopy_tall(dx, dy, dz);
+        case CANOPY_BROAD:   return in_canopy_broad(dx, dy, dz);
+        case CANOPY_COMPACT: return in_canopy_compact(dx, dy, dz);
+        default:             return in_canopy_round(dx, dy, dz);
+    }
+}
+
+// Maximum dy above trunk_top for each shape (needed for chunk scan range).
+static int canopy_dy_max(int shape) noexcept {
+    return (shape == CANOPY_TALL) ? 2 : 1;
+}
+
+// Minimum dy relative to trunk_top (always -1 for all shapes).
+static constexpr int CANOPY_DY_MIN = -1;
 
 // ---------------------------------------------------------------------------
 // Decoration pass — seam-aware, biome-aware
@@ -622,15 +854,15 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
     std::int32_t wz_max = wz_min + kChunkDim - 1;
 
     // -------------------------------------------------------------------
-    // 1. TREES — same seam-safe cell-scan as previous agent.
-    //    Max surface height with new biomes: Mountains base_y 16 + amp 34 = 50.
-    //    We conservatively expand the search area by CANOPY_RADIUS_XZ.
+    // 1. TREES — seam-safe cell-scan.
+    //    Broad canopy extends ±3 XZ, tall extends 2 blocks above trunk_top.
+    //    We scan conservatively with CANOPY_MAX_REACH_XZ=3.
     // -------------------------------------------------------------------
     {
         std::int32_t cell_xmin, cell_xmax, cell_zmin, cell_zmax, dummy;
-        tree_cell(wx_min - CANOPY_RADIUS_XZ, wz_min - CANOPY_RADIUS_XZ, cell_xmin, cell_zmin);
-        tree_cell(wx_max + CANOPY_RADIUS_XZ, wz_max + CANOPY_RADIUS_XZ, cell_xmax, dummy);
-        tree_cell(wx_min, wz_max + CANOPY_RADIUS_XZ, dummy, cell_zmax);
+        tree_cell(wx_min - CANOPY_MAX_REACH_XZ, wz_min - CANOPY_MAX_REACH_XZ, cell_xmin, cell_zmin);
+        tree_cell(wx_max + CANOPY_MAX_REACH_XZ, wz_max + CANOPY_MAX_REACH_XZ, cell_xmax, dummy);
+        tree_cell(wx_min, wz_max + CANOPY_MAX_REACH_XZ, dummy, cell_zmax);
         (void)dummy;
 
         for (std::int32_t ccz = cell_zmin; ccz <= cell_zmax; ++ccz) {
@@ -652,7 +884,8 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 // Trunk: H+1 .. H+trunk_height
                 int trunk_base_wy = H + 1;
                 int trunk_top_wy  = H + td.trunk_height;
-                int canopy_wy_max = trunk_top_wy + CANOPY_RADIUS_Y;
+                int dy_max        = canopy_dy_max(td.canopy_shape);
+                int canopy_wy_max = trunk_top_wy + dy_max;
 
                 if (canopy_wy_max < wy_min || trunk_base_wy > wy_max) continue;
 
@@ -668,10 +901,11 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 }
 
                 // Place canopy leaves.
-                for (int dz = -CANOPY_RADIUS_XZ; dz <= CANOPY_RADIUS_XZ; ++dz) {
-                    for (int dx = -CANOPY_RADIUS_XZ; dx <= CANOPY_RADIUS_XZ; ++dx) {
-                        for (int dy = -CANOPY_RADIUS_Y; dy <= CANOPY_RADIUS_Y; ++dy) {
-                            if (!in_canopy(dx, dy, dz)) continue;
+                int reach = (td.canopy_shape == CANOPY_BROAD) ? 3 : 2;
+                for (int dz = -reach; dz <= reach; ++dz) {
+                    for (int dx = -reach; dx <= reach; ++dx) {
+                        for (int dy = CANOPY_DY_MIN; dy <= dy_max; ++dy) {
+                            if (!in_canopy(dx, dy, dz, td.canopy_shape)) continue;
 
                             std::int32_t wlx = td.root_wx + dx;
                             std::int32_t wly = trunk_top_wy + dy;
@@ -695,7 +929,18 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
     }
 
     // -------------------------------------------------------------------
-    // 2. PLANTS — biome-specific single-block surface decorations.
+    // 2. PLANTS + BUSHES — biome-specific single-block surface decorations.
+    //
+    //    Bushes are placed as leaf blocks (OAK_LEAVES/BIRCH_LEAVES) directly
+    //    at H+1 — they read visually as low shrubs sitting on the ground.
+    //    Density varies strongly by biome:
+    //      Forest: dense tall_grass, flowers, some mushrooms, many bushes
+    //      Plains: moderate tall_grass, flowers, some bushes
+    //      Swamp:  tall_grass, many mushrooms, scattered bushes
+    //      Snowy:  bare (no plants)
+    //      Desert: bare
+    //      Beach:  bare
+    //      Mountains: sparse grass, no bushes above snow line
     // -------------------------------------------------------------------
     {
         std::uint64_t pseed = fmix64(seed ^ PLANT_SEED_MIX);
@@ -709,8 +954,8 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 biome_weights(wx, wz, seed, weights);
                 Biome dom = dominant_biome(weights);
 
-                // Desert and Beach have minimal/no surface plants.
-                if (dom == Biome::Desert) continue;
+                // Desert, Beach, and Snowy have minimal/no surface plants.
+                if (dom == Biome::Desert || dom == Biome::Beach || dom == Biome::Snowy) continue;
 
                 int H = surface_height(wx, wz, seed, weights);
                 if (H <= SEA_LEVEL) continue;  // underwater
@@ -729,53 +974,64 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 // Decide based on surface block.
                 BlockId surf = chunk.get(lx, ly_surface, lz);
 
-                // Plant scatter hash.
-                std::uint64_t ph = hash2(wx, wz, pseed);
-                std::uint64_t roll = ph & 0xFFu;  // 0..255
+                // Plant scatter hash — two bytes for independent rolls.
+                std::uint64_t ph   = hash2(wx, wz, pseed);
+                std::uint64_t roll = ph & 0xFFu;        // 0..255, primary
+                std::uint64_t roll2 = (ph >> 8u) & 0xFFu; // 0..255, secondary
 
                 BlockId plant = AIR;
 
-                if (dom == Biome::Snowy) {
-                    // Snowy: snow layer already placed on surface by terrain pass.
-                    // No plants in snowy biome (too cold).
-                    (void)surf;
-                    plant = AIR;
-                } else if (dom == Biome::Forest) {
-                    // Dense undergrowth: more tall grass, some mushrooms, fewer flowers.
-                    if      (surf != GRASS) plant = AIR;
-                    else if (roll < 110u)   plant = TALL_GRASS;
-                    else if (roll < 122u)   plant = FLOWER_RED;
-                    else if (roll < 134u)   plant = FLOWER_YELLOW;
-                    else if (roll < 148u)   plant = MUSHROOM;
+                if (dom == Biome::Forest) {
+                    // Dense undergrowth: tall_grass most common, flowers, mushrooms,
+                    // and fairly frequent leaf bushes.
+                    if (surf == GRASS) {
+                        if      (roll < 120u) plant = TALL_GRASS;
+                        else if (roll < 140u) plant = FLOWER_RED;
+                        else if (roll < 158u) plant = FLOWER_YELLOW;
+                        else if (roll < 172u) plant = MUSHROOM;
+                        // Bushes: leaf blocks at ground level (20% of columns)
+                        else if (roll < 204u) plant = OAK_LEAVES;
+                    } else if (surf == DIRT) {
+                        // Shaded dirt: mushrooms more likely
+                        if      (roll2 < 80u) plant = MUSHROOM;
+                        else if (roll2 < 120u) plant = TALL_GRASS;
+                    }
                 } else if (dom == Biome::Swamp) {
-                    // Swamp: lots of mushrooms + tall grass on dirt/grass, no flowers.
-                    if      (surf == GRASS || surf == DIRT) {
-                        if      (roll < 90u)  plant = TALL_GRASS;
-                        else if (roll < 130u) plant = MUSHROOM;
+                    // Swamp: lots of mushrooms + tall grass, scattered bushes on high spots.
+                    if (surf == GRASS || surf == DIRT) {
+                        if      (roll < 100u) plant = TALL_GRASS;
+                        else if (roll < 150u) plant = MUSHROOM;
+                        else if (roll < 170u) plant = FLOWER_RED;
+                        // Bush (birch leaves for variety in swamp)
+                        else if (roll < 195u) plant = BIRCH_LEAVES;
                     }
                 } else if (dom == Biome::Plains) {
-                    // Plains: lots of tall grass + flowers.
-                    if      (surf != GRASS) plant = AIR;
-                    else if (roll < 89u)    plant = TALL_GRASS;
-                    else if (roll < 101u)   plant = FLOWER_RED;
-                    else if (roll < 113u)   plant = FLOWER_YELLOW;
-                    else if (roll < 118u)   plant = MUSHROOM;
-                } else if (dom == Biome::Mountains) {
-                    // Mountains: sparse grass on stone/grass, no flowers above snow line.
-                    if (H >= SNOW_LINE) {
-                        plant = AIR;  // too high for plants
-                    } else if (surf == GRASS) {
-                        if (roll < 40u) plant = TALL_GRASS;
+                    // Plains: lots of tall grass, flowers, occasional bushes.
+                    if (surf == GRASS) {
+                        if      (roll < 100u) plant = TALL_GRASS;
+                        else if (roll < 118u) plant = FLOWER_RED;
+                        else if (roll < 136u) plant = FLOWER_YELLOW;
+                        // Occasional mushroom
+                        else if (roll < 142u) plant = MUSHROOM;
+                        // Scattered bushes (oak leaves, ~8% of grass columns)
+                        else if (roll < 162u) plant = OAK_LEAVES;
                     }
-                } else if (dom == Biome::Beach) {
-                    plant = AIR;  // bare sand beach
+                } else if (dom == Biome::Mountains) {
+                    // Mountains: sparse grass on lower slopes, no plants above snow line.
+                    if (H >= SNOW_LINE) {
+                        plant = AIR;
+                    } else if (surf == GRASS) {
+                        if (roll < 45u) plant = TALL_GRASS;
+                    }
                 } else {
-                    // Default: same as plains.
-                    if      (surf != GRASS) plant = AIR;
-                    else if (roll < 89u)    plant = TALL_GRASS;
-                    else if (roll < 101u)   plant = FLOWER_RED;
-                    else if (roll < 113u)   plant = FLOWER_YELLOW;
-                    else if (roll < 118u)   plant = MUSHROOM;
+                    // Default fallback: plains-like.
+                    if (surf == GRASS) {
+                        if      (roll < 100u) plant = TALL_GRASS;
+                        else if (roll < 118u) plant = FLOWER_RED;
+                        else if (roll < 136u) plant = FLOWER_YELLOW;
+                        else if (roll < 142u) plant = MUSHROOM;
+                        else if (roll < 162u) plant = OAK_LEAVES;
+                    }
                 }
 
                 if (plant != AIR) {

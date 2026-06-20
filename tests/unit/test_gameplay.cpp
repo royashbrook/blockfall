@@ -65,9 +65,16 @@ int main() {
     for (int i = 0; i < 200 && cw.debug_creature_count() < 8; ++i) cw.update(zero, 0.05);
     CHECK(cw.debug_creature_count() >= 8, "animals populate the area near the player");
     CHECK(cw.debug_aim_at_creature0(), "aimed at an animal");
-    int before = cw.debug_creature_count();        // capture right before the hit
-    bf_action attack{}; attack.kind = BF_ACT_ATTACK; cw.action(attack);
-    CHECK(cw.debug_creature_count() == before - 1, "calming an aimed animal removes it (puff)");
+    int before = cw.debug_creature_count();        // capture right before the hits
+    // Creatures now take several hits (with knockback), so re-aim and strike
+    // until the aimed animal is defeated.
+    bf_action attack{}; attack.kind = BF_ACT_ATTACK;
+    for (int h = 0; h < 8 && cw.debug_creature_count() == before; ++h) {
+        cw.debug_aim_at_creature0();               // re-aim (knockback moved it)
+        cw.action(attack);
+        cw.update(zero, 0.02);
+    }
+    CHECK(cw.debug_creature_count() == before - 1, "defeating an aimed animal removes it");
 
     if (fails == 0) std::printf("OK: M3 gameplay (drops + crafting + creatures)\n");
     return fails == 0 ? 0 : 1;

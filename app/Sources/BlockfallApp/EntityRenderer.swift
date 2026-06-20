@@ -80,6 +80,84 @@ final class EntityRenderer {
     private let cubeIB:     MTLBuffer
     private let indexCount: Int
 
+    // =========================================================================
+    // HIT REACTION — combat feedback ("you just click and poof" → make it land)
+    //
+    // The engine's bf_entity_draw ABI (contract/engine_c_api.h) currently has NO
+    // hit/hurt/flash field — only position, yaw, color, scale, kind, sat, _pad.
+    // We must NOT change the ABI here, so the hit signal is derived locally:
+    //
+    //   SIGNAL USED: a sudden drop in an entity's `scale` between frames.
+    //   When the engine damages a creature it almost always shrinks/knocks it
+    //   (or it vanishes outright on death). We key a tiny per-entity history by
+    //   a quantized (position, kind) hash, remember last frame's scale, and when
+    //   scale drops sharply (>12%) we fire a short hit window for that entity.
+    //
+    //   The reaction itself (flash white→red + squash-recoil) lives in
+    //   `hitReaction(progress:)` and is applied to every cube via `flashRGB`
+    //   and the body-level `squash`. It is written so the lead can ALSO drive
+    //   it directly: if/when an engine hit-flash field is added (the natural
+    //   home is the reserved `_pad` slot — e.g. low byte = frames-since-hit, or
+    //   a float 0..1 hurt value), set `externalHurt01` per entity in `encode`
+    //   and it takes precedence over the derived signal. Until then it is a
+    //   robust no-op when nothing is hit.
+    //
+    // Cost: one dictionary probe + a few float ops per entity per frame, and a
+    // periodic prune. Cheap for dozens on screen.
+    // =========================================================================
+    private struct EntityHist {
+        var lastScale:  Float
+        var lastSeen:   Float   // wall-clock time last observed
+        var hitAt:      Float   // wall-clock time the last hit fired (-1 = none)
+    }
+    private var hist: [UInt64: EntityHist] = [:]
+    private var lastPrune: Float = 0
+
+    /// Duration of the hit reaction in seconds (flash + squash recoil).
+    private let hitDuration: Float = 0.32
+
+    // Per-entity reaction state for the CURRENTLY drawing creature. Set once at
+    // the top of each entity's draw in `encode`, read by `drawCube`. Avoids
+    // threading a new parameter through every drawKindN signature.
+    private var curFlash: SIMD3<Float> = .zero   // additive color toward white/red
+    private var curFlashAmt: Float = 0           // 0..1 strength (for emissive parts)
+
+    /// Quantize (pos, kind) into a stable-ish key so a creature maps to the same
+    /// history bucket across frames despite small movement. 0.5-unit cells.
+    @inline(__always)
+    private func histKey(_ pos: SIMD3<Float>, _ kind: UInt32) -> UInt64 {
+        let qx = UInt64(bitPattern: Int64((pos.x * 2.0).rounded()))
+        let qy = UInt64(bitPattern: Int64((pos.y * 2.0).rounded()))
+        let qz = UInt64(bitPattern: Int64((pos.z * 2.0).rounded()))
+        // Mix; keep it cheap. kind in the low bits keeps distinct species apart.
+        var h = qx &* 0x9E3779B1
+        h = (h ^ (qz &* 0x85EBCA77)) &* 0xC2B2AE3D
+        h = h ^ (qy &* 0x27D4EB2F) ^ UInt64(kind)
+        return h
+    }
+
+    /// Hit reaction curve. `p` is 0 (just hit) → 1 (recovered).
+    /// Returns: flash color (additive, fades fast), flash strength, and a
+    /// per-axis squash scale (squash down + bulge wide, then settle).
+    @inline(__always)
+    private func hitReaction(_ p: Float) -> (flash: SIMD3<Float>, amt: Float, squash: SIMD3<Float>) {
+        let q = max(0, min(1, p))
+        // Flash: bright white the first ~third, decaying into red, then gone.
+        // amt drops as a fast ease-out so the pop is snappy not laggy.
+        let amt = (1.0 - q) * (1.0 - q)
+        // hot white early, shifting toward red as it fades
+        let white = SIMD3<Float>(1.0, 1.0, 1.0)
+        let red   = SIMD3<Float>(1.0, 0.18, 0.12)
+        let flash = simd_mix(red, white, SIMD3<Float>(repeating: max(0, 1.0 - q * 2.2))) * amt
+        // Squash recoil: quick downward smash that springs back with a small
+        // overshoot. abs/decay so it reads as a single recoil, not a wobble.
+        let env   = (1.0 - q)
+        let osc   = sin(q * 11.0) * env * env      // damped spring
+        let sy    = 1.0 - osc * 0.22               // flatten vertically on impact
+        let sxz   = 1.0 + osc * 0.14               // bulge horizontally
+        return (flash, amt, SIMD3<Float>(sxz, sy, sxz))
+    }
+
     // -----------------------------------------------------------------------
     init(device: MTLDevice, colorFormat: MTLPixelFormat) {
         guard let lib = try? device.makeLibrary(source: EntityRenderer.shaderSource, options: nil) else {
@@ -130,6 +208,13 @@ final class EntityRenderer {
 
         let t = Float(CACurrentMediaTime())
 
+        // Periodically prune stale history so the dictionary can't grow without
+        // bound as creatures spawn/despawn. Cheap: every ~2s.
+        if t - lastPrune > 2.0 {
+            lastPrune = t
+            hist = hist.filter { t - $0.value.lastSeen < 1.5 }
+        }
+
         for i in 0..<count {
             let e = entities[i]
             let pos = SIMD3<Float>(e.position.x, e.position.y, e.position.z)
@@ -138,16 +223,59 @@ final class EntityRenderer {
             let phaseHash = sin(pos.x * 1.3 + pos.z * 2.7)
             let phase     = t + phaseHash * 3.14159
 
-            switch e.kind {
-            case 0:  drawKind0(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash)
-            case 1:  drawKind1(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash)
-            case 2:  drawKind2(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash)
-            case 3:  drawKind3(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash)
-            case 4:  drawKind4(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash)
-            case 5:  drawKind5(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash)
-            case 6:  drawKind6(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase)
-            default: drawKind0(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash)
+            // --- HIT REACTION: derive a hurt signal & build the per-entity
+            // reaction (flash + squash). Falling blocks (kind 6) are exempt.
+            var squash = SIMD3<Float>(1, 1, 1)
+            curFlash    = .zero
+            curFlashAmt = 0
+            if e.kind != 6 {
+                // CONTINUOUS LIVELINESS: a tiny always-on breathing pulse on the
+                // whole-creature squash so nothing ever looks frozen, even when
+                // stationary and not mid-hit. Very subtle (<1.5%) and phase-
+                // scattered so a crowd doesn't pulse in unison. This rides
+                // *through* the same squash channel, so it's free.
+                let idle = sin(phase * 0.9) * 0.012
+                squash = SIMD3<Float>(1 - idle * 0.5, 1 + idle, 1 - idle * 0.5)
+
+                let key = histKey(pos, e.kind)
+                if var h = hist[key] {
+                    // SIGNAL: a sharp drop in scale this frame ≈ damage/recoil.
+                    // (See class-level note: swap for an engine field when one
+                    // exists — set externalHurt01 and skip this derivation.)
+                    if h.lastScale > 0.0001,
+                       e.scale < h.lastScale * 0.88,
+                       (h.hitAt < 0 || t - h.hitAt > hitDuration) {
+                        h.hitAt = t
+                    }
+                    h.lastScale = e.scale
+                    h.lastSeen  = t
+                    if h.hitAt >= 0, t - h.hitAt < hitDuration {
+                        let p = (t - h.hitAt) / hitDuration
+                        let r = hitReaction(p)
+                        // Hit squash dominates the idle pulse during the window.
+                        squash      = r.squash
+                        curFlash    = r.flash
+                        curFlashAmt = r.amt
+                    }
+                    hist[key] = h
+                } else {
+                    hist[key] = EntityHist(lastScale: e.scale, lastSeen: t, hitAt: -1)
+                }
             }
+
+            switch e.kind {
+            case 0:  drawKind0(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 1:  drawKind1(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 2:  drawKind2(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 3:  drawKind3(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 4:  drawKind4(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 5:  drawKind5(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 6:  drawKind6(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase)
+            default: drawKind0(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            }
+            // Clear so kind 6 (and the next iter before it sets) never inherit.
+            curFlash    = .zero
+            curFlashAmt = 0
         }
     }
 
@@ -189,6 +317,63 @@ final class EntityRenderer {
         return sin(tailPhase * 1.60) * 0.32
     }
 
+    /// Build the per-creature hit-reaction SQUASH transform, expressed in the
+    /// creature's post-yaw local frame so it can be folded straight into the
+    /// rotation matrix (R = rotY * squash) and thus apply to EVERY part —
+    /// body, head, legs, horns, ears, tail — with no per-part changes.
+    ///
+    /// The squash pivots about the creature's foot/ground contact so the recoil
+    /// reads as "smashed down into the ground" and the feet stay planted.
+    /// `footLocalY` is the ground height in local space = groundY - wc.y (<= 0).
+    @inline(__always)
+    private func squashRig(_ rotY: simd_float4x4,
+                           squash: SIMD3<Float>,
+                           footLocalY: Float) -> simd_float4x4 {
+        // Identity fast-path: no allocation of trans/scale chains when at rest.
+        if squash.x == 1 && squash.y == 1 && squash.z == 1 { return rotY }
+        let toFoot   = EntityRenderer.trans(SIMD3<Float>(0, footLocalY, 0))
+        let fromFoot = EntityRenderer.trans(SIMD3<Float>(0, -footLocalY, 0))
+        return rotY * toFoot * EntityRenderer.scaleM(squash) * fromFoot
+    }
+
+    // -------------------------------------------------------------------------
+    // FACE PARTS — small reusable face features placed on the FRONT (+Z, local)
+    // of a head. Because every creature's parts are drawn as
+    //   trans(wc) * R * trans(local) * scale,  and R already includes rotY(yaw),
+    // anything we place at +Z local automatically sits on the front of the head
+    // along the creature's facing direction. So faces always look where the
+    // creature moves — no extra orientation math needed. (R also carries the
+    // hit squash, so faces squash with the body too.)
+    //
+    // `pw` is the caller's part-world closure (lo, dims) -> matrix, identical to
+    // the ones each drawKind defines. We just feed face-part positions through it.
+    // -------------------------------------------------------------------------
+
+    /// A single rounded eye: white sclera + dark pupil + tiny highlight.
+    /// `c` = eye center (local), `r` = eye radius (x = width, y = height incl.
+    /// blink already applied by caller, z = depth bulge). `look` shifts the pupil
+    /// toward +Z/front-down for a friendly downward gaze (set 0 for forward).
+    /// `scleraCol`/`pupilCol` let species tint the eye.
+    @inline(__always)
+    private func drawEye(enc: MTLRenderCommandEncoder, viewProj: simd_float4x4,
+                         pw: (SIMD3<Float>, SIMD3<Float>) -> simd_float4x4,
+                         c: SIMD3<Float>, r: SIMD3<Float>, sat: Float,
+                         scleraCol: SIMD3<Float>, pupilCol: SIMD3<Float>) {
+        // Sclera
+        drawCube(enc: enc, viewProj: viewProj, model: pw(c, SIMD3(r.x, r.y, r.z)),
+                 rgb: scleraCol, sat: sat)
+        // Pupil — slightly smaller, pushed to the very front so it reads on top
+        let pupil = SIMD3<Float>(r.x * 0.55, r.y * 0.62, r.z * 0.9)
+        let pupilC = SIMD3<Float>(c.x, c.y - r.y * 0.05, c.z + r.z * 0.45)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(pupilC, pupil),
+                 rgb: pupilCol, sat: sat)
+        // Highlight — tiny bright fleck upper-outer of pupil (catchlight = life)
+        let hl = SIMD3<Float>(r.x * 0.22, r.y * 0.24, r.z * 0.5)
+        let hlC = SIMD3<Float>(c.x + r.x * 0.18, c.y + r.y * 0.22, c.z + r.z * 0.7)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(hlC, hl),
+                 rgb: SIMD3<Float>(0.98, 0.98, 1.0), sat: sat)
+    }
+
     // =========================================================================
     // KIND 0 — BUNNY / small critter
     //
@@ -209,10 +394,11 @@ final class EntityRenderer {
                            e: bf_entity_draw,
                            pos: SIMD3<Float>,
                            phase: Float,
-                           hash: Float) {
+                           hash: Float,
+                           squash: SIMD3<Float>) {
         let s   = e.scale
         let sat = e.sat
-        let R   = EntityRenderer.rotY(e.yaw)
+        let Ryaw = EntityRenderer.rotY(e.yaw)
         let baseCol  = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
         let bellyCol = baseCol * 0.96
         let innerEarCol = SIMD3<Float>(
@@ -251,6 +437,9 @@ final class EntityRenderer {
         let groundY = pos.y
         let bodyY   = groundY + legH + bH * 0.5 + hopAmt + breatheY
         let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+        // Fold hit-squash into the rotation so every part recoils together,
+        // pivoting about the ground contact (local Y = groundY - wc.y).
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
 
         func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
@@ -281,22 +470,40 @@ final class EntityRenderer {
                  model: pw(SIMD3(0, headY, headZ), SIMD3(hS, hS * 0.95, hS * 0.90)),
                  rgb: baseCol, sat: sat)
 
-        // Eyes — with blink
-        let eyeW = s * 0.11; let eyeH = s * 0.12 * eyeBlinkSY; let eyeD = s * 0.04
+        // FACE — BUNNY: BIG round dark eyes (sclera + pupil + catchlight), pink
+        // nose, tiny buck teeth, soft cheek blush. Biggest eyes of any species
+        // so the bunny reads as the cute/innocent one at a glance.
+        let faceZ  = headZ + hS * 0.46
+        let eyeW = s * 0.15; let eyeH = s * 0.17 * eyeBlinkSY; let eyeD = s * 0.05
+        let eyeY = headY + hS * 0.10
+        // Bunny eyes are nearly all dark pupil with a strong highlight (doe-eyed)
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3(-hS * 0.27, eyeY, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
+                sat: sat, scleraCol: eyeCol, pupilCol: eyeCol)
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3( hS * 0.27, eyeY, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
+                sat: sat, scleraCol: eyeCol, pupilCol: eyeCol)
+        // Cheek blush — soft pink dots low on the cheeks
+        let blush = SIMD3<Float>(min(1, baseCol.x * 0.6 + 0.4), baseCol.y * 0.5 + 0.2, baseCol.z * 0.5 + 0.25)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(-hS * 0.26, headY + hS * 0.06, headZ + hS * 0.44),
-                           SIMD3(eyeW, eyeH, eyeD)),
-                 rgb: eyeCol, sat: sat)
+                 model: pw(SIMD3(-hS * 0.40, headY - hS * 0.14, headZ + hS * 0.42), SIMD3(s*0.10, s*0.07, s*0.02)),
+                 rgb: blush, sat: sat)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3( hS * 0.26, headY + hS * 0.06, headZ + hS * 0.44),
-                           SIMD3(eyeW, eyeH, eyeD)),
-                 rgb: eyeCol, sat: sat)
-
-        // Nose — small pink block at front-center of head
+                 model: pw(SIMD3( hS * 0.40, headY - hS * 0.14, headZ + hS * 0.42), SIMD3(s*0.10, s*0.07, s*0.02)),
+                 rgb: blush, sat: sat)
+        // Nose — pink triangle-ish block at front-center
+        let noseY = headY - hS * 0.06
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(0, headY - hS * 0.08, headZ + hS * 0.47),
-                           SIMD3(s * 0.07, s * 0.05, s * 0.03)),
+                 model: pw(SIMD3(0, noseY, faceZ + hS * 0.04), SIMD3(s * 0.09, s * 0.06, s * 0.04)),
                  rgb: noseCol, sat: sat)
+        // Buck teeth — two little white blocks below the nose (bunny signature)
+        let toothCol = SIMD3<Float>(0.97, 0.97, 0.93)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(-s * 0.035, noseY - hS * 0.12, faceZ), SIMD3(s*0.05, s*0.09, s*0.03)),
+                 rgb: toothCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3( s * 0.035, noseY - hS * 0.12, faceZ), SIMD3(s*0.05, s*0.09, s*0.03)),
+                 rgb: toothCol, sat: sat)
 
         // TALL UPRIGHT EARS — the key silhouette feature
         // Pivot at base of ear (on top of head), rotate upright with slight outward lean
@@ -381,14 +588,15 @@ final class EntityRenderer {
                            e: bf_entity_draw,
                            pos: SIMD3<Float>,
                            phase: Float,
-                           hash: Float) {
+                           hash: Float,
+                           squash: SIMD3<Float>) {
         let s   = e.scale
         let sat = e.sat
-        let R   = EntityRenderer.rotY(e.yaw)
+        let Ryaw = EntityRenderer.rotY(e.yaw)
         let baseCol  = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
         let patchCol = baseCol * 0.62        // darker irregular patch color
         let legCol   = baseCol * 0.75
-        let eyeCol   = SIMD3<Float>(0.04, 0.04, 0.06)
+        let eyeCol   = SIMD3<Float>(0.05, 0.03, 0.02)   // warm dark brown gentle eyes
 
         let blinkPhase  = phase + hash * 3.8
         let breathPhase = phase * 0.38 + hash * 2.1
@@ -421,6 +629,7 @@ final class EntityRenderer {
         let groundY = pos.y
         let bodyY   = groundY + legH + bH * 0.5 + breatheY
         let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
 
         func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
@@ -488,16 +697,44 @@ final class EntityRenderer {
                  model: pw(SIMD3(neckSway, headY, headZ), SIMD3(hW, hH, hD)),
                  rgb: baseCol, sat: sat)
 
-        // Eyes with blink — on sides of small head
-        let eyeW = s * 0.04; let eyeH = s * 0.10 * eyeBlinkSY; let eyeD = s * 0.10
+        // FACE — GIRAFFE: long gentle snout jutting forward, soft front-facing
+        // eyes with long lashes, two nostrils at the snout tip. Eyes are gentle
+        // (calm, half-lidded look via a brow shade above) to read as docile.
+        let snoutZ = headZ + hD * 0.50 + s * 0.16
+        // Long snout — lighter muzzle extending forward off the small head
+        let muzzleCol = SIMD3<Float>(min(1, baseCol.x*0.7+0.22), min(1, baseCol.y*0.7+0.18), min(1, baseCol.z*0.6+0.12))
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(neckSway - hW * 0.52, headY + hH * 0.10, headZ),
-                           SIMD3(eyeW, eyeH, eyeD)),
-                 rgb: eyeCol, sat: sat)
+                 model: pw(SIMD3(neckSway, headY - hH * 0.10, snoutZ),
+                           SIMD3(hW * 0.66, hH * 0.66, s * 0.34)),
+                 rgb: muzzleCol, sat: sat)
+        // Nostrils — two dark dots at the very tip of the snout
+        let nostCol = baseCol * 0.45
+        let nostZ = snoutZ + s * 0.18
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(neckSway + hW * 0.52, headY + hH * 0.10, headZ),
-                           SIMD3(eyeW, eyeH, eyeD)),
-                 rgb: eyeCol, sat: sat)
+                 model: pw(SIMD3(neckSway - hW * 0.18, headY - hH * 0.14, nostZ), SIMD3(s*0.05, s*0.05, s*0.03)),
+                 rgb: nostCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(neckSway + hW * 0.18, headY - hH * 0.14, nostZ), SIMD3(s*0.05, s*0.05, s*0.03)),
+                 rgb: nostCol, sat: sat)
+        // Gentle eyes — front-facing, with pupil + highlight, set wide on the
+        // small head. Smaller and softer than the bunny's.
+        let gfFaceZ = headZ + hD * 0.46
+        let geW = s * 0.07; let geH = s * 0.09 * eyeBlinkSY; let geD = s * 0.05
+        let geY = headY + hH * 0.18
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3(neckSway - hW * 0.34, geY, gfFaceZ), r: SIMD3(geW, geH, geD),
+                sat: sat, scleraCol: SIMD3(0.95, 0.92, 0.86), pupilCol: eyeCol)
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3(neckSway + hW * 0.34, geY, gfFaceZ), r: SIMD3(geW, geH, geD),
+                sat: sat, scleraCol: SIMD3(0.95, 0.92, 0.86), pupilCol: eyeCol)
+        // Long eyelashes — thin dark line above each eye (the giraffe's charm)
+        let lashCol = SIMD3<Float>(0.06, 0.04, 0.03)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(neckSway - hW * 0.34, geY + geH * 1.3, gfFaceZ), SIMD3(geW * 1.5, s*0.02, geD)),
+                 rgb: lashCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(neckSway + hW * 0.34, geY + geH * 1.3, gfFaceZ), SIMD3(geW * 1.5, s*0.02, geD)),
+                 rgb: lashCol, sat: sat)
 
         // Ossicones — tiny nubby horn-knobs on top of head (giraffe's distinctive horns)
         drawCube(enc: enc, viewProj: viewProj,
@@ -550,10 +787,11 @@ final class EntityRenderer {
                            e: bf_entity_draw,
                            pos: SIMD3<Float>,
                            phase: Float,
-                           hash: Float) {
+                           hash: Float,
+                           squash: SIMD3<Float>) {
         let s   = e.scale
         let sat = e.sat
-        let R   = EntityRenderer.rotY(e.yaw)
+        let Ryaw = EntityRenderer.rotY(e.yaw)
         let baseCol  = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
         let darkCol  = baseCol * 0.60
         let bellyCol = SIMD3<Float>(
@@ -596,6 +834,7 @@ final class EntityRenderer {
         // Body sits very low — legs are short
         let bodyY   = groundY + legH + bH * 0.5
         let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
 
         let rock = EntityRenderer.rotZ(rockAngle)
         func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
@@ -649,16 +888,44 @@ final class EntityRenderer {
                                  snoutZ + snD * 0.30),
                            SIMD3(nostW, nostH, nostD)), rgb: darkCol * 0.82, sat: sat)
 
-        // Eyes — on SIDES of wide flat head, slightly raised
-        let eyeW = s * 0.05; let eyeH = s * 0.10 * eyeBlinkSY; let eyeD = s * 0.10
+        // FACE — LIZARD: bulging dome eyes mounted high on the SIDES of the flat
+        // head (true reptile placement → unmistakable side-eyed look), each a
+        // pale dome with a slit-style dark pupil, plus a wide toothy grin slit
+        // along the snout. Goofy/cheeky rather than cute.
+        // Eyes: domed cubes high on each side, pupil facing outward (+/-X front).
+        let lzEyeW = s * 0.12; let lzEyeH = s * 0.13 * eyeBlinkSY; let lzEyeD = s * 0.12
+        let lzEyeY = headY + hH * 0.42
+        let lzEyeZ = headZ - hD * 0.06
+        let domeCol = SIMD3<Float>(min(1, baseCol.x*0.5+0.45), min(1, baseCol.y*0.5+0.42), min(1, baseCol.z*0.4+0.30))
+        // Left dome + outward slit pupil
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(-hW * 0.52, headY + hH * 0.22, headZ - hD * 0.10),
-                           SIMD3(eyeW, eyeH, eyeD)),
-                 rgb: eyeCol, sat: sat)
+                 model: pw(SIMD3(-hW * 0.50, lzEyeY, lzEyeZ), SIMD3(lzEyeW, lzEyeH, lzEyeD)),
+                 rgb: domeCol, sat: sat)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3( hW * 0.52, headY + hH * 0.22, headZ - hD * 0.10),
-                           SIMD3(eyeW, eyeH, eyeD)),
+                 model: pw(SIMD3(-hW * 0.50 - lzEyeW * 0.45, lzEyeY, lzEyeZ),
+                           SIMD3(s*0.03, lzEyeH * 0.8, lzEyeD * 0.55)),
                  rgb: eyeCol, sat: sat)
+        // Right dome + outward slit pupil
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3( hW * 0.50, lzEyeY, lzEyeZ), SIMD3(lzEyeW, lzEyeH, lzEyeD)),
+                 rgb: domeCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3( hW * 0.50 + lzEyeW * 0.45, lzEyeY, lzEyeZ),
+                           SIMD3(s*0.03, lzEyeH * 0.8, lzEyeD * 0.55)),
+                 rgb: eyeCol, sat: sat)
+        // WIDE GRIN — a dark mouth slit running across the front of the snout,
+        // with a few tiny white teeth notches. The lizard's cheeky signature.
+        let grinCol = SIMD3<Float>(0.10, 0.04, 0.04)
+        let grinZ = snoutZ + snD * 0.50
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, headY - hH * 0.30, grinZ), SIMD3(snW * 0.92, s * 0.05, s * 0.04)),
+                 rgb: grinCol, sat: sat)
+        let lzToothCol = SIMD3<Float>(0.95, 0.95, 0.88)
+        for tx in [-0.28, -0.10, 0.10, 0.28] as [Float] {
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(snW * tx, headY - hH * 0.24, grinZ), SIMD3(s*0.03, s*0.045, s*0.03)),
+                     rgb: lzToothCol, sat: sat)
+        }
 
         // 4 splayed legs — set wide out to sides
         let hipY: Float = -bH * 0.5
@@ -732,10 +999,11 @@ final class EntityRenderer {
                            e: bf_entity_draw,
                            pos: SIMD3<Float>,
                            phase: Float,
-                           hash: Float) {
+                           hash: Float,
+                           squash: SIMD3<Float>) {
         let s   = e.scale
         let sat = e.sat
-        let R   = EntityRenderer.rotY(e.yaw)
+        let Ryaw = EntityRenderer.rotY(e.yaw)
         let baseCol = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
         let darkCol = baseCol * 0.62
         let hornCol = SIMD3<Float>(
@@ -773,6 +1041,7 @@ final class EntityRenderer {
         let groundY = pos.y
         let bodyY   = groundY + legH + hoofH + bH * 0.5 + bodyBob + breatheY
         let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
 
         func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
@@ -812,14 +1081,33 @@ final class EntityRenderer {
                  model: pw(SIMD3(0, snoutY, snoutZ), SIMD3(snW, snH, snD)),
                  rgb: darkCol, sat: sat)
 
-        // Eyes — squinting, low in head
-        let eyeW = s * 0.11; let eyeH = s * 0.09 * eyeBlinkSY; let eyeD = s * 0.04
+        // FACE — RAM: STERN heavy brow casting the eyes into a glare, narrow
+        // squinting eyes with a hard pupil, dark nostril slits on the snout.
+        // Reads as tough/grumpy — the bruiser of the herd.
+        let rmFaceZ = headZ + hD * 0.46
+        // Heavy brow ridge — a dark angled bar above the eyes (the stern look)
+        let browCol = baseCol * 0.45
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(-hW * 0.28, headY + hH * 0.08, headZ + hD * 0.44),
-                           SIMD3(eyeW, eyeH, eyeD)), rgb: eyeCol, sat: sat)
+                 model: pw(SIMD3(0, headY + hH * 0.24, rmFaceZ), SIMD3(hW * 0.86, s * 0.10, s * 0.06)),
+                 rgb: browCol, sat: sat)
+        // Eyes — narrow, set just under the brow, amber sclera + dark slit pupil
+        let rmEyeW = s * 0.12; let rmEyeH = s * 0.08 * eyeBlinkSY; let rmEyeD = s * 0.05
+        let rmEyeY = headY + hH * 0.07
+        let amberSclera = SIMD3<Float>(0.85, 0.62, 0.18)
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3(-hW * 0.28, rmEyeY, rmFaceZ), r: SIMD3(rmEyeW, rmEyeH, rmEyeD),
+                sat: sat, scleraCol: amberSclera, pupilCol: eyeCol)
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3( hW * 0.28, rmEyeY, rmFaceZ), r: SIMD3(rmEyeW, rmEyeH, rmEyeD),
+                sat: sat, scleraCol: amberSclera, pupilCol: eyeCol)
+        // Nostril slits — two dark dashes on the front of the snout
+        let snFrontZ = snoutZ + snD * 0.50
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3( hW * 0.28, headY + hH * 0.08, headZ + hD * 0.44),
-                           SIMD3(eyeW, eyeH, eyeD)), rgb: eyeCol, sat: sat)
+                 model: pw(SIMD3(-snW * 0.22, snoutY + snH * 0.05, snFrontZ), SIMD3(s*0.05, s*0.08, s*0.03)),
+                 rgb: baseCol * 0.30, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3( snW * 0.22, snoutY + snH * 0.05, snFrontZ), SIMD3(s*0.05, s*0.08, s*0.03)),
+                 rgb: baseCol * 0.30, sat: sat)
 
         // BIG SWEPT CURVED HORNS — each is 2 segments making an arc
         // Base segment sweeps wide-outward (rotZ outward)
@@ -909,10 +1197,11 @@ final class EntityRenderer {
                            e: bf_entity_draw,
                            pos: SIMD3<Float>,
                            phase: Float,
-                           hash: Float) {
+                           hash: Float,
+                           squash: SIMD3<Float>) {
         let s   = e.scale * 1.50   // boss is noticeably bigger
         let sat = e.sat
-        let R   = EntityRenderer.rotY(e.yaw)
+        let Ryaw = EntityRenderer.rotY(e.yaw)
         let baseCol  = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
         let darkCol  = baseCol * 0.60
         let crownCol = baseCol * 1.25
@@ -947,6 +1236,7 @@ final class EntityRenderer {
         let groundY = pos.y
         let bodyY   = groundY + legH + bH * 0.5 + stomp
         let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
 
         func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
@@ -1004,6 +1294,45 @@ final class EntityRenderer {
                  model: pw(SIMD3( hS * 0.24, headY + hS * 0.08, headZ + hS * 0.43),
                            SIMD3(eyeW, eyeH, eyeD)),
                  rgb: eyeGlowCol, sat: -1.0)  // emissive
+
+        // FACE — BOSS (friendly grand giant): kindly RAISED brows over the
+        // glowing eyes (raised = warm, not angry), and a big broad GRIN with
+        // upturned corners so the giant reads as awesome-friendly, not scary.
+        let bsFaceZ = headZ + hS * 0.43
+        // Friendly raised brows — short bars angled gently upward-outward.
+        let bossBrowCol = crownCol
+        let browL = EntityRenderer.trans(wc) * R
+            * EntityRenderer.trans(SIMD3(-hS * 0.24, headY + hS * 0.24, bsFaceZ))
+            * EntityRenderer.rotZ(0.22)
+            * EntityRenderer.scaleM(SIMD3(s * 0.20, s * 0.05, s * 0.05))
+        let browR = EntityRenderer.trans(wc) * R
+            * EntityRenderer.trans(SIMD3( hS * 0.24, headY + hS * 0.24, bsFaceZ))
+            * EntityRenderer.rotZ(-0.22)
+            * EntityRenderer.scaleM(SIMD3(s * 0.20, s * 0.05, s * 0.05))
+        drawCube(enc: enc, viewProj: viewProj, model: browL, rgb: bossBrowCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: browR, rgb: bossBrowCol, sat: sat)
+        // Big grin — wide dark mouth bar with upturned corner blocks.
+        let grinCol = SIMD3<Float>(0.10, 0.05, 0.05)
+        let grinY   = headY - hS * 0.22
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, grinY, bsFaceZ), SIMD3(hS * 0.50, s * 0.06, s * 0.05)),
+                 rgb: grinCol, sat: sat)
+        // Upturned corners (smile)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(-hS * 0.26, grinY + s * 0.06, bsFaceZ), SIMD3(s*0.08, s*0.06, s*0.05)),
+                 rgb: grinCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3( hS * 0.26, grinY + s * 0.06, bsFaceZ), SIMD3(s*0.08, s*0.06, s*0.05)),
+                 rgb: grinCol, sat: sat)
+        // A couple of friendly square teeth in the grin
+        let bossTooth = SIMD3<Float>(0.95, 0.95, 0.9)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(-s * 0.06, grinY + s * 0.02, bsFaceZ + s*0.01), SIMD3(s*0.07, s*0.06, s*0.03)),
+                 rgb: bossTooth, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3( s * 0.06, grinY + s * 0.02, bsFaceZ + s*0.01), SIMD3(s*0.07, s*0.06, s*0.03)),
+                 rgb: bossTooth, sat: sat)
+
         // Crown — 3 spires, center taller, bob on separate phase
         let crownBaseY = headY + hS * 0.50
         drawCube(enc: enc, viewProj: viewProj,
@@ -1052,10 +1381,11 @@ final class EntityRenderer {
                            e: bf_entity_draw,
                            pos: SIMD3<Float>,
                            phase: Float,
-                           hash: Float) {
+                           hash: Float,
+                           squash: SIMD3<Float>) {
         let s   = e.scale * 1.10   // slightly bigger than normal animals
         let sat = e.sat
-        let R   = EntityRenderer.rotY(e.yaw)
+        let Ryaw = EntityRenderer.rotY(e.yaw)
 
         // Force entity color very dark — monsters are black/near-black with
         // a tiny tint from entity color so siblings differ slightly.
@@ -1103,6 +1433,7 @@ final class EntityRenderer {
         let bodyY   = groundY + legH + bH * 0.5 + lurchY
         // Body also lurches on X
         let wc      = SIMD3<Float>(pos.x + lurchX, bodyY, pos.z)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
 
         func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * bodyHunch * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
@@ -1141,23 +1472,51 @@ final class EntityRenderer {
                  model: pw(SIMD3(0, headY, headZ), SIMD3(hW, hH, hD)),
                  rgb: bodyCol, sat: sat)
 
-        // GAPING MOUTH SLIT — dark red horizontal cut across face
-        let mouthW = hW * 0.82; let mouthH = s * 0.06; let mouthD = s * 0.04
+        // FACE — NIGHT MONSTER: glowing red eyes (kept), plus ANGRY angled
+        // brows pressing down over them and a JAGGED fanged mouth. The face is
+        // the threat-read — menacing but cartoonish, not gory.
+        let mnFaceZ = headZ + hD * 0.50
+        // GAPING MOUTH — dark red gap with a row of jagged white fangs across
+        // it (alternating up/down points → the jagged maw).
+        let mouthW = hW * 0.82; let mouthH = s * 0.10; let mouthD = s * 0.04
+        let mouthY = headY - hH * 0.22
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(0, headY - hH * 0.22, headZ + hD * 0.50),
-                           SIMD3(mouthW, mouthH, mouthD)),
+                 model: pw(SIMD3(0, mouthY, mnFaceZ), SIMD3(mouthW, mouthH, mouthD)),
                  rgb: mouthCol, sat: sat)
+        // Jagged fangs — five thin teeth, alternating from top and bottom.
+        let fangCol = SIMD3<Float>(0.92, 0.90, 0.84)
+        let fangXs: [Float] = [-0.32, -0.16, 0.0, 0.16, 0.32]
+        for (i, fx) in fangXs.enumerated() {
+            let down = (i % 2 == 0)   // alternate up/down points
+            let fy = mouthY + (down ? mouthH * 0.18 : -mouthH * 0.18)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(mouthW * fx, fy, mnFaceZ + s*0.01), SIMD3(s*0.045, s*0.07, s*0.03)),
+                     rgb: fangCol, sat: sat)
+        }
 
-        // GLOWING RED HDR EYES — emissive, bloom into red haze
+        // GLOWING RED HDR EYES — emissive, bloom into red haze (unchanged)
         let eyeW = s * 0.13; let eyeH = s * 0.13 * eyeBlinkSY; let eyeD = s * 0.04
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(-hW * 0.26, headY + hH * 0.12, headZ + hD * 0.50),
+                 model: pw(SIMD3(-hW * 0.26, headY + hH * 0.12, mnFaceZ),
                            SIMD3(eyeW, eyeH, eyeD)),
                  rgb: eyeGlowCol, sat: -1.0)  // emissive red
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3( hW * 0.26, headY + hH * 0.12, headZ + hD * 0.50),
+                 model: pw(SIMD3( hW * 0.26, headY + hH * 0.12, mnFaceZ),
                            SIMD3(eyeW, eyeH, eyeD)),
                  rgb: eyeGlowCol, sat: -1.0)  // emissive red
+        // ANGRY BROWS — dark angled bars pressing inward-down over the eyes
+        // (inner ends low, outer ends high → classic angry "V" scowl).
+        let mnBrowCol = spikeCol * 1.4
+        let mbL = EntityRenderer.trans(wc) * R * bodyHunch
+            * EntityRenderer.trans(SIMD3(-hW * 0.26, headY + hH * 0.30, mnFaceZ))
+            * EntityRenderer.rotZ(-0.40)
+            * EntityRenderer.scaleM(SIMD3(s * 0.20, s * 0.05, s * 0.05))
+        let mbR = EntityRenderer.trans(wc) * R * bodyHunch
+            * EntityRenderer.trans(SIMD3( hW * 0.26, headY + hH * 0.30, mnFaceZ))
+            * EntityRenderer.rotZ( 0.40)
+            * EntityRenderer.scaleM(SIMD3(s * 0.20, s * 0.05, s * 0.05))
+        drawCube(enc: enc, viewProj: viewProj, model: mbL, rgb: mnBrowCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: mbR, rgb: mnBrowCol, sat: sat)
 
         // 4 angled legs — placed slightly splayed for menacing stance
         // Legs use world-space (no bodyHunch) so they plant on the ground correctly
@@ -1290,14 +1649,39 @@ final class EntityRenderer {
     // -----------------------------------------------------------------------
     // Draw one unit cube with given model matrix and color.
     // sat = -1.0 is the emissive sentinel: fragment shader skips shading multiply.
+    //
+    // HIT FLASH: when the currently-drawing creature is mid-hit-reaction
+    // (curFlashAmt > 0) every part is pushed toward the hot flash color. We do
+    // this on the CPU side (per draw) so it composites correctly for both the
+    // shaded path and the emissive (sat < 0) eye path:
+    //   - shaded parts: lerp rgb toward flash, drive sat toward emissive so the
+    //     flash reads at full brightness regardless of face-shading.
+    //   - already-emissive parts (glowing eyes): add the flash on top so they
+    //     pop brighter / whiter for the duration, then settle back.
     @inline(__always)
     private func drawCube(enc: MTLRenderCommandEncoder,
                           viewProj: simd_float4x4,
                           model: simd_float4x4,
                           rgb: SIMD3<Float>,
                           sat: Float) {
+        var outRGB = rgb
+        var outSat = sat
+        if curFlashAmt > 0.001 {
+            if sat < 0.0 {
+                // Emissive part: add flash energy on top of existing HDR glow.
+                outRGB = rgb + curFlash * 1.5
+            } else {
+                // Shaded part: blend toward the flash color and make it emissive
+                // for the blended amount so the pop is full-strength.
+                let k = min(1.0, curFlashAmt)
+                outRGB = simd_mix(rgb, max(rgb, curFlash), SIMD3<Float>(repeating: k))
+                // Drive toward emissive only once the flash is strong, so the
+                // creature's own color still shows during the tail of the fade.
+                outSat = k > 0.5 ? -1.0 : sat
+            }
+        }
         var u = EUniforms(mvp: viewProj * model,
-                          color: SIMD4<Float>(rgb.x, rgb.y, rgb.z, sat))
+                          color: SIMD4<Float>(outRGB.x, outRGB.y, outRGB.z, outSat))
         enc.setVertexBytes(&u, length: MemoryLayout<EUniforms>.stride, index: 1)
         enc.drawIndexedPrimitives(type: .triangle, indexCount: indexCount,
                                   indexType: .uint16, indexBuffer: cubeIB, indexBufferOffset: 0)

@@ -110,7 +110,7 @@ final class GameAudio {
         }
     }
 
-    /// Call each frame (or whenever time changes). t ∈ [0, 1]: 0/1 = midnight, 0.5 = noon.
+    /// Call each frame (or whenever time changes). t in [0, 1]: 0/1 = midnight, 0.5 = noon.
     /// Picks the daytime vs evening music track and fades bird volume.
     func setTimeOfDay(_ t: Float) {
         let clampedT = max(0, min(1, t))
@@ -142,7 +142,7 @@ final class GameAudio {
     }
 
     // -----------------------------------------------------------------------
-    // MARK: SFX playback (with ±pitch variation to avoid monotony)
+    // MARK: SFX playback (with +/-pitch variation to avoid monotony)
     // -----------------------------------------------------------------------
 
     func play(_ sfx: Sfx) {
@@ -169,7 +169,7 @@ final class GameAudio {
         // Simplest compile-correct approach: use the node's `rate` setter via
         // AVAudioPlayerNode scheduling with a slightly different format pitch.
         //
-        // Actually the cleanest no-extra-node approach: build ±5% pitch variants
+        // Actually the cleanest no-extra-node approach: build +/-5% pitch variants
         // for the frequently-repeated sounds at startup, then pick one at random.
 
         let key = SfxVariantKey(sfx: sfx, variant: variantIndex(for: sfx))
@@ -266,7 +266,7 @@ final class GameAudio {
         eng.connect(sMix, to: mainMixer, format: outFormat)
         sfxMixer = sMix
 
-        // --- Music nodes (4 voices for layered pad chords) ---
+        // --- Music nodes (4 voices for melody/bass/arpeggio/pad) ---
         for _ in 0 ..< 4 {
             let node = AVAudioPlayerNode()
             eng.attach(node)
@@ -307,18 +307,29 @@ final class GameAudio {
     }
 
     // -----------------------------------------------------------------------
-    // MARK: Music — four distinct tracks
+    // MARK: Music — four fun, upbeat, kid-friendly tracks
     // -----------------------------------------------------------------------
     //
-    // Track 0: "Bright Daytime"   — C major, open 5ths, brighter pad
-    // Track 1: "Sunny Exploration"— G major, pentatonic feel, bouncy arpeggios
-    // Track 2: "Mellow Evening"   — A minor, softer, slower chord rhythm
-    // Track 3: "Gentle Dusk"      — F major → D minor, lullaby-ish, very soft
+    // Track 0: "Sunshine Sprint"  — C major, 120 BPM, 16 s loop  [DAY]
+    //   Bouncy melody over walking bass + sparkling arpeggios.
     //
-    // Each track is pre-rendered into 4 voice buffers (root / 3rd / 5th / octave).
-    // A Timer rotates tracks every ~48 s. On rotation we cross-fade (stop+restart).
+    // Track 1: "Pixel Bounce"     — G major, 132 BPM, ~14.5 s loop [DAY]
+    //   Skippy pentatonic melody, bright triangle arpeggios, punchy bass.
+    //
+    // Track 2: "Cozy Campfire"    — F major, 108 BPM, ~17.8 s loop [EVENING]
+    //   Warm and cheerful — still all-major, a touch softer and dreamier.
+    //
+    // Track 3: "Starlight Waltz"  — D major, 120 BPM, 12 s loop  [EVENING]
+    //   Lilting 3/4 feel, gentle melody, happy but calm.
+    //
+    // Each track is synthesized as 4 independent looping voice buffers:
+    //   Voice 0 = melody   (sine + slight harmonic blend, medium vol)
+    //   Voice 1 = bass     (triangle, lower octave, punchy envelope)
+    //   Voice 2 = arpeggio (sine, fast ascending broken chord, light vol)
+    //   Voice 3 = pad      (sine, sustained chord, very soft backing)
     //
     // Tracks 0,1 belong to .day group; Tracks 2,3 to .evening group.
+    // Rotation: tracks alternate within their group every 48 s via crossFadeToTrack.
 
     private func startMusic() {
         if allTrackBuffers.isEmpty { buildAllTrackBuffers() }
@@ -400,157 +411,436 @@ final class GameAudio {
     // MARK: Track buffer synthesis
     // -----------------------------------------------------------------------
     //
-    // Each track has its own chord progression + voice character.
-    // Each track's full loop is a concatenation of chord segments.
-    // 4 voices per track → stored as allTrackBuffers[trackIdx][voiceIdx].
+    // Each track is built from 4 note-sequence voices (melody, bass, arpeggio, pad).
+    // All voices within a track share the same totalSamples so they loop in sync.
+    // The note-sequence helper buildNoteVoice() renders note events sample-by-sample
+    // using a continuous phase accumulator (no audible pops at note transitions) and
+    // applies a short linear fade-in/out at the buffer boundary for clean looping.
 
     private func buildAllTrackBuffers() {
         allTrackBuffers = []
-        allTrackBuffers.append(buildTrack0_BrightDaytime())
-        allTrackBuffers.append(buildTrack1_SunnyExploration())
-        allTrackBuffers.append(buildTrack2_MellowEvening())
-        allTrackBuffers.append(buildTrack3_GentleDusk())
-    }
-
-    // MARK: Track 0 — Bright Daytime (C maj → F maj → G maj → C maj, 5 s each = 20 s loop)
-    private func buildTrack0_BrightDaytime() -> [AVAudioPCMBuffer] {
-        // Roots: C3, F3, G3, C3
-        let roots:     [Float] = [130.81, 174.61, 196.00, 130.81]
-        // All major chords: root, M3, P5, octave
-        let intervals: [Float] = [1.0, 5.0/4, 3.0/2, 2.0]
-        let chordDur:  Double  = 5.0
-        let shapes: [OscShape] = [.sine, .triangle, .sine, .triangle]
-        let vols:    [Float]   = [0.32, 0.22, 0.28, 0.16]
-        return buildChordProgressionTrack(roots: roots, intervals: intervals,
-                                          chordDur: chordDur, shapes: shapes,
-                                          voiceVols: vols, attackMul: 1.0, releaseMul: 1.0)
-    }
-
-    // MARK: Track 1 — Sunny Exploration (G maj → D maj → A min → E min, 4 s each = 16 s)
-    private func buildTrack1_SunnyExploration() -> [AVAudioPCMBuffer] {
-        // Brighter — use octave-up roots (G3, D3, A2, E3)
-        let roots:     [Float] = [196.00, 146.83, 110.00, 164.81]
-        // Major / minor mix
-        let chordTypes: [[Float]] = [
-            [1.0, 5.0/4, 3.0/2, 2.0],    // G major
-            [1.0, 5.0/4, 3.0/2, 2.0],    // D major
-            [1.0, 6.0/5, 3.0/2, 2.0],    // A minor
-            [1.0, 6.0/5, 3.0/2, 2.0],    // E minor
-        ]
-        let chordDur: Double = 4.0
-        let shapes: [OscShape] = [.sine, .sine, .triangle, .triangle]
-        let vols:   [Float]   = [0.28, 0.24, 0.26, 0.14]
-        // Build per-voice by extracting each voice's intervals across chords.
-        return buildMixedProgressionTrack(roots: roots, chordTypes: chordTypes,
-                                          chordDur: chordDur, shapes: shapes, voiceVols: vols,
-                                          attackMul: 0.7, releaseMul: 0.8)
-    }
-
-    // MARK: Track 2 — Mellow Evening (A min → C maj → G maj → E min, 6 s each = 24 s)
-    private func buildTrack2_MellowEvening() -> [AVAudioPCMBuffer] {
-        let roots: [Float] = [110.00, 130.81, 98.00, 82.41]   // A2, C3, G2, E2
-        let chordTypes: [[Float]] = [
-            [1.0, 6.0/5, 3.0/2, 2.0],    // A minor
-            [1.0, 5.0/4, 3.0/2, 2.0],    // C major
-            [1.0, 5.0/4, 3.0/2, 2.0],    // G major
-            [1.0, 6.0/5, 3.0/2, 2.0],    // E minor
-        ]
-        let chordDur: Double = 6.0
-        // Softer — all sine for a pure, calm feel.
-        let shapes: [OscShape] = [.sine, .sine, .sine, .sine]
-        let vols:   [Float]   = [0.28, 0.18, 0.24, 0.13]
-        return buildMixedProgressionTrack(roots: roots, chordTypes: chordTypes,
-                                          chordDur: chordDur, shapes: shapes, voiceVols: vols,
-                                          attackMul: 1.5, releaseMul: 1.5)
-    }
-
-    // MARK: Track 3 — Gentle Dusk (F maj → D min → B♭ maj → C maj, 7 s each = 28 s)
-    private func buildTrack3_GentleDusk() -> [AVAudioPCMBuffer] {
-        let roots: [Float] = [87.31, 73.42, 116.54, 65.41]   // F2, D2, Bb2, C2
-        let chordTypes: [[Float]] = [
-            [1.0, 5.0/4, 3.0/2, 2.0],    // F major
-            [1.0, 6.0/5, 3.0/2, 2.0],    // D minor
-            [1.0, 5.0/4, 3.0/2, 2.0],    // Bb major
-            [1.0, 5.0/4, 3.0/2, 2.0],    // C major
-        ]
-        let chordDur: Double = 7.0
-        // Very soft triangle — lullaby warmth
-        let shapes: [OscShape] = [.triangle, .triangle, .triangle, .triangle]
-        let vols:   [Float]   = [0.24, 0.16, 0.20, 0.11]
-        return buildMixedProgressionTrack(roots: roots, chordTypes: chordTypes,
-                                          chordDur: chordDur, shapes: shapes, voiceVols: vols,
-                                          attackMul: 2.0, releaseMul: 2.0)
+        allTrackBuffers.append(buildTrack0_SunshineSprint())
+        allTrackBuffers.append(buildTrack1_PixelBounce())
+        allTrackBuffers.append(buildTrack2_CozyCampfire())
+        allTrackBuffers.append(buildTrack3_StarlightWaltz())
     }
 
     // -----------------------------------------------------------------------
-    // MARK: Track helpers
+    // MARK: Note-sequence voice builder
     // -----------------------------------------------------------------------
+    //
+    // A MusicalNote specifies:
+    //   hz      — equal-temperament frequency (0 = rest/silence for this slot)
+    //   dur     — gate duration in seconds (how long the note sounds)
+    //   gap     — silence after the gate before the next note starts
+    //
+    // The sequence loops to fill totalSamples exactly.
+    //
+    // Per-note envelope:
+    //   attack  = min(0.010, dur * 0.08)   — very fast, punchy
+    //   sustain = ramp from 1.0 down to 0.78 over the held portion (light duck)
+    //   release = starts dur - max(0.005, gap*0.4 + dur*0.12) seconds in
+    //
+    // Oscillator: main shape + 18% second harmonic for warmth; both scaled so
+    // combined peak stays within +-1.0 at vol=1.
 
-    /// All chords share the same interval ratios (e.g. all-major).
-    private func buildChordProgressionTrack(roots: [Float],
-                                            intervals: [Float],
-                                            chordDur: Double,
-                                            shapes: [OscShape],
-                                            voiceVols: [Float],
-                                            attackMul: Float,
-                                            releaseMul: Float) -> [AVAudioPCMBuffer] {
-        let chordTypes = roots.map { _ in intervals }
-        return buildMixedProgressionTrack(roots: roots, chordTypes: chordTypes,
-                                          chordDur: chordDur, shapes: shapes,
-                                          voiceVols: voiceVols,
-                                          attackMul: attackMul, releaseMul: releaseMul)
+    private struct MusicalNote {
+        let hz:  Float   // 0 = rest
+        let dur: Float   // gate duration in seconds
+        let gap: Float   // silence after gate before next note
     }
 
-    /// Each chord can have its own interval set.
-    private func buildMixedProgressionTrack(roots: [Float],
-                                            chordTypes: [[Float]],
-                                            chordDur: Double,
-                                            shapes: [OscShape],
-                                            voiceVols: [Float],
-                                            attackMul: Float,
-                                            releaseMul: Float) -> [AVAudioPCMBuffer] {
-        let sr              = Float(format.sampleRate)
-        let chordSamples    = Int(sr * Float(chordDur))
-        let chordCount      = roots.count
-        let totalSamples    = chordSamples * chordCount
-        let numVoices       = min(4, min(shapes.count, voiceVols.count))
+    /// Render a note sequence into a stereo buffer of exactly `totalSamples` frames.
+    private func buildNoteVoice(notes: [MusicalNote],
+                                shape: OscShape,
+                                vol: Float,
+                                totalSamples: Int) -> AVAudioPCMBuffer? {
+        guard !notes.isEmpty, totalSamples > 0 else { return nil }
+        guard let buf = AVAudioPCMBuffer(pcmFormat: format,
+                                         frameCapacity: AVAudioFrameCount(totalSamples)) else { return nil }
+        buf.frameLength = AVAudioFrameCount(totalSamples)
+        guard let L = buf.floatChannelData?[0],
+              let R = buf.floatChannelData?[1] else { return nil }
 
-        var result: [AVAudioPCMBuffer] = []
+        let sr = Float(format.sampleRate)
 
-        for voiceIdx in 0 ..< numVoices {
-            guard let buf = AVAudioPCMBuffer(pcmFormat: format,
-                                             frameCapacity: AVAudioFrameCount(totalSamples)) else { continue }
-            buf.frameLength = AVAudioFrameCount(totalSamples)
-            guard let L = buf.floatChannelData?[0],
-                  let R = buf.floatChannelData?[1] else { continue }
+        // Pre-compute cumulative note-slot start times (in seconds).
+        var starts = [Float]()
+        starts.reserveCapacity(notes.count)
+        var cursor: Float = 0
+        for n in notes {
+            starts.append(cursor)
+            cursor += n.dur + n.gap
+        }
+        let seqLen = cursor   // total duration of one sequence pass
 
-            let shape = shapes[voiceIdx]
-            let vol   = voiceVols[voiceIdx]
-            let atk   = Float(chordDur) * 0.15 * attackMul
-            let rel   = Float(chordDur) * 0.22 * releaseMul
+        // Phase accumulator — we reset it each time the note pitch changes so the
+        // waveform restarts cleanly at phase 0, avoiding inter-note clicks.
+        var phase: Float  = 0
+        var prevHz: Float = 0
+        var noteIdx = 0
 
-            for chordIdx in 0 ..< chordCount {
-                let rootHz   = roots[chordIdx]
-                let interval = chordTypes[chordIdx][min(voiceIdx, chordTypes[chordIdx].count - 1)]
-                let hz       = rootHz * interval
-                let baseOff  = chordIdx * chordSamples
+        for i in 0 ..< totalSamples {
+            let globalT = Float(i) / sr
+            // Map into one sequence repeat.
+            let seqT    = globalT.truncatingRemainder(dividingBy: seqLen)
 
-                for i in 0 ..< chordSamples {
-                    let t   = Float(i) / sr
-                    let env = padEnvelope(t, attack: atk, release: rel, total: Float(chordDur))
-                    let sample = vol * env * osc(shape, phase: hz * t)
-                    L[baseOff + i] = sample
-                    R[baseOff + i] = sample
-                }
+            // Locate active note (linear scan; note count is small, typically 4-16).
+            noteIdx = 0
+            while noteIdx < notes.count - 1 && starts[noteIdx + 1] <= seqT {
+                noteIdx += 1
             }
 
-            applyFadeIO(L, R, samples: totalSamples, fadeLen: min(512, totalSamples / 8))
-            result.append(buf)
+            let note  = notes[noteIdx]
+            let noteT = seqT - starts[noteIdx]   // elapsed time within this note slot
+
+            // Reset phase when note pitch changes (clean restart, no pop).
+            if note.hz != prevHz {
+                phase  = 0
+                prevHz = note.hz
+            }
+            // Advance phase accumulator regardless of gate (keeps tracking).
+            if note.hz > 0 {
+                phase += note.hz / sr
+                if phase > 1.0 { phase -= 1.0 }
+            }
+
+            var sample: Float = 0
+            if note.hz > 0 && noteT < note.dur {
+                // Per-note envelope.
+                let atk      = min(0.010, note.dur * 0.08)
+                let relStart = note.dur - max(0.005, note.gap * 0.4 + note.dur * 0.12)
+                let env: Float
+                if noteT < atk {
+                    env = noteT / atk
+                } else if noteT >= relStart {
+                    let relLen = max(0.001, note.dur - relStart)
+                    env = max(0, 1.0 - (noteT - relStart) / relLen)
+                } else {
+                    // Gentle sustain duck: 1.0 at attack end, 0.78 at release start.
+                    let sustProg = (noteT - atk) / max(0.001, relStart - atk)
+                    env = 1.0 - 0.22 * min(sustProg, 1.0)
+                }
+                // Main osc + gentle 2nd harmonic (normalised so peak stays <= 1.0).
+                let mainOsc = osc(shape, phase: phase)
+                let harm2   = sin(2 * .pi * phase * 2) * 0.18
+                sample = vol * env * (mainOsc + harm2) * (1.0 / 1.18)
+            }
+            L[i] = sample
+            R[i] = sample
         }
-        return result
+
+        // Short fade in/out to guarantee a clean loop point (~11.6 ms at 44.1 kHz).
+        applyFadeIO(L, R, samples: totalSamples, fadeLen: min(512, totalSamples / 8))
+        return buf
     }
 
-    /// Smooth pad envelope: fast attack → sustain → graceful release.
+    // -----------------------------------------------------------------------
+    // MARK: Track 0 — "Sunshine Sprint" (C major, 120 BPM, 16 s loop) [DAY]
+    // -----------------------------------------------------------------------
+    // Quarter note (q) = 0.500 s.  Loop = 32 q = 16.0 s exactly.
+    // Melody: two 8-q phrases — ascending run then resolved peak.
+    // Bass: C3-G3-F3-G3 (half notes), steady and bouncy.
+    // Arpeggio: C4-E4-G4-C5 (eighth notes), sparkly constant motion.
+    // Pad: C4-G4-F4-G4 (half notes), very soft harmonic warmth.
+
+    private func buildTrack0_SunshineSprint() -> [AVAudioPCMBuffer] {
+        let q: Float = 0.500
+        let e: Float = q / 2
+        let h: Float = q * 2
+
+        // Equal-temperament Hz values (A4 = 440 Hz).
+        let C3: Float = 130.813; let G3: Float = 195.998; let F3: Float = 174.614
+        let C4: Float = 261.626; let E4: Float = 329.628; let G4: Float = 391.995; let F4: Float = 349.228
+        let C5: Float = 523.251; let E5: Float = 659.255; let G5: Float = 783.991
+        let A5: Float = 880.000; let C6: Float = 1046.502
+
+        let totalSamples = Int(Float(format.sampleRate) * 16.0)
+
+        // Melody — 16 quarter notes (one full sequence = 8 s, loops twice in 16 s buffer).
+        let melodyNotes: [MusicalNote] = [
+            .init(hz: C5, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: E5, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: G5, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: A5, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: G5, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: E5, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: C5, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: G4, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: C5, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: E5, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: G5, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: A5, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: C6, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: A5, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: G5, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: E5, dur: q * 0.85, gap: q * 0.15),
+        ]
+
+        // Bass — C3 G3 F3 G3 (half notes, 4 notes = 8 s, loops twice).
+        let bassNotes: [MusicalNote] = [
+            .init(hz: C3, dur: h * 0.80, gap: h * 0.20),
+            .init(hz: G3, dur: h * 0.80, gap: h * 0.20),
+            .init(hz: F3, dur: h * 0.80, gap: h * 0.20),
+            .init(hz: G3, dur: h * 0.80, gap: h * 0.20),
+        ]
+
+        // Arpeggio — C4 E4 G4 C5 (eighth notes, repeats to fill).
+        let arpNotes: [MusicalNote] = [
+            .init(hz: C4, dur: e * 0.75, gap: e * 0.25),
+            .init(hz: E4, dur: e * 0.75, gap: e * 0.25),
+            .init(hz: G4, dur: e * 0.75, gap: e * 0.25),
+            .init(hz: C5, dur: e * 0.75, gap: e * 0.25),
+        ]
+
+        // Pad — C4 G4 F4 G4 (half notes), very soft.
+        let padNotes: [MusicalNote] = [
+            .init(hz: C4, dur: h * 0.92, gap: h * 0.08),
+            .init(hz: G4, dur: h * 0.92, gap: h * 0.08),
+            .init(hz: F4, dur: h * 0.92, gap: h * 0.08),
+            .init(hz: G4, dur: h * 0.92, gap: h * 0.08),
+        ]
+
+        var voices: [AVAudioPCMBuffer] = []
+        if let v = buildNoteVoice(notes: melodyNotes, shape: .sine,     vol: 0.28, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: bassNotes,   shape: .triangle, vol: 0.22, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: arpNotes,    shape: .sine,     vol: 0.13, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: padNotes,    shape: .sine,     vol: 0.10, totalSamples: totalSamples) { voices.append(v) }
+        return voices
+    }
+
+    // -----------------------------------------------------------------------
+    // MARK: Track 1 — "Pixel Bounce" (G major, 132 BPM, ~14.55 s loop) [DAY]
+    // -----------------------------------------------------------------------
+    // Quarter note = 60/132 = 0.4545... s.  Loop = 32 q = 14.545... s.
+    // Melody: skippy pentatonic G-major phrases with a rest beat for breathing room.
+    // Bass: G3-D4-G3-B3 (half notes, staccato).
+    // Arpeggio: G4-B4-D5-G5 (eighth notes, triangle for brightness).
+    // Pad: G4-D4-G4-B4 (half notes), very soft.
+
+    private func buildTrack1_PixelBounce() -> [AVAudioPCMBuffer] {
+        let q: Float = 60.0 / 132.0
+        let e: Float = q / 2
+        let h: Float = q * 2
+
+        let G3: Float = 195.998; let D4: Float = 293.665; let B3: Float = 246.942
+        let G4: Float = 391.995; let B4: Float = 493.883; let D5: Float = 587.330
+        let G5: Float = 783.991; let A5: Float = 880.000; let E5: Float = 659.255
+
+        let loopDur: Float    = q * 32
+        let totalSamples: Int = Int(Float(format.sampleRate) * loopDur)
+
+        // Melody — 16 q slots (8 s per pass, loops twice in ~14.5 s buffer).
+        let melodyNotes: [MusicalNote] = [
+            .init(hz: G5,  dur: q * 0.75, gap: q * 0.25),
+            .init(hz: E5,  dur: q * 0.75, gap: q * 0.25),
+            .init(hz: D5,  dur: q * 0.75, gap: q * 0.25),
+            .init(hz: B4,  dur: q * 0.75, gap: q * 0.25),
+            .init(hz: G4,  dur: q * 0.75, gap: q * 0.25),
+            .init(hz: B4,  dur: q * 0.75, gap: q * 0.25),
+            .init(hz: D5,  dur: q * 0.75, gap: q * 0.25),
+            .init(hz: G5,  dur: q * 0.75, gap: q * 0.25),
+            .init(hz: A5,  dur: q * 0.75, gap: q * 0.25),
+            .init(hz: G5,  dur: q * 0.75, gap: q * 0.25),
+            .init(hz: E5,  dur: q * 0.75, gap: q * 0.25),
+            .init(hz: D5,  dur: q * 0.75, gap: q * 0.25),
+            .init(hz: B4,  dur: q * 0.75, gap: q * 0.25),
+            .init(hz: D5,  dur: q * 0.75, gap: q * 0.25),
+            .init(hz: G5,  dur: q * 0.60, gap: q * 0.40),
+            .init(hz:   0, dur: q * 0.90, gap: q * 0.10),   // rest beat for bounce feel
+        ]
+
+        // Bass — G3 D4 G3 B3 (staccato half notes).
+        let bassNotes: [MusicalNote] = [
+            .init(hz: G3, dur: h * 0.65, gap: h * 0.35),
+            .init(hz: D4, dur: h * 0.65, gap: h * 0.35),
+            .init(hz: G3, dur: h * 0.65, gap: h * 0.35),
+            .init(hz: B3, dur: h * 0.65, gap: h * 0.35),
+        ]
+
+        // Arpeggio — G4 B4 D5 G5 (eighth notes).
+        let arpNotes: [MusicalNote] = [
+            .init(hz: G4, dur: e * 0.70, gap: e * 0.30),
+            .init(hz: B4, dur: e * 0.70, gap: e * 0.30),
+            .init(hz: D5, dur: e * 0.70, gap: e * 0.30),
+            .init(hz: G5, dur: e * 0.70, gap: e * 0.30),
+        ]
+
+        // Pad — G4 D4 G4 B4.
+        let padNotes: [MusicalNote] = [
+            .init(hz: G4, dur: h * 0.90, gap: h * 0.10),
+            .init(hz: D4, dur: h * 0.90, gap: h * 0.10),
+            .init(hz: G4, dur: h * 0.90, gap: h * 0.10),
+            .init(hz: B4, dur: h * 0.90, gap: h * 0.10),
+        ]
+
+        var voices: [AVAudioPCMBuffer] = []
+        if let v = buildNoteVoice(notes: melodyNotes, shape: .sine,     vol: 0.27, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: bassNotes,   shape: .triangle, vol: 0.21, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: arpNotes,    shape: .triangle, vol: 0.12, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: padNotes,    shape: .sine,     vol: 0.09, totalSamples: totalSamples) { voices.append(v) }
+        return voices
+    }
+
+    // -----------------------------------------------------------------------
+    // MARK: Track 2 — "Cozy Campfire" (F major, 108 BPM, ~17.78 s loop) [EVENING]
+    // -----------------------------------------------------------------------
+    // Quarter note = 60/108 = 0.5556 s.  Loop = 32 q = 17.778 s.
+    // Happy and warm F major — a touch more relaxed than the day tracks but
+    // still bright and major throughout. Melody has a gentle sing-along arc.
+
+    private func buildTrack2_CozyCampfire() -> [AVAudioPCMBuffer] {
+        let q: Float = 60.0 / 108.0
+        let e: Float = q / 2
+        let h: Float = q * 2
+
+        let F3: Float = 174.614; let C4: Float = 261.626; let A3: Float = 220.000
+        let F4: Float = 349.228; let A4: Float = 440.000; let C5: Float = 523.251
+        let F5: Float = 698.456; let G5: Float = 783.991; let E5: Float = 659.255
+        let Bb4: Float = 466.164; let D5: Float = 587.330; let G4: Float = 391.995
+
+        let loopDur: Float    = q * 32
+        let totalSamples: Int = Int(Float(format.sampleRate) * loopDur)
+
+        // Melody — warm singable F-major phrase (16 q slots = 8.89 s, loops twice).
+        let melodyNotes: [MusicalNote] = [
+            .init(hz: F5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: E5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: F5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: G5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: F5,  dur: h * 0.88, gap: h * 0.12),    // half note — phrase peak
+            .init(hz: C5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: D5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: C5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: A4,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: Bb4, dur: h * 0.88, gap: h * 0.12),
+            .init(hz: A4,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: G4,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: A4,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: C5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: F4,  dur: h * 0.80, gap: h * 0.20),    // half note resolution
+            .init(hz:   0, dur: q * 0.95, gap: q * 0.05),    // breath rest
+        ]
+
+        // Bass — F3 C4 F3 A3 (walking half notes, gentle).
+        let bassNotes: [MusicalNote] = [
+            .init(hz: F3, dur: h * 0.75, gap: h * 0.25),
+            .init(hz: C4, dur: h * 0.75, gap: h * 0.25),
+            .init(hz: F3, dur: h * 0.75, gap: h * 0.25),
+            .init(hz: A3, dur: h * 0.75, gap: h * 0.25),
+        ]
+
+        // Arpeggio — F4 A4 C5 F5 (eighth notes).
+        let arpNotes: [MusicalNote] = [
+            .init(hz: F4, dur: e * 0.78, gap: e * 0.22),
+            .init(hz: A4, dur: e * 0.78, gap: e * 0.22),
+            .init(hz: C5, dur: e * 0.78, gap: e * 0.22),
+            .init(hz: F5, dur: e * 0.78, gap: e * 0.22),
+        ]
+
+        // Pad — F4 C4 F4 A4 (half notes), very soft.
+        let padNotes: [MusicalNote] = [
+            .init(hz: F4, dur: h * 0.93, gap: h * 0.07),
+            .init(hz: C4, dur: h * 0.93, gap: h * 0.07),
+            .init(hz: F4, dur: h * 0.93, gap: h * 0.07),
+            .init(hz: A4, dur: h * 0.93, gap: h * 0.07),
+        ]
+
+        var voices: [AVAudioPCMBuffer] = []
+        if let v = buildNoteVoice(notes: melodyNotes, shape: .sine,     vol: 0.26, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: bassNotes,   shape: .triangle, vol: 0.19, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: arpNotes,    shape: .sine,     vol: 0.11, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: padNotes,    shape: .sine,     vol: 0.09, totalSamples: totalSamples) { voices.append(v) }
+        return voices
+    }
+
+    // -----------------------------------------------------------------------
+    // MARK: Track 3 — "Starlight Waltz" (D major, 120 BPM, 12 s loop) [EVENING]
+    // -----------------------------------------------------------------------
+    // Quarter note = 0.500 s.  Loop = 24 q (8 bars of 3/4) = 12.0 s exactly.
+    // Lilting waltz feel — happy but gentle, like a cheerful music-box tune.
+    // D major uses F# (Fs) = 369.994 Hz.
+
+    private func buildTrack3_StarlightWaltz() -> [AVAudioPCMBuffer] {
+        let q: Float = 0.500
+        let e: Float = q / 2
+        let h: Float = q * 2
+
+        let D3: Float  = 146.832; let A3: Float  = 220.000; let Fs3: Float = 184.997
+        let D4: Float  = 293.665; let Fs4: Float = 369.994; let A4: Float  = 440.000
+        let D5: Float  = 587.330; let Fs5: Float = 739.989; let A5: Float  = 880.000
+        let E5: Float  = 659.255; let G5: Float  = 783.991
+
+        let loopDur: Float    = q * 24   // 12.0 s
+        let totalSamples: Int = Int(Float(format.sampleRate) * loopDur)
+
+        // Melody — 24 quarter-note events (8 x 3/4 bars).
+        // Last bar uses a 2.8q note + 0.2q gap = 3q total to complete the phrase.
+        let melodyNotes: [MusicalNote] = [
+            // Bar 1: D5 Fs5 A5
+            .init(hz: D5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: Fs5, dur: q * 0.88, gap: q * 0.12),
+            .init(hz: A5,  dur: q * 0.88, gap: q * 0.12),
+            // Bar 2: A5 G5 E5
+            .init(hz: A5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: G5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: E5,  dur: q * 0.88, gap: q * 0.12),
+            // Bar 3: Fs5 A5 D5
+            .init(hz: Fs5, dur: q * 0.88, gap: q * 0.12),
+            .init(hz: A5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: D5,  dur: q * 0.88, gap: q * 0.12),
+            // Bar 4: E5 Fs5 (dotted half = two q)
+            .init(hz: E5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: Fs5, dur: h * 0.85, gap: h * 0.15),
+            // Bar 5: D5 Fs5 A5
+            .init(hz: D5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: Fs5, dur: q * 0.88, gap: q * 0.12),
+            .init(hz: A5,  dur: q * 0.88, gap: q * 0.12),
+            // Bar 6: G5 E5 D5
+            .init(hz: G5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: E5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: D5,  dur: q * 0.88, gap: q * 0.12),
+            // Bar 7: A4 Fs5 A5
+            .init(hz: A4,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: Fs5, dur: q * 0.88, gap: q * 0.12),
+            .init(hz: A5,  dur: q * 0.88, gap: q * 0.12),
+            // Bar 8: D5 dotted half (3 q = fills bar, total = 24 q)
+            .init(hz: D5,  dur: q * 2.80, gap: q * 0.20),
+        ]
+
+        // Bass — D3 A3 D3 Fs3 (half notes, gentle waltz feel).
+        let bassNotes: [MusicalNote] = [
+            .init(hz: D3,  dur: h * 0.72, gap: h * 0.28),
+            .init(hz: A3,  dur: h * 0.72, gap: h * 0.28),
+            .init(hz: D3,  dur: h * 0.72, gap: h * 0.28),
+            .init(hz: Fs3, dur: h * 0.72, gap: h * 0.28),
+        ]
+
+        // Arpeggio — D4 Fs4 A4 D5 (eighth notes, music-box sparkle).
+        let arpNotes: [MusicalNote] = [
+            .init(hz: D4,  dur: e * 0.72, gap: e * 0.28),
+            .init(hz: Fs4, dur: e * 0.72, gap: e * 0.28),
+            .init(hz: A4,  dur: e * 0.72, gap: e * 0.28),
+            .init(hz: D5,  dur: e * 0.72, gap: e * 0.28),
+        ]
+
+        // Pad — D4 A4 D4 A4 (half notes, soft sustained notes).
+        let padNotes: [MusicalNote] = [
+            .init(hz: D4,  dur: h * 0.92, gap: h * 0.08),
+            .init(hz: A4,  dur: h * 0.92, gap: h * 0.08),
+            .init(hz: D4,  dur: h * 0.92, gap: h * 0.08),
+            .init(hz: A4,  dur: h * 0.92, gap: h * 0.08),
+        ]
+
+        var voices: [AVAudioPCMBuffer] = []
+        if let v = buildNoteVoice(notes: melodyNotes, shape: .sine,     vol: 0.25, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: bassNotes,   shape: .triangle, vol: 0.18, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: arpNotes,    shape: .sine,     vol: 0.11, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: padNotes,    shape: .sine,     vol: 0.08, totalSamples: totalSamples) { voices.append(v) }
+        return voices
+    }
+
+    /// Smooth pad envelope: retained for any future callers.
     @inline(__always)
     private func padEnvelope(_ t: Float, attack: Float, release: Float, total: Float) -> Float {
         if t < attack { return t / attack }
@@ -566,7 +856,7 @@ final class GameAudio {
     // Wind: long filtered-noise buffer (60 s) with gentle amplitude LFO to give
     // the impression of swells. Scheduled on .loops.
     //
-    // Birds: 3 distinct whistle motifs, played at random ~10–35 s intervals via
+    // Birds: 3 distinct whistle motifs, played at random ~10-35 s intervals via
     // a self-rescheduling Timer. Volume controlled by setTimeOfDay.
 
     private func buildAmbienceBuffers() {
@@ -588,7 +878,7 @@ final class GameAudio {
 
     private func scheduleBirdChirp() {
         birdTimer?.invalidate()
-        // Random interval 10–35 s between chirps.
+        // Random interval 10-35 s between chirps.
         let delay = Double.random(in: 10 ... 35)
         birdTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             guard let self, self.ambienceEnabled, self.engine?.isRunning == true else { return }
@@ -619,16 +909,16 @@ final class GameAudio {
         guard let L = buf.floatChannelData?[0],
               let R = buf.floatChannelData?[1] else { return nil }
 
-        // Simple low-pass via one-pole IIR: y[n] = α*x[n] + (1-α)*y[n-1]
-        let alpha: Float  = 0.003   // very heavy LP → wind-like rumble
+        // Simple low-pass via one-pole IIR: y[n] = alpha*x[n] + (1-alpha)*y[n-1]
+        let alpha: Float  = 0.003   // very heavy LP — wind-like rumble
         var prevL: Float  = 0
         var prevR: Float  = 0
         let lfoFreq: Float = 0.04   // gentle swell frequency
 
         for i in 0 ..< n {
             let t    = Float(i) / sr
-            let lfo  = 0.5 + 0.5 * sin(2 * .pi * lfoFreq * t + 0.7)   // 0…1 swell
-            let amp  = 0.35 + 0.25 * lfo                                // 0.35…0.60
+            let lfo  = 0.5 + 0.5 * sin(2 * .pi * lfoFreq * t + 0.7)   // 0...1 swell
+            let amp  = 0.35 + 0.25 * lfo                                // 0.35...0.60
 
             let xL   = Float.random(in: -1 ... 1)
             let xR   = Float.random(in: -1 ... 1)
@@ -663,7 +953,7 @@ final class GameAudio {
     private func makeBirdMotifA() -> AVAudioPCMBuffer? {
         let total:   Float = 0.70
         let noteDur: Float = 0.15
-        // Note 1 at 0 s: 1800→2400 Hz sweep; Note 2 at 0.25 s: 2200→2800 Hz
+        // Note 1 at 0 s: 1800-2400 Hz sweep; Note 2 at 0.25 s: 2200-2800 Hz
         return synthesize(duration: total) { i, sr in
             let t = Float(i) / sr
             var s: Float = 0
@@ -755,7 +1045,7 @@ final class GameAudio {
     private var breakVariantCounters: [Int] = []
 
     /// Call from the renderer when a block of a given material class breaks.
-    /// materialClass out of range → falls back to 0.
+    /// materialClass out of range falls back to 0.
     func playBreak(materialClass: Int) {
         guard sfxEnabled, let engine, engine.isRunning else { return }
         let cls = (materialClass >= 0 && materialClass < breakMaterialBuffers.count)
@@ -843,7 +1133,6 @@ final class GameAudio {
                 : 0
             let hz    = Float(180) * pow(0.18, t * 4)
             let tone  = 0.50 * sin(2 * .pi * hz * t)
-            // High-pass character via subtracting LP-like content (approximate with raw - slow noise)
             let rawNoise = self.whitenoise()
             let crack = crackEnv * rawNoise * 1.0
             let thud  = thudEnv  * (tone * 0.7 + rawNoise * 0.45)
@@ -861,7 +1150,7 @@ final class GameAudio {
             let snapEnv = self.envelope(t, a: 0.001, d: 0.015, s: 0.0, sLen: 0.0, r: 0.02, total: 0.04)
             // Resonant hollow body: two sine tones (fundamental + 2nd harmonic of wood)
             let bodyEnv = self.envelope(t, a: 0.003, d: 0.04, s: 0.30, sLen: 0.06, r: 0.11, total: dur)
-            // Wood hollow resonance ~ 220–280 Hz range, sweeps down
+            // Wood hollow resonance ~ 220-280 Hz range, sweeps down
             let hz1   = Float(240) * pow(0.40, t * 3)
             let hz2   = hz1 * 1.5   // hollow box mode
             let body  = bodyEnv * (0.55 * sin(2 * .pi * hz1 * t) + 0.25 * sin(2 * .pi * hz2 * t))
@@ -880,11 +1169,11 @@ final class GameAudio {
         return synthesize(duration: dur) { i, sr in
             let t   = Float(i) / sr
             let env = self.envelope(t, a: 0.005, d: 0.04, s: 0.35, sLen: 0.05, r: 0.10, total: dur)
-            // Heavy low-pass filter → muffled, earthy
+            // Heavy low-pass filter — muffled, earthy
             let alpha: Float = 0.025
             let raw = self.whitenoise()
             prevLP = alpha * raw + (1 - alpha) * prevLP
-            // Very low fundamental thud (70–100 Hz)
+            // Very low fundamental thud (70-100 Hz)
             let hz   = Float(85) * pow(0.30, t * 3)
             let tone = 0.40 * sin(2 * .pi * hz * t)
             // Quiet mid noise for texture
@@ -943,7 +1232,7 @@ final class GameAudio {
         return synthesize(duration: dur) { i, sr in
             let t   = Float(i) / sr
             let env = self.envelope(t, a: 0.004, d: 0.03, s: 0.30, sLen: 0.06, r: 0.08, total: dur)
-            // Band-pass emphasis: mid-high crinkle (0.08 LP - heavy LP → band)
+            // Band-pass emphasis: mid-high crinkle (0.08 LP - heavy LP = band)
             let raw = self.whitenoise()
             let lp1  = 0.06 * raw + 0.94 * prevMid
             prevMid  = lp1
@@ -1010,7 +1299,7 @@ final class GameAudio {
     // MARK: Pitch-variant pre-render
     //
     // For frequently-repeated SFX (mine, place, breakBlock, step) we pre-render
-    // 4 pitch variants (±3 semitones) and rotate through them so repeated
+    // 4 pitch variants (+/-3 semitones) and rotate through them so repeated
     // sounds don't feel machine-gun identical.
 
     private func buildSfxVariants() {
@@ -1101,7 +1390,7 @@ final class GameAudio {
         }
     }
 
-    /// jump — tiny upward chirp: sine swept 300→600 Hz, ~140 ms
+    /// jump — tiny upward chirp: sine swept 300-600 Hz, ~140 ms
     private func makeJumpBuffer() -> AVAudioPCMBuffer? {
         let dur: Float = 0.14
         var phase: Float = 0
@@ -1190,7 +1479,7 @@ final class GameAudio {
         }
     }
 
-    /// pickup — item collected: bright sparkle ding, E6→G6→B6 upward arpeggio, ~360 ms
+    /// pickup — item collected: bright sparkle ding, E6-G6-B6 upward arpeggio, ~360 ms
     private func makePickupBuffer() -> AVAudioPCMBuffer? {
         let noteDur: Float = 0.10
         let total:   Float = noteDur * 3 + 0.06
@@ -1217,7 +1506,7 @@ final class GameAudio {
             let t    = Float(i) / sr
             // Envelope: quick attack, long release (slide in)
             let env  = self.envelope(t, a: 0.01, d: 0.05, s: 0.6, sLen: 0.05, r: 0.10, total: dur)
-            // Cutoff sweeps from low → mid as drawer opens
+            // Cutoff sweeps from low to mid as drawer opens
             let alpha = 0.005 + 0.04 * (t / dur)
             let x    = self.whitenoise()
             prevLow  = alpha * x + (1 - alpha) * prevLow

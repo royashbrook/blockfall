@@ -98,12 +98,16 @@ struct WaterUniforms {
     var cameraPosW:    SIMD4<Float> = .zero   // xyz = world-space camera pos, w unused
 }
 
-/// Uniforms for the HDR composite / tonemap pass (16 bytes).
+/// Uniforms for the HDR composite / tonemap pass (32 bytes).
 struct PostUniforms {
-    var bloomStrength: Float   // 0.18  — fraction of bloom added
-    var vignetteStr:   Float   // 0.55
-    var satBoost:      Float   // 1.12  — colour grade saturation multiplier
-    var pad:           Float   // = 0
+    var bloomStrength:  Float   // fraction of bloom added
+    var vignetteStr:    Float   // vignette strength
+    var satBoost:       Float   // colour grade saturation multiplier
+    var rainStrength:   Float   // 0..1 — drives precipitation overlay
+    var wallClockSecs:  Float   // animation time for precipitation
+    var pad0:           Float = 0
+    var pad1:           Float = 0
+    var pad2:           Float = 0
 }
 
 /// Wind + weather uniforms passed to terrain vertex shaders (both vmain and shadowVmain).
@@ -169,14 +173,19 @@ final class Renderer: NSObject, MTKViewDelegate {
     // ---- HDR offscreen textures (rebuilt on resize) --------------------------
     private var hdrColor: MTLTexture?     // rgba16Float  — scene rendered here
     private var hdrDepth: MTLTexture?     // depth32Float — shared by shadow + scene
-    // Bloom intermediates (half drawable size)
+    // Bloom intermediates (half scene size)
     private var bloomBright: MTLTexture?  // rgba16Float half-res bright pass
     private var bloomBlurA:  MTLTexture?  // rgba16Float blur ping
     private var bloomBlurB:  MTLTexture?  // rgba16Float blur pong
     private var currentDrawableSize: CGSize = .zero
+    // Capped internal render size (the long edge is limited to kRenderLongEdge).
+    // The final composite upscales to the full drawable; only the HDR/scene/bloom
+    // textures are at this reduced size — saves ~4× fragment cost on Retina.
+    private let kRenderLongEdge: CGFloat = 1600
+    private var sceneSize: CGSize = .zero   // actual HDR texture size (≤ drawable)
 
-    // ---- Shadow map (fixed 2048×2048) ----------------------------------------
-    private let kShadowRes = 2048
+    // ---- Shadow map (fixed 1536×1536) ----------------------------------------
+    private let kShadowRes = 1536
     private var shadowMap: MTLTexture!    // depth32Float
     private var shadowSampler: MTLSamplerState!
 
@@ -347,10 +356,21 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     // ---- Resize: rebuild HDR + bloom textures when drawable size changes -----
+    // The HDR scene is rendered at a capped internal resolution so the long edge
+    // never exceeds kRenderLongEdge pixels (e.g. 1600 on a 5K Retina display).
+    // The final composite pass upscales from hdrColor to the full drawable, so
+    // UI edges remain crisp while fragment cost is cut by ~4× on Retina.
     private func rebuildHDRTextures(size: CGSize) {
         guard size.width > 0 && size.height > 0 else { return }
-        let W = Int(size.width), H = Int(size.height)
-        let HW = max(1, W / 2), HH = max(1, H / 2)
+
+        // Compute capped scene size: scale down if the long edge exceeds the cap.
+        let longEdge = max(size.width, size.height)
+        let scale = longEdge > kRenderLongEdge ? kRenderLongEdge / longEdge : 1.0
+        let SW = max(1, Int((size.width  * scale).rounded()))
+        let SH = max(1, Int((size.height * scale).rounded()))
+        sceneSize = CGSize(width: SW, height: SH)
+
+        let HW = max(1, SW / 2), HH = max(1, SH / 2)
 
         func make2D(_ fmt: MTLPixelFormat, _ w: Int, _ h: Int, usage: MTLTextureUsage) -> MTLTexture {
             let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: fmt, width: w, height: h, mipmapped: false)
@@ -358,11 +378,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             return device.makeTexture(descriptor: td)!
         }
 
-        hdrColor    = make2D(.rgba16Float,  W,  H, usage: [.renderTarget, .shaderRead])
-        hdrDepth    = make2D(.depth32Float, W,  H, usage: [.renderTarget])
-        bloomBright = make2D(.rgba16Float, HW, HH, usage: [.renderTarget, .shaderRead])
-        bloomBlurA  = make2D(.rgba16Float, HW, HH, usage: [.renderTarget, .shaderRead])
-        bloomBlurB  = make2D(.rgba16Float, HW, HH, usage: [.renderTarget, .shaderRead])
+        hdrColor    = make2D(.rgba16Float,  SW,  SH, usage: [.renderTarget, .shaderRead])
+        hdrDepth    = make2D(.depth32Float, SW,  SH, usage: [.renderTarget])
+        bloomBright = make2D(.rgba16Float, HW,  HH, usage: [.renderTarget, .shaderRead])
+        bloomBlurA  = make2D(.rgba16Float, HW,  HH, usage: [.renderTarget, .shaderRead])
+        bloomBlurB  = make2D(.rgba16Float, HW,  HH, usage: [.renderTarget, .shaderRead])
         currentDrawableSize = size
     }
 
@@ -708,7 +728,17 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor,    index: 0)
                 enc.setFragmentTexture(bloomBright, index: 1)
-                var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.30, pad: 0)
+                // Determine if it's snowy (cold = time near 0 i.e. midnight, or negative temperature proxy)
+                // We use the same weatherCycle computed above for rain/snow toggle.
+                // Snow when weatherCycle > 0.60 AND timeOfDay is "cold" (night/winter proxy: tod < 0.3 or > 0.7)
+                let tod = frame.camera.time_of_day
+                let isCold = (tod < 0.30 || tod > 0.70)
+                let precipRain = isCold ? 0.0 : rainStrength   // rain strength in warm weather
+                let precipSnow = isCold ? rainStrength : 0.0   // snow strength in cold weather
+                // Pack rain+snow: composite shader reads rainStrength>0 as rain, <0 as snow (abs = strength)
+                let precipPacked = precipRain > 0.001 ? precipRain : -precipSnow
+                var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.38,
+                                      rainStrength: precipPacked, wallClockSecs: wallClock)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 enc.endEncoding()
@@ -942,12 +972,17 @@ final class Renderer: NSObject, MTKViewDelegate {
     };
     #define UW_CAM_POS(wu) (wu).cameraPosW.xyz
 
-    // PostUniforms (16 bytes) — composite pass.
+    // PostUniforms (32 bytes) — composite pass.
+    // >0 rainStrength = rain, <0 = snow, 0 = clear.
     struct PostUniforms {
         float bloomStrength;
         float vignetteStr;
         float satBoost;
-        float pad;
+        float rainStrength;
+        float wallClockSecs;
+        float pad0;
+        float pad1;
+        float pad2;
     };
 
     // ShadowVertUniforms (80 bytes): light VP + chunk origin.
@@ -1391,29 +1426,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     // Shared wind-sway displacement used by BOTH vmain and shadowVmain.
-    //   worldPos  : pre-sway world position of the vertex
-    //   matID     : block material/type id (p.material in BFVertex = block type)
-    //               NOTE: p.block is per-vertex *light level* (0..15), not the type!
-    //   T         : wallClockSecs
-    //   rainStr   : 0..1 weather factor (amplifies sway in storms)
-    // Returns XZ displacement in world units.
-    // NOTE: voxel vertex Y positions are always integers, so we cannot use
-    // fract(y) to distinguish top/bottom of a block. Instead we apply the
-    // sway uniformly to all vertices of a foliage block — this is correct
-    // because the whole grass blade / flower / leaf cluster sways as one unit.
-    // Adjacent leaf blocks at different Y levels naturally sway with slightly
-    // different XZ-phase wind values, giving a convincing rustling canopy.
+    // DISABLED: foliage sway is off for now (full cube blocks slide visibly).
+    // Wind uniform plumbing is kept intact; just returns zero displacement.
+    // Re-enable once proper cross/billboard foliage models are in place.
     static float2 windSway(float3 worldPos, uint matID, float T, float rainStr) {
-        float ff = foliageFactor(matID);
-        if (ff < 0.001) return float2(0.0);
-        // Wind field: two overlapping sine waves on world XZ so adjacent blocks
-        // share the same phase (no seam at chunk boundaries).
-        float wx = sin(worldPos.x * 0.15 + worldPos.z * 0.10 + T * 1.30);
-        float wz = cos(worldPos.z * 0.17                      + T * 1.10);
-        // Base amplitude: subtle, so plants drift in the breeze without sliding
-        // far off their grid cell.
-        float amp = 0.10 * ff * (1.0 + rainStr * 0.6);
-        return float2(wx, wz) * amp;
+        return float2(0.0);
     }
 
     // =========================================================
@@ -1511,7 +1528,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // PCF 3×3: use the comparison sampler (lessEqual) which returns 0 or 1
         // per sample; Metal's shadow sampler averages them for free.
-        float texelSize = 1.0 / 2048.0;
+        float texelSize = 1.0 / 1536.0;
         float shadow = 0.0;
         for (int dy = -1; dy <= 1; ++dy) {
             for (int dx = -1; dx <= 1; ++dx) {
@@ -1594,8 +1611,36 @@ final class Renderer: NSObject, MTKViewDelegate {
         // ---- Standard block path ----
         float3 detail = blockDetail(in.worldPos, in.faceNorm, in.material);
 
-        // Combined: shade * AO * shadow * detail (detail is float3 colour multiplier ~0.78..1.22)
-        float3 col = in.color * detail * in.shade * aoFactor * shadowFactor;
+        // ---- Fake bump / normal perturbation from procedural height -----------
+        // Derive a small per-fragment normal offset from finite-differencing the
+        // same noise used by blockDetail so bumps are correlated with visible texture.
+        // Only applies the bump to the sun (directional) lighting term, not AO/shadow,
+        // keeping the effect subtle and tasteful.
+        // Skip on emissive and water (they have their own shading).
+        float bumpLight = 1.0;
+        {
+            const float eps = 0.06;   // finite-difference step in world units
+            float2 uv0 = faceUV(in.worldPos, in.faceNorm);
+            // Sample height field = luminance of detail noise (cheap, already computed).
+            // We use a separate high-frequency noise to avoid re-running blockDetail.
+            float h00 = noise2(uv0 * 7.5);
+            float h10 = noise2((uv0 + float2(eps, 0.0)) * 7.5);
+            float h01 = noise2((uv0 + float2(0.0, eps)) * 7.5);
+            float dHdX = (h10 - h00) / eps;
+            float dHdY = (h01 - h00) / eps;
+            // Build perturbed normal in tangent space: N_perturbed = normalize(-dH, -dH, 1)
+            // then map to world-space sun contribution.
+            // Sun direction (light-space; we have su.sunDirTime in VOut but not here directly).
+            // We just compute how "sun-facing" the perturbed normal is along the face's normal.
+            // Intensity of bump: scale to 0.08 max so it's a subtle emboss, not harsh.
+            float bumpStrength = 0.09;
+            float sunTilt = clamp(1.0 - (dHdX + dHdY) * bumpStrength, 0.78, 1.22);
+            // Only top / side faces get bump; bottom faces don't face the sun.
+            bumpLight = (in.faceNorm == 3u) ? 1.0 : sunTilt;
+        }
+
+        // Combined: shade * AO * shadow * bump * detail
+        float3 col = in.color * detail * (in.shade * bumpLight) * aoFactor * shadowFactor;
 
         // Emissive blocks bloom in HDR: push them above 1.0
         if (isEmissive) {
@@ -1718,12 +1763,19 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         if (dayT < 0.5) {
             float starFade = 1.0 - smoothstep(0.05, 0.35, dayT);
-            starFade *= smoothstep(0.0, 0.10, ray.y);
-            float2 starUV = floor((ray.xz / max(ray.y + 0.01, 0.01)) * 60.0 + float2(200.0));
-            float starH = uhash(uint(starUV.x) * 3141u + uint(starUV.y) * 1618u
-                                 + uint(starUV.x * starUV.y) * 97u);
-            float starBright = step(0.986, starH);
-            skyCol += float3(starBright * starFade * 0.90);
+            // Only render stars well above the horizon — the perspective division
+            // ray.xz/ray.y blows up at low elevation and produces long streaks.
+            float starElev = smoothstep(0.10, 0.22, ray.y);  // zero below 10° elevation
+            starFade *= starElev;
+            if (starFade > 0.001) {
+                // Project onto a flat sky dome: UV is stable for ray.y > 0.10.
+                float2 starUV = floor((ray.xz / max(ray.y, 0.10)) * 60.0 + float2(200.0));
+                // Hash must not mix x*y (that produces visible diagonal streaks).
+                float starH = uhash(uint(starUV.x + 5000.0) * 3141u
+                                    ^ uint(starUV.y + 5000.0) * 1618u);
+                float starBright = step(0.986, starH);
+                skyCol += float3(starBright * starFade * 0.90);
+            }
         }
 
         float weatherCycle = sin(clk * (3.14159265f / 150.0f)) * 0.5f + 0.5f;
@@ -1756,26 +1808,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             skyCol = mix(skyCol, float3(0.88, 0.92, 1.00), ltAmp);
         }
 
-        if (rainStrength > 0.01) {
-            // Screen-space rain streaks: two layers, slight angle, fade near horizon.
-            // Layer 1: fast fine streaks
-            float2 rUV  = float2(in.ndc.x * 45.0 + in.ndc.y * 0.3,
-                                  in.ndc.y * 4.0 + clk * 2.4);
-            float2 rUV2 = rUV * float2(1.5, 1.0) + float2(11.3, 0.0);
-            float streak1 = noise2(rUV) * noise2(rUV2);
-            float rain1 = pow(max(0.0, streak1 - 0.38), 2.0) * 9.0;
-            // Layer 2: slower thicker streaks
-            float2 rUV3  = float2(in.ndc.x * 22.0 + in.ndc.y * 0.5,
-                                   in.ndc.y * 2.5 + clk * 1.6);
-            float2 rUV4  = rUV3 + float2(7.7, 3.3);
-            float streak2 = noise2(rUV3) * noise2(rUV4);
-            float rain2 = pow(max(0.0, streak2 - 0.40), 1.8) * 7.0;
-            float rain = clamp(rain1 * 0.65 + rain2 * 0.35, 0.0, 1.0);
-            float3 rainColor = mix(float3(0.60, 0.68, 0.82), float3(0.48, 0.60, 0.76), dayT);
-            // Fade near horizon (streaks are nearly vertical — visible above horizon only)
-            float rainFade = smoothstep(-0.5, 0.15, in.ndc.y);
-            skyCol = mix(skyCol, rainColor, rain * rainStrength * 0.28 * rainFade);
-        }
+        // Rain/snow precipitation is now rendered as animated screen-space
+        // streaks/flakes in the composite pass — not here in the sky.
+        // (Kept the overcast / storm-cloud darkening above, which correctly
+        //  dims the sky during rain; the actual falling precipitation is
+        //  composited on top of the final LDR image for cheapness.)
 
         float fairCloud = clamp(1.0 - overcast * 1.6, 0.0, 1.0);
         float cloudVis  = smoothstep(0.12, 0.38, dayT)
@@ -1904,8 +1941,13 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // =========================================================
     // COMPOSITE — ACES filmic tone-mapping + colour grade + vignette
+    //             + animated precipitation overlay (rain streaks / snow flakes)
     //   Reads HDR scene (rgba16Float) + bloom texture, writes LDR bgra8.
+    //   hdrTex is at the capped internal resolution; the bilinear sampler
+    //   upscales it to the full drawable naturally.
     // =========================================================
+
+    // (PostUniforms defined once at the top of the shader — see TERRAIN STRUCTS section)
 
     // ACES fitted curve (Narkowicz 2015, single-pass approximation)
     static float3 ACESFilmic(float3 x) {
@@ -1917,12 +1959,57 @@ final class Renderer: NSObject, MTKViewDelegate {
         return clamp((x*(a*x+b)) / (x*(c*x+d)+e), 0.0, 1.0);
     }
 
+    // ---- Precipitation helpers -----------------------------------------------
+    // Rain: returns 0..1 streak intensity at screen UV (uv in [0,1]).
+    // Each "cell" is a tall thin column; the streak falls through the column over time.
+    static float rainStreak(float2 uv, float T, float cellScale) {
+        // Scale uv into rain-cell space: many narrow columns, short in Y.
+        float2 cell = float2(uv.x * cellScale, uv.y * 3.0 + T * 3.5);
+        float2 cellI = floor(cell);
+        float2 cellF = fract(cell);
+        // Per-column hash: random X offset and brightness
+        float colH = uhash(uint(cellI.x) * 1664525u + 1013904223u);
+        float colH2 = uhash(uint(cellI.x) * 22695477u ^ 1664525u);
+        // Streak X position within column (slight jitter)
+        float streakX = 0.35 + colH * 0.30;
+        // Streak presence: each column has a random phase offset so they fall at different times
+        float phase = fmod(cell.y + colH2 * 10.0, 1.0);
+        // Narrow in X, short streak in Y (length ~0.18 of cell height)
+        float dx = abs(cellF.x - streakX);
+        float inX = smoothstep(0.04, 0.0, dx);
+        // The streak occupies ~20% of the vertical cell — compute if we're in it
+        float streakLen = 0.18 + colH * 0.10;
+        float inY = smoothstep(0.0, 0.04, phase) * smoothstep(streakLen, streakLen - 0.04, phase);
+        return inX * inY * (0.4 + colH * 0.6);  // varying brightness
+    }
+
+    // Snow: returns 0..1 flake intensity. Flakes drift downward + slight side drift.
+    static float snowFlake(float2 uv, float T, float cellScale) {
+        float2 cell = float2(uv.x * cellScale + T * 0.08,   // gentle sideways drift
+                              uv.y * cellScale + T * 0.9);   // falling speed
+        float2 cellI = floor(cell);
+        float2 cellF = fract(cell);
+        // Per-flake hash
+        float flakeH  = uhash(uint(cellI.x) * 1664525u + uint(cellI.y) * 22695477u);
+        float flakeH2 = uhash(uint(cellI.x) * 6364136u ^ uint(cellI.y) * 1013904223u);
+        // Flake position within cell (random, drifts slightly)
+        float2 flakePosOffset = float2(flakeH - 0.5, flakeH2 - 0.5) * 0.6;
+        float2 flakePos = float2(0.5) + flakePosOffset;
+        float2 diff = cellF - flakePos;
+        float dist = dot(diff, diff);
+        // Tiny circular flake — radius in cell units ~0.06..0.10
+        float r = 0.05 + flakeH * 0.05;
+        float inFlake = 1.0 - smoothstep(r * r * 0.5, r * r, dist);
+        return inFlake * (0.5 + flakeH * 0.5);
+    }
+
     fragment float4 compositeFrag(FSVOut in [[stage_in]],
                                   texture2d<float> hdrTex   [[texture(0)]],
                                   texture2d<float> bloomTex [[texture(1)]],
                                   constant PostUniforms& pu [[buffer(0)]]) {
         constexpr sampler s(filter::linear, address::clamp_to_edge);
 
+        // hdrTex is at the capped internal resolution; bilinear upscale is free here.
         float3 hdr   = hdrTex.sample(s, in.uv).rgb;
         float3 bloom = bloomTex.sample(s, in.uv).rgb;
 
@@ -1937,12 +2024,19 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 warmHighlight = float3(1.04, 1.00, 0.95);
         tonemapped = mix(tonemapped, tonemapped * warmHighlight, lumG * lumG * 0.30);
 
-        // Saturation boost
+        // Saturation boost — pushed higher for vivid kid-friendly palette.
         float lumSat = dot(tonemapped, float3(0.2126, 0.7152, 0.0722));
         tonemapped   = mix(float3(lumSat), tonemapped, pu.satBoost);
-        // Mild S-curve contrast so the scene reads punchy, not washed/flat.
-        tonemapped   = clamp((tonemapped - 0.5) * 1.12 + 0.5, 0.0, 1.0);
-        tonemapped   = clamp(tonemapped, 0.0, 1.0);
+
+        // S-curve midtone contrast: bring midtones up while leaving black/white alone.
+        // Steeper than before for punchier look.
+        tonemapped = clamp(tonemapped, 0.0, 1.0);
+        // Apply a gentle power curve to lift midtones (gamma ~0.88 in mids):
+        float3 midLift = pow(tonemapped, float3(0.90));
+        // Then S-curve: compress shadows and highlights slightly while stretching mids.
+        tonemapped = mix(tonemapped, midLift, 0.40);
+        tonemapped = clamp((tonemapped - 0.5) * 1.18 + 0.5, 0.0, 1.0);
+        tonemapped = clamp(tonemapped, 0.0, 1.0);
 
         // Vignette: smooth falloff toward screen edges
         float2 centred = in.uv - 0.5;
@@ -1950,9 +2044,37 @@ final class Renderer: NSObject, MTKViewDelegate {
         float vignette = 1.0 - smoothstep(0.20, 0.70, vigRad * 4.0) * pu.vignetteStr;
         tonemapped *= vignette;
 
-        // Gamma: assume drawable is in sRGB-compatible space (bgra8Unorm_srgb or
-        // similar). If not sRGB, apply a manual gamma ≈ 2.2 adjustment here.
-        // The drawable format is bgra8Unorm; apply a simple gamma lift.
+        // ---- Animated precipitation overlay ---------------------------------
+        // pu.rainStrength > 0 => rain streaks, < 0 => snow flakes, 0 => clear.
+        // Applied AFTER tonemapping so it's visible on top of everything (LDR overlay).
+        float precipStr = abs(pu.rainStrength);
+        if (precipStr > 0.005) {
+            float T = pu.wallClockSecs;
+            bool isSnow = (pu.rainStrength < 0.0);
+
+            if (isSnow) {
+                // Snow: two layers of flakes at different densities / speeds
+                float layer1 = snowFlake(in.uv, T * 1.0,  22.0);
+                float layer2 = snowFlake(in.uv, T * 0.65, 14.0) * 0.65;
+                float flakes = clamp(layer1 + layer2, 0.0, 1.0);
+                float3 snowCol = float3(0.92, 0.94, 1.00);
+                // Fade near the top (flakes enter screen from above)
+                float topFade = smoothstep(0.0, 0.12, in.uv.y) * smoothstep(1.0, 0.85, in.uv.y);
+                tonemapped = mix(tonemapped, snowCol, flakes * precipStr * 0.85 * topFade);
+            } else {
+                // Rain: two streak layers — fine fast + coarse slow
+                float s1 = rainStreak(in.uv, T, 60.0);
+                float s2 = rainStreak(in.uv + float2(0.5, 0.3), T * 0.8, 38.0) * 0.70;
+                float streaks = clamp(s1 * 0.65 + s2 * 0.35, 0.0, 1.0);
+                // Rain colour: blue-grey, slightly transparent
+                float3 rainCol = float3(0.70, 0.75, 0.88);
+                // Streaks are more visible top-to-bottom (vertical, so fade near edge)
+                float edgeFade = smoothstep(0.0, 0.08, in.uv.x) * smoothstep(0.0, 0.08, 1.0 - in.uv.x);
+                tonemapped = mix(tonemapped, rainCol, streaks * precipStr * 0.55 * edgeFade);
+            }
+        }
+
+        // Gamma: drawable is bgra8Unorm (no hardware sRGB), apply manual gamma 2.2.
         tonemapped = pow(clamp(tonemapped, 0.0, 1.0), float3(1.0 / 2.2));
 
         return float4(tonemapped, 1.0);
@@ -2362,7 +2484,8 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
                 enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor,  index: 0)
                 enc.setFragmentTexture(bloomBrt,  index: 1)
-                var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.30, pad: 0)
+                var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.38,
+                                      rainStrength: 0, wallClockSecs: Float(f)/60.0)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 enc.endEncoding()
