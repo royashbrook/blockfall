@@ -1,5 +1,7 @@
 // Track C — TerrainGen deterministic worldgen tests. Framework-free.
-// Tests: determinism, seed sensitivity, no seams, non-trivial output, caves.
+// Tests: determinism, seed sensitivity, no seams, non-trivial output, caves,
+//        trees, decoration seam, plants, biome variety, mountain height,
+//        snow on high ground, snowy-biome seam continuity.
 #include "blockcore/worldgen.hpp"
 #include "blockcore/chunk.hpp"
 
@@ -7,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cmath>
+#include <memory>
 
 static int fails = 0;
 #define CHECK(c, m) do { if(!(c)) { std::printf("FAIL: %s\n", m); ++fails; } } while(0)
@@ -78,7 +81,6 @@ static void test_seed_sensitivity() {
     gb.seed(0x2222222222222222ull);
 
     bool any_diff = false;
-    // Check a handful of coords
     constexpr ChunkCoord coords[] = {{0,0,0},{1,0,0},{0,0,1},{-1,0,-1},{3,0,2}};
     for (auto& coord : coords) {
         if (ga.content_hash(coord) != gb.content_hash(coord)) {
@@ -96,30 +98,22 @@ static void test_seed_sensitivity() {
 //    For chunks (0,0,0) and (1,0,0) sharing world x=15..16 boundary:
 //    The highest solid block at world x=15 (from chunk0) and at world x=16
 //    (from chunk1) must differ by at most 1 for all z in the chunk.
-//    (Continuity check — value noise is C1 continuous.)
+//    This is checked across ALL biome transitions (the blended height function
+//    guarantees C0 continuity across every boundary).
 // ---------------------------------------------------------------------------
 static void test_no_seams() {
     constexpr std::uint64_t SEED = 0xFACEFEEDF00DC0DEull;
     TerrainGen g;
     g.seed(SEED);
 
-    // Surface chunk (y=0 covers world y 0..15)
-    // We'll check multiple y-chunks to find solid tops
-    // Grab chunk (0,0,0) and (1,0,0)
-    // Also grab (0,-1,0) and (1,-1,0) to cover below-surface
+    // Grab chunk (0,0,0) and (1,0,0), and their sub-surface halves.
     PaletteChunk c0_y0({0, 0, 0}, 0);  g.generate({0, 0, 0}, c0_y0);
     PaletteChunk c0_yn({0,-1, 0}, 0);  g.generate({0,-1, 0}, c0_yn);
     PaletteChunk c1_y0({1, 0, 0}, 0);  g.generate({1, 0, 0}, c1_y0);
     PaletteChunk c1_yn({1,-1, 0}, 0);  g.generate({1,-1, 0}, c1_yn);
 
-    // Helper: find highest TERRAIN solid (non-AIR, non-WATER, non-decoration) world-y
-    // in a column across two stacked chunks (lower, upper).
-    // Decoration blocks (trees, plants) are excluded so that the seam test checks
-    // only the underlying terrain continuity guaranteed by the noise function.
-    // Returns kColumnMinY-1 if not found.
-    constexpr BlockId AIR   = 0;
-    constexpr BlockId WATER = 9;
-    // Decoration block ids (leaves, logs, plants, flowers, mushroom).
+    constexpr BlockId WATER_ID = 9;
+    // Decoration block ids — excluded so seam test measures raw terrain.
     auto is_decoration = [](BlockId b) -> bool {
         return b == 5   // oak_leaves
             || b == 21  // oak_log
@@ -128,19 +122,19 @@ static void test_no_seams() {
             || b == 36  // flower_red
             || b == 37  // flower_yellow
             || b == 38  // tall_grass_block
-            || b == 39; // mushroom_block
+            || b == 39  // mushroom_block
+            || b == 12; // snow_layer (thin, not terrain)
     };
 
     auto top_solid = [&](const PaletteChunk& upper, const PaletteChunk& lower,
                          int lx, int lz) -> std::int32_t {
-        // upper covers y 0..15 (chunk.y=0), lower covers y -16..-1 (chunk.y=-1)
         for (int ly = kChunkDim - 1; ly >= 0; --ly) {
             BlockId b = upper.get(lx, ly, lz);
-            if (b != AIR && b != WATER && !is_decoration(b)) return ly;   // world y = 0*16+ly
+            if (b != 0 && b != WATER_ID && !is_decoration(b)) return ly;
         }
         for (int ly = kChunkDim - 1; ly >= 0; --ly) {
             BlockId b = lower.get(lx, ly, lz);
-            if (b != AIR && b != WATER && !is_decoration(b)) return -kChunkDim + ly;  // world y = -1*16+ly
+            if (b != 0 && b != WATER_ID && !is_decoration(b)) return -kChunkDim + ly;
         }
         return bf::kColumnMinY - 1;
     };
@@ -160,6 +154,60 @@ static void test_no_seams() {
 }
 
 // ---------------------------------------------------------------------------
+// 3b. NO SEAMS ACROSS BIOME TRANSITIONS
+//     Test a seam at a location likely to cross multiple biome boundaries,
+//     using a different seed chosen to stress transitions.
+// ---------------------------------------------------------------------------
+static void test_no_seams_biome_transition() {
+    // Use a seed that produces different biomes near origin.
+    constexpr std::uint64_t SEED = 0xB10BE5EED5ED4321ull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    // Test multiple chunk pairs in both X and Z directions.
+    // For each adjacent pair, check both X-boundary and Z-boundary.
+    int total_violations = 0;
+
+    // X-direction seams: chunks (cx, 0, cz) vs (cx+1, 0, cz)
+    for (int cx = -4; cx <= 4; ++cx) {
+        for (int cz = -4; cz <= 4; ++cz) {
+            PaletteChunk ca({cx,   0, cz}, 0); g.generate({cx,   0, cz}, ca);
+            PaletteChunk cb({cx+1, 0, cz}, 0); g.generate({cx+1, 0, cz}, cb);
+            PaletteChunk ca_lo({cx,   -1, cz}, 0); g.generate({cx,   -1, cz}, ca_lo);
+            PaletteChunk cb_lo({cx+1, -1, cz}, 0); g.generate({cx+1, -1, cz}, cb_lo);
+
+            auto is_decoration = [](BlockId b) -> bool {
+                return b == 5 || b == 21 || b == 22 || b == 27
+                    || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+            };
+            auto top_solid = [&](const PaletteChunk& up, const PaletteChunk& lo,
+                                 int lx, int lz_col) -> std::int32_t {
+                for (int ly = kChunkDim - 1; ly >= 0; --ly) {
+                    BlockId b = up.get(lx, ly, lz_col);
+                    if (b != 0 && b != 9u && !is_decoration(b)) return ly;
+                }
+                for (int ly = kChunkDim - 1; ly >= 0; --ly) {
+                    BlockId b = lo.get(lx, ly, lz_col);
+                    if (b != 0 && b != 9u && !is_decoration(b)) return -kChunkDim + ly;
+                }
+                return bf::kColumnMinY - 1;
+            };
+
+            for (int lz = 0; lz < kChunkDim; ++lz) {
+                std::int32_t hl = top_solid(ca, ca_lo, 15, lz);
+                std::int32_t hr = top_solid(cb, cb_lo,  0, lz);
+                std::int32_t diff = hl - hr;
+                if (diff < 0) diff = -diff;
+                if (diff > 1) ++total_violations;
+            }
+        }
+    }
+
+    CHECK(total_violations == 0,
+          "biome transition seams: no height seam > 1 across biome boundaries in 9x9 grid");
+}
+
+// ---------------------------------------------------------------------------
 // 4. NOT TRIVIAL
 //    A surface chunk is not uniform and contains a mix of block types.
 // ---------------------------------------------------------------------------
@@ -168,7 +216,6 @@ static void test_not_trivial() {
     TerrainGen g;
     g.seed(SEED);
 
-    // Generate a surface chunk where terrain should be visible
     PaletteChunk ch({0, 0, 0}, 0);
     g.generate({0, 0, 0}, ch);
 
@@ -183,10 +230,10 @@ static void test_not_trivial() {
         for (int ly = 0; ly < kChunkDim; ++ly)
             for (int lx = 0; lx < kChunkDim; ++lx) {
                 BlockId b = ch.get(lx, ly, lz);
-                if (b == 0)                     { ++air_count;   has_air = true; }
-                else                            { ++solid_count; }
-                if (b == 1 || b == 6)           has_grass_or_sand = true;
-                if (b == 2 || b == 3)           has_dirt_or_stone = true;
+                if (b == 0)         { ++air_count;   has_air = true; }
+                else                { ++solid_count; }
+                if (b == 1 || b == 6)  has_grass_or_sand = true;
+                if (b == 2 || b == 3)  has_dirt_or_stone = true;
             }
 
     CHECK(has_air,           "not trivial: surface chunk has AIR cells");
@@ -199,16 +246,12 @@ static void test_not_trivial() {
 // ---------------------------------------------------------------------------
 // 5. CAVES EXIST
 //    Across a vertical span of chunks, underground AIR cells exist from carving.
-//    We sample deep chunks where surface is above and look for carved AIR.
 // ---------------------------------------------------------------------------
 static void test_caves_exist() {
     constexpr std::uint64_t SEED = 0xCA4EF00D5EEDull;
     TerrainGen g;
     g.seed(SEED);
 
-    // Generate several vertical chunks at x=0,z=0 region spanning underground
-    // Surface is around y=0..32, so chunk y=-1 (wy=-16..-1) should be underground
-    // and carved by cave noise.
     int underground_air_total = 0;
     constexpr int NUM_CHUNKS = 6;
     constexpr ChunkCoord coords[NUM_CHUNKS] = {
@@ -227,22 +270,18 @@ static void test_caves_exist() {
 
     CHECK(underground_air_total > 0,
           "caves exist: underground chunks contain AIR cells (caves carved)");
-    // Expect at least ~5% air in the underground volume = 0.05 * 6 * 4096 = 1228
     CHECK(underground_air_total > 200,
           "caves exist: enough cave volume (>200 air cells in 6 underground chunks)");
 }
 
 // ---------------------------------------------------------------------------
 // 6. TREES EXIST
-//    Generate a horizontal swath of surface chunks and assert that oak_log
-//    and oak_leaves voxels actually appear somewhere.
 // ---------------------------------------------------------------------------
 static void test_trees_exist() {
     constexpr std::uint64_t SEED = 0xF0F0F0F05EED1234ull;
     TerrainGen g;
     g.seed(SEED);
 
-    // Block ids we are looking for.
     constexpr BlockId OAK_LOG      = 21;
     constexpr BlockId BIRCH_LOG    = 22;
     constexpr BlockId OAK_LEAVES   = 5;
@@ -251,8 +290,6 @@ static void test_trees_exist() {
     bool found_log    = false;
     bool found_leaves = false;
 
-    // Scan a 6x6 swath of surface chunks (y=0 and y=1 to catch trunks/canopies
-    // that may span the chunk y boundary).
     for (int cz = -3; cz <= 3 && !(found_log && found_leaves); ++cz) {
         for (int cx = -3; cx <= 3 && !(found_log && found_leaves); ++cx) {
             for (int cy : {0, 1}) {
@@ -262,7 +299,7 @@ static void test_trees_exist() {
                     for (int ly = 0; ly < kChunkDim; ++ly)
                         for (int lx = 0; lx < kChunkDim; ++lx) {
                             BlockId b = ch.get(lx, ly, lz);
-                            if (b == OAK_LOG || b == BIRCH_LOG)    found_log    = true;
+                            if (b == OAK_LOG || b == BIRCH_LOG)       found_log    = true;
                             if (b == OAK_LEAVES || b == BIRCH_LEAVES) found_leaves = true;
                         }
             }
@@ -275,8 +312,6 @@ static void test_trees_exist() {
 
 // ---------------------------------------------------------------------------
 // 7. DECORATIONS ARE DETERMINISTIC
-//    Two fresh generators with the same seed+coord must produce identical
-//    content_hash (covers both terrain and decorations in one shot).
 // ---------------------------------------------------------------------------
 static void test_decoration_determinism() {
     constexpr std::uint64_t SEED  = 0xDEC0DED4B10C0FFEull;
@@ -290,7 +325,6 @@ static void test_decoration_determinism() {
     std::uint64_t h2 = g2.content_hash(COORD);
     CHECK(h1 == h2, "decoration determinism: same seed+coord yields identical content_hash");
 
-    // Also verify block-by-block.
     PaletteChunk c1(COORD, 0), c2(COORD, 0);
     g1.generate(COORD, c1);
     g2.generate(COORD, c2);
@@ -305,31 +339,6 @@ static void test_decoration_determinism() {
 
 // ---------------------------------------------------------------------------
 // 8. NO TREE SEAM ARTIFACTS
-//    Generate two horizontally adjacent chunks that share a world-x boundary.
-//    A tree whose trunk column is near that boundary should have its canopy
-//    voxels appear correctly on both sides — i.e. a leaf voxel at (wx, wy, wz)
-//    found in chunk A at the boundary should also match what chunk B places for
-//    the same world coordinate.
-//
-//    Strategy: scan near the x-boundary of chunks (0,*,0) and (1,*,0).
-//    For each y-level in both chunks, compare the single column of voxels at
-//    world x=15 (from chunk 0) and world x=16 (from chunk 1) against each
-//    other — these are independent generate() calls.  Specifically:
-//      - If chunk0 has a log/leaf at (lx=15, ly, lz), chunk1 must also have
-//        placed the same block kind at (lx=0+offset, ly, lz) IF the tree origin
-//        is in chunk1's territory, OR vice versa.
-//    A simpler, concrete seam test: generate both neighbour chunks and verify
-//    that no AIR gap exists in the middle of what should be a continuous trunk:
-//    if there is a log at trunk height in chunk A on the boundary column, and
-//    the tree's origin is one chunk over, then the trunk column on the
-//    neighbouring chunk's side must also have a log at the same height.
-//
-//    Even simpler and fully verifiable: regenerate the same chunk twice with
-//    two different TerrainGen instances and confirm they agree on every voxel
-//    in the boundary region (already covered by test 7).  Additionally:
-//    scan both neighbour chunks and verify that for every trunk block found in
-//    one chunk at the x-boundary column, the expected canopy radius does not
-//    include voxels in the neighbour that are wrongly AIR.
 // ---------------------------------------------------------------------------
 static void test_tree_no_seam() {
     constexpr std::uint64_t SEED = 0xBEEF5EED5EED1234ull;
@@ -337,20 +346,14 @@ static void test_tree_no_seam() {
     constexpr BlockId BIRCH_LOG    = 22;
     constexpr BlockId OAK_LEAVES   = 5;
     constexpr BlockId BIRCH_LEAVES = 27;
-    constexpr BlockId AIR = 0;
+    constexpr BlockId AIR_ID = 0;
 
     TerrainGen g;
     g.seed(SEED);
 
-    // Generate a horizontal band covering a few y-levels of surface chunks at
-    // x=0 and x=1 (and also x=-1 and x=2 to test both directions).
-    // We need y chunks {0, 1} to cover trunks+canopies above sea level.
     constexpr int CY_RANGE[2] = {0, 1};
 
-    // Store all chunks in a small lookup.
-    // chunk[cx_offset][cy_offset][cz] with cx in {-1,0,1,2}, cy in {0,1}, cz in {0}.
     struct ChunkSet {
-        // cx offset mapped: -1->0, 0->1, 1->2, 2->3
         PaletteChunk chunks[4][2];
         ChunkSet(TerrainGen& gen, std::uint64_t /*seed*/)
             : chunks{
@@ -361,21 +364,17 @@ static void test_tree_no_seam() {
             }
         {
             constexpr std::int32_t CXS[4] = {-1, 0, 1, 2};
-            for (int ci = 0; ci < 4; ++ci) {
-                for (int yi = 0; yi < 2; ++yi) {
+            for (int ci = 0; ci < 4; ++ci)
+                for (int yi = 0; yi < 2; ++yi)
                     gen.generate({CXS[ci], CY_RANGE[yi], 0}, chunks[ci][yi]);
-                }
-            }
         }
 
-        // Get block at world (wx, wy, wz) — wz must be 0..15.
         BlockId at(std::int32_t wx, std::int32_t wy, std::int32_t wz) const {
-            // Determine chunk x index.
             int cx_offset = -1;
-            if      (wx >= -16 && wx < 0)  cx_offset = 0;  // cx=-1
-            else if (wx >= 0   && wx < 16) cx_offset = 1;  // cx=0
-            else if (wx >= 16  && wx < 32) cx_offset = 2;  // cx=1
-            else if (wx >= 32  && wx < 48) cx_offset = 3;  // cx=2
+            if      (wx >= -16 && wx < 0)  cx_offset = 0;
+            else if (wx >= 0   && wx < 16) cx_offset = 1;
+            else if (wx >= 16  && wx < 32) cx_offset = 2;
+            else if (wx >= 32  && wx < 48) cx_offset = 3;
             if (cx_offset < 0) return 0;
 
             int cy_offset = -1;
@@ -383,10 +382,8 @@ static void test_tree_no_seam() {
             else if (wy >= 16 && wy < 32) cy_offset = 1;
             if (cy_offset < 0) return 0;
 
-            int lx = static_cast<int>(wx - (cx_offset - 1) * 16 + 16) % 16;
-            // Recalculate properly:
             std::int32_t chunk_wx_origin = (cx_offset - 1) * 16;
-            lx = static_cast<int>(wx - chunk_wx_origin);
+            int lx = static_cast<int>(wx - chunk_wx_origin);
             int ly = static_cast<int>(wy - CY_RANGE[cy_offset] * 16);
             int lz = static_cast<int>(wz);
             if (lx < 0 || lx >= 16 || ly < 0 || ly >= 16 || lz < 0 || lz >= 16) return 0;
@@ -394,34 +391,10 @@ static void test_tree_no_seam() {
         }
     } cs(g, SEED);
 
-    // Seam check: for world x = 15 and x = 16 (the boundary between chunk 0 and 1),
-    // check that any trunk column is vertical-continuous (no log surrounded by air
-    // above and below where the trunk should continue).
-    // Also: for a leaf block on one side of the boundary, the symmetric voxel on
-    // the other side (if it should also be leaf by the canopy shape) must not be AIR.
-    // We check all z columns and all y levels.
     int seam_violations = 0;
 
-    // Check boundary x=15/16 across z=0..15, wy=0..31 (two y-chunks).
     for (int lz = 0; lz < kChunkDim; ++lz) {
         for (int wy = 1; wy <= 30; ++wy) {
-            // If there is a log in the trunk column at x=15 (right edge of chunk 0)
-            // and also one at x=15+1=16 (left edge of chunk 1), that is fine.
-            // The seam problem is: a log at x=15 (from chunk 1's tree) with nothing
-            // at x=15 in chunk 0's generation (or vice versa).
-            //
-            // Stronger: the world is a single coherent generation. The block at any
-            // world position must be the same regardless of which chunk generated it.
-            // We verify this by checking that chunk 0's right-boundary column
-            // (lx=15, i.e. wx=15) at each wy matches what chunk 0 and chunk 1 agree
-            // about wx=15 — but since only chunk 0 generates wx=15, we instead verify
-            // the symmetric cross: if chunk 1 (which generates wx=16..31) has a log
-            // at wx=16, then the chunk-0 side (wx=15) should also have a log if the
-            // tree origin is at wx=16 ± 0 (i.e. the trunk is at 16, in chunk1 only).
-            //
-            // The most direct test: compare the world block from each chunk's generate
-            // for boundary-adjacent columns, and check no trunk is cut in half.
-            // "Cut trunk" = log at wy, AIR at wy+1, then log or leaf at wy+2.
             auto b_at  = [&](std::int32_t wx) { return cs.at(wx, wy,   lz); };
             auto b_up  = [&](std::int32_t wx) { return cs.at(wx, wy+1, lz); };
             auto b_up2 = [&](std::int32_t wx) { return cs.at(wx, wy+2, lz); };
@@ -434,48 +407,24 @@ static void test_tree_no_seam() {
                     || b == OAK_LEAVES || b == BIRCH_LEAVES;
             };
 
-            // Check for a trunk cut at x=15: log, then AIR, then wood.
-            if (is_log(b_at(15)) && b_up(15) == AIR && is_wood(b_up2(15))) {
+            if (is_log(b_at(15)) && b_up(15) == AIR_ID && is_wood(b_up2(15))) {
                 ++seam_violations;
             }
-            // Same at x=16.
-            if (is_log(b_at(16)) && b_up(16) == AIR && is_wood(b_up2(16))) {
+            if (is_log(b_at(16)) && b_up(16) == AIR_ID && is_wood(b_up2(16))) {
                 ++seam_violations;
             }
 
-            // Check for leaf continuity at seam: a leaf at x=15, and x=16 also
-            // belongs in the canopy (|dx|<=2 from a potential trunk at x=13..17),
-            // so if leaf at x=15 and AIR at x=16 is only a violation if the canopy
-            // should span both — we can't easily know without re-running the cell
-            // logic.  Instead: verify that the same world voxel generated from two
-            // separate chunk calls produces the same result.  We do this by
-            // generating chunks independently and comparing wx=15 from chunk cx=0
-            // with... itself (it's the same generate call).  For a stronger check,
-            // verify that for any OAK_LOG at wx=15, wy, lz inside chunk(0,y,0), the
-            // log also appears at wx=15, wy, lz inside chunk(0,y,0) generated again:
-            // trivially true (covered by test_determinism).
-            //
-            // The meaningful cross-chunk seam check is that chunk1 (cx=1) correctly
-            // places leaves at wx=16..17 that belong to a tree rooted at wx=15 in
-            // chunk0's territory, and chunk0 correctly places leaves at wx=13..14
-            // that belong to a tree rooted at wx=16 in chunk1's territory.
-            // We verify this indirectly: scan wx=13..17 and verify no AIR gap
-            // splits a canopy horizontally (leaf, AIR, leaf at same wy across a seam).
             (void)b_at; (void)b_up; (void)b_up2; (void)is_log; (void)is_wood;
         }
     }
 
-    // Verify using a simpler but strict check: generate chunk (0,0,0) and (1,0,0)
-    // independently, then for the single column at x=15 (chunk0) re-generate chunk0
-    // from a fresh TerrainGen — they must agree.
     {
         TerrainGen g2;
         g2.seed(SEED);
         PaletteChunk alt({0, 0, 0}, 0);
         g2.generate({0, 0, 0}, alt);
 
-        // Every voxel must match.
-        PaletteChunk& orig = cs.chunks[1][0];  // cx=0 offset index 1, cy=0
+        PaletteChunk& orig = cs.chunks[1][0];
         for (int lz2 = 0; lz2 < kChunkDim; ++lz2)
             for (int ly2 = 0; ly2 < kChunkDim; ++ly2)
                 for (int lx2 = 0; lx2 < kChunkDim; ++lx2)
@@ -489,7 +438,6 @@ static void test_tree_no_seam() {
 
 // ---------------------------------------------------------------------------
 // 9. PLANTS EXIST
-//    Tall grass / flowers must appear in the world.
 // ---------------------------------------------------------------------------
 static void test_plants_exist() {
     constexpr std::uint64_t SEED = 0xF10F105EED5678ull;
@@ -503,8 +451,9 @@ static void test_plants_exist() {
     bool found_grass  = false;
     bool found_flower = false;
 
-    for (int cz = -2; cz <= 2 && !(found_grass && found_flower); ++cz) {
-        for (int cx = -2; cx <= 2 && !(found_grass && found_flower); ++cx) {
+    // Scan ±6 chunks to cover enough area to hit grassy biomes.
+    for (int cz = -6; cz <= 6 && !(found_grass && found_flower); ++cz) {
+        for (int cx = -6; cx <= 6 && !(found_grass && found_flower); ++cx) {
             PaletteChunk ch({cx, 0, cz}, 0);
             g.generate({cx, 0, cz}, ch);
             for (int lz = 0; lz < kChunkDim; ++lz)
@@ -522,18 +471,243 @@ static void test_plants_exist() {
 }
 
 // ---------------------------------------------------------------------------
+// 10. BIOME VARIETY
+//     Sample a large horizontal swath and assert that at least 4 distinct
+//     "biome signatures" are present.  A signature is classified by surface
+//     block + height range bucket.  We also assert specific block types appear:
+//     sand (desert/beach), snow_layer/ice (snowy/mountains), dirt-surface columns
+//     (swamp).  At minimum 4 distinct signature classes must appear.
+// ---------------------------------------------------------------------------
+static void test_biome_variety() {
+    constexpr std::uint64_t SEED = 0xB10BE5EED1234567ull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    // We need to classify columns by their surface block and height bucket.
+    // We scan a 32x32 chunk area (512x512 world blocks) at y=0 level.
+    // For each column, find the highest non-air, non-water, non-decoration solid.
+
+    auto is_decoration = [](BlockId b) -> bool {
+        return b == 5 || b == 21 || b == 22 || b == 27
+            || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+    };
+
+    constexpr int SCAN_R = 16;  // scan ±16 chunks = ±256 world blocks
+
+    bool found_sand_surface   = false;  // desert / beach
+    bool found_grass_surface  = false;  // plains / forest / mountains low
+    bool found_snow_or_ice    = false;  // snowy / mountain peak
+    bool found_dirt_surface   = false;  // swamp (dirt as top terrain)
+    bool found_high_column    = false;  // mountains (H > 30)
+    bool found_low_column     = false;  // swamp (H <= 8)
+    bool found_stone_surface  = false;  // mountain rock above snow line
+
+    // Surface y chunks we need to look in (-2..4 covers all terrain).
+    constexpr int CY_MIN = -2;
+    constexpr int CY_MAX =  4;
+    constexpr int NUM_CY = CY_MAX - CY_MIN + 1;
+
+    for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
+        for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
+            // Generate all y chunks for this (cx,cz) column.
+            // Use unique_ptr to avoid default-constructor requirement.
+            std::unique_ptr<PaletteChunk> chunks[NUM_CY];
+            for (int ci = 0; ci < NUM_CY; ++ci) {
+                int cy = CY_MIN + ci;
+                chunks[ci] = std::make_unique<PaletteChunk>(ChunkCoord{cx, cy, cz}, BlockId(0));
+                g.generate({cx, cy, cz}, *chunks[ci]);
+            }
+
+            // For each local (lx,lz) find highest solid surface.
+            for (int lz = 0; lz < kChunkDim; ++lz) {
+                for (int lx = 0; lx < kChunkDim; ++lx) {
+                    BlockId    top_block = 0;
+                    std::int32_t top_wy = std::int32_t(CY_MIN) * kChunkDim - 1;
+                    bool found = false;
+
+                    for (int ci = NUM_CY - 1; ci >= 0 && !found; --ci) {
+                        std::int32_t chunk_wy_base = (CY_MIN + ci) * kChunkDim;
+                        for (int ly = kChunkDim - 1; ly >= 0 && !found; --ly) {
+                            BlockId b = chunks[ci]->get(lx, ly, lz);
+                            if (b != 0 && b != 9u && !is_decoration(b)) {
+                                top_block = b;
+                                top_wy    = chunk_wy_base + ly;
+                                found     = true;
+                            }
+                        }
+                    }
+
+                    if (!found) continue;
+
+                    if (top_block == 6u)   found_sand_surface  = true;  // SAND
+                    if (top_block == 1u)   found_grass_surface = true;  // GRASS
+                    if (top_block == 12u || top_block == 13u)
+                                           found_snow_or_ice   = true;  // SNOW/ICE
+                    if (top_block == 2u)   found_dirt_surface  = true;  // DIRT (swamp)
+                    if (top_block == 3u)   found_stone_surface = true;  // STONE (mountain rock)
+                    if (top_wy > 30)       found_high_column   = true;
+                    if (top_wy <= 8)       found_low_column    = true;
+                }
+            }
+        }
+    }
+
+    // Count distinct biome signatures seen.
+    int sigs = 0;
+    if (found_sand_surface)  ++sigs;
+    if (found_grass_surface) ++sigs;
+    if (found_snow_or_ice)   ++sigs;
+    if (found_dirt_surface)  ++sigs;
+
+    CHECK(sigs >= 4,
+          "biome variety: at least 4 distinct surface block signatures appear in large scan");
+    CHECK(found_sand_surface,
+          "biome variety: sand surface (desert/beach) found in world scan");
+    CHECK(found_grass_surface,
+          "biome variety: grass surface (plains/forest) found in world scan");
+    CHECK(found_snow_or_ice,
+          "biome variety: snow_layer or ice (snowy/mountain) found in world scan");
+    CHECK(found_dirt_surface,
+          "biome variety: dirt surface (swamp) found in world scan");
+    CHECK(found_high_column,
+          "biome variety: mountain column with H > 30 found in world scan");
+    CHECK(found_low_column,
+          "biome variety: low column with H <= 8 (swamp) found in world scan");
+    CHECK(found_stone_surface,
+          "biome variety: stone surface (mountain peak) found in world scan");
+}
+
+// ---------------------------------------------------------------------------
+// 11. MOUNTAINS TALLER THAN PLAINS / DESERT
+//     Sample a 32x32 chunk area, track the max column height for chunks
+//     dominated by mountains vs those dominated by plains or desert.
+//     Mountain max should be significantly greater.
+// ---------------------------------------------------------------------------
+static void test_mountain_height() {
+    constexpr std::uint64_t SEED = 0xA0041A5EED123456ull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    auto is_decoration = [](BlockId b) -> bool {
+        return b == 5 || b == 21 || b == 22 || b == 27
+            || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+    };
+
+    // Generate a large swath and record max heights per chunk.
+    // Then compare the top-10% max heights (mountain region) vs median.
+    constexpr int SCAN_R = 20;
+    int max_mountain_h  = -999;
+    int max_flatland_h  = -999;
+
+    // Generate y-chunks to cover surface.
+    constexpr int CY_MIN = -1;
+    constexpr int CY_MAX =  5;  // mountain peaks can go to y~50
+    constexpr int NUM_CY_M = CY_MAX - CY_MIN + 1;
+
+    for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
+        for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
+            // Generate all y-chunks for this (cx,cz) column.
+            std::unique_ptr<PaletteChunk> chunks_arr[NUM_CY_M];
+            for (int ci = 0; ci < NUM_CY_M; ++ci) {
+                int cy = CY_MIN + ci;
+                chunks_arr[ci] = std::make_unique<PaletteChunk>(ChunkCoord{cx, cy, cz}, BlockId(0));
+                g.generate({cx, cy, cz}, *chunks_arr[ci]);
+            }
+
+            // Find the highest solid block and detect stone-high columns.
+            int chunk_max_h = -999;
+            bool has_stone_high = false;
+
+            for (int lz = 0; lz < kChunkDim; ++lz) {
+                for (int lx = 0; lx < kChunkDim; ++lx) {
+                    bool col_found = false;
+                    for (int ci = NUM_CY_M - 1; ci >= 0 && !col_found; --ci) {
+                        std::int32_t cy_wy_base = (CY_MIN + ci) * kChunkDim;
+                        for (int ly = kChunkDim - 1; ly >= 0 && !col_found; --ly) {
+                            BlockId b = chunks_arr[ci]->get(lx, ly, lz);
+                            if (b != 0 && b != 9u && !is_decoration(b)) {
+                                int wy = static_cast<int>(cy_wy_base) + ly;
+                                if (wy > chunk_max_h) chunk_max_h = wy;
+                                if (wy >= 24 && b == 3u) has_stone_high = true;
+                                col_found = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Classify: mountain chunk has stone above snow-line height.
+            if (has_stone_high) {
+                if (chunk_max_h > max_mountain_h) max_mountain_h = chunk_max_h;
+            } else {
+                if (chunk_max_h > max_flatland_h) max_flatland_h = chunk_max_h;
+            }
+        }
+    }
+
+    // Mountains should reach at least 30 blocks high.
+    CHECK(max_mountain_h >= 30,
+          "mountain height: mountain peaks reach at least y=30");
+    // Mountain max height should be notably greater than flatland max.
+    CHECK(max_mountain_h > max_flatland_h + 10,
+          "mountain height: mountain max height notably exceeds flatland max height");
+}
+
+// ---------------------------------------------------------------------------
+// 12. SNOW ON HIGH GROUND
+//     In a large area scan, snow_layer or ice blocks appear somewhere above y=20.
+// ---------------------------------------------------------------------------
+static void test_snow_exists() {
+    constexpr std::uint64_t SEED = 0x5AB0FEED5EED9876ull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    constexpr BlockId SNOW_LAYER_ID = 12;
+    constexpr BlockId ICE_ID        = 13;
+
+    bool found_snow_high = false;
+
+    // Scan ±24 chunks, y-chunks 0..4 (where surface terrain lives).
+    for (int cz = -24; cz <= 24 && !found_snow_high; ++cz) {
+        for (int cx = -24; cx <= 24 && !found_snow_high; ++cx) {
+            for (int cy = 0; cy <= 4 && !found_snow_high; ++cy) {
+                PaletteChunk ch({cx, cy, cz}, 0);
+                g.generate({cx, cy, cz}, ch);
+                std::int32_t wy_base = cy * kChunkDim;
+                for (int lz = 0; lz < kChunkDim && !found_snow_high; ++lz)
+                    for (int ly = 0; ly < kChunkDim && !found_snow_high; ++ly)
+                        for (int lx = 0; lx < kChunkDim && !found_snow_high; ++lx) {
+                            BlockId b = ch.get(lx, ly, lz);
+                            std::int32_t wy = wy_base + ly;
+                            if ((b == SNOW_LAYER_ID || b == ICE_ID) && wy >= 20) {
+                                found_snow_high = true;
+                            }
+                        }
+            }
+        }
+    }
+
+    CHECK(found_snow_high,
+          "snow exists: snow_layer or ice found at y>=20 in large world scan");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
     test_determinism();
     test_seed_sensitivity();
     test_no_seams();
+    test_no_seams_biome_transition();
     test_not_trivial();
     test_caves_exist();
     test_trees_exist();
     test_decoration_determinism();
     test_tree_no_seam();
     test_plants_exist();
+    test_biome_variety();
+    test_mountain_height();
+    test_snow_exists();
 
     if (fails == 0) {
         std::printf("OK: worldgen tests\n");

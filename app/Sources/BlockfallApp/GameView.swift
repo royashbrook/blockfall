@@ -18,9 +18,13 @@ final class GameView: MTKView {
     private var invertX = true
     private var invertY = false
 
-    // App-level co-op hooks (wired by the app delegate).
+    // App-level hooks (wired by the app delegate).
     var onHost: (() -> Void)?
     var onJoin: (() -> Void)?
+    var onPause: (() -> Void)?
+
+    func releaseMouse() { releasePointer() }
+    func grabMouse() { capturePointer() }
 
     // Accumulated mouse look since the last frame (consumed by Renderer).
     private(set) var lookDX: Float = 0
@@ -62,7 +66,7 @@ final class GameView: MTKView {
 
     // ---- keyboard ----------------------------------------------------------
     override func keyDown(with e: NSEvent) {
-        if e.keyCode == K.esc { if invOpen { toggleInventory() } else { releasePointer() }; return }
+        if e.keyCode == K.esc { if invOpen { toggleInventory() } else { onPause?() }; return }
         if e.keyCode == 14 { toggleInventory(); return }   // 'E' — inventory
         if e.keyCode == 8 { queue(BF_ACT_MODE_TOGGLE); return } // 'C' — creative/survival
         if e.keyCode == 12 { queue(BF_ACT_CRAFT); return }      // 'Q' — craft first available

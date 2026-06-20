@@ -230,7 +230,7 @@ typedef struct bf_camera {
     bf_vec3 forward;
     float   time_of_day;      /* 0..1, 0=midnight 0.5=noon                   */
     bf_vec3 sun_dir;
-    float   _pad1;
+    float   underwater;       /* 1 when the eye is submerged (for water tint)  */
 } bf_camera;
 
 /* ---- HUD state (read-only snapshot for the SwiftUI/Metal overlay) ------- */

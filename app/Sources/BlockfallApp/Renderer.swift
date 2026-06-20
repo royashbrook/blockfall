@@ -74,6 +74,16 @@ struct SkyUniforms {
     var sunDirTime: SIMD4<Float>    // xyz sun dir, w time-of-day
 }
 
+/// Extra per-frame uniforms passed as fragment bytes at index 2 for terrain pass,
+/// and as both vertex+fragment bytes for the underwater post pass.
+/// 16 bytes — not seen by the engine, set in draw(in:).
+struct WaterUniforms {
+    var wallClockSecs: Float   // CACurrentMediaTime() mod 3600 — for water anim + weather
+    var underwater: Float      // 1.0 if camera is submerged, else 0.0
+    var pad0: Float = 0
+    var pad1: Float = 0
+}
+
 // MARK: - Renderer
 
 final class Renderer: NSObject, MTKViewDelegate {
@@ -84,6 +94,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var depthState: MTLDepthStencilState!
     private var skyPipeline: MTLRenderPipelineState!
     private var skyDepthState: MTLDepthStencilState!
+    private var underwaterPipeline: MTLRenderPipelineState!  // fullscreen post-pass
     private var entityRenderer: EntityRenderer!
     private var particles: ParticleSystem!
     private var engine: OpaquePointer?
@@ -92,6 +103,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private weak var gameView: GameView?
     weak var hud: HUDView?
     weak var audio: GameAudio?
+    private var lastUnderwater = false
     private let saveDir: String
 
     init(view: MTKView, device: MTLDevice, saveDir: String, audio: GameAudio?) {
@@ -141,6 +153,20 @@ final class Renderer: NSObject, MTKViewDelegate {
         sdd.depthCompareFunction = .always
         sdd.isDepthWriteEnabled  = false
         skyDepthState = device.makeDepthStencilState(descriptor: sdd)
+
+        // Build underwater fullscreen post-pass pipeline (alpha blending, no depth write).
+        let udesc = MTLRenderPipelineDescriptor()
+        udesc.vertexFunction   = lib.makeFunction(name: "underwaterVmain")
+        udesc.fragmentFunction = lib.makeFunction(name: "underwaterFmain")
+        udesc.colorAttachments[0].pixelFormat = colorFormat
+        udesc.colorAttachments[0].isBlendingEnabled = true
+        udesc.colorAttachments[0].sourceRGBBlendFactor      = .sourceAlpha
+        udesc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        udesc.colorAttachments[0].sourceAlphaBlendFactor    = .one
+        udesc.colorAttachments[0].destinationAlphaBlendFactor = .zero
+        udesc.depthAttachmentPixelFormat = .depth32Float
+        do { underwaterPipeline = try device.makeRenderPipelineState(descriptor: udesc) }
+        catch { fatalError("underwater pipeline failed: \(error)") }
     }
 
     private func createEngine() {
@@ -240,6 +266,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         let viewProj = proj * viewM
         let sun = frame.camera.sun_dir
 
+        // Wall-clock seconds (mod 3600 to stay finite) for water + weather animation.
+        let wallClock = Float(now.truncatingRemainder(dividingBy: 3600.0))
+        let isUnderwater = frame.camera.underwater
+
         // 4) sky + depth clear
         let sky = skyColor(frame.camera.time_of_day)
         passDesc.colorAttachments[0].clearColor = MTLClearColor(red: sky.0, green: sky.1, blue: sky.2, alpha: 1)
@@ -256,8 +286,11 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setDepthStencilState(skyDepthState)
                 enc.setCullMode(.none)
                 var su = SkyUniforms(sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day))
+                // Pack wall-clock into a separate call for the sky (weather / cloud drift).
                 enc.setVertexBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
                 enc.setFragmentBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
+                var wuSky = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater)
+                enc.setFragmentBytes(&wuSky, length: MemoryLayout<WaterUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             }
 
@@ -266,6 +299,10 @@ final class Renderer: NSObject, MTKViewDelegate {
             enc.setDepthStencilState(depthState)
             enc.setCullMode(.back)
             enc.setFrontFacing(.counterClockwise)
+
+            // Water/extra uniforms bound once for entire terrain pass (fragment index 2).
+            var wu = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater)
+            enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
 
             for i in 0..<Int(frame.draw_count) {
                 let d = frame.draws[i]
@@ -287,10 +324,28 @@ final class Renderer: NSObject, MTKViewDelegate {
             entityRenderer.encode(enc, viewProj: viewProj, entities: frame.entities, count: Int(frame.entity_count))
             particles.update(Float(dt))
             particles.encode(enc, viewProj: viewProj)
+
+            // --- Underwater post-pass (fullscreen overlay, alpha blend, no depth write) ---
+            if underwaterPipeline != nil && isUnderwater > 0.01 {
+                enc.setRenderPipelineState(underwaterPipeline)
+                enc.setDepthStencilState(skyDepthState)  // always-pass, no write
+                enc.setCullMode(.none)
+                var wuPost = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater)
+                enc.setVertexBytes(&wuPost, length: MemoryLayout<WaterUniforms>.stride, index: 0)
+                enc.setFragmentBytes(&wuPost, length: MemoryLayout<WaterUniforms>.stride, index: 0)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+            }
+
             enc.endEncoding()
             cmd.present(drawable)
             cmd.commit()
         }
+
+        // Audio: drive day/evening music + splash when entering water.
+        audio?.setTimeOfDay(frame.camera.time_of_day)
+        let nowUnder = frame.camera.underwater > 0.5
+        if nowUnder && !lastUnderwater { audio?.play(.splash) }
+        lastUnderwater = nowUnder
 
         hud?.update(from: frame.hud)
         bf_frame_end(e)
@@ -349,6 +404,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     // =========================================================
     struct PackedVertex { uint pos; uint normuv; ushort material; uchar sky; uchar block; uint reserved; };
     struct Uniforms { float4x4 viewProj; float4 chunkOrigin; float4 sunDirTime; };
+    // WaterUniforms: separate small uniform, not engine-filled.
+    struct WaterUniforms { float wallClockSecs; float underwater; float pad0; float pad1; };
+
     struct VOut {
         float4 position [[position]];
         float3 color;
@@ -381,7 +439,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             case  2u: return float3(0.54, 0.38, 0.24);  // dirt — earthy brown
             case  3u: return float3(0.55, 0.55, 0.58);  // stone — cool grey
             case  6u: return float3(0.90, 0.83, 0.58);  // sand — warm tan
-            case  9u: return float3(0.22, 0.50, 0.90);  // water — sky blue
+            case  9u: return float3(0.14, 0.42, 0.82);  // water — deeper blue (animated separately)
             case 10u: return float3(0.44, 0.44, 0.46);  // cobblestone — dark grey
             case 11u: return float3(0.50, 0.47, 0.42);  // gravel — grey-beige
             case 12u: return float3(0.93, 0.96, 1.00);  // snow_layer — bright white
@@ -464,45 +522,69 @@ final class Renderer: NSObject, MTKViewDelegate {
         return wp.xy;                                  // +Z/-Z face
     }
 
-    // Compute a procedural detail multiplier (0.88..1.12) for a block face.
+    // Compute a procedural detail multiplier (0.80..1.22) for a block face.
     // Combines: (a) per-voxel brightness jitter, (b) grain noise.
     static float blockDetail(float3 worldPos, uint face, uint matID) {
         int3 vi = int3(floor(worldPos));          // which voxel
         float vHash = voxelHash(vi);              // stable per-voxel scalar
 
-        // (a) per-voxel brightness jitter: adjacent blocks differ ±6%
-        float jitter = (vHash - 0.5) * 0.12;
+        // (a) per-voxel brightness jitter: adjacent blocks differ ±8%
+        float jitter = (vHash - 0.5) * 0.16;
 
         // (b) sub-voxel grain: different scale per material family
         float2 uv = faceUV(worldPos, face);
         float grain;
 
-        // Stone / ore family: medium-scale speckle
+        // Stone / ore family: medium-scale speckle + coarse crack overlay
         if (matID==3u||matID==8u||matID==10u||matID==11u||
             matID==15u||matID==17u||matID==18u||matID==19u||
             matID==20u||matID==29u) {
-            grain = (noise2(uv * 7.5) - 0.5) * 0.18;
+            float fine  = (noise2(uv * 8.0) - 0.5) * 0.22;
+            float coarse= (noise2(uv * 2.5 + float2(5.1, 2.3)) - 0.5) * 0.10;
+            grain = fine + coarse;
         }
-        // Grass / leaves / foliage: finer organic noise
+        // Grass / leaves / foliage: finer organic noise with dual-scale
         else if (matID==1u||matID==5u||matID==27u||matID==38u) {
-            grain = (fbm2(uv * 5.0) - 0.5) * 0.14;
+            float a = (fbm2(uv * 5.5) - 0.5) * 0.20;
+            float b = (noise2(uv * 14.0 + float2(1.7, 3.3)) - 0.5) * 0.08;
+            grain = a + b;
         }
-        // Wood / planks: subtle linear grain (rotate UV 45°)
+        // Wood / planks: linear ring grain (rotated UV)
         else if (matID==4u||matID==21u||matID==22u||matID==23u||
                  matID==30u||matID==31u||matID==33u) {
             float2 ruv = float2(uv.x+uv.y, uv.x-uv.y) * 3.5;
-            grain = (noise2(ruv) - 0.5) * 0.12;
+            float ring  = (noise2(ruv) - 0.5) * 0.16;
+            float stripe= sin((uv.x + uv.y) * 6.28318f * 1.2f) * 0.05;
+            grain = ring + stripe;
         }
-        // Sand / gravel: coarse gritty noise
+        // Sand / gravel: gritty high-frequency speckle
         else if (matID==6u||matID==11u||matID==14u) {
-            grain = (noise2(uv * 9.0) - 0.5) * 0.10;
+            float coarse = (noise2(uv * 5.0) - 0.5) * 0.14;
+            float grit   = (noise2(uv * 18.0 + float2(2.2, 7.1)) - 0.5) * 0.10;
+            grain = coarse + grit;
         }
-        // Glowing blocks: gentle pulsing brightness preserved (no grain clash)
+        // Snow / ice: gentle subtle shimmer
+        else if (matID==12u||matID==13u) {
+            grain = (noise2(uv * 11.0) - 0.5) * 0.08;
+        }
+        // Glowing blocks: gentle pulsing brightness (no grain clash)
         else if (matID==7u||matID==32u||matID==34u||matID==35u||matID==40u) {
             grain = 0.0;
         }
+        // Clay brick / terracotta: mortared look (dark recessed grid)
+        else if (matID==24u) {
+            float bx = fract(uv.x * 2.0);
+            float by = fract(uv.y * 1.0);
+            float mortar = smoothstep(0.0, 0.08, bx) * smoothstep(0.0, 0.08, 1.0-bx)
+                         * smoothstep(0.0, 0.10, by) * smoothstep(0.0, 0.10, 1.0-by);
+            grain = (mortar - 0.5) * 0.22 + (noise2(uv * 7.0) - 0.5) * 0.06;
+        }
+        // Dim blocks: heavy dark grain
+        else if (matID==15u||matID==16u) {
+            grain = (fbm2(uv * 4.0) - 0.5) * 0.24;
+        }
         else {
-            grain = (noise2(uv * 5.0) - 0.5) * 0.08;
+            grain = (noise2(uv * 5.0) - 0.5) * 0.10;
         }
 
         return 1.0 + jitter + grain;
@@ -544,10 +626,60 @@ final class Renderer: NSObject, MTKViewDelegate {
     // =========================================================
     // TERRAIN FRAGMENT SHADER
     // =========================================================
-    fragment float4 fmain(VOut in [[stage_in]]) {
-        // Layer procedural detail on top of the base color (preserves lighting)
+    fragment float4 fmain(VOut in [[stage_in]],
+                          constant WaterUniforms& wu [[buffer(2)]]) {
+        uint mat = in.material;
+
+        // ---- Water (block id 9) special path ----
+        if (mat == 9u) {
+            float t = wu.wallClockSecs;
+            float2 uv = in.worldPos.xz;   // horizontal UV for water surface
+
+            // Two layers of scrolling normal noise — orthogonal drift directions
+            float wave1 = noise2(uv * 0.8  + float2( t * 0.22,  t * 0.14));
+            float wave2 = noise2(uv * 1.40 + float2(-t * 0.17,  t * 0.28));
+            float wave3 = noise2(uv * 2.80 + float2( t * 0.35, -t * 0.19));
+            float ripple = wave1 * 0.50 + wave2 * 0.35 + wave3 * 0.15;
+            // Remap to -1..1 range, use as brightness variation
+            float rippleN = ripple * 2.0 - 1.0;  // -1..1
+
+            // Base water color — slightly deeper blue-cyan
+            float3 waterBase = float3(0.12, 0.40, 0.80);
+
+            // Fresnel-ish: top face is brighter, sides see edge darkening
+            float fresnelBias = (in.faceNorm == 2u) ? 0.30 : 0.08;
+            float fresnelAmt  = fresnelBias + rippleN * 0.12;
+
+            // Sun specular: glint using ripple as a perturbed normal
+            // We fake a normal from the two noise layers
+            float2 nAB = float2(
+                noise2(uv * 1.2 + float2(t * 0.22 + 0.1, t * 0.14)) - wave1,
+                noise2(uv * 1.2 + float2(t * 0.22, t * 0.14 + 0.1)) - wave1
+            ) * 4.0;
+            float3 perturbedN = normalize(float3(nAB.x, 1.4, nAB.y));
+            // Simple Phong-ish sun direction (approximate, no camera matrix)
+            float3 sunDir = normalize(float3(0.5, 0.9, 0.3));  // constant approx upward sun
+            float spec = pow(max(0.0, dot(perturbedN, sunDir)), 22.0);
+            float specular = spec * 0.55 * in.shade;  // modulated by light level
+
+            // Assemble final water color
+            float3 col = waterBase * in.shade;
+            // Ripple brightening — lighter crest, darker trough
+            col *= 1.0 + rippleN * 0.20;
+            // Fresnel highlight (whitish)
+            col = mix(col, float3(0.85, 0.95, 1.00), clamp(fresnelAmt, 0.0, 0.45));
+            // Sun specular glint (warm white)
+            col += float3(1.0, 0.98, 0.88) * specular;
+
+            // Dim saturation
+            float lum = dot(col, float3(0.299, 0.587, 0.114));
+            col = mix(float3(lum), col, clamp(in.sat, 0.0, 1.0));
+            return float4(clamp(col, 0.0, 1.0), 1.0);
+        }
+
+        // ---- Standard block path ----
         float detail = blockDetail(in.worldPos, in.faceNorm, in.material);
-        float3 col = in.color * in.shade * clamp(detail, 0.78, 1.22);
+        float3 col = in.color * in.shade * clamp(detail, 0.75, 1.28);
         // Dim regions drain toward grey; restoring (e.g. a glow block) brings
         // the color back. Luminance-preserving desaturation.
         float lum = dot(col, float3(0.299, 0.587, 0.114));
@@ -580,17 +712,15 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     fragment float4 skyFmain(SkyVOut in [[stage_in]],
-                              constant SkyUniforms& su [[buffer(0)]]) {
+                              constant SkyUniforms& su [[buffer(0)]],
+                              constant WaterUniforms& wu [[buffer(1)]]) {
         float t   = su.sunDirTime.w;        // 0..1 time of day
         float3 sd = su.sunDirTime.xyz;      // sun direction (world space)
+        float clk = wu.wallClockSecs;       // wall-clock seconds for fast animation
 
         // --- Sky gradient ---
         float vy = in.uv.y;  // 0=bottom/horizon, 1=top
 
-        // Key colours at different times
-        // Dawn/dusk: orange horizon, purple zenith
-        // Day:       light blue zenith, white horizon
-        // Night:     near-black zenith, dark indigo horizon
         float dayT = max(0.0, sin(t * 3.14159265f));      // 0=midnight, 1=noon
         float dawnT = max(0.0, 1.0 - abs(t - 0.25)*8.0); // peaks at t=0.25 (dawn)
         float duskT = max(0.0, 1.0 - abs(t - 0.75)*8.0); // peaks at t=0.75 (dusk)
@@ -607,39 +737,147 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 zenith = mix(mix(zenithNight, zenithDay, dayT), zenithSunset, sunsetT*0.7);
         float3 horiz  = mix(mix(horizNight,  horizDay,  dayT), horizSunset,  sunsetT*0.85);
 
-        // Gradient: horizon at vy=0.3, zenith at vy=1.0
+        // Gradient: horizon at vy=0.15, zenith at vy=0.80
         float gradT = smoothstep(0.15, 0.80, vy);
         float3 skyCol = mix(horiz, zenith, gradT);
 
-        // --- Sun disc ---
-        // Sun screen position: project sun_dir into UV space using simple
-        // approximation (assume uv maps to hemisphere view)
-        // We compute a fake ray direction for each pixel:
+        // --- Prominent sun disc ---
         float2 ndcXY = in.uv * 2.0 - 1.0;   // [-1,1]
-        // Approximate view ray (no camera matrix needed for sky look)
         float3 ray = normalize(float3(ndcXY.x * 1.6, ndcXY.y - 0.1, 1.0));
         float sunDot = dot(ray, normalize(sd));
-        float sunDisc = smoothstep(0.996, 1.000, sunDot);   // tight disc
-        float sunGlow = smoothstep(0.88, 1.000, sunDot) * 0.25 * dayT;  // corona
-        float3 sunColor = mix(float3(1.0, 0.85, 0.60), float3(1.0, 0.98, 0.85), dayT);
-        skyCol = mix(skyCol + sunGlow * sunColor, sunColor, sunDisc * dayT);
+        // Bigger, brighter sun disc
+        float sunDisc  = smoothstep(0.9975, 1.000, sunDot);   // tight solid disc
+        float sunInner = smoothstep(0.9990, 1.000, sunDot);   // bright core
+        float sunGlow1 = smoothstep(0.94,   1.000, sunDot) * 0.18 * dayT;  // wide halo
+        float sunGlow2 = smoothstep(0.985,  1.000, sunDot) * 0.30 * dayT;  // tight corona
+        float3 sunColor   = mix(float3(1.0, 0.78, 0.40), float3(1.0, 0.98, 0.85), dayT);
+        float3 sunCorona  = sunColor * 1.1;
+        // Apply: glow -> disc -> bright core
+        skyCol = skyCol + sunGlow1 * sunCorona + sunGlow2 * sunCorona;
+        skyCol = mix(skyCol, sunColor,         sunDisc  * dayT);
+        skyCol = mix(skyCol, float3(1.0,1.0,0.95), sunInner * dayT);
 
-        // --- Procedural drifting clouds ---
-        // Only visible during day/dawn/dusk
-        float cloudVis = smoothstep(0.15, 0.40, dayT) * smoothstep(0.0, 0.25, vy);
+        // Faint moon at night (opposite side of sky)
+        float3 moonDir = -sd;  // approximate: opposite sun
+        float moonDot = dot(ray, normalize(moonDir));
+        float moonDisc = smoothstep(0.9990, 1.000, moonDot) * (1.0 - dayT) * 0.9;
+        skyCol = mix(skyCol, float3(0.90, 0.92, 1.00), moonDisc);
+
+        // Stars: visible at night using hash-based points
+        if (dayT < 0.5) {
+            float starFade = 1.0 - smoothstep(0.1, 0.4, dayT);
+            float2 starUV = floor(in.uv * 160.0);
+            float starH = uhash(uint(starUV.x) * 3141u + uint(starUV.y) * 1618u);
+            float starBright = step(0.988, starH);
+            skyCol += float3(starBright * starFade * 0.85);
+        }
+
+        // --- Weather: overcast + rain effect ---
+        // Weather cycles slowly over time: use a low-frequency noise on time
+        // period ~ 300s per weather cycle; mild so it never fully blacks out.
+        float weatherCycle = sin(clk * (3.14159265f / 150.0f)) * 0.5 + 0.5;  // 0..1
+        float overcast = smoothstep(0.55, 0.80, weatherCycle) * 0.62;  // 0..0.62 opacity
+
+        if (overcast > 0.01) {
+            // Overcast cloud layer: denser, lower, grey
+            float2 ocUV = float2(in.uv.x * 4.0 + clk * 0.008,
+                                 in.uv.y * 2.5 + clk * 0.002);
+            float ocCloud = cloudFbm(ocUV);
+            ocCloud = smoothstep(0.40, 0.65, ocCloud);
+            float3 ocColor = mix(float3(0.60, 0.62, 0.68), float3(0.75, 0.76, 0.80), dayT);
+            skyCol = mix(skyCol, ocColor, ocCloud * overcast * smoothstep(0.1, 0.5, vy));
+
+            // Rain streaks: vertical animated noise in screen space
+            float rainStrength = smoothstep(0.60, 0.80, weatherCycle);
+            if (rainStrength > 0.01) {
+                // Streak UV: compress x, long y stripes, scroll downward fast
+                float2 rUV = float2(in.uv.x * 80.0, in.uv.y * 5.0 + clk * 1.8);
+                float streak1 = noise2(rUV);
+                float streak2 = noise2(rUV * float2(1.3, 1.0) + float2(7.3, 0.0));
+                float rain = pow(max(0.0, streak1 * streak2 - 0.38), 2.5) * 12.0;
+                rain = clamp(rain, 0.0, 1.0);
+                float3 rainColor = mix(float3(0.65, 0.72, 0.85), float3(0.55, 0.65, 0.80), dayT);
+                skyCol = mix(skyCol, rainColor, rain * rainStrength * 0.38);
+            }
+        }
+
+        // --- Procedural drifting fair-weather clouds (when not overcast) ---
+        float fairCloud = 1.0 - overcast * 1.4;
+        float cloudVis = smoothstep(0.15, 0.40, dayT) * smoothstep(0.0, 0.25, vy) * clamp(fairCloud, 0.0, 1.0);
         if (cloudVis > 0.001) {
-            // Drift using time_of_day (full drift cycle over a day)
-            float2 cloudUV = float2(in.uv.x * 3.5 + t * 0.18,
-                                    in.uv.y * 1.8 + t * 0.04);
+            // Fast wall-clock drift so clouds visibly move
+            float2 cloudUV = float2(in.uv.x * 3.8 + clk * 0.012,
+                                    in.uv.y * 2.0 + clk * 0.004);
             float cloud = cloudFbm(cloudUV);
-            cloud = smoothstep(0.52, 0.72, cloud);  // threshold -> soft edges
+            // Second layer at different scale + direction
+            float2 cloudUV2 = float2(in.uv.x * 2.2 - clk * 0.008,
+                                     in.uv.y * 1.6 + clk * 0.003);
+            float cloud2 = cloudFbm(cloudUV2);
+            cloud = smoothstep(0.50, 0.72, (cloud + cloud2 * 0.5) / 1.5);
             float3 cloudCol = mix(float3(0.95, 0.95, 1.00),
                                   mix(float3(1.0, 0.80, 0.65), float3(0.95,0.95,1.0), dayT),
-                                  sunsetT * 0.6);
-            skyCol = mix(skyCol, cloudCol, cloud * cloudVis * 0.85);
+                                  sunsetT * 0.65);
+            // Cloud shadow tint on underside (lower vy = darker belly)
+            cloudCol = mix(cloudCol * float3(0.78, 0.78, 0.82), cloudCol,
+                           smoothstep(0.30, 0.65, vy));
+            skyCol = mix(skyCol, cloudCol, cloud * cloudVis * 0.88);
         }
 
         return float4(skyCol, 1.0);
+    }
+
+    // =========================================================
+    // UNDERWATER POST PASS — fullscreen overlay (alpha blended)
+    // Drawn AFTER terrain + particles. Fades geometry to blue-green
+    // with distance so cave systems below are hidden while submerged.
+    // =========================================================
+    struct UWVOut { float4 position [[position]]; float2 uv; };
+
+    vertex UWVOut underwaterVmain(uint vid [[vertex_id]],
+                                  constant WaterUniforms& wu [[buffer(0)]]) {
+        float2 pos;
+        if      (vid == 0u) pos = float2(-1.0, -1.0);
+        else if (vid == 1u) pos = float2( 3.0, -1.0);
+        else                pos = float2(-1.0,  3.0);
+        UWVOut o;
+        o.position = float4(pos, 0.0, 1.0);  // depth 0 — in front of everything
+        o.uv = pos * 0.5 + 0.5;
+        return o;
+    }
+
+    fragment float4 underwaterFmain(UWVOut in [[stage_in]],
+                                    constant WaterUniforms& wu [[buffer(0)]]) {
+        float uw = wu.underwater;
+        if (uw < 0.01) { discard_fragment(); }
+
+        float t = wu.wallClockSecs;
+
+        // Caustic shimmer: slow moving bright patches on screen
+        float2 cUV1 = in.uv * float2(3.0, 2.5) + float2(t * 0.08, t * 0.05);
+        float2 cUV2 = in.uv * float2(2.2, 3.1) + float2(-t * 0.06, t * 0.09);
+        float caustic = noise2(cUV1) * 0.6 + noise2(cUV2) * 0.4;
+        caustic = smoothstep(0.52, 0.78, caustic) * 0.18;  // subtle bright patches
+
+        // Screen-space fog: stronger toward screen edges and near the bottom
+        float edgeFog = 1.0 - 4.0 * (in.uv.x - 0.5) * (in.uv.x - 0.5)
+                             - 4.0 * (in.uv.y - 0.5) * (in.uv.y - 0.5);
+        edgeFog = clamp(edgeFog, 0.0, 1.0);
+        // Fog that fills the lower half more (cave below)
+        float depthFog = 1.0 - smoothstep(0.0, 0.7, in.uv.y);
+
+        // Base underwater tint: blue-green
+        float3 uwColor = float3(0.06, 0.28, 0.45);
+
+        // Composite: tint over the whole frame, denser at edges + below
+        float baseFog = 0.40;                // constant minimum overlay
+        float edgeMod = (1.0 - edgeFog) * 0.30;
+        float depthMod = depthFog * 0.28;
+        float totalAlpha = clamp((baseFog + edgeMod + depthMod) * uw, 0.0, 0.78);
+
+        // Add caustics as a brightening offset in the color
+        float3 col = uwColor + float3(caustic * 0.8, caustic * 1.0, caustic * 0.6);
+
+        return float4(col, totalAlpha);
     }
     """
 
@@ -732,11 +970,15 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
             var su = SkyUniforms(sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day))
             enc.setVertexBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
             enc.setFragmentBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
+            var wuSky = WaterUniforms(wallClockSecs: Float(f) / 60.0, underwater: 0.0)
+            enc.setFragmentBytes(&wuSky, length: MemoryLayout<WaterUniforms>.stride, index: 1)
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         }
         // Terrain pass
         enc.setRenderPipelineState(pipeline); enc.setDepthStencilState(depthState)
         enc.setCullMode(.back); enc.setFrontFacing(.counterClockwise)
+        var wu = WaterUniforms(wallClockSecs: Float(f) / 60.0, underwater: 0.0)
+        enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
         for i in 0..<Int(frame.draw_count) {
             let d = frame.draws[i]
             guard d.index_count > 0, let vb = registry.lookup(d.vertex_buffer), let ib = registry.lookup(d.index_buffer) else { continue }

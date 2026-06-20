@@ -21,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let audio = GameAudio()
     let menu = MenuController()
     var device: MTLDevice!
+    weak var gameView: GameView?
+    var gameContainer: NSView?
+    var pauseOverlay: NSView?
 
     func applicationDidFinishLaunching(_: Notification) {
         guard bf_abi_version() == BF_ABI_VERSION else {
@@ -39,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         device = dev
         audio.start()
+        audio.setAmbienceEnabled(true)
 
         // Show the main menu first; start the game when a world is chosen.
         menu.onPlayWorld = { [weak self] saveDir, _, _ in self?.startGame(saveDir: saveDir) }
@@ -58,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mtkView.delegate = r
         mtkView.onHost = { [weak r] in r?.startHost() }
         mtkView.onJoin = { [weak r] in r?.joinLAN() }
+        mtkView.onPause = { [weak self] in self?.pauseGame() }
 
         let h = HUDView(frame: frame)
         h.autoresizingMask = [.width, .height]
@@ -71,6 +76,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeFirstResponder(mtkView)
         renderer = r
         hud = h
+        gameView = mtkView
+        gameContainer = container
+    }
+
+    // ---- pause menu (Esc) ----
+    @objc private func pauseGame() {
+        guard pauseOverlay == nil, let container = gameContainer else { return }
+        gameView?.releaseMouse()
+        let ov = NSView(frame: container.bounds)
+        ov.autoresizingMask = [.width, .height]
+        ov.wantsLayer = true
+        ov.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
+
+        let title = NSTextField(labelWithString: "Paused")
+        title.font = .boldSystemFont(ofSize: 40); title.textColor = .white
+        title.alignment = .center; title.translatesAutoresizingMaskIntoConstraints = false
+
+        let resume = pauseButton("Resume", #selector(resumeGame))
+        let menuBtn = pauseButton("Save & Quit to Menu", #selector(quitToMenu))
+        let stack = NSStackView(views: [title, resume, menuBtn])
+        stack.orientation = .vertical; stack.spacing = 18; stack.alignment = .centerX
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        ov.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: ov.centerYAnchor),
+        ])
+        container.addSubview(ov)
+        pauseOverlay = ov
+    }
+    private func pauseButton(_ t: String, _ sel: Selector) -> NSButton {
+        let b = NSButton(title: t, target: self, action: sel)
+        b.bezelStyle = .rounded; b.font = .systemFont(ofSize: 18)
+        b.translatesAutoresizingMaskIntoConstraints = false
+        b.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
+        return b
+    }
+    @objc private func resumeGame() {
+        pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
+        gameView?.grabMouse()
+        if let gv = gameView { window.makeFirstResponder(gv) }
+    }
+    @objc private func quitToMenu() {
+        pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
+        renderer?.shutdown(); renderer = nil    // saves the world
+        gameView = nil; gameContainer = nil; hud = nil
+        menu.refresh()
+        window.contentView = menu.rootView
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool { true }

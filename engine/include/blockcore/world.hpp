@@ -54,6 +54,7 @@ struct Creature {
     bool  is_boss{false};
     bool  friendly{false};
     float wander{0};
+    int   shape{0};         // renderer model variant (0..3 animals)
     std::string name;       // content creature name (quest befriend target)
 };
 
@@ -129,17 +130,19 @@ public:
     }
     void give_starter_items() {
         if (!inv_) return;
-        // Creative-style hotbar of placeable blocks + functional blocks.
-        const char* hot[BF_HOTBAR_SLOTS] = {
-            "glow_block", "stone", "oak_planks", "stone_brick", "sand",
-            "oak_log", "torch", "chest", "crafting_table"
-        };
-        for (int i = 0; i < BF_HOTBAR_SLOTS; ++i) {
-            ItemId id = item_id_by_name(hot[i]);
-            if (id) inv_->set(std::size_t(i), ItemStack{id, 64, 0xFFFF});
+        if (mode_ == BF_MODE_CREATIVE) {
+            // Creative: a full palette of placeable + functional blocks.
+            const char* hot[BF_HOTBAR_SLOTS] = {
+                "glow_block", "stone", "oak_planks", "stone_brick", "sand",
+                "oak_log", "torch", "chest", "crafting_table"
+            };
+            for (int i = 0; i < BF_HOTBAR_SLOTS; ++i)
+                if (ItemId id = item_id_by_name(hot[i])) inv_->set(std::size_t(i), ItemStack{id, 64, 0xFFFF});
+        } else {
+            // Survival: hotbar starts EMPTY so mined blocks visibly land in it.
+            // Just a couple of logs to bootstrap the first crafts.
+            if (ItemId log = item_id_by_name("oak_log")) inv_->set(0, ItemStack{log, 3, 0xFFFF});
         }
-        // A few raw materials in the main grid so crafting has inputs.
-        if (ItemId log = item_id_by_name("oak_log")) inv_->set(9, ItemStack{log, 16, 0xFFFF});
     }
 
     // ---- M2: procedural spawn + streaming --------------------------------
@@ -464,6 +467,8 @@ public:
         out.camera.time_of_day = t;
         float ang = t * 6.2831853f;
         out.camera.sun_dir = bf_vec3{std::cos(ang) * 0.6f, -std::sin(ang) - 0.25f, 0.35f};
+        out.camera.underwater =
+            (block_at(IVec3{ifloor(eye.x), ifloor(eye.y), ifloor(eye.z)}) == WATER) ? 1.0f : 0.0f;
         out.interp_alpha = 0.0f;
         out.draws = draws.data();
         out.draw_count = std::uint32_t(draws.size());
@@ -478,7 +483,7 @@ public:
             e.yaw = cr.yaw;
             e.color = bf_vec3{col.x, col.y, col.z};
             e.scale = cr.scale;
-            e.kind = cr.is_boss ? 1u : 0u;
+            e.kind = cr.is_boss ? 4u : std::uint32_t(cr.shape & 3);   // 0..3 animals, 4 boss
             e.sat = region_sat(to_chunk(IVec3{ifloor(cr.pos.x), ifloor(cr.pos.y), ifloor(cr.pos.z)}));
             entities_.push_back(e);
         }
@@ -526,8 +531,8 @@ public:
     }
 
 private:
-    // Start in bright morning (+0.30) and cycle ~50 s/day.
-    static float day_time(double clock) { return float(std::fmod(clock * 0.02 + 0.30, 1.0)); }
+    // Start in bright morning (+0.30) and cycle slowly (~12 min/day).
+    static float day_time(double clock) { return float(std::fmod(clock * 0.0014 + 0.30, 1.0)); }
 
     V3 forward_dir() const {
         return normalize(V3{ std::cos(pitch_) * std::sin(yaw_), std::sin(pitch_),
@@ -676,6 +681,7 @@ private:
                 c.name = std::string(d->name);
                 c.color = color_for(boss ? "boss" : d->disposition, d->id);
                 c.speed = boss ? d->move_speed * 0.7f : d->move_speed;
+                c.shape = int(d->id) % 4;            // model variant from the def
             }
         } else {
             c.color = color_for(boss ? "boss" : "passive", std::uint16_t(creatures_.size() + 1));

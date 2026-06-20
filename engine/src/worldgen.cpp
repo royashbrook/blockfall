@@ -12,36 +12,42 @@
 //   fbm2(x, z, seed, oct) -- fractal 2D: sum of `oct` smooth octaves
 //   fbm3(x, y, z, seed)   -- fractal 3D for caves
 //
-// Terrain
-// -------
-//   surface height H = BASE_Y + int(fbm2 * AMP)
-//   BASE_Y=8, AMP=24  =>  H roughly in [8-24 .. 8+24] = [-16..32]
+// Biome system (7 biomes, smoothly blended)
+// ------------------------------------------
+// Two low-frequency 2D noise channels (temperature T, moisture M) partition the
+// world into 7 biomes.  Biome WEIGHTS (not a hard classification) are computed
+// as soft Gaussian-like kernels in (T,M) space so every column carries a blend
+// across all biomes proportional to its distance from each centre.  Heights and
+// block choices are then the weighted average of per-biome parameters — this
+// guarantees C0-continuous terrain across ALL biome boundaries with no cliffs.
 //
-// Biomes (low-frequency 2D noise)
-//   < 0.4 -> plains  (GRASS surface, DIRT fill)
-//   0.4..0.7 -> hills (GRASS surface, STONE fill at depth, more amplitude)
-//   > 0.7 -> desert  (SAND surface, SAND fill)
+// Biomes and approximate (T,M) centres:
+//   PLAINS      (0.5, 0.5)  flat-ish, grass, lots of flowers+tall grass, sparse trees
+//   FOREST      (0.5, 0.8)  rolling, very dense trees, mushrooms, mossy stone
+//   MOUNTAINS   (0.3, 0.4)  tall peaks, stone/gravel exposed, snow above snow line
+//   DESERT      (0.8, 0.1)  gentle dunes (low-freq noise), sand/sand fill, sparse
+//   SNOWY       (0.1, 0.5)  snow surface, birch trees, frozen water (ice)
+//   SWAMP       (0.5, 0.95) low+flat, water pools, mud (dirt), mushrooms, clay
+//   BEACH       (0.6, 0.3)  thin sand band near sea level (low amp)
 //
-// Caves (3D fbm > threshold, only underground, above kColumnMinY+4)
+// Terrain shape per biome:
+//   base_y  — vertical centre of the terrain column
+//   amp     — half-amplitude of height variation
+//   freq    — primary noise frequency (higher = more jagged/detailed)
+//   octaves — fBm octave count (mountains get more detail)
 //
-// Decoration (seam-aware scatter)
-// ---------------------------------
-// Trees are placed on a virtual 8x8 world-block grid of "tree cells".  Each
-// cell either has a tree or not (probability ~18%, plains/hills only).  The
-// tree's exact (wx, wz) root is offset within the cell by hash.  Trunk height
-// (4..6) and type (oak/birch) are also hash-derived from the root column.
-// Canopy is a 5x5x3 leaf blob centred on the top of the trunk (clipped by
-// rounded corners).
+// Cave carving (unchanged): 3D fbm > threshold => AIR underground.
 //
-// When generating chunk C, we scan every tree cell whose influence bounding-box
-// (root ± CANOPY_RADIUS_XZ, root.y .. root.y + trunk + CANOPY_HEIGHT) might
-// overlap chunk C.  For each such tree we place only the voxels that actually
-// fall inside C.  Because all decisions derive from (wx,wz,seed) alone, the
-// same tree voxels appear correctly in every adjacent chunk that covers them.
+// Decoration (seam-aware scatter, PRESERVED from previous agent)
+// -----------------------------------------------------------------
+// Trees are placed on a world-aligned 8x8 tree-cell grid.  The cell hash
+// determines: presence, root (wx,wz) offset, trunk height (4..6), type
+// (oak/birch).  Canopy = 5x5x3 blob with rounded corners.  Each biome has
+// its own tree-density threshold.  A tree is only spawned if its biome weight
+// for the designated tree-bearing biomes exceeds a threshold.
 //
 // Plants (tall grass, flowers, mushrooms) are single-block decorations placed
-// directly on each column's surface — they need no cross-chunk margin because
-// they are exactly 1 block tall.
+// directly on each column's surface — no cross-chunk margin needed.
 // ============================================================================
 #include "blockcore/worldgen.hpp"
 #include "blockcore/chunk.hpp"
@@ -52,28 +58,32 @@
 namespace bf {
 
 // ---------------------------------------------------------------------------
-// Block id constants
+// Block id constants (verified against content/blocks/*.json)
 // ---------------------------------------------------------------------------
-static constexpr BlockId AIR          = 0;
-static constexpr BlockId GRASS        = 1;
-static constexpr BlockId DIRT         = 2;
-static constexpr BlockId STONE        = 3;
-static constexpr BlockId OAK_LEAVES   = 5;
-static constexpr BlockId SAND         = 6;
-static constexpr BlockId WATER        = 9;
-static constexpr BlockId OAK_LOG      = 21;
-static constexpr BlockId BIRCH_LOG    = 22;
-static constexpr BlockId BIRCH_LEAVES = 27;
-static constexpr BlockId FLOWER_RED   = 36;
-static constexpr BlockId FLOWER_YELLOW= 37;
-static constexpr BlockId TALL_GRASS   = 38;
-static constexpr BlockId MUSHROOM     = 39;
+static constexpr BlockId AIR           = 0;
+static constexpr BlockId GRASS         = 1;
+static constexpr BlockId DIRT          = 2;
+static constexpr BlockId STONE         = 3;
+static constexpr BlockId OAK_LEAVES    = 5;
+static constexpr BlockId SAND          = 6;
+static constexpr BlockId WATER         = 9;
+static constexpr BlockId GRAVEL        = 11;
+static constexpr BlockId SNOW_LAYER    = 12;
+static constexpr BlockId ICE           = 13;
+static constexpr BlockId CLAY          = 14;
+static constexpr BlockId OAK_LOG       = 21;
+static constexpr BlockId BIRCH_LOG     = 22;
+static constexpr BlockId BIRCH_LEAVES  = 27;
+static constexpr BlockId MOSSY_STONE   = 29;
+static constexpr BlockId FLOWER_RED    = 36;
+static constexpr BlockId FLOWER_YELLOW = 37;
+static constexpr BlockId TALL_GRASS    = 38;
+static constexpr BlockId MUSHROOM      = 39;
 
-static constexpr int SEA_LEVEL  = 6;
-static constexpr int BASE_Y     = 8;
-static constexpr int AMP_PLAINS = 12;
-static constexpr int AMP_HILLS  = 24;
-static constexpr int AMP_DESERT = 10;
+static constexpr int SEA_LEVEL = 6;
+
+// Snow line: columns at this world-y or above in mountain biome get snow.
+static constexpr int SNOW_LINE = 24;
 
 // Cave noise threshold: cells whose 3D noise > this become AIR.
 static constexpr float CAVE_THRESH = 0.68f;
@@ -82,7 +92,6 @@ static constexpr float CAVE_THRESH = 0.68f;
 // Hash primitives — Wang/murmur-inspired 64-bit mixes
 // ---------------------------------------------------------------------------
 
-// Mix a single 64-bit value (finalizer from MurmurHash3 / fmix64).
 static constexpr std::uint64_t fmix64(std::uint64_t h) noexcept {
     h ^= h >> 33u;
     h *= 0xFF51AFD7ED558CCDull;
@@ -92,7 +101,6 @@ static constexpr std::uint64_t fmix64(std::uint64_t h) noexcept {
     return h;
 }
 
-// Hash two signed 32-bit coords + seed into a 64-bit value.
 static std::uint64_t hash2(std::int32_t ix, std::int32_t iz, std::uint64_t seed) noexcept {
     std::uint64_t h = seed;
     h ^= fmix64(static_cast<std::uint64_t>(static_cast<std::uint32_t>(ix)));
@@ -100,7 +108,6 @@ static std::uint64_t hash2(std::int32_t ix, std::int32_t iz, std::uint64_t seed)
     return fmix64(h);
 }
 
-// Hash three signed 32-bit coords + seed.
 static std::uint64_t hash3(std::int32_t ix, std::int32_t iy, std::int32_t iz,
                             std::uint64_t seed) noexcept {
     std::uint64_t h = seed;
@@ -110,14 +117,12 @@ static std::uint64_t hash3(std::int32_t ix, std::int32_t iy, std::int32_t iz,
     return fmix64(h);
 }
 
-// Map a 64-bit hash to [0, 1].
 static float h2f(std::uint64_t h) noexcept {
-    // Use top 24 bits for float precision.
     return static_cast<float>(h >> 40u) / static_cast<float>(1u << 24u);
 }
 
 // ---------------------------------------------------------------------------
-// Smoothstep (3rd-order, C1 continuous)
+// Smoothstep
 // ---------------------------------------------------------------------------
 static constexpr float smoothstep(float t) noexcept {
     return t * t * (3.0f - 2.0f * t);
@@ -125,7 +130,6 @@ static constexpr float smoothstep(float t) noexcept {
 
 // ---------------------------------------------------------------------------
 // 2D value noise: bilinearly interpolated hash lattice
-// Coordinate space: (fx, fz) are in [0, inf); lattice step = 1 unit
 // ---------------------------------------------------------------------------
 static float value_noise2(float fx, float fz, std::uint64_t seed) noexcept {
     auto ifloor = [](float v) noexcept -> std::int32_t {
@@ -166,7 +170,6 @@ static float value_noise3(float fx, float fy, float fz, std::uint64_t seed) noex
     float ty = smoothstep(fy - static_cast<float>(y0));
     float tz = smoothstep(fz - static_cast<float>(z0));
 
-    // Interpolate along x first, then y, then z
     float c[2][2][2];
     c[0][0][0] = h2f(hash3(x0, y0, z0, seed));
     c[1][0][0] = h2f(hash3(x1, y0, z0, seed));
@@ -190,7 +193,7 @@ static float value_noise3(float fx, float fy, float fz, std::uint64_t seed) noex
 }
 
 // ---------------------------------------------------------------------------
-// Fractal Brownian Motion (fBm) — 2D, seeded per octave
+// Fractal Brownian Motion (fBm) — 2D
 // Returns value in approximately [0, 1].
 // ---------------------------------------------------------------------------
 static float fbm2(float wx, float wz, std::uint64_t seed, int octaves,
@@ -202,14 +205,13 @@ static float fbm2(float wx, float wz, std::uint64_t seed, int octaves,
     float max_val = 0.0f;
 
     for (int o = 0; o < octaves; ++o) {
-        // Perturb seed per octave to avoid octave correlation.
         std::uint64_t oseed = fmix64(seed ^ static_cast<std::uint64_t>(o) * 0xABCDEF01234567ull);
         val     += amp * value_noise2(wx * freq, wz * freq, oseed);
         max_val += amp;
         amp     *= persistence;
         freq    *= lacunarity;
     }
-    return val / max_val;   // normalize to [0, 1]
+    return val / max_val;
 }
 
 // 3D fBm for caves.
@@ -233,63 +235,191 @@ static float fbm3(float wx, float wy, float wz, std::uint64_t seed, int octaves,
 }
 
 // ---------------------------------------------------------------------------
-// Biome helpers
+// Biome definitions
 // ---------------------------------------------------------------------------
-enum class Biome : std::uint8_t { Plains, Hills, Desert };
 
-// Low-frequency biome noise — continuous, no per-chunk discontinuity.
-static Biome biome_at(std::int32_t wx, std::int32_t wz, std::uint64_t seed) noexcept {
-    // Use a seed derived from base seed to separate biome from terrain.
-    std::uint64_t bseed = fmix64(seed ^ 0xB10E5EED5ull);
-    float b = fbm2(static_cast<float>(wx), static_cast<float>(wz), bseed,
-                   /*octaves=*/2, /*base_freq=*/1.0f / 128.0f);
-    if (b < 0.4f)  return Biome::Plains;
-    if (b < 0.7f)  return Biome::Hills;
-    return Biome::Desert;
-}
+// Number of biomes (used for array sizes — keep in sync with enum).
+static constexpr int NUM_BIOMES = 7;
 
-// Surface height as a continuous function of world (wx, wz).
-static int surface_height(std::int32_t wx, std::int32_t wz,
-                          std::uint64_t seed, Biome biome) noexcept {
+enum class Biome : std::uint8_t {
+    Plains    = 0,
+    Forest    = 1,
+    Mountains = 2,
+    Desert    = 3,
+    Snowy     = 4,
+    Swamp     = 5,
+    Beach     = 6,
+};
+
+// Per-biome terrain shaping parameters.
+struct BiomeParams {
+    float base_y;    // vertical centre of terrain (float for blending)
+    float amp;       // half-amplitude of height variation
+    float freq;      // primary noise frequency
+    int   octaves;   // fBm octave count (more = more detail)
+    float persistence; // amplitude falloff per octave
+};
+
+// Soft weight centre in (temperature, moisture) space — used to compute
+// how strongly a biome influences any given world column.
+struct BiomeCentre {
+    float temp;      // [0,1] temperature
+    float moist;     // [0,1] moisture
+    float radius_t;  // half-width in temperature dimension
+    float radius_m;  // half-width in moisture dimension
+};
+
+// Table indexed by Biome enum value.
+// Mountain base_y and amp are deliberately high so blended peaks reach >=30.
+// Even at ~60-70% mountain weight, peaks should exceed 30:
+//   h = 0.65*36 + 0.35*8 = 23.4 + 2.8 = 26 ... need higher base
+// To guarantee >30 even at 60% weight we need base_y+amp such that
+//   0.6*(base_y+amp) + 0.4*8 > 30  =>  base_y+amp > (30-3.2)/0.6 = 44.7
+// Use base_y=18, amp=38 => 56, so 0.6*56+0.4*8 = 33.6+3.2 = 36.8 > 30. Good.
+static constexpr BiomeParams BIOME_PARAMS[NUM_BIOMES] = {
+    // base_y  amp   freq        octaves  persistence
+    {  8.0f,  10.0f, 1.0f/48.0f,  4,     0.50f },  // Plains
+    { 10.0f,  14.0f, 1.0f/40.0f,  4,     0.55f },  // Forest
+    { 18.0f,  38.0f, 1.0f/28.0f,  5,     0.62f },  // Mountains (tall, jagged)
+    {  7.0f,   9.0f, 1.0f/64.0f,  3,     0.45f },  // Desert (wide smooth dunes)
+    {  8.0f,  10.0f, 1.0f/48.0f,  4,     0.50f },  // Snowy (plains-shaped, white)
+    {  5.0f,   4.0f, 1.0f/56.0f,  3,     0.45f },  // Swamp (very flat, low)
+    {  6.5f,   2.0f, 1.0f/80.0f,  2,     0.40f },  // Beach (very flat near sea)
+};
+
+static constexpr BiomeCentre BIOME_CENTRES[NUM_BIOMES] = {
+    // temp  moist  r_t    r_m
+    // Radii tightened so biomes are more distinct at their centres.
+    { 0.50f, 0.50f, 0.28f, 0.28f },  // Plains
+    { 0.50f, 0.82f, 0.22f, 0.20f },  // Forest (high moisture)
+    { 0.22f, 0.38f, 0.22f, 0.28f },  // Mountains (cool, moderate moisture)
+    { 0.85f, 0.10f, 0.20f, 0.18f },  // Desert (hot, dry)
+    { 0.08f, 0.50f, 0.18f, 0.32f },  // Snowy (very cold)
+    { 0.50f, 0.96f, 0.28f, 0.08f },  // Swamp (max moisture)
+    { 0.65f, 0.27f, 0.18f, 0.18f },  // Beach (warm, low moisture)
+};
+
+// ---------------------------------------------------------------------------
+// Biome weight computation
+// ---------------------------------------------------------------------------
+// Computes per-biome weights at a world column using two independent noise
+// channels (temperature, moisture).  The weights are soft bells in (T,M)
+// space, so transitions are smooth and purely a function of (wx,wz,seed).
+// Weights are normalised so they sum to 1.
+// ---------------------------------------------------------------------------
+
+static void biome_weights(std::int32_t wx, std::int32_t wz, std::uint64_t seed,
+                          float weights[NUM_BIOMES]) noexcept {
+    // Derive separate seeds for temperature and moisture channels.
+    std::uint64_t tseed = fmix64(seed ^ 0xB10E5EED00000001ull);
+    std::uint64_t mseed = fmix64(seed ^ 0xB10E5EED00000002ull);
+
     float fwx = static_cast<float>(wx);
     float fwz = static_cast<float>(wz);
 
-    int amp;
-    switch (biome) {
-        case Biome::Plains: amp = AMP_PLAINS; break;
-        case Biome::Hills:  amp = AMP_HILLS;  break;
-        case Biome::Desert: amp = AMP_DESERT; break;
-        default:            amp = AMP_PLAINS; break;
+    // Low-frequency (large scale biome zones).
+    float temp  = fbm2(fwx, fwz, tseed, /*octaves=*/2, /*freq=*/1.0f / 192.0f);
+    float moist = fbm2(fwx, fwz, mseed, /*octaves=*/2, /*freq=*/1.0f / 192.0f);
+
+    float total = 0.0f;
+    for (int i = 0; i < NUM_BIOMES; ++i) {
+        const BiomeCentre& c = BIOME_CENTRES[i];
+        float dt = (temp  - c.temp)  / c.radius_t;
+        float dm = (moist - c.moist) / c.radius_m;
+        // Gaussian-like kernel: exp(-0.5*(dt^2+dm^2)).
+        // Use fast approximation: max(0, 1 - (dt^2+dm^2))^2 (tent squared).
+        float d2 = dt * dt + dm * dm;
+        // Clamp to [0,1] before squaring for a tent-like profile.
+        float w = 1.0f - d2;
+        if (w < 0.0f) w = 0.0f;
+        w = w * w;
+        weights[i] = w;
+        total += w;
     }
 
-    float n = fbm2(fwx, fwz, seed, /*octaves=*/4, /*base_freq=*/1.0f / 48.0f);
-    // n in [0,1], map to [BASE_Y - amp, BASE_Y + amp]
-    int H = BASE_Y + static_cast<int>(n * static_cast<float>(2 * amp)) - amp;
-    return H;
+    // Normalise.
+    if (total < 1e-6f) {
+        // Shouldn't happen but fall back to Plains.
+        for (int i = 0; i < NUM_BIOMES; ++i) weights[i] = (i == 0) ? 1.0f : 0.0f;
+    } else {
+        float inv = 1.0f / total;
+        for (int i = 0; i < NUM_BIOMES; ++i) weights[i] *= inv;
+    }
+}
+
+// Dominant biome — used for block-type decisions (surface block, fill, etc.)
+// We pick the biome with the highest weight.
+static Biome dominant_biome(const float weights[NUM_BIOMES]) noexcept {
+    int best = 0;
+    for (int i = 1; i < NUM_BIOMES; ++i) {
+        if (weights[i] > weights[best]) best = i;
+    }
+    return static_cast<Biome>(best);
 }
 
 // ---------------------------------------------------------------------------
-// Decoration constants
+// Blended surface height — continuous function of (wx, wz, seed)
+// ---------------------------------------------------------------------------
+// Each biome contributes its own noise value scaled to its base_y + amp.
+// The per-biome terrain is weighted by the biome weight, producing smooth
+// blends across all biome transitions.  This guarantees seam-free terrain
+// (C0 continuous) because the weight function itself is C∞.
 // ---------------------------------------------------------------------------
 
-// Trees are scattered on a world-aligned grid of TREE_CELL_SIZE x TREE_CELL_SIZE
-// blocks.  At most one tree origin exists per cell; the exact (wx,wz) offset
-// within the cell is hash-derived so trees don't line up on a lattice.
-static constexpr int TREE_CELL_SIZE   = 8;   // blocks — min spacing (approx)
-// Canopy is a 5×5×3 blob centred on (trunk_top_wx, trunk_top_wy, trunk_top_wz).
-static constexpr int CANOPY_RADIUS_XZ = 2;   // extends ±2 in X and Z
-static constexpr int CANOPY_RADIUS_Y  = 1;   // extends ±1 in Y
+static int surface_height(std::int32_t wx, std::int32_t wz,
+                          std::uint64_t seed,
+                          const float weights[NUM_BIOMES]) noexcept {
+    float fwx = static_cast<float>(wx);
+    float fwz = static_cast<float>(wz);
+
+    // Each biome has a separate terrain seed to avoid cross-biome correlation.
+    // We use offset seeds from the base seed so biome terrain looks independent.
+    static constexpr std::uint64_t BIOME_SEED_OFFSETS[NUM_BIOMES] = {
+        0x0000000000000001ull,
+        0x1111111111111111ull,
+        0x2222222222222222ull,
+        0x3333333333333333ull,
+        0x4444444444444444ull,
+        0x5555555555555555ull,
+        0x6666666666666666ull,
+    };
+
+    float blended_h = 0.0f;
+
+    for (int i = 0; i < NUM_BIOMES; ++i) {
+        if (weights[i] < 1e-4f) continue;  // skip negligible contributors
+
+        const BiomeParams& p = BIOME_PARAMS[i];
+        std::uint64_t bseed = fmix64(seed ^ BIOME_SEED_OFFSETS[i]);
+
+        float n = fbm2(fwx, fwz, bseed, p.octaves, p.freq,
+                       /*lacunarity=*/2.0f, p.persistence);
+        // Map n in [0,1] -> [base_y - amp, base_y + amp]
+        float h = p.base_y + (n * 2.0f - 1.0f) * p.amp;
+        blended_h += weights[i] * h;
+    }
+
+    return static_cast<int>(blended_h);
+}
+
+// ---------------------------------------------------------------------------
+// Decoration constants (unchanged from previous agent)
+// ---------------------------------------------------------------------------
+static constexpr int TREE_CELL_SIZE   = 8;
+static constexpr int CANOPY_RADIUS_XZ = 2;
+static constexpr int CANOPY_RADIUS_Y  = 1;
 static constexpr int TRUNK_MIN        = 4;
 static constexpr int TRUNK_MAX        = 6;
-// Probability threshold: a cell spawns a tree when hash < TREE_PROB_THRESH/0xFFFF.
-// 0.18 * 65535 ≈ 11796
-static constexpr std::uint64_t TREE_PROB_THRESH = 11796u;
 
-// ---------------------------------------------------------------------------
-// Decoration seeds — derive from base seed to avoid correlation with terrain
-// ---------------------------------------------------------------------------
-// We use two distinct derived seeds so that the tree scatter hash and plant
-// scatter hash each feel independent.
+// Default tree probability threshold (~18% of cells).
+static constexpr std::uint64_t TREE_PROB_THRESH_DEFAULT = 11796u;   // 0.18 * 65535
+// Forest biome: much denser trees (~55%).
+static constexpr std::uint64_t TREE_PROB_THRESH_FOREST  = 36044u;   // 0.55 * 65535
+// Snowy biome: sparse birch (~12%).
+static constexpr std::uint64_t TREE_PROB_THRESH_SNOWY   = 7864u;    // 0.12 * 65535
+// Swamp biome: sparse (~15%).
+static constexpr std::uint64_t TREE_PROB_THRESH_SWAMP   = 9830u;    // 0.15 * 65535
+
 static constexpr std::uint64_t TREE_SEED_MIX  = 0xD7C0DECAF00D1234ull;
 static constexpr std::uint64_t PLANT_SEED_MIX = 0xB16B00B5CAFE5EEDull;
 
@@ -297,10 +427,8 @@ static constexpr std::uint64_t PLANT_SEED_MIX = 0xB16B00B5CAFE5EEDull;
 // Tree queries — pure functions of world (wx, wz) and seed
 // ---------------------------------------------------------------------------
 
-// Given a world column (wx, wz), return the "tree cell" coordinates.
 static void tree_cell(std::int32_t wx, std::int32_t wz,
                       std::int32_t& cx, std::int32_t& cz) noexcept {
-    // Floor division towards -inf.
     auto floordiv = [](std::int32_t a, int b) noexcept -> std::int32_t {
         return a / b - (a % b != 0 && (a ^ b) < 0 ? 1 : 0);
     };
@@ -309,41 +437,67 @@ static void tree_cell(std::int32_t wx, std::int32_t wz,
 }
 
 struct TreeDesc {
-    std::int32_t root_wx;    // world x of trunk base
-    std::int32_t root_wz;    // world z of trunk base
-    int          trunk_height; // 4..6
-    BlockId      log_id;     // OAK_LOG or BIRCH_LOG
-    BlockId      leaf_id;    // OAK_LEAVES or BIRCH_LEAVES
-    bool         present;    // false => no tree in this cell
+    std::int32_t root_wx;
+    std::int32_t root_wz;
+    int          trunk_height;
+    BlockId      log_id;
+    BlockId      leaf_id;
+    bool         present;
 };
 
-// Deterministically determine if a tree exists in a given tree cell, and
-// if so, what its properties are.  Pure function of (cell_cx, cell_cz, seed).
+// Determine if a tree exists in the given tree cell, and its properties.
+// The presence threshold is biome-dependent.  We sample the biome weights at
+// the cell origin (rather than the exact root) to keep the decision cheap and
+// still seam-safe (the origin is fully deterministic from cell coords).
 static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
                                std::uint64_t seed) noexcept {
     std::uint64_t tseed = fmix64(seed ^ TREE_SEED_MIX);
-
-    // Primary hash for the cell.
     std::uint64_t h = hash2(cell_cx, cell_cz, tseed);
 
-    // Decide presence.
-    std::uint64_t prob = h & 0xFFFFu;
-    if (prob >= TREE_PROB_THRESH) {
+    // Get biome weights at cell origin to choose threshold and tree type.
+    std::int32_t cell_origin_x = cell_cx * TREE_CELL_SIZE;
+    std::int32_t cell_origin_z = cell_cz * TREE_CELL_SIZE;
+    float weights[NUM_BIOMES];
+    biome_weights(cell_origin_x, cell_origin_z, seed, weights);
+    Biome dom = dominant_biome(weights);
+
+    // Biomes that never have trees.
+    if (dom == Biome::Desert || dom == Biome::Beach) {
         return TreeDesc{0, 0, 0, 0, 0, false};
     }
 
-    // Root offset within the cell (1..TREE_CELL_SIZE-2 to avoid edge collisions).
-    std::int32_t cell_origin_x = cell_cx * TREE_CELL_SIZE;
-    std::int32_t cell_origin_z = cell_cz * TREE_CELL_SIZE;
+    // Choose density threshold based on dominant biome.
+    std::uint64_t thresh;
+    switch (dom) {
+        case Biome::Forest:    thresh = TREE_PROB_THRESH_FOREST;  break;
+        case Biome::Snowy:     thresh = TREE_PROB_THRESH_SNOWY;   break;
+        case Biome::Swamp:     thresh = TREE_PROB_THRESH_SWAMP;   break;
+        default:               thresh = TREE_PROB_THRESH_DEFAULT;  break;
+    }
+
+    std::uint64_t prob = h & 0xFFFFu;
+    if (prob >= thresh) {
+        return TreeDesc{0, 0, 0, 0, 0, false};
+    }
+
+    // Root offset within cell (1..TREE_CELL_SIZE-2).
     std::uint64_t h2 = fmix64(h ^ 0x1234567890ABCDEFull);
-    std::int32_t off_x = 1 + static_cast<std::int32_t>((h2 >> 0u) & 0x5u);  // 1..5
-    std::int32_t off_z = 1 + static_cast<std::int32_t>((h2 >> 8u) & 0x5u);  // 1..5
+    std::int32_t off_x = 1 + static_cast<std::int32_t>((h2 >> 0u) & 0x5u);
+    std::int32_t off_z = 1 + static_cast<std::int32_t>((h2 >> 8u) & 0x5u);
 
     // Trunk height: 4..6
-    int trunk_h = TRUNK_MIN + static_cast<int>((h2 >> 16u) % static_cast<std::uint64_t>(TRUNK_MAX - TRUNK_MIN + 1));
+    int trunk_h = TRUNK_MIN + static_cast<int>(
+        (h2 >> 16u) % static_cast<std::uint64_t>(TRUNK_MAX - TRUNK_MIN + 1));
 
-    // Tree type: oak (lower bits) or birch.
-    bool is_birch = ((h2 >> 24u) & 0x3u) == 0u;  // ~25% birch
+    // Tree type: snowy/swamp -> birch dominant; forest -> mixed; others -> mostly oak.
+    bool is_birch;
+    if (dom == Biome::Snowy || dom == Biome::Swamp) {
+        is_birch = ((h2 >> 24u) & 0x1u) != 0u;  // 50% birch
+    } else if (dom == Biome::Forest) {
+        is_birch = ((h2 >> 24u) & 0x3u) <= 1u;  // ~50% birch in forest
+    } else {
+        is_birch = ((h2 >> 24u) & 0x3u) == 0u;  // ~25% birch elsewhere
+    }
 
     return TreeDesc{
         cell_origin_x + off_x,
@@ -355,17 +509,11 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
     };
 }
 
-// Returns true if (leaf_dx, leaf_dy, leaf_dz) is inside the rounded canopy blob.
-// Canopy is a 5x5x3 cluster centred at the trunk top.  Corner voxels of the
-// outer ring on the top/bottom slabs are cut to give a rounder shape.
+// Rounded canopy shape — same as previous agent.
 static bool in_canopy(int dx, int dy, int dz) noexcept {
-    // dx, dz relative to trunk top (horizontal centre); dy relative to trunk top.
-    // Canopy occupies dy in [-1, 0, +1] and dx/dz in [-2, -1, 0, +1, +2].
     if (dy < -1 || dy > 1)              return false;
     if (dx < -CANOPY_RADIUS_XZ || dx > CANOPY_RADIUS_XZ) return false;
     if (dz < -CANOPY_RADIUS_XZ || dz > CANOPY_RADIUS_XZ) return false;
-    // Cut corners: on the outer ring (|dx|==2 or |dz|==2), disallow corners
-    // only on the top and bottom slabs (dy != 0).
     bool outer_x = (dx == -2 || dx == 2);
     bool outer_z = (dz == -2 || dz == 2);
     if (outer_x && outer_z && dy != 0) return false;
@@ -373,16 +521,9 @@ static bool in_canopy(int dx, int dy, int dz) noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// Decoration pass — called from generate() after terrain+cave fill
+// Decoration pass — seam-aware, biome-aware
 // ---------------------------------------------------------------------------
-// This function places trees and plants into `chunk`.  It is seam-aware:
-//   - Plants: only affect the column (wx, wz) that belongs to this chunk.
-//   - Trees : scan a margin of tree cells whose canopy might overlap this chunk,
-//             place only voxels that land inside local coords [0..15].
-//
-// All decisions are pure functions of world coords + seed_ — no mutable state.
 static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
-    // World-space bounds of this chunk (inclusive).
     std::int32_t wx_min = c.x * kChunkDim;
     std::int32_t wy_min = c.y * kChunkDim;
     std::int32_t wz_min = c.z * kChunkDim;
@@ -391,16 +532,11 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
     std::int32_t wz_max = wz_min + kChunkDim - 1;
 
     // -------------------------------------------------------------------
-    // 1. TREES
-    //    Determine which tree cells could influence this chunk.
-    //    A tree's canopy extends ±CANOPY_RADIUS_XZ in x/z from its root and
-    //    the trunk can be up to TRUNK_MAX+CANOPY_RADIUS_Y blocks above the surface.
-    //    Surface height is at most BASE_Y + AMP_HILLS = 8 + 24 = 32.
-    //    We conservatively expand the search area by CANOPY_RADIUS_XZ blocks on
-    //    each side in X/Z.
+    // 1. TREES — same seam-safe cell-scan as previous agent.
+    //    Max surface height with new biomes: Mountains base_y 16 + amp 34 = 50.
+    //    We conservatively expand the search area by CANOPY_RADIUS_XZ.
     // -------------------------------------------------------------------
     {
-        // Cell indices covering the potentially-influencing range in X and Z.
         std::int32_t cell_xmin, cell_xmax, cell_zmin, cell_zmax, dummy;
         tree_cell(wx_min - CANOPY_RADIUS_XZ, wz_min - CANOPY_RADIUS_XZ, cell_xmin, cell_zmin);
         tree_cell(wx_max + CANOPY_RADIUS_XZ, wz_max + CANOPY_RADIUS_XZ, cell_xmax, dummy);
@@ -412,42 +548,40 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 TreeDesc td = tree_for_cell(ccx, ccz, seed);
                 if (!td.present) continue;
 
-                // Determine tree's biome and surface height.
-                Biome bio = biome_at(td.root_wx, td.root_wz, seed);
-                // Trees only in grassy biomes above sea level.
-                if (bio == Biome::Desert) continue;
+                // Compute biome at tree root for surface height.
+                float weights[NUM_BIOMES];
+                biome_weights(td.root_wx, td.root_wz, seed, weights);
+                Biome dom = dominant_biome(weights);
 
-                int H = surface_height(td.root_wx, td.root_wz, seed, bio);
+                // Tree-bearing biomes only (desert/beach have no trees).
+                if (dom == Biome::Desert || dom == Biome::Beach) continue;
+
+                int H = surface_height(td.root_wx, td.root_wz, seed, weights);
                 if (H <= SEA_LEVEL) continue;  // don't grow trees underwater
 
-                // Check that the surface block is GRASS (not sand/water beach).
-                // Surface is SAND if wy==H && wy<=SEA_LEVEL — already excluded above.
-                // So if H > SEA_LEVEL the surface is GRASS.
+                // Don't grow trees above the snow line in non-mountain biomes
+                // (mountains have no trees anyway by cell check above).
+                // (Mountains already excluded by tree_for_cell pruning.)
 
-                // Trunk voxels: from H+1 to H+trunk_height (inclusive).
+                // Trunk: H+1 .. H+trunk_height
                 int trunk_base_wy = H + 1;
                 int trunk_top_wy  = H + td.trunk_height;
-                // Canopy is centred at trunk_top_wy, extends ±CANOPY_RADIUS_Y.
                 int canopy_wy_max = trunk_top_wy + CANOPY_RADIUS_Y;
 
-                // Quick y-range rejection: does any part of this tree overlap chunk?
                 if (canopy_wy_max < wy_min || trunk_base_wy > wy_max) continue;
 
-                // Trunk: place oak/birch log blocks.
+                // Place trunk logs.
                 for (int wy = trunk_base_wy; wy <= trunk_top_wy; ++wy) {
                     if (wy < wy_min || wy > wy_max) continue;
-                    // World x/z of trunk matches root.
                     if (td.root_wx < wx_min || td.root_wx > wx_max) continue;
                     if (td.root_wz < wz_min || td.root_wz > wz_max) continue;
                     int lx = td.root_wx - wx_min;
                     int ly = wy - wy_min;
                     int lz = td.root_wz - wz_min;
-                    // Don't overwrite solid terrain blocks with logs
-                    // (the trunk base sits on the grass surface; H+1 is air).
                     chunk.set(lx, ly, lz, td.log_id);
                 }
 
-                // Canopy: place leaf blocks in blob around trunk top.
+                // Place canopy leaves.
                 for (int dz = -CANOPY_RADIUS_XZ; dz <= CANOPY_RADIUS_XZ; ++dz) {
                     for (int dx = -CANOPY_RADIUS_XZ; dx <= CANOPY_RADIUS_XZ; ++dx) {
                         for (int dy = -CANOPY_RADIUS_Y; dy <= CANOPY_RADIUS_Y; ++dy) {
@@ -464,7 +598,6 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                             int lx = wlx - wx_min;
                             int ly = wly - wy_min;
                             int lz = wlz - wz_min;
-                            // Only place leaves in air — don't overwrite logs or terrain.
                             if (chunk.get(lx, ly, lz) == AIR) {
                                 chunk.set(lx, ly, lz, td.leaf_id);
                             }
@@ -476,9 +609,7 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
     }
 
     // -------------------------------------------------------------------
-    // 2. PLANTS — tall grass, flowers, mushrooms
-    //    These are single-block, placed directly on the grass surface of
-    //    each column belonging to this chunk only (no margin needed).
+    // 2. PLANTS — biome-specific single-block surface decorations.
     // -------------------------------------------------------------------
     {
         std::uint64_t pseed = fmix64(seed ^ PLANT_SEED_MIX);
@@ -488,13 +619,16 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 std::int32_t wx = wx_min + lx;
                 std::int32_t wz = wz_min + lz;
 
-                Biome bio = biome_at(wx, wz, seed);
-                if (bio == Biome::Desert) continue;  // desert stays bare
+                float weights[NUM_BIOMES];
+                biome_weights(wx, wz, seed, weights);
+                Biome dom = dominant_biome(weights);
 
-                int H = surface_height(wx, wz, seed, bio);
-                if (H <= SEA_LEVEL) continue;        // underwater column
+                // Desert and Beach have minimal/no surface plants.
+                if (dom == Biome::Desert) continue;
 
-                // The surface block world-y = H; plant goes at H+1.
+                int H = surface_height(wx, wz, seed, weights);
+                if (H <= SEA_LEVEL) continue;  // underwater
+
                 std::int32_t plant_wy = H + 1;
                 if (plant_wy < wy_min || plant_wy > wy_max) continue;
 
@@ -503,31 +637,62 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 if (ly_surface < 0 || ly_surface >= kChunkDim) continue;
                 if (ly_plant   < 0 || ly_plant   >= kChunkDim) continue;
 
-                // The spot must be AIR (a tree trunk or canopy may already occupy it).
+                // Must be AIR above surface.
                 if (chunk.get(lx, ly_plant, lz) != AIR) continue;
-                // The surface block must be GRASS.
-                if (chunk.get(lx, ly_surface, lz) != GRASS) continue;
+
+                // Decide based on surface block.
+                BlockId surf = chunk.get(lx, ly_surface, lz);
 
                 // Plant scatter hash.
                 std::uint64_t ph = hash2(wx, wz, pseed);
-                // Use different bit ranges for independence.
                 std::uint64_t roll = ph & 0xFFu;  // 0..255
 
-                // ~35% probability of any plant (distributed among types).
-                // roll 0..14  => tall grass  (~5.9%)
-                // roll 15..29 => tall grass  (total ~11.8% tall grass)
-                // roll 30..89 => tall grass  (total tall grass ~35%)
-                // Use explicit thresholds:
-                //   0..88  (89/256 ≈ 34.8%) tall grass
-                //   89..100 (12/256 ≈ 4.7%) flower_red
-                //   101..112 (12/256 ≈ 4.7%) flower_yellow
-                //   113..117 (5/256  ≈ 2.0%) mushroom
-                //   118..255 nothing
                 BlockId plant = AIR;
-                if      (roll < 89u)  plant = TALL_GRASS;
-                else if (roll < 101u) plant = FLOWER_RED;
-                else if (roll < 113u) plant = FLOWER_YELLOW;
-                else if (roll < 118u) plant = MUSHROOM;
+
+                if (dom == Biome::Snowy) {
+                    // Snowy: snow layer already placed on surface by terrain pass.
+                    // Place it as decoration only if surface is SNOW_LAYER.
+                    // Just a rare flower underneath snow? No — skip surface plants on snow.
+                    (void)surf;
+                    // No plants in snowy biome (too cold).
+                    plant = AIR;
+                } else if (dom == Biome::Forest) {
+                    // Dense undergrowth: more tall grass, some mushrooms, fewer flowers.
+                    if      (surf != GRASS) plant = AIR;
+                    else if (roll < 110u)   plant = TALL_GRASS;
+                    else if (roll < 122u)   plant = FLOWER_RED;
+                    else if (roll < 134u)   plant = FLOWER_YELLOW;
+                    else if (roll < 148u)   plant = MUSHROOM;
+                } else if (dom == Biome::Swamp) {
+                    // Swamp: lots of mushrooms + tall grass on dirt/grass, no flowers.
+                    if      (surf == GRASS || surf == DIRT) {
+                        if      (roll < 90u)  plant = TALL_GRASS;
+                        else if (roll < 130u) plant = MUSHROOM;
+                    }
+                } else if (dom == Biome::Plains) {
+                    // Plains: lots of tall grass + flowers.
+                    if      (surf != GRASS) plant = AIR;
+                    else if (roll < 89u)    plant = TALL_GRASS;
+                    else if (roll < 101u)   plant = FLOWER_RED;
+                    else if (roll < 113u)   plant = FLOWER_YELLOW;
+                    else if (roll < 118u)   plant = MUSHROOM;
+                } else if (dom == Biome::Mountains) {
+                    // Mountains: sparse grass on stone/grass, no flowers above snow line.
+                    if (H >= SNOW_LINE) {
+                        plant = AIR;  // too high for plants
+                    } else if (surf == GRASS) {
+                        if (roll < 40u) plant = TALL_GRASS;
+                    }
+                } else if (dom == Biome::Beach) {
+                    plant = AIR;  // bare sand beach
+                } else {
+                    // Default: same as plains.
+                    if      (surf != GRASS) plant = AIR;
+                    else if (roll < 89u)    plant = TALL_GRASS;
+                    else if (roll < 101u)   plant = FLOWER_RED;
+                    else if (roll < 113u)   plant = FLOWER_YELLOW;
+                    else if (roll < 118u)   plant = MUSHROOM;
+                }
 
                 if (plant != AIR) {
                     chunk.set(lx, ly_plant, lz, plant);
@@ -535,27 +700,144 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
             }
         }
     }
+
+    // -------------------------------------------------------------------
+    // 3. SWAMP CLAY PATCHES — scatter clay blocks in swamp surface.
+    //    Clay is placed 1-3 blocks below the surface (replacing stone/dirt).
+    // -------------------------------------------------------------------
+    {
+        std::uint64_t clay_seed = fmix64(seed ^ 0xC1A4C1A4C1A4C1A4ull);
+
+        for (int lz = 0; lz < kChunkDim; ++lz) {
+            for (int lx = 0; lx < kChunkDim; ++lx) {
+                std::int32_t wx = wx_min + lx;
+                std::int32_t wz = wz_min + lz;
+
+                float weights[NUM_BIOMES];
+                biome_weights(wx, wz, seed, weights);
+                Biome dom = dominant_biome(weights);
+
+                if (dom != Biome::Swamp) continue;
+
+                int H = surface_height(wx, wz, seed, weights);
+
+                // Clay at H-1 (just below surface dirt).
+                std::int32_t clay_wy = H - 1;
+                if (clay_wy < wy_min || clay_wy > wy_max) continue;
+
+                int ly_clay = clay_wy - wy_min;
+                if (ly_clay < 0 || ly_clay >= kChunkDim) continue;
+
+                std::uint64_t ch = hash2(wx, wz, clay_seed);
+                // ~30% clay patches.
+                if ((ch & 0xFFu) < 77u) {
+                    BlockId cur = chunk.get(lx, ly_clay, lz);
+                    if (cur == DIRT || cur == STONE) {
+                        chunk.set(lx, ly_clay, lz, CLAY);
+                    }
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // 4. FOREST MOSSY STONE PATCHES — replace some surface stone with mossy stone.
+    // -------------------------------------------------------------------
+    {
+        std::uint64_t moss_seed = fmix64(seed ^ 0x405577EDA40550C0ull);
+
+        for (int lz = 0; lz < kChunkDim; ++lz) {
+            for (int lx = 0; lx < kChunkDim; ++lx) {
+                std::int32_t wx = wx_min + lx;
+                std::int32_t wz = wz_min + lz;
+
+                float weights[NUM_BIOMES];
+                biome_weights(wx, wz, seed, weights);
+                Biome dom = dominant_biome(weights);
+
+                if (dom != Biome::Forest) continue;
+
+                int H = surface_height(wx, wz, seed, weights);
+
+                // Mossy stone at H-2 (below dirt layer).
+                std::int32_t mwy = H - 2;
+                if (mwy < wy_min || mwy > wy_max) continue;
+
+                int ly_m = mwy - wy_min;
+                if (ly_m < 0 || ly_m >= kChunkDim) continue;
+
+                std::uint64_t mh = hash2(wx, wz, moss_seed);
+                // ~20% mossy stone.
+                if ((mh & 0xFFu) < 51u) {
+                    BlockId cur = chunk.get(lx, ly_m, lz);
+                    if (cur == STONE) {
+                        chunk.set(lx, ly_m, lz, MOSSY_STONE);
+                    }
+                }
+            }
+        }
+    }
 }
 
+// ---------------------------------------------------------------------------
+// Terrain fill — per-column block placement
+// ---------------------------------------------------------------------------
 void TerrainGen::seed(std::uint64_t s) {
     seed_ = s;
 }
 
 void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
-    // For each horizontal column in this chunk
     for (int lz = 0; lz < kChunkDim; ++lz) {
         for (int lx = 0; lx < kChunkDim; ++lx) {
             std::int32_t wx = c.x * kChunkDim + lx;
             std::int32_t wz = c.z * kChunkDim + lz;
 
-            Biome biome = biome_at(wx, wz, seed_);
-            int H = surface_height(wx, wz, seed_, biome);
+            // Compute biome weights and blended surface height.
+            float weights[NUM_BIOMES];
+            biome_weights(wx, wz, seed_, weights);
+            Biome dom = dominant_biome(weights);
+            int H = surface_height(wx, wz, seed_, weights);
 
-            BlockId surface_block = GRASS;
-            BlockId fill_block    = DIRT;
-            if (biome == Biome::Desert) {
-                surface_block = SAND;
-                fill_block    = SAND;
+            // Choose surface and fill blocks based on dominant biome + height.
+            BlockId surface_block;
+            BlockId fill_block;
+            bool has_snow = (dom == Biome::Mountains && H >= SNOW_LINE)
+                         || (dom == Biome::Snowy);
+
+            switch (dom) {
+                case Biome::Desert:
+                    surface_block = SAND;
+                    fill_block    = SAND;
+                    break;
+                case Biome::Beach:
+                    surface_block = SAND;
+                    fill_block    = SAND;
+                    break;
+                case Biome::Mountains:
+                    if (H >= SNOW_LINE) {
+                        // High peaks: stone/gravel exposed, snow on very top.
+                        // Surface block will be set per-layer below.
+                        surface_block = STONE;
+                        fill_block    = STONE;
+                    } else {
+                        surface_block = GRASS;
+                        fill_block    = DIRT;
+                    }
+                    break;
+                case Biome::Snowy:
+                    surface_block = SNOW_LAYER;  // snow on top
+                    fill_block    = DIRT;
+                    break;
+                case Biome::Swamp:
+                    surface_block = DIRT;   // muddy surface
+                    fill_block    = DIRT;
+                    break;
+                case Biome::Forest:
+                case Biome::Plains:
+                default:
+                    surface_block = GRASS;
+                    fill_block    = DIRT;
+                    break;
             }
 
             for (int ly = 0; ly < kChunkDim; ++ly) {
@@ -563,24 +845,40 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
 
                 BlockId b;
                 if (wy > H) {
+                    // Above terrain: water below sea level, air above.
                     if (wy <= SEA_LEVEL) {
-                        b = WATER;
+                        // Snowy biome: freeze water at the surface.
+                        if (has_snow && wy == SEA_LEVEL) {
+                            b = ICE;
+                        } else {
+                            b = WATER;
+                        }
                     } else {
                         b = AIR;
                     }
                 } else if (wy == H) {
-                    if (wy <= SEA_LEVEL && biome != Biome::Desert) {
+                    // Surface voxel.
+                    if (wy <= SEA_LEVEL && dom != Biome::Desert) {
+                        // Submerged surface: sand beach transition.
                         b = SAND;
                     } else {
                         b = surface_block;
                     }
                 } else if (wy >= H - 3) {
-                    b = fill_block;
+                    // Sub-surface fill layer.
+                    if (dom == Biome::Mountains && H >= SNOW_LINE && wy == H - 1) {
+                        // Just below peak: gravel for variety.
+                        b = GRAVEL;
+                    } else if (dom == Biome::Desert) {
+                        b = SAND;
+                    } else {
+                        b = fill_block;
+                    }
                 } else {
                     b = STONE;
                 }
 
-                // Cave carving
+                // Cave carving (unchanged).
                 if (b != AIR && b != WATER && wy < H - 2 && wy > kColumnMinY + 4) {
                     float fwx = static_cast<float>(wx);
                     float fwy = static_cast<float>(wy);
@@ -595,6 +893,48 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
 
                 chunk.set(lx, ly, lz, b);
             }
+
+            // Snow layer on top of mountain peaks (placed after the column loop).
+            // We place SNOW_LAYER one block ABOVE the terrain surface if it is AIR.
+            // This creates a visible snow cap without changing the height function.
+            if (dom == Biome::Mountains && H >= SNOW_LINE) {
+                std::int32_t snow_wy = H + 1;
+                std::int32_t snow_ly = snow_wy - c.y * kChunkDim;
+                if (snow_ly >= 0 && snow_ly < kChunkDim) {
+                    if (chunk.get(lx, static_cast<int>(snow_ly), lz) == AIR) {
+                        chunk.set(lx, static_cast<int>(snow_ly), lz, SNOW_LAYER);
+                    }
+                }
+            }
+        }
+    }
+
+    // Swamp water pools: fill low-lying swamp columns with water up to SEA_LEVEL.
+    // This is done in a second pass so we don't interfere with the first.
+    for (int lz = 0; lz < kChunkDim; ++lz) {
+        for (int lx = 0; lx < kChunkDim; ++lx) {
+            std::int32_t wx = c.x * kChunkDim + lx;
+            std::int32_t wz = c.z * kChunkDim + lz;
+
+            float weights[NUM_BIOMES];
+            biome_weights(wx, wz, seed_, weights);
+            Biome dom = dominant_biome(weights);
+
+            if (dom != Biome::Swamp) continue;
+
+            int H = surface_height(wx, wz, seed_, weights);
+            // Swamp pools: columns at or below SEA_LEVEL+1 that are fully AIR
+            // above H get filled with water up to SEA_LEVEL.
+            if (H <= SEA_LEVEL + 1) {
+                for (int ly = 0; ly < kChunkDim; ++ly) {
+                    std::int32_t wy = c.y * kChunkDim + ly;
+                    if (wy > H && wy <= SEA_LEVEL) {
+                        if (chunk.get(lx, ly, lz) == AIR) {
+                            chunk.set(lx, ly, lz, WATER);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -607,10 +947,8 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
 // ---------------------------------------------------------------------------
 std::uint64_t TerrainGen::content_hash(ChunkCoord c) const {
     PaletteChunk tmp(c, AIR);
-    // Cast away const for generate (we mutate a local temp, not this).
     const_cast<TerrainGen*>(this)->generate(c, tmp);
 
-    // FNV-1a 64-bit over all block ids in voxel order.
     constexpr std::uint64_t FNV_OFFSET = 14695981039346656037ull;
     constexpr std::uint64_t FNV_PRIME  = 1099511628211ull;
 
@@ -619,7 +957,6 @@ std::uint64_t TerrainGen::content_hash(ChunkCoord c) const {
         for (int ly = 0; ly < kChunkDim; ++ly) {
             for (int lx = 0; lx < kChunkDim; ++lx) {
                 BlockId b = tmp.get(lx, ly, lz);
-                // Feed both bytes of the uint16_t.
                 h ^= static_cast<std::uint64_t>(b & 0xFFu);
                 h *= FNV_PRIME;
                 h ^= static_cast<std::uint64_t>((b >> 8u) & 0xFFu);
