@@ -72,9 +72,13 @@ final class GameView: MTKView {
             NSLog("Blockfall: invert Y (up/down) = \(invertY)"); return }
         if e.keyCode == 4  { onHost?(); return }                // 'H' — host LAN co-op
         if e.keyCode == 38 { onJoin?(); return }                // 'J' — join a LAN host
-        // Hotbar 1..9
+        // Number keys: craft the Nth craftable recipe when the inventory is
+        // open, otherwise select the hotbar slot.
         let nums: [UInt16: Int32] = [18:0, 19:1, 20:2, 21:3, 23:4, 22:5, 26:6, 28:7, 25:8]
-        if let slot = nums[e.keyCode] { queue(BF_ACT_HOTBAR_SELECT, slot) }
+        if let slot = nums[e.keyCode] {
+            if invOpen { if slot < 8 { queue(BF_ACT_CRAFT, slot) } }
+            else { queue(BF_ACT_HOTBAR_SELECT, slot) }
+        }
         pressed.insert(e.keyCode)
     }
 

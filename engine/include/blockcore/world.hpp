@@ -393,7 +393,7 @@ public:
                 }
                 break;
             }
-            case BF_ACT_CRAFT:      try_craft_available(); break;
+            case BF_ACT_CRAFT:      craft_index(a.arg_i); break;
             case BF_ACT_INV_OPEN:   inv_open_ = true;  break;
             case BF_ACT_INV_CLOSE:  inv_open_ = false; break;
             case BF_ACT_ATTACK: {                  // calm -> puff away (no death)
@@ -548,16 +548,29 @@ private:
         }
         return t;
     }
-    void try_craft_available() {
-        if (!content_ || !inv_ || !craft_) return;
-        for (std::uint32_t i = 0; i < content_->recipe_count(); ++i) {
+    // Recipe indices whose ingredients are all in the inventory now (cap 8).
+    void craftable_recipes(std::vector<std::uint32_t>& out) const {
+        out.clear();
+        if (!content_ || !inv_) return;
+        for (std::uint32_t i = 0; i < content_->recipe_count() && out.size() < 8; ++i) {
             const RecipeEntry& r = content_->recipe(i);
-            if (craft_->commit(*inv_, std::span<const ItemId>(r.pattern.data(), r.pattern.size()),
-                               r.grid_size)) {
-                fx(4, player_voxel());                 // craft chime
-                return;   // crafted the first recipe the player can make
-            }
+            if (r.pattern.empty() || r.result_item == 0) continue;
+            std::unordered_map<ItemId, int> need;
+            for (ItemId it : r.pattern) if (it != 0) need[it]++;
+            bool ok = true;
+            for (auto& [it, n] : need) if (int(inv_->count_item(it)) < n) { ok = false; break; }
+            if (ok) out.push_back(i);
         }
+    }
+    // Craft a specific craftable index, or the first available if idx < 0.
+    void craft_index(int idx) {
+        if (!content_ || !inv_ || !craft_) return;
+        std::vector<std::uint32_t> cr; craftable_recipes(cr);
+        if (idx < 0) { if (!cr.empty()) idx = 0; else return; }
+        if (std::size_t(idx) >= cr.size()) return;
+        const RecipeEntry& r = content_->recipe(cr[std::size_t(idx)]);
+        if (craft_->commit(*inv_, std::span<const ItemId>(r.pattern.data(), r.pattern.size()), r.grid_size))
+            fx(4, player_voxel());
     }
 
     // ---- quest engine (Track J, M5) ---------------------------------------
@@ -903,6 +916,14 @@ private:
             for (int i = 0; i < BF_INVENTORY_SLOTS; ++i) {
                 ItemStack s = inv_->get(std::size_t(i));
                 h.inventory[i].item = s.item; h.inventory[i].count = s.count; h.inventory[i].durability = s.durability;
+            }
+            std::vector<std::uint32_t> cr; craftable_recipes(cr);
+            h.craftable_count = std::uint8_t(cr.size());
+            for (std::size_t i = 0; i < cr.size(); ++i) {
+                const RecipeEntry& r = content_->recipe(cr[i]);
+                h.craftable[i].item = r.result_item;
+                h.craftable[i].count = r.result_count;
+                h.craftable[i].durability = 0xFFFF;
             }
         }
         // Active quest from content (Track J quest engine).

@@ -138,6 +138,28 @@ final class HUDView: NSView {
             }
         }
 
+        // --- Craftable recipes (press the number to craft) ---
+        let cy = b.midY - 70
+        drawText("Craft  (press the number)", at: NSPoint(x: originX, y: cy + slot + 8), size: 14, color: .systemYellow, bold: true)
+        let n = Int(hud.craftable_count)
+        if n == 0 {
+            drawText("Gather wood and stone, then come back!", at: NSPoint(x: originX, y: cy + slot - 14),
+                     size: 12, color: NSColor.white.withAlphaComponent(0.7), bold: false)
+        }
+        withUnsafeBytes(of: hud.craftable) { raw in
+            let cr = raw.bindMemory(to: bf_hud_slot.self)
+            var cx = originX
+            for i in 0..<min(n, 8) {
+                let rect = NSRect(x: cx, y: cy, width: slot, height: slot)
+                NSColor.black.withAlphaComponent(0.5).setFill()
+                let rr = NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5); rr.fill()
+                NSColor.systemYellow.withAlphaComponent(0.7).setStroke(); rr.lineWidth = 1.5; rr.stroke()
+                if cr[i].item != 0 { drawCenteredItem(id: cr[i].item, count: cr[i].count, in: rect, selected: false) }
+                drawText("\(i+1)", at: NSPoint(x: cx + 3, y: cy + slot - 16), size: 12, color: .systemYellow, bold: true)
+                cx += slot + gap
+            }
+        }
+
         drawText("Esc / E to close", at: NSPoint(x: originX, y: b.midY - 130), size: 12, color: .white, bold: false)
     }
 

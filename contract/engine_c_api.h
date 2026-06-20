@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 2u   /* v2: entity render data (ADR 0005) */
+#define BF_ABI_VERSION 3u   /* v3: craftable-recipe HUD list (ADR 0006) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -261,6 +261,10 @@ typedef struct bf_hud_state {
     bf_bool      has_target;
     bf_ivec3     target_block;
     float        mine_progress;     /* 0..1 of current break                 */
+    /* Recipes craftable right now (result item+count); shown in inventory,
+     * craft with number keys -> BF_ACT_CRAFT arg_i (ABI v3, ADR 0006).      */
+    bf_hud_slot  craftable[8];
+    uint8_t      craftable_count;
 } bf_hud_state;
 
 /* The whole frame, borrowed from the engine between acquire/end. */
