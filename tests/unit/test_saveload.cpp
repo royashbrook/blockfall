@@ -50,7 +50,8 @@ int main() {
         bf::GreedyMesher m3; bf::TerrainGen g3; bf::World w3(m3, &g3);
         w3.set_allocator(alloc); w3.init_world(424242);
         bf_frame_input zero{};
-        for (int i = 0; i < 20; ++i) { w3.update(zero, 0.016); world.update(zero, 0.016); }
+        // Pump enough frames for both worlds to fully stream the compared band.
+        for (int i = 0; i < 120; ++i) { w3.update(zero, 0.016); world.update(zero, 0.016); }
         int matches = 0, total = 0;
         for (int x = 0; x < 8; ++x) for (int z = 0; z < 8; ++z) {
             for (int y = 0; y < 20; ++y) {

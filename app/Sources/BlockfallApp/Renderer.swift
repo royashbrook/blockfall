@@ -115,7 +115,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         var cfg = bf_engine_config()
         cfg.abi_version = BF_ABI_VERSION
         cfg.role = BF_ROLE_SINGLEPLAYER
-        cfg.start_mode = BF_MODE_CREATIVE
+        cfg.start_mode = BF_MODE_SURVIVAL      // walk + gravity (press C to fly)
         cfg.render_distance_chunks = 10
         cfg.memory_budget_bytes = 10 * 1024 * 1024 * 1024
         cfg.content_dir = persistentCString(Bundle.main.resourcePath ?? ".")

@@ -145,15 +145,20 @@ public:
         gen_->seed(seed);
         // Find the surface at spawn column (0,0): generate the vertical band and
         // scan from the top for the first solid block.
-        int surface = 8;
+        int surface = 8; bool found = false;
         for (int cy = CY_MAX; cy >= CY_MIN; --cy) {
-            auto ch = std::make_unique<PaletteChunk>(ChunkCoord{0, cy, 0});
-            gen_->generate(ChunkCoord{0, cy, 0}, *ch);
-            for (int ly = kChunkDim - 1; ly >= 0; --ly) {
-                if (ch->get(0, ly, 0) != AIR) { surface = cy * kChunkDim + ly; goto found; }
+            ChunkCoord cc{0, cy, 0};
+            auto ch = std::make_unique<PaletteChunk>(cc);
+            gen_->generate(cc, *ch);
+            if (!found)
+                for (int ly = kChunkDim - 1; ly >= 0; --ly)
+                    if (ch->get(0, ly, 0) != AIR) { surface = cy * kChunkDim + ly; found = true; break; }
+            // Keep the spawn column resident so the player lands immediately
+            // (rather than falling through before streaming fills it in).
+            if (!(ch->is_uniform() && ch->get(0, 0, 0) == AIR)) {
+                store_.insert(std::move(ch)); dirty_.insert(cc);
             }
         }
-        found:
         pos_ = V3{0.5f, float(surface) + 2.5f, 0.5f};
         yaw_ = 0.6f; pitch_ = -0.25f;
         restore_region(ChunkCoord{0, 0, 0});           // spawn region starts colorful
@@ -301,11 +306,25 @@ public:
         V3 fwd = forward_dir();
         V3 flat = normalize(V3{fwd.x, 0, fwd.z});
         V3 right = normalize(cross(flat, V3{0, 1, 0}));
-        float speed = (in.sprint ? 22.0f : 11.0f) * float(dt);
-        V3 delta = flat * (in.move_forward * speed) + right * (in.move_strafe * speed);
-        if (in.jump || in.fly_ascend)   delta.y += speed;
-        if (in.sneak || in.fly_descend) delta.y -= speed;
-        pos_ = pos_ + delta;
+        float speed = (in.sprint ? 16.0f : 8.0f) * float(dt);
+        V3 hmove = flat * (in.move_forward * speed) + right * (in.move_strafe * speed);
+        if (mode_ == BF_MODE_CREATIVE) {
+            // Creative: free fly, no collision.
+            pos_ = pos_ + hmove;
+            if (in.jump || in.fly_ascend)   pos_.y += speed;
+            if (in.sneak || in.fly_descend) pos_.y -= speed;
+            vy_ = 0.0f;
+        } else {
+            // Survival: walk with AABB voxel collision + gravity + jump.
+            pos_.x += hmove.x; if (box_collides(pos_)) pos_.x -= hmove.x;
+            pos_.z += hmove.z; if (box_collides(pos_)) pos_.z -= hmove.z;
+            if (in.jump && on_ground_) vy_ = 8.4f;
+            vy_ = std::max(vy_ - 28.0f * float(dt), -64.0f);
+            float dy = vy_ * float(dt);
+            pos_.y += dy;
+            on_ground_ = false;
+            if (box_collides(pos_)) { pos_.y -= dy; if (vy_ < 0) on_ground_ = true; vy_ = 0.0f; }
+        }
 
         // Stream as the player crosses chunk boundaries.
         ChunkCoord pc = to_chunk(IVec3{ifloor(pos_.x), ifloor(pos_.y), ifloor(pos_.z)});
@@ -568,6 +587,25 @@ private:
         for (int y = yTop; y > yTop - 80; --y)
             if (block_at(IVec3{x, y, z}) != AIR) return y + 1;
         return kNoFloor;
+    }
+
+    // Is a block solid for player collision? (air + water are passable.)
+    bool collide_solid(int x, int y, int z) const {
+        BlockId b = block_at(IVec3{x, y, z});
+        return b != AIR && b != WATER;
+    }
+    // Player AABB (0.6 wide, ~1.8 tall; pos_ is the eye). Returns true if it
+    // overlaps any solid voxel.
+    bool box_collides(V3 p) const {
+        const float hw = 0.3f;
+        int x0 = ifloor(p.x - hw), x1 = ifloor(p.x + hw);
+        int z0 = ifloor(p.z - hw), z1 = ifloor(p.z + hw);
+        int y0 = ifloor(p.y - 1.6f), y1 = ifloor(p.y + 0.2f);   // feet..head
+        for (int x = x0; x <= x1; ++x)
+            for (int y = y0; y <= y1; ++y)
+                for (int z = z0; z <= z1; ++z)
+                    if (collide_solid(x, y, z)) return true;
+        return false;
     }
 
     static V3 hue_rgb(float h) {
@@ -894,6 +932,8 @@ private:
     float         health_{20.0f}, hunger_{20.0f};
     std::uint8_t  selected_{0};
     bool          mining_{false};
+    float         vy_{0.0f};            // vertical velocity (survival walk)
+    bool          on_ground_{false};
 
     // Track J content + gameplay state.
     const ContentRegistry*        content_{nullptr};

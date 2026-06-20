@@ -13,6 +13,11 @@ final class GameView: MTKView {
     private var shiftDown = false
     private var captured = false
 
+    // Mouse-look inversion: left/right inverted, up/down normal by default.
+    // Toggle X with 'I', Y with 'O'.
+    private var invertX = true
+    private var invertY = false
+
     // App-level co-op hooks (wired by the app delegate).
     var onHost: (() -> Void)?
     var onJoin: (() -> Void)?
@@ -39,8 +44,9 @@ final class GameView: MTKView {
         inp.move_strafe  = (pressed.contains(K.d) ? 1 : 0) - (pressed.contains(K.a) ? 1 : 0)
         inp.jump  = pressed.contains(K.space) ? 1 : 0
         inp.sneak = shiftDown ? 1 : 0
-        inp.look_yaw_delta   = lookDX * 0.0035
-        inp.look_pitch_delta = -lookDY * 0.0035
+        // Default to inverted on both axes (toggle with 'I').
+        inp.look_yaw_delta   = lookDX * 0.0035 * (invertX ? -1 : 1)
+        inp.look_pitch_delta = lookDY * 0.0035 * (invertY ?  1 : -1)
         lookDX = 0; lookDY = 0
         return inp
     }
@@ -60,6 +66,10 @@ final class GameView: MTKView {
         if e.keyCode == 14 { toggleInventory(); return }   // 'E' — inventory
         if e.keyCode == 8 { queue(BF_ACT_MODE_TOGGLE); return } // 'C' — creative/survival
         if e.keyCode == 12 { queue(BF_ACT_CRAFT); return }      // 'Q' — craft first available
+        if e.keyCode == 34 { invertX.toggle()                    // 'I' — invert left/right
+            NSLog("Blockfall: invert X (left/right) = \(invertX)"); return }
+        if e.keyCode == 31 { invertY.toggle()                    // 'O' — invert up/down
+            NSLog("Blockfall: invert Y (up/down) = \(invertY)"); return }
         if e.keyCode == 4  { onHost?(); return }                // 'H' — host LAN co-op
         if e.keyCode == 38 { onJoin?(); return }                // 'J' — join a LAN host
         // Hotbar 1..9
