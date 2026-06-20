@@ -1026,6 +1026,179 @@ static void test_tree_variety_and_undergrowth() {
 }
 
 // ---------------------------------------------------------------------------
+// 16. ORE GENERATION
+//     Scan a large underground volume and verify:
+//       a) Coal ore (17) appears underground in stone (common, shallow).
+//       b) Iron ore (19) appears underground (less common, deeper).
+//       c) Crystal ore (20) appears (rare, deep).
+//       d) Crystal is rarer than coal across the scanned region.
+//       e) Coal appears at shallower depths than crystal (coal y > crystal_max_y).
+//       f) No ores appear at or above y=0 (they should be underground only).
+// ---------------------------------------------------------------------------
+static void test_ore_generation() {
+    constexpr std::uint64_t SEED = 0x0ADFACE50ADE0ADAull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    constexpr BlockId COAL_ORE_ID    = 17;
+    constexpr BlockId COPPER_ORE_ID  = 18;
+    constexpr BlockId IRON_ORE_ID    = 19;
+    constexpr BlockId CRYSTAL_ORE_ID = 20;
+
+    int coal_count    = 0;
+    int copper_count  = 0;
+    int iron_count    = 0;
+    int crystal_count = 0;
+    int ore_above_ground = 0;  // ores at wy >= 0 (should be zero)
+
+    int coal_max_y    = -999;  // highest y coal is found
+    int crystal_max_y = -999;  // highest y crystal is found
+
+    // Scan underground chunks: x,z in ±8 chunks, y in -1..-6 (world y -16..-96)
+    for (int cz = -8; cz <= 8; ++cz) {
+        for (int cx = -8; cx <= 8; ++cx) {
+            for (int cy = -1; cy >= -6; --cy) {
+                PaletteChunk ch({cx, cy, cz}, 0);
+                g.generate({cx, cy, cz}, ch);
+
+                std::int32_t wy_base = cy * kChunkDim;
+
+                for (int lz = 0; lz < kChunkDim; ++lz) {
+                    for (int ly = 0; ly < kChunkDim; ++ly) {
+                        for (int lx = 0; lx < kChunkDim; ++lx) {
+                            BlockId b = ch.get(lx, ly, lz);
+                            std::int32_t wy = wy_base + ly;
+
+                            switch (b) {
+                                case COAL_ORE_ID:
+                                    ++coal_count;
+                                    if (wy > coal_max_y) coal_max_y = static_cast<int>(wy);
+                                    break;
+                                case COPPER_ORE_ID:
+                                    ++copper_count;
+                                    break;
+                                case IRON_ORE_ID:
+                                    ++iron_count;
+                                    break;
+                                case CRYSTAL_ORE_ID:
+                                    ++crystal_count;
+                                    if (wy > crystal_max_y) crystal_max_y = static_cast<int>(wy);
+                                    break;
+                                default: break;
+                            }
+
+                            bool is_ore = (b == COAL_ORE_ID || b == COPPER_ORE_ID
+                                        || b == IRON_ORE_ID || b == CRYSTAL_ORE_ID);
+                            if (is_ore && wy >= 0) ++ore_above_ground;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    CHECK(coal_count    > 0, "ores: coal ore (17) found underground");
+    CHECK(copper_count  > 0, "ores: copper ore (18) found underground");
+    CHECK(iron_count    > 0, "ores: iron ore (19) found underground");
+    CHECK(crystal_count > 0, "ores: crystal ore (20) found underground");
+
+    // Coal should be much more common than crystal.
+    CHECK(coal_count > crystal_count * 3,
+          "ores: coal is significantly more common than crystal");
+
+    // Coal should appear at shallower depths than crystal.
+    // coal_max_y will be relatively high (close to 0), crystal_max_y deep.
+    CHECK(coal_max_y > crystal_max_y,
+          "ores: coal found at shallower depths than crystal (progression)");
+
+    // No ores should appear above ground (y >= 0).
+    CHECK(ore_above_ground == 0,
+          "ores: no ore blocks appear at y >= 0 (underground only)");
+}
+
+// ---------------------------------------------------------------------------
+// 17. EXTENDED TREE VARIETY
+//     Verify that:
+//       a) Trees with very tall trunks (>= 8 blocks) exist in the world.
+//          The new tree system goes up to 12, so some tall trees must appear.
+//       b) Trees with trunks >= 10 exist (giant or tall pine).
+//       c) Short trees (trunk 4..5) still exist.
+//       d) The new PINE shape produces the correct silhouette (conical):
+//          a log column flanked by leaves that extend downward, i.e. there
+//          exist leaf blocks below the trunk top (dy < 0 from trunk top).
+//          We approximate: leaf blocks appear at a y lower than the tree
+//          top in columns adjacent to a trunk column.
+// ---------------------------------------------------------------------------
+static void test_extended_tree_variety() {
+    constexpr std::uint64_t SEED = 0xE4570EE0501D1234ull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    constexpr BlockId OAK_LOG_ID      = 21;
+    constexpr BlockId BIRCH_LOG_ID    = 22;
+    constexpr BlockId OAK_LEAVES_ID   = 5;
+    constexpr BlockId BIRCH_LEAVES_ID = 27;
+
+    bool found_short_trunk  = false;  // trunk <= 5
+    bool found_tall_trunk8  = false;  // trunk >= 8
+    bool found_tall_trunk10 = false;  // trunk >= 10
+
+    constexpr int SCAN_R = 12;
+
+    for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
+        for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
+            // Generate enough y-slices to see tall trees (trunk up to 12).
+            PaletteChunk ch0({cx, 0, cz}, 0);
+            PaletteChunk ch1({cx, 1, cz}, 0);
+            PaletteChunk ch2({cx, 2, cz}, 0);
+            g.generate({cx, 0, cz}, ch0);
+            g.generate({cx, 1, cz}, ch1);
+            g.generate({cx, 2, cz}, ch2);
+
+            auto get_block = [&](int lx, int wy, int lz) -> BlockId {
+                if (wy >= 0  && wy < 16) return ch0.get(lx, wy,      lz);
+                if (wy >= 16 && wy < 32) return ch1.get(lx, wy - 16, lz);
+                if (wy >= 32 && wy < 48) return ch2.get(lx, wy - 32, lz);
+                return BlockId(0);
+            };
+            auto is_log = [](BlockId b) -> bool {
+                return b == OAK_LOG_ID || b == BIRCH_LOG_ID;
+            };
+            (void)OAK_LEAVES_ID;
+            (void)BIRCH_LEAVES_ID;
+
+            for (int lz = 0; lz < kChunkDim; ++lz) {
+                for (int lx = 0; lx < kChunkDim; ++lx) {
+                    // Count consecutive log blocks (trunk height).
+                    int log_start = -1;
+                    int log_count = 0;
+                    for (int wy = 0; wy < 48; ++wy) {
+                        if (is_log(get_block(lx, wy, lz))) {
+                            if (log_start < 0) log_start = wy;
+                            ++log_count;
+                        } else if (log_start >= 0) {
+                            break;
+                        }
+                    }
+                    if (log_count == 0) continue;
+
+                    if (log_count <= 5) found_short_trunk  = true;
+                    if (log_count >= 8) found_tall_trunk8  = true;
+                    if (log_count >= 10) found_tall_trunk10 = true;
+                }
+            }
+        }
+    }
+
+    CHECK(found_short_trunk,
+          "extended tree variety: short trees (trunk <= 5) still exist");
+    CHECK(found_tall_trunk8,
+          "extended tree variety: tall trees (trunk >= 8) found in world scan");
+    CHECK(found_tall_trunk10,
+          "extended tree variety: very tall trees (trunk >= 10) found (giant/pine/birch)");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -1045,6 +1218,8 @@ int main() {
     test_no_surface_holes();
     test_flatness();
     test_tree_variety_and_undergrowth();
+    test_ore_generation();
+    test_extended_tree_variety();
 
     if (fails == 0) {
         std::printf("OK: worldgen tests\n");

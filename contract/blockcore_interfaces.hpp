@@ -214,6 +214,7 @@ struct ItemDef {
     std::uint16_t max_stack;
     std::uint8_t  tool_tier;     // 0 = not a tool
     std::uint8_t  tool_kind;     // pickaxe/axe/shovel/none
+    std::uint16_t tool_durability; // 0 = not a tool / unbreakable
     BlockId       places_block;  // 0 = not placeable
 };
 struct IItemRegistry {

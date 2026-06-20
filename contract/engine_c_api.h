@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 4u   /* v4: HUD oxygen + look-at name (ADR 0007) */
+#define BF_ABI_VERSION 5u   /* v5: HUD achievement toast + counts (ADR 0008) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -268,6 +268,10 @@ typedef struct bf_hud_state {
     /* v4 additions */
     float        oxygen;            /* 0..1 air remaining underwater (1 = full) */
     char         look_name[40];     /* name of the block/creature under the crosshair, "" if none */
+    /* v5 additions */
+    char         achievement_toast[48]; /* recently-unlocked achievement banner, "" if none */
+    uint8_t      achievements_done;
+    uint8_t      achievements_total;
 } bf_hud_state;
 
 /* The whole frame, borrowed from the engine between acquire/end. */

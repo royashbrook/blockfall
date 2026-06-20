@@ -281,6 +281,27 @@ final class HUDView: NSView {
         let modeStr = (hud.mode == BF_MODE_CREATIVE) ? "CREATIVE" : "SURVIVAL"
         drawText(modeStr, at: NSPoint(x: b.maxX - 110, y: b.maxY - 32), size: 13,
                  color: (hud.mode == BF_MODE_CREATIVE) ? .systemTeal : .systemOrange, bold: true)
+
+        // Achievement toast (top-center banner) when one was just unlocked.
+        let toast = withUnsafeBytes(of: hud.achievement_toast) { raw -> String in
+            String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+        }
+        if !toast.isEmpty {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: 20),
+                .foregroundColor: NSColor(red: 1.0, green: 0.86, blue: 0.30, alpha: 1),
+                .strokeColor: NSColor.black, .strokeWidth: -3.0,
+            ]
+            let sz = (toast as NSString).size(withAttributes: attrs)
+            let pad: CGFloat = 16
+            let bx = b.midX - sz.width/2 - pad, by = b.maxY - 96
+            let bg = NSRect(x: bx, y: by - 6, width: sz.width + pad*2, height: sz.height + 12)
+            NSColor(red: 0.10, green: 0.14, blue: 0.10, alpha: 0.82).setFill()
+            NSBezierPath(roundedRect: bg, xRadius: 10, yRadius: 10).fill()
+            NSColor(red: 1.0, green: 0.86, blue: 0.30, alpha: 0.8).setStroke()
+            let bp = NSBezierPath(roundedRect: bg, xRadius: 10, yRadius: 10); bp.lineWidth = 2; bp.stroke()
+            (toast as NSString).draw(at: NSPoint(x: b.midX - sz.width/2, y: by), withAttributes: attrs)
+        }
     }
 
     // Inventory grid geometry — single source of truth for both drawing and
@@ -461,15 +482,408 @@ final class HUDView: NSView {
             fillPoly([ctrTop, rightApex, botRight, botCtr], shade(base, 0.56))  // right
             fillPoly([topApex, rightApex, ctrTop, leftApex], shade(base, 1.15)) // top
         } else {
-            // Tool/material/food → rounded chip.
-            base.setFill()
-            let rr = NSBezierPath(roundedRect: chip, xRadius: 5, yRadius: 5); rr.fill()
-            NSColor.black.withAlphaComponent(0.3).setStroke(); rr.lineWidth = 1; rr.stroke()
+            // Tool / material / food → distinct procedural icon per item, so
+            // each is recognizable at a glance (no more uniform chips).
+            drawItemIcon(id: id, in: chip, base: base)
         }
         if count > 1 {
             drawText("\(count)", at: NSPoint(x: rect.maxX - 18, y: rect.minY + 3),
                      size: 12, color: .white, bold: true)
         }
+    }
+
+    // ===== Procedural item icons ============================================
+    // Each item id (50..93) maps to a small recognizable silhouette drawn with
+    // Core Graphics / NSBezierPath — no art assets. Helpers stay cheap (a few
+    // bezier ops) because these draw several times per frame. The view is
+    // non-flipped, so +y is UP throughout.
+
+    // Tier tints for the 9 tools (head colour by material; handle is wood).
+    private static let kWoodTint  = NSColor(srgbRed: 0.62, green: 0.45, blue: 0.26, alpha: 1)
+    private static let kStoneTint = NSColor(srgbRed: 0.58, green: 0.58, blue: 0.60, alpha: 1)
+    private static let kIronTint  = NSColor(srgbRed: 0.86, green: 0.87, blue: 0.90, alpha: 1)
+    private static let kHandleCol = NSColor(srgbRed: 0.50, green: 0.34, blue: 0.18, alpha: 1)
+
+    private func toolTint(_ id: bf_item_id) -> NSColor {
+        switch id {
+        case 70, 71, 72: return HUDView.kWoodTint
+        case 73, 74, 75: return HUDView.kStoneTint
+        case 76, 77, 78: return HUDView.kIronTint
+        default:         return HUDView.kStoneTint
+        }
+    }
+
+    // Lighten toward white by fraction f (0 = unchanged, 1 = white).
+    private func lighten(_ c: NSColor, _ f: CGFloat) -> NSColor {
+        let s = c.usingColorSpace(.sRGB) ?? c
+        let g = max(0, min(1, f))
+        return NSColor(srgbRed: s.redComponent + (1 - s.redComponent) * g,
+                       green: s.greenComponent + (1 - s.greenComponent) * g,
+                       blue:  s.blueComponent + (1 - s.blueComponent) * g, alpha: 1)
+    }
+
+    private func strokePoly(_ pts: [NSPoint], _ fill: NSColor,
+                            outline: NSColor = NSColor.black.withAlphaComponent(0.45),
+                            width: CGFloat = 1) {
+        guard pts.count >= 2 else { return }
+        let p = NSBezierPath(); p.move(to: pts[0])
+        for q in pts.dropFirst() { p.line(to: q) }
+        p.close()
+        fill.setFill(); p.fill()
+        outline.setStroke(); p.lineWidth = width; p.stroke()
+    }
+
+    private func fillCircle(_ center: NSPoint, _ r: CGFloat, _ fill: NSColor,
+                            outline: NSColor? = NSColor.black.withAlphaComponent(0.4),
+                            width: CGFloat = 1) {
+        let rect = NSRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
+        let p = NSBezierPath(ovalIn: rect)
+        fill.setFill(); p.fill()
+        if let o = outline { o.setStroke(); p.lineWidth = width; p.stroke() }
+    }
+
+    // Dispatch an id (50..93) to its dedicated icon helper.
+    private func drawItemIcon(id: bf_item_id, in r: NSRect, base: NSColor) {
+        switch id {
+        // --- Tools: shape by type, head colour by tier ---
+        case 70, 73, 76: drawPickaxe(in: r, tint: toolTint(id))
+        case 71, 74, 77: drawAxe(in: r, tint: toolTint(id))
+        case 72, 75, 78: drawShovel(in: r, tint: toolTint(id))
+        // --- Materials ---
+        case 50: drawStick(in: r)
+        case 51: drawLumpCluster(in: r, color: base)            // coal
+        case 52, 53, 54: drawOreNugget(in: r, color: base)      // raw ores
+        case 55, 56: drawIngot(in: r, color: base)              // ingots
+        case 57: drawGem(in: r, color: base)                    // crystal shard
+        case 58: drawBlob(in: r, color: base)                   // clay lump
+        case 59: drawCoil(in: r, color: base)                   // string fiber
+        case 60: drawFeather(in: r, color: base)                // feather
+        case 61, 62: drawDustPile(in: r, color: base)           // dusts
+        case 63: drawBook(in: r, color: base)                   // blank book
+        // --- Food ---
+        case 90: drawBerryCluster(in: r, color: base)
+        case 91: drawStewBowl(in: r, color: base)
+        case 92: drawCakeSlice(in: r, color: base)
+        case 93: drawMushroom(in: r, color: base)
+        default: drawBlob(in: r, color: base)                   // graceful fallback
+        }
+    }
+
+    // ----- Tools -----------------------------------------------------------
+    // Shared: a diagonal wooden handle running lower-left → upper-right.
+    private func drawHandle(in r: NSRect, from a: NSPoint, to b: NSPoint, thickness: CGFloat) {
+        let p = NSBezierPath()
+        p.lineCapStyle = .round
+        p.move(to: a); p.line(to: b)
+        HUDView.kHandleCol.setStroke(); p.lineWidth = thickness; p.stroke()
+        // subtle highlight along the handle
+        lighten(HUDView.kHandleCol, 0.25).setStroke(); p.lineWidth = max(1, thickness * 0.4); p.stroke()
+    }
+
+    private func drawPickaxe(in r: NSRect, tint: NSColor) {
+        let handleA = NSPoint(x: r.minX + r.width * 0.30, y: r.minY + r.height * 0.18)
+        let handleB = NSPoint(x: r.maxX - r.width * 0.18, y: r.maxY - r.height * 0.22)
+        drawHandle(in: r, from: handleA, to: handleB, thickness: max(2, r.width * 0.13))
+        // Curved double-pointed head across the top, centred over the handle top.
+        let hx = handleB.x, hy = handleB.y
+        let span = r.width * 0.42
+        let p = NSBezierPath()
+        p.lineCapStyle = .round; p.lineJoinStyle = .round
+        p.move(to: NSPoint(x: hx - span, y: hy + r.height * 0.02))
+        p.curve(to: NSPoint(x: hx + span, y: hy + r.height * 0.02),
+                controlPoint1: NSPoint(x: hx - span * 0.3, y: hy + r.height * 0.30),
+                controlPoint2: NSPoint(x: hx + span * 0.3, y: hy + r.height * 0.30))
+        tint.setStroke(); p.lineWidth = max(2.5, r.width * 0.16); p.stroke()
+        // tip accents
+        fillCircle(NSPoint(x: hx - span, y: hy + r.height * 0.02), max(1, r.width * 0.05), lighten(tint, 0.2))
+        fillCircle(NSPoint(x: hx + span, y: hy + r.height * 0.02), max(1, r.width * 0.05), lighten(tint, 0.2))
+    }
+
+    private func drawAxe(in r: NSRect, tint: NSColor) {
+        let handleA = NSPoint(x: r.minX + r.width * 0.30, y: r.minY + r.height * 0.16)
+        let handleB = NSPoint(x: r.maxX - r.width * 0.26, y: r.maxY - r.height * 0.18)
+        drawHandle(in: r, from: handleA, to: handleB, thickness: max(2, r.width * 0.13))
+        // Wedge blade on the upper-right side of the handle head.
+        let hx = handleB.x, hy = handleB.y
+        let blade = [
+            NSPoint(x: hx - r.width * 0.04, y: hy + r.height * 0.06),
+            NSPoint(x: hx + r.width * 0.30, y: hy + r.height * 0.18),
+            NSPoint(x: hx + r.width * 0.34, y: hy - r.height * 0.04),
+            NSPoint(x: hx + r.width * 0.16, y: hy - r.height * 0.20),
+            NSPoint(x: hx - r.width * 0.02, y: hy - r.height * 0.12),
+        ]
+        strokePoly(blade, tint, width: 1)
+        // cutting-edge highlight
+        let edge = NSBezierPath()
+        edge.move(to: blade[1]); edge.line(to: blade[2])
+        lighten(tint, 0.45).setStroke(); edge.lineWidth = max(1, r.width * 0.06); edge.stroke()
+    }
+
+    private func drawShovel(in r: NSRect, tint: NSColor) {
+        let handleA = NSPoint(x: r.minX + r.width * 0.24, y: r.minY + r.height * 0.30)
+        let handleB = NSPoint(x: r.maxX - r.width * 0.22, y: r.maxY - r.height * 0.16)
+        drawHandle(in: r, from: handleA, to: handleB, thickness: max(2, r.width * 0.13))
+        // Spade/scoop at the bottom (lower-left) end of the handle.
+        let sx = handleA.x, sy = handleA.y
+        let w = r.width * 0.20, h = r.height * 0.22
+        let scoop = NSBezierPath()
+        scoop.lineJoinStyle = .round
+        scoop.move(to: NSPoint(x: sx - w, y: sy + h * 0.2))
+        scoop.line(to: NSPoint(x: sx + w, y: sy + h * 0.2))
+        scoop.line(to: NSPoint(x: sx + w * 0.7, y: sy - h))
+        // rounded tip
+        scoop.curve(to: NSPoint(x: sx - w * 0.7, y: sy - h),
+                    controlPoint1: NSPoint(x: sx + w * 0.2, y: sy - h * 1.5),
+                    controlPoint2: NSPoint(x: sx - w * 0.2, y: sy - h * 1.5))
+        scoop.close()
+        tint.setFill(); scoop.fill()
+        NSColor.black.withAlphaComponent(0.45).setStroke(); scoop.lineWidth = 1; scoop.stroke()
+    }
+
+    // ----- Materials -------------------------------------------------------
+    private func drawStick(in r: NSRect) {
+        let p = NSBezierPath()
+        p.lineCapStyle = .round
+        p.move(to: NSPoint(x: r.minX + r.width * 0.30, y: r.minY + r.height * 0.20))
+        p.line(to: NSPoint(x: r.maxX - r.width * 0.30, y: r.maxY - r.height * 0.20))
+        HUDView.kHandleCol.setStroke(); p.lineWidth = max(2, r.width * 0.16); p.stroke()
+        lighten(HUDView.kHandleCol, 0.3).setStroke(); p.lineWidth = max(1, r.width * 0.06); p.stroke()
+    }
+
+    private func drawLumpCluster(in r: NSRect, color: NSColor) {
+        // A few overlapping dark lumps (coal). Deterministic placement.
+        let cx = r.midX, cy = r.midY
+        let rr = r.width * 0.22
+        let offs = [CGSize(width: -0.18, height: -0.10), CGSize(width: 0.16, height: -0.14),
+                    CGSize(width: 0.02, height: 0.16), CGSize(width: -0.05, height: -0.02)]
+        for (i, o) in offs.enumerated() {
+            let c = NSPoint(x: cx + r.width * o.width, y: cy + r.height * o.height)
+            fillCircle(c, rr, shade(color, i == 3 ? 1.25 : (0.85 + CGFloat(i) * 0.1)))
+        }
+    }
+
+    private func drawOreNugget(in r: NSRect, color: NSColor) {
+        // Rough faceted nugget: an irregular polygon in the ore colour.
+        let cx = r.midX, cy = r.midY
+        let w = r.width * 0.34, h = r.height * 0.32
+        let pts = [
+            NSPoint(x: cx - w,        y: cy - h * 0.2),
+            NSPoint(x: cx - w * 0.4,  y: cy + h),
+            NSPoint(x: cx + w * 0.6,  y: cy + h * 0.7),
+            NSPoint(x: cx + w,        y: cy - h * 0.3),
+            NSPoint(x: cx + w * 0.2,  y: cy - h),
+            NSPoint(x: cx - w * 0.6,  y: cy - h * 0.8),
+        ]
+        strokePoly(pts, color, width: 1)
+        // a couple of bright facet flecks
+        fillCircle(NSPoint(x: cx - w * 0.2, y: cy + h * 0.1), max(1, r.width * 0.06), lighten(color, 0.45), outline: nil)
+        fillCircle(NSPoint(x: cx + w * 0.4, y: cy - h * 0.2), max(1, r.width * 0.045), lighten(color, 0.55), outline: nil)
+    }
+
+    private func drawIngot(in r: NSRect, color: NSColor) {
+        // Trapezoid bar (wider at the bottom), with a lighter top face.
+        let cx = r.midX, cy = r.midY
+        let bw = r.width * 0.40, tw = r.width * 0.28
+        let h = r.height * 0.20
+        let body = [
+            NSPoint(x: cx - bw, y: cy - h),
+            NSPoint(x: cx + bw, y: cy - h),
+            NSPoint(x: cx + tw, y: cy + h),
+            NSPoint(x: cx - tw, y: cy + h),
+        ]
+        strokePoly(body, color, width: 1)
+        // top face highlight (thin parallelogram on top edge)
+        let top = [
+            NSPoint(x: cx - tw,         y: cy + h),
+            NSPoint(x: cx + tw,         y: cy + h),
+            NSPoint(x: cx + tw * 0.7,   y: cy + h * 1.7),
+            NSPoint(x: cx - tw * 0.7,   y: cy + h * 1.7),
+        ]
+        strokePoly(top, lighten(color, 0.35), outline: NSColor.black.withAlphaComponent(0.25))
+    }
+
+    private func drawGem(in r: NSRect, color: NSColor) {
+        // Faceted gem: top crown + pointed pavilion, with a centre facet line.
+        let cx = r.midX, cy = r.midY
+        let w = r.width * 0.30, top = r.height * 0.26, bot = r.height * 0.32
+        let outline = [
+            NSPoint(x: cx - w,        y: cy + top * 0.4),
+            NSPoint(x: cx - w * 0.45, y: cy + top),
+            NSPoint(x: cx + w * 0.45, y: cy + top),
+            NSPoint(x: cx + w,        y: cy + top * 0.4),
+            NSPoint(x: cx,            y: cy - bot),
+        ]
+        strokePoly(outline, color, width: 1)
+        // facets
+        let f = NSBezierPath()
+        f.move(to: NSPoint(x: cx - w * 0.45, y: cy + top)); f.line(to: NSPoint(x: cx, y: cy - bot))
+        f.move(to: NSPoint(x: cx + w * 0.45, y: cy + top)); f.line(to: NSPoint(x: cx, y: cy - bot))
+        f.move(to: NSPoint(x: cx - w, y: cy + top * 0.4)); f.line(to: NSPoint(x: cx + w, y: cy + top * 0.4))
+        lighten(color, 0.5).setStroke(); f.lineWidth = 1; f.stroke()
+    }
+
+    private func drawBlob(in r: NSRect, color: NSColor) {
+        // Rounded clay blob: a fat oval with a soft highlight.
+        let rect = r.insetBy(dx: r.width * 0.16, dy: r.height * 0.24)
+        let p = NSBezierPath(ovalIn: rect)
+        color.setFill(); p.fill()
+        NSColor.black.withAlphaComponent(0.4).setStroke(); p.lineWidth = 1; p.stroke()
+        fillCircle(NSPoint(x: rect.midX - rect.width * 0.18, y: rect.midY + rect.height * 0.18),
+                   max(1, rect.width * 0.14), lighten(color, 0.4), outline: nil)
+    }
+
+    private func drawCoil(in r: NSRect, color: NSColor) {
+        // String fibre: a few stacked loops/threads.
+        let cx = r.midX
+        let w = r.width * 0.30
+        let stroke = shade(color, 0.85)
+        for i in 0..<3 {
+            let y = r.midY + (CGFloat(i) - 1) * r.height * 0.18
+            let rect = NSRect(x: cx - w, y: y - r.height * 0.07, width: w * 2, height: r.height * 0.14)
+            let p = NSBezierPath(ovalIn: rect)
+            stroke.setStroke(); p.lineWidth = max(1.5, r.width * 0.07); p.stroke()
+        }
+    }
+
+    private func drawFeather(in r: NSRect, color: NSColor) {
+        // Feather: a leaf-like vane with a central quill.
+        let tip = NSPoint(x: r.maxX - r.width * 0.22, y: r.maxY - r.height * 0.18)
+        let base = NSPoint(x: r.minX + r.width * 0.26, y: r.minY + r.height * 0.20)
+        let vane = NSBezierPath()
+        vane.move(to: base)
+        vane.curve(to: tip,
+                   controlPoint1: NSPoint(x: r.minX + r.width * 0.15, y: r.maxY - r.height * 0.30),
+                   controlPoint2: NSPoint(x: r.midX, y: r.maxY - r.height * 0.10))
+        vane.curve(to: base,
+                   controlPoint1: NSPoint(x: r.maxX - r.width * 0.10, y: r.midY),
+                   controlPoint2: NSPoint(x: r.midX + r.width * 0.10, y: r.minY + r.height * 0.18))
+        vane.close()
+        color.setFill(); vane.fill()
+        NSColor.black.withAlphaComponent(0.3).setStroke(); vane.lineWidth = 1; vane.stroke()
+        // quill / rachis
+        let quill = NSBezierPath()
+        quill.move(to: base); quill.line(to: tip)
+        shade(color, 0.7).setStroke(); quill.lineWidth = max(1, r.width * 0.05); quill.stroke()
+    }
+
+    private func drawDustPile(in r: NSRect, color: NSColor) {
+        // Small heap with sparkle specks.
+        let cx = r.midX, baseY = r.minY + r.height * 0.30
+        let heap = NSBezierPath()
+        heap.move(to: NSPoint(x: cx - r.width * 0.30, y: baseY))
+        heap.curve(to: NSPoint(x: cx + r.width * 0.30, y: baseY),
+                   controlPoint1: NSPoint(x: cx - r.width * 0.10, y: baseY + r.height * 0.34),
+                   controlPoint2: NSPoint(x: cx + r.width * 0.10, y: baseY + r.height * 0.34))
+        heap.close()
+        color.setFill(); heap.fill()
+        NSColor.black.withAlphaComponent(0.3).setStroke(); heap.lineWidth = 1; heap.stroke()
+        // sparkles
+        let spark = lighten(color, 0.6)
+        for o in [CGPoint(x: -0.10, y: 0.42), CGPoint(x: 0.16, y: 0.30), CGPoint(x: 0.02, y: 0.55)] {
+            drawSparkle(at: NSPoint(x: cx + r.width * o.x, y: baseY + r.height * o.y),
+                        s: r.width * 0.07, color: spark)
+        }
+    }
+
+    private func drawSparkle(at c: NSPoint, s: CGFloat, color: NSColor) {
+        let p = NSBezierPath()
+        p.move(to: NSPoint(x: c.x - s, y: c.y)); p.line(to: NSPoint(x: c.x + s, y: c.y))
+        p.move(to: NSPoint(x: c.x, y: c.y - s)); p.line(to: NSPoint(x: c.x, y: c.y + s))
+        color.setStroke(); p.lineWidth = max(1, s * 0.5); p.stroke()
+    }
+
+    private func drawBook(in r: NSRect, color: NSColor) {
+        // Small closed book: cover + spine + page edge.
+        let rect = r.insetBy(dx: r.width * 0.20, dy: r.height * 0.22)
+        let cover = NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2)
+        color.setFill(); cover.fill()
+        NSColor.black.withAlphaComponent(0.4).setStroke(); cover.lineWidth = 1; cover.stroke()
+        // page edge on the right
+        let pages = NSRect(x: rect.maxX - rect.width * 0.16, y: rect.minY + 1,
+                           width: rect.width * 0.14, height: rect.height - 2)
+        lighten(color, 0.7).setFill(); NSBezierPath(rect: pages).fill()
+        // spine on the left
+        let spine = NSRect(x: rect.minX, y: rect.minY, width: rect.width * 0.16, height: rect.height)
+        shade(color, 0.7).setFill(); NSBezierPath(rect: spine).fill()
+    }
+
+    // ----- Food ------------------------------------------------------------
+    private func drawBerryCluster(in r: NSRect, color: NSColor) {
+        let rr = r.width * 0.16
+        let offs = [CGPoint(x: -0.16, y: 0.10), CGPoint(x: 0.16, y: 0.10),
+                    CGPoint(x: 0.0, y: -0.14), CGPoint(x: -0.02, y: 0.26)]
+        for o in offs {
+            let c = NSPoint(x: r.midX + r.width * o.x, y: r.midY + r.height * o.y)
+            fillCircle(c, rr, color)
+            fillCircle(NSPoint(x: c.x - rr * 0.3, y: c.y + rr * 0.3), rr * 0.3, lighten(color, 0.5), outline: nil)
+        }
+    }
+
+    private func drawStewBowl(in r: NSRect, color: NSColor) {
+        // Bowl (half-disc) with stew inside.
+        let cx = r.midX, cy = r.midY - r.height * 0.04
+        let bw = r.width * 0.34
+        // stew surface (ellipse)
+        let surf = NSRect(x: cx - bw, y: cy, width: bw * 2, height: r.height * 0.16)
+        color.setFill(); NSBezierPath(ovalIn: surf).fill()
+        // bowl body
+        let bowl = NSBezierPath()
+        bowl.move(to: NSPoint(x: cx - bw, y: cy + r.height * 0.08))
+        bowl.curve(to: NSPoint(x: cx + bw, y: cy + r.height * 0.08),
+                   controlPoint1: NSPoint(x: cx - bw * 0.6, y: cy - r.height * 0.28),
+                   controlPoint2: NSPoint(x: cx + bw * 0.6, y: cy - r.height * 0.28))
+        NSColor(srgbRed: 0.85, green: 0.85, blue: 0.88, alpha: 1).setFill(); bowl.fill()
+        NSColor.black.withAlphaComponent(0.35).setStroke(); bowl.lineWidth = 1; bowl.stroke()
+    }
+
+    private func drawCakeSlice(in r: NSRect, color: NSColor) {
+        // Layered triangular slice (side view): two cake layers + a top.
+        let left = r.minX + r.width * 0.22
+        let right = r.maxX - r.width * 0.20
+        let baseY = r.minY + r.height * 0.26
+        let topY = r.maxY - r.height * 0.26
+        let slice = [
+            NSPoint(x: left, y: baseY),
+            NSPoint(x: right, y: baseY),
+            NSPoint(x: right, y: topY),
+        ]
+        strokePoly(slice, shade(color, 0.85), width: 1)
+        // filling stripe
+        let midY = (baseY + topY) / 2
+        let stripe = NSBezierPath()
+        stripe.move(to: NSPoint(x: left + (right - left) * 0.0, y: midY))
+        stripe.line(to: NSPoint(x: right, y: midY))
+        lighten(color, 0.55).setStroke(); stripe.lineWidth = max(1.5, r.height * 0.07); stripe.stroke()
+        // a cherry on the top corner
+        fillCircle(NSPoint(x: right - r.width * 0.06, y: topY - r.height * 0.02),
+                   max(1, r.width * 0.07), NSColor.systemRed)
+    }
+
+    private func drawMushroom(in r: NSRect, color: NSColor) {
+        // Stem + domed cap.
+        let cx = r.midX
+        // stem
+        let stem = NSRect(x: cx - r.width * 0.10, y: r.minY + r.height * 0.22,
+                          width: r.width * 0.20, height: r.height * 0.28)
+        lighten(color, 0.6).setFill()
+        let sp = NSBezierPath(roundedRect: stem, xRadius: 2, yRadius: 2); sp.fill()
+        NSColor.black.withAlphaComponent(0.3).setStroke(); sp.lineWidth = 1; sp.stroke()
+        // cap (half dome)
+        let capY = r.minY + r.height * 0.48
+        let cw = r.width * 0.32
+        let cap = NSBezierPath()
+        cap.move(to: NSPoint(x: cx - cw, y: capY))
+        cap.curve(to: NSPoint(x: cx + cw, y: capY),
+                  controlPoint1: NSPoint(x: cx - cw, y: capY + r.height * 0.34),
+                  controlPoint2: NSPoint(x: cx + cw, y: capY + r.height * 0.34))
+        cap.close()
+        color.setFill(); cap.fill()
+        NSColor.black.withAlphaComponent(0.35).setStroke(); cap.lineWidth = 1; cap.stroke()
+        // spots
+        fillCircle(NSPoint(x: cx - cw * 0.4, y: capY + r.height * 0.10), max(1, r.width * 0.05),
+                   NSColor.white.withAlphaComponent(0.8), outline: nil)
+        fillCircle(NSPoint(x: cx + cw * 0.35, y: capY + r.height * 0.14), max(1, r.width * 0.04),
+                   NSColor.white.withAlphaComponent(0.8), outline: nil)
     }
 
     private func drawHearts(value: Float, max: Int, at origin: NSPoint) {

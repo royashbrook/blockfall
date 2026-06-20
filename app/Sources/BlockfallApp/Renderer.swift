@@ -903,7 +903,12 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// We place the eye 120 units "up" along L from a point 40 units in front of the camera.
     static func buildLightMatrix(sunDir: SIMD3<Float>, camPos: SIMD3<Float>, camFwd: SIMD3<Float>) -> simd_float4x4 {
         let L = normalize(sunDir)                         // points downward from sun
-        let center = camPos + camFwd * 40.0               // look-at centre
+        // Centre the shadow frustum on the PLAYER, not ahead of the view — an
+        // ahead-of-view centre made the covered region swing as you turned, so
+        // shadows flipped across half the world when spinning. Snap to whole
+        // blocks to reduce shimmer while moving.
+        _ = camFwd
+        let center = SIMD3<Float>(camPos.x.rounded(), camPos.y.rounded(), camPos.z.rounded())
         let eye    = center - L * 120.0                   // light eye position
 
         // lookAt: choose an up vector not parallel to L
@@ -1398,9 +1403,226 @@ final class Renderer: NSObject, MTKViewDelegate {
             return float3(clamp(bri, 0.94, 1.06));
         }
 
-        // ---- EMISSIVE / SMOOTH blocks (7,32,34,35,40) — no texture needed ----
-        if (matID==7u||matID==32u||matID==34u||matID==35u||matID==40u) {
-            return float3(1.0);
+        // ---- CRAFTING TABLE (30) -----------------------------------------------
+        // Wood base everywhere.  TOP face: a 3×3 crafting grid overlay + saw-blade
+        // centre motif.  SIDE faces: wood grain + a narrow tool-band across the
+        // middle third (y ∈ [0.30, 0.70]) with a chisel/saw silhouette.
+        if (matID == 30u) {
+            // Shared wood grain base (same technique as planks/logs)
+            float grain  = noise2(float2(uv.x * 4.0, worldPos.y * 0.8 + vH * 2.0)) * 0.55
+                         + noise2(float2(uv.x * 9.0, worldPos.y * 2.0 + vH * 1.3)) * 0.45;
+            float seam   = 1.0 - step(0.93, fract(uv.x * 3.0));
+            float woodBri = mix(0.85, 1.15, grain) * mix(0.82, 1.0, seam);
+
+            if (isTop) {
+                // 3×3 grid: dark lines at 1/3 and 2/3 along each axis.
+                // Use worldPos projected to [0,1] within the block.
+                float2 cellUV = fract(worldPos.xz);   // 0..1 within block
+                float2 gridLines;
+                gridLines.x = 1.0 - smoothstep(0.0, 0.05, abs(fract(cellUV.x * 3.0) - 0.5) - 0.44);
+                gridLines.y = 1.0 - smoothstep(0.0, 0.05, abs(fract(cellUV.y * 3.0) - 0.5) - 0.44);
+                float grid   = max(gridLines.x, gridLines.y);   // 1 = on a line
+
+                // Saw-blade: 8-tooth starburst centred on block top.
+                float2 ctr  = cellUV - 0.5;   // -0.5..0.5
+                float  r    = length(ctr);
+                float  ang  = atan2(ctr.y, ctr.x);
+                float  teeth = cos(ang * 8.0) * 0.5 + 0.5;   // 8 teeth
+                float  blade = smoothstep(0.32, 0.26, r) * smoothstep(0.10, 0.18, r)
+                             * mix(0.75, 1.0, teeth);
+
+                // Combine: wood base, darken grid lines, brighten blade
+                float bri = woodBri * (1.0 - grid * 0.35) * mix(1.0, 1.18, blade);
+                return float3(clamp(bri, 0.70, 1.20));
+            } else {
+                // Side faces: wood grain + a horizontal dark band in middle third
+                // with a simple chisel-slash pattern inside the band.
+                float localY = fract(worldPos.y);
+                float inBand = smoothstep(0.28, 0.32, localY) * smoothstep(0.72, 0.68, localY);
+                // Diagonal chisel cuts inside the band
+                float chisel = sin(uv.x * 18.0 + localY * 6.0) * 0.5 + 0.5;
+                float bandBri = mix(woodBri, woodBri * (0.72 + chisel * 0.20), inBand);
+                return float3(clamp(bandBri, 0.70, 1.18));
+            }
+        }
+
+        // ---- CHEST (31) --------------------------------------------------------
+        // Wood box: SIDE faces show a lid-seam line across the upper third + a
+        // metal latch clasp centred on the face.  TOP face = lid planks with a
+        // clasp hinge bar across the middle.  BOTTOM = plain wood planks.
+        if (matID == 31u) {
+            float grain  = noise2(float2(uv.x * 4.5, worldPos.y * 0.9 + vH * 2.0)) * 0.55
+                         + noise2(float2(uv.x * 10.0, worldPos.y * 2.2 + vH * 1.4)) * 0.45;
+            float seam   = 1.0 - step(0.92, fract(uv.x * 2.8));
+            float woodBri = mix(0.84, 1.14, grain) * mix(0.80, 1.0, seam);
+
+            if (isTop) {
+                // Lid planks + a hinge bar across the middle
+                float2 lidUV = fract(worldPos.xz);
+                float plankS = 1.0 - step(0.92, fract(lidUV.x * 2.5));
+                float hinge  = smoothstep(0.04, 0.0, abs(lidUV.y - 0.5));   // dark line at centre
+                float bri    = woodBri * mix(0.78, 1.0, plankS) * (1.0 - hinge * 0.45);
+                return float3(clamp(bri, 0.72, 1.16));
+            } else if (isBot) {
+                return float3(clamp(woodBri, 0.78, 1.12));
+            } else {
+                // Side: lid seam at ~70% of height (upper third = lid)
+                float localY = fract(worldPos.y);
+                float lidSeam = smoothstep(0.04, 0.0, abs(localY - 0.68));   // 1 = on seam
+                // Metal clasp: small rectangular bright patch at centre-bottom of lid band
+                float cx  = fract(uv.x);   // 0..1 across face
+                float cy  = localY;
+                float claspX = smoothstep(0.04, 0.0, abs(cx - 0.5));        // centred in X
+                float claspY = smoothstep(0.02, 0.0, abs(cy - 0.60));       // just below seam
+                float clasp  = claspX * claspY;
+                // Lid slightly brighter than body
+                float lidBri  = mix(woodBri, woodBri * 1.10, step(0.68, localY));
+                float bri     = lidBri * (1.0 - lidSeam * 0.40);
+                // Clasp is iron-grey: pull colour toward neutral brightness
+                float3 col    = float3(clamp(bri, 0.70, 1.16));
+                col           = mix(col, float3(0.88), clasp * 0.70);
+                return clamp(col, 0.70, 1.16);
+            }
+        }
+
+        // ---- TORCH (32) --------------------------------------------------------
+        // Rendered as a full block face; fake a stick + glowing tip.
+        // The stick occupies the bottom 70% (dark wood); the tip is the upper 30%
+        // with a bright warm glow halo.  Emissive, so the tip feeds bloom.
+        if (matID == 32u) {
+            float localY = fract(worldPos.y);
+            float2 cx    = fract(worldPos.xz) - 0.5;   // -0.5..0.5 within block
+            float  dist2 = dot(cx, cx);                  // distance^2 from block centre
+
+            // Stick: narrow dark column
+            float stickR   = 0.10;
+            float onStick  = smoothstep(stickR + 0.04, stickR, sqrt(dist2)) * step(localY, 0.70);
+            float stickGrain = noise2(float2(sqrt(dist2) * 6.0, localY * 8.0 + vH * 3.0));
+            float stickBri = mix(0.70, 0.95, stickGrain);
+
+            // Flame tip: bright warm blob in upper 30%, glowing halo around centre
+            float inTip   = smoothstep(0.75, 0.68, localY);
+            float flamePulse = noise2(float2(worldPos.x * 4.0, worldPos.z * 4.0));
+            float tipGlow = exp(-dist2 * 18.0) * (1.0 + flamePulse * 0.30);
+            float halo    = exp(-dist2 *  5.0) * 0.55;
+
+            // Combine: base is dark wood, glow tip overlaid
+            float3 col = float3(stickBri * onStick + 0.15);
+            col = mix(col, float3(1.6, 1.1, 0.4) * (tipGlow + halo), inTip * clamp(tipGlow + halo, 0.0, 1.0));
+            return clamp(col, 0.0, 2.5);   // allow HDR for the tip (emissive branch multiplies again)
+        }
+
+        // ---- OAK DOOR (33) -----------------------------------------------------
+        // Planked door look: two tall panels separated by a centre rail, a top rail
+        // and a bottom rail.  A round door handle on the right side near mid height.
+        // All faces share the same plank grain; door geometry is on the XY or ZY face.
+        if (matID == 33u) {
+            float grain = noise2(float2(uv.x * 4.0, uv.y * 1.2 + vH * 2.0)) * 0.55
+                        + noise2(float2(uv.x * 9.0,  uv.y * 2.8 + vH * 1.3)) * 0.45;
+            float woodBri = mix(0.84, 1.14, grain);
+
+            if (isSide) {
+                // The main visible face.  uv.x = horizontal across door, uv.y = vertical.
+                float lx = fract(uv.x);   // 0..1 across block width
+                float ly = fract(uv.y);   // 0..1 up the block
+
+                // Panel grooves: vertical centre rail + top/bottom rails
+                float centreRail = smoothstep(0.04, 0.0, abs(lx - 0.50));    // vertical seam
+                float topRail    = smoothstep(0.04, 0.0, abs(ly - 0.82));    // near top
+                float bottomRail = smoothstep(0.04, 0.0, abs(ly - 0.18));    // near bottom
+                float midRail    = smoothstep(0.04, 0.0, abs(ly - 0.50));    // horizontal mid
+                float rails      = max(max(centreRail, topRail), max(bottomRail, midRail));
+
+                // Panel recesses: slight darkening of the panel interior
+                float inPanel = (1.0 - centreRail) * (1.0 - topRail) * (1.0 - bottomRail) * (1.0 - midRail);
+                float panelShade = mix(1.0, 0.88, inPanel * 0.4);
+
+                // Round handle: small circle on right side at 55% height
+                float2 hctr = float2(lx - 0.75, ly - 0.55);
+                float hDist = length(hctr);
+                float handle = smoothstep(0.07, 0.04, hDist);
+                float handleRing = smoothstep(0.09, 0.07, hDist) * (1.0 - smoothstep(0.04, 0.03, hDist));
+
+                float bri = woodBri * panelShade * (1.0 - rails * 0.30);
+                float3 col = float3(clamp(bri, 0.72, 1.14));
+                // Handle is iron: grey-bright disc with a slightly darker ring
+                col = mix(col, float3(0.90, 0.88, 0.82), handle * 0.85);
+                col = mix(col, float3(0.55, 0.54, 0.52), handleRing * 0.70);
+                return clamp(col, 0.70, 1.15);
+            } else {
+                // Top/bottom of door: just wood grain, narrow (door is thin)
+                return float3(clamp(woodBri, 0.78, 1.12));
+            }
+        }
+
+        // ---- BEACON BLOCK (34) -------------------------------------------------
+        // A glowing energy core with concentric animated rings and crystalline
+        // facet lines.  Emissive (goes HDR); patterns modulate the brightness
+        // so the beacon pulses visually but still reads as a distinct shape.
+        if (matID == 34u) {
+            float2 ctr  = fract(worldPos.xz) - 0.5;   // -0.5..0.5 within block top/side
+            if (isTop || isBot) {
+                float r     = length(ctr);
+                // Concentric rings that animate (pretend T via vH for static version)
+                float rings  = sin(r * 22.0 - vH * 6.28) * 0.5 + 0.5;
+                // Radial spokes
+                float ang    = atan2(ctr.y, ctr.x);
+                float spokes = pow(abs(sin(ang * 6.0)) * 0.5 + 0.5, 2.0);
+                // Core glow
+                float core   = exp(-r * r * 28.0);
+                float bri    = mix(0.80, 1.30, rings * 0.60 + spokes * 0.40) + core * 0.50;
+                // Tint: aqua-white
+                return clamp(float3(bri * 0.92, bri, bri * 1.05), 0.0, 2.0);
+            } else {
+                // Side faces: horizontal energy bands + diagonal facets
+                float ly    = fract(worldPos.y);
+                float bands = sin(ly * 14.0) * 0.5 + 0.5;
+                float2 side2 = fract(uv) - 0.5;
+                float facets = voronoiCell(side2 + float2(vH * 2.0, 0.5), 3.0);
+                float bri   = mix(0.80, 1.30, bands * 0.50 + facets * 0.50);
+                return clamp(float3(bri * 0.90, bri, bri * 1.06), 0.0, 2.0);
+            }
+        }
+
+        // ---- CRYSTAL LAMP (35) -------------------------------------------------
+        // Glowing crystalline facets with a bright inner core. Each face shows
+        // Voronoi crystal cells with bright cell-centre highlights.
+        if (matID == 35u) {
+            float2 crystUV = uv + float2(vH * 1.3, vH * 0.7);
+            float  cell   = voronoiCell(crystUV, 4.5);
+            // Fine inner sparkle
+            float  sparkle = step(0.88, noise2(uv * 18.0 + float2(vH * 5.0, 2.3)));
+            // Gradient from edge (dim) to centre (bright) within each cell
+            float  bri    = mix(0.75, 1.45, cell) + sparkle * 0.20;
+            // Purple-white crystal tint
+            float3 col    = float3(bri * 0.95, bri * 0.88, bri * 1.10);
+            return clamp(col, 0.0, 2.0);
+        }
+
+        // ---- GLOW BLOCK (7) ----------------------------------------------------
+        // Warm amber luminous block: smooth but with subtle hexagonal cell pattern
+        // so it reads as a lamp tile rather than a flat coloured block.
+        if (matID == 7u) {
+            float  cell   = voronoiCell(uv + float2(vH * 1.1, vH * 0.8), 3.0);
+            float  grain  = noise2(uv * 8.0 + float2(vH * 2.0, 1.3)) * 0.25;
+            float  bri    = mix(0.85, 1.30, cell * 0.70 + grain * 0.30);
+            // Warm amber tint (yellow-orange)
+            float3 col    = float3(bri * 1.05, bri * 0.92, bri * 0.55);
+            return clamp(col, 0.0, 2.0);
+        }
+
+        // ---- COLOR CRYSTAL (40) ------------------------------------------------
+        // Bright magenta-violet faceted crystal with high-contrast Voronoi cells
+        // and angular shards. Emissive, so overbright values feed bloom.
+        if (matID == 40u) {
+            float2 shardUV = uv * float2(1.3, 0.9) + float2(vH * 0.9, vH * 1.4);
+            float2 vd      = voronoi2(shardUV * 4.2);
+            float  edge    = smoothstep(0.0, 0.18, vd.y - vd.x);   // 0=edge, 1=centre
+            float  sparkle = step(0.90, noise2(uv * 22.0 + float2(vH * 4.5, 1.7)));
+            float  bri     = mix(0.72, 1.50, edge) + sparkle * 0.30;
+            // Magenta-violet: high R and B, modest G
+            float3 col     = float3(bri * 1.05, bri * 0.60, bri * 1.10);
+            return clamp(col, 0.0, 2.2);
         }
 
         // ---- DEFAULT: gentle value noise for anything else --------------------

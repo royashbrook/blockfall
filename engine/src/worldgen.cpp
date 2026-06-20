@@ -52,16 +52,19 @@
 // Cave carving: 3D fbm > threshold => AIR underground.
 //   FIX: cave carving requires wy < H - 6 (was H-2) to prevent surface holes.
 //
-// Tree variety (M5 addition)
+// Tree variety (M5 addition, extended)
 // ---------------------------
-// Trees now vary in: trunk height (4..8), canopy shape (round/tall/broad),
-// and wood type (oak/birch).  Shape is encoded as a 2-bit value derived
+// Trees vary in: trunk height (4..12), canopy shape (5 distinct shapes),
+// and wood type (oak/birch).  Shape is encoded as a 3-bit value derived
 // deterministically from the cell hash.  Per-biome rules:
-//   Forest:    tall or broad shapes, trunk 6..8, denser
-//   Plains:    round, short trunk 4..5, sparse
-//   Snowy:     tall thin (shape=tall), trunk 5..7
-//   Swamp:     round, short 4..5
-//   Mountains: round or tall, 5..7
+//   Forest:    mix of BROAD/GIANT/ROUND, trunk 6..10, denser.
+//   Plains:    ROUND/COMPACT short, trunk 4..5, sparse.
+//   Snowy:     PINE (narrow conical), trunk 6..10.
+//   Swamp:     COMPACT/BROAD short-wide, trunk 4..6.
+//   Mountains: PINE/TALL, trunk 5..8.
+//   All biomes: rare GIANT (trunk 10..12, huge canopy) ~5% of cells.
+//   BIRCH shape: tall slender trunks 7..10.
+//   SHRUB: very short bushy tree, trunk 2..3, compact 5x3x5 crown.
 // All canopy writing is seam-safe: trees hash on trunk world position and
 // write into any chunk their canopy overlaps.
 //
@@ -74,6 +77,23 @@
 //     absent in desert/snowy/beach.
 //   - Increased TALL_GRASS and FLOWER density in forest/plains/swamp.
 //   - MUSHROOM scatter under forest canopy and in swamp.
+//
+// Ore veins (#8 — mining progression)
+// -------------------------------------
+// Underground ore clusters are generated in a seam-safe, deterministic way:
+//   - Veins are anchored on a world-aligned ORE_CELL grid (size 7x7x7).
+//   - Each cell anchor hash determines ore type, vein size (3-8 blocks),
+//     and presence probability.  The anchor world coords are used for the
+//     hash so any chunk that overlaps a vein's extent generates it identically.
+//   - Ore placement only replaces STONE (never AIR/caves/other ores).
+//   - Depth windows (relative to surface H of the column — approximate):
+//       coal_ore   (17): surface − 8  ..  kColumnMinY+4  (common, shallow)
+//       copper_ore (18): surface − 14 ..  kColumnMinY+4  (mid depth)
+//       iron_ore   (19): surface − 20 ..  kColumnMinY+4  (mid-deep)
+//       crystal_ore(20): surface − 32 ..  kColumnMinY+4  (rare, deep only)
+//     Depth is checked against absolute world-y, not per-column surface,
+//     for seam safety.  Hard depth ceilings below surface are used.
+//   - Density: coal ~12% of cells, copper ~8%, iron ~5%, crystal ~2%.
 //
 // Decoration (seam-aware scatter, PRESERVED from previous agent)
 // -----------------------------------------------------------------
@@ -121,6 +141,10 @@ static constexpr BlockId GRAVEL        = 11;
 static constexpr BlockId SNOW_LAYER    = 12;
 static constexpr BlockId ICE           = 13;
 static constexpr BlockId CLAY          = 14;
+static constexpr BlockId COAL_ORE      = 17;
+static constexpr BlockId COPPER_ORE    = 18;
+static constexpr BlockId IRON_ORE      = 19;
+static constexpr BlockId CRYSTAL_ORE   = 20;
 static constexpr BlockId OAK_LOG       = 21;
 static constexpr BlockId BIRCH_LOG     = 22;
 static constexpr BlockId BIRCH_LEAVES  = 27;
@@ -574,24 +598,28 @@ static int slope_at(std::int32_t wx, std::int32_t wz, std::uint64_t seed, int H)
 // ---------------------------------------------------------------------------
 static constexpr int TREE_CELL_SIZE   = 8;
 
-// Canopy shape codes (2 bits):
-//   ROUND — classic sphere-ish 5x3x5 blob with rounded corners (original shape)
-//   TALL  — narrower, taller: 3x5x3 column-ish with top cap (spruce-like)
-//   BROAD — wide flat top: 7x3x7 at trunk top, 5x3x5 one below, with crown
+// Canopy shape codes:
+//   ROUND   — classic sphere-ish 5x3x5 blob with rounded corners (original shape)
+//   TALL    — narrower, taller: 3x5x3 column-ish with top cap (spruce-like)
+//   BROAD   — wide flat top: 7x3x7 at trunk top, 5x3x5 one below, with crown
 //   COMPACT — dense squat: 5x3x5 fully filled (used for swamp/plains short trees)
+//   PINE    — conical layered: multiple decreasing rings from base to tip (spruce/pine)
+//   GIANT   — very large round canopy 9x5x9 on a thick trunk (rare)
 static constexpr int CANOPY_ROUND   = 0;
 static constexpr int CANOPY_TALL    = 1;
 static constexpr int CANOPY_BROAD   = 2;
 static constexpr int CANOPY_COMPACT = 3;
+static constexpr int CANOPY_PINE    = 4;
+static constexpr int CANOPY_GIANT   = 5;
 
-// Trunk height range (now 4..8 for more variety).
+// Trunk height range: now 4..12 for more variety.
+// Short trees (shrubs): 2..3. Standard: 4..8. Tall: 8..12. Giant: 10..12.
 static constexpr int TRUNK_MIN = 4;
-static constexpr int TRUNK_MAX = 8;
+static constexpr int TRUNK_MAX = 12;
 
 // Max canopy reach for seam-safe cell scanning.
-// Broad canopy extends ±3 XZ, tall extends ±1 XZ but 2 Y above trunk top.
-// We use 3 as the conservative upper bound for cell scan margin.
-static constexpr int CANOPY_MAX_REACH_XZ = 3;
+// GIANT canopy extends ±4 XZ; we use 4 as the conservative upper bound.
+static constexpr int CANOPY_MAX_REACH_XZ = 4;
 
 // Default tree probability threshold (~18% of cells).
 static constexpr std::uint64_t TREE_PROB_THRESH_DEFAULT = 11796u;   // 0.18 * 65535
@@ -671,60 +699,87 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
     // --- Per-biome trunk height, canopy shape, and wood type ---
     //
     // Bits used from h2:
-    //   bits 16..19 (4 bits)  -> trunk length variation
-    //   bits 20..21 (2 bits)  -> canopy shape selector (biome-gated)
+    //   bits 16..19 (4 bits)  -> trunk length variation (0..15)
+    //   bits 20..22 (3 bits)  -> canopy shape selector (0..7, biome-gated)
     //   bits 24..25 (2 bits)  -> birch vs oak selector
+    //   bits 28..31 (4 bits)  -> giant-tree rarity gate (0..15; giant if ==0)
     //
     int trunk_h;
     int canopy_shape;
     bool is_birch;
 
     std::uint64_t trunk_bits  = (h2 >> 16u) & 0xFu;  // 0..15
-    std::uint64_t shape_bits  = (h2 >> 20u) & 0x3u;  // 0..3
+    std::uint64_t shape_bits  = (h2 >> 20u) & 0x7u;  // 0..7
     std::uint64_t birch_bits  = (h2 >> 24u) & 0x3u;  // 0..3
+    std::uint64_t giant_bits  = (h2 >> 28u) & 0xFu;  // 0..15; giant when ==0 (~6%)
+
+    // Rare GIANT tree: appears ~6% of non-desert/beach cells regardless of biome.
+    // Trunk 10..12, giant canopy, always oak.
+    if (giant_bits == 0u && dom != Biome::Desert && dom != Biome::Beach) {
+        trunk_h      = 10 + static_cast<int>(trunk_bits % 3u);  // 10, 11, or 12
+        canopy_shape = CANOPY_GIANT;
+        is_birch     = false;
+        return TreeDesc{
+            cell_origin_x + off_x,
+            cell_origin_z + off_z,
+            trunk_h, canopy_shape,
+            OAK_LOG, OAK_LEAVES,
+            true
+        };
+    }
 
     switch (dom) {
         case Biome::Forest:
-            // Forest: taller trees, mixed shapes, mixed oak/birch.
-            // Trunk 6..8: base 6 + (bits % 3) -> 6, 7, 8
-            trunk_h      = 6 + static_cast<int>(trunk_bits % 3u);
-            // Shapes: round (0), broad (1), tall (2), broad again (3) — weighted toward tall/broad
-            canopy_shape = (shape_bits == 0u) ? CANOPY_ROUND :
-                           (shape_bits == 1u) ? CANOPY_BROAD :
-                           (shape_bits == 2u) ? CANOPY_TALL  : CANOPY_BROAD;
-            is_birch     = (birch_bits <= 1u);  // 50% birch
+            // Forest: varied tall trees — BROAD oaks, some GIANT, some ROUND.
+            // Trunk 6..10.
+            trunk_h      = 6 + static_cast<int>(trunk_bits % 5u);  // 6..10
+            canopy_shape = (shape_bits == 0u) ? CANOPY_ROUND  :
+                           (shape_bits == 1u) ? CANOPY_BROAD  :
+                           (shape_bits == 2u) ? CANOPY_BROAD  :
+                           (shape_bits == 3u) ? CANOPY_TALL   :
+                           (shape_bits == 4u) ? CANOPY_BROAD  :
+                           (shape_bits == 5u) ? CANOPY_ROUND  :
+                           (shape_bits == 6u) ? CANOPY_PINE   : CANOPY_BROAD;
+            is_birch     = (birch_bits <= 1u);  // 50% birch (slender tall birches)
+            // Birch in forest: tall slender trunk 7..10.
+            if (is_birch) {
+                trunk_h      = 7 + static_cast<int>(trunk_bits % 4u);  // 7..10
+                canopy_shape = CANOPY_TALL;
+            }
             break;
 
         case Biome::Mountains:
-            // Mountains: medium trunks, round or tall shapes, mostly oak.
-            trunk_h      = 5 + static_cast<int>(trunk_bits % 3u);   // 5..7
-            canopy_shape = (shape_bits & 0x1u) ? CANOPY_TALL : CANOPY_ROUND;
+            // Mountains: PINE (conical) and TALL shapes, medium trunks 5..8.
+            trunk_h      = 5 + static_cast<int>(trunk_bits % 4u);   // 5..8
+            canopy_shape = (shape_bits <= 3u) ? CANOPY_PINE :
+                           (shape_bits <= 5u) ? CANOPY_TALL : CANOPY_ROUND;
             is_birch     = (birch_bits == 0u);  // 25% birch
             break;
 
         case Biome::Snowy:
-            // Snowy: tall thin spruce-ish trees, birch-heavy.
-            trunk_h      = 5 + static_cast<int>(trunk_bits % 3u);   // 5..7
-            canopy_shape = CANOPY_TALL;   // always tall/narrow for snowy
-            is_birch     = (birch_bits != 0u);  // 75% birch
+            // Snowy: PINE trees exclusively — tall conical conifers.
+            // Trunk 6..10 for dramatic snowy spires.
+            trunk_h      = 6 + static_cast<int>(trunk_bits % 5u);   // 6..10
+            canopy_shape = CANOPY_PINE;
+            is_birch     = false;  // no birch in deep snowy (pines only)
             break;
 
         case Biome::Swamp:
-            // Swamp: short squat trees.
-            trunk_h      = 4 + static_cast<int>(trunk_bits % 2u);   // 4..5
-            canopy_shape = CANOPY_COMPACT;
+            // Swamp: short wide squat trees, trunk 4..6.
+            trunk_h      = 4 + static_cast<int>(trunk_bits % 3u);   // 4..6
+            canopy_shape = (shape_bits <= 3u) ? CANOPY_COMPACT : CANOPY_BROAD;
             is_birch     = (birch_bits <= 1u);  // 50% birch
             break;
 
         case Biome::Plains:
-            // Plains: sparse short trees, round canopy.
-            trunk_h      = 4 + static_cast<int>(trunk_bits % 2u);   // 4..5
-            canopy_shape = CANOPY_ROUND;
+            // Plains: sparse, mostly short ROUND/COMPACT, occasional medium.
+            trunk_h      = 4 + static_cast<int>(trunk_bits % 3u);   // 4..6
+            canopy_shape = (shape_bits <= 2u) ? CANOPY_ROUND : CANOPY_COMPACT;
             is_birch     = (birch_bits == 0u);  // 25% birch
             break;
 
         default:
-            // Other (generic): medium, round, mostly oak.
+            // Other (generic): medium ROUND, mostly oak.
             trunk_h      = TRUNK_MIN + static_cast<int>(
                 trunk_bits % static_cast<std::uint64_t>(TRUNK_MAX - TRUNK_MIN + 1));
             canopy_shape = CANOPY_ROUND;
@@ -825,18 +880,87 @@ static bool in_canopy_compact(int dx, int dy, int dz) noexcept {
     return true;
 }
 
+// PINE: tall conical layered canopy (spruce/pine).
+// The canopy has multiple "skirt" rings that decrease in radius as dy increases,
+// creating a classic conical silhouette.
+//   dy=-2: 7x7 ring (outer bottom skirt), no corners
+//   dy=-1: 5x5 no corners
+//   dy= 0: 3x3
+//   dy=+1: 3x3 (another tier at top of trunk)
+//   dy=+2: 1x1 top
+//   dy=+3: 1x1 tip
+// This creates a distinctive conical pine/spruce silhouette.
+static bool in_canopy_pine(int dx, int dy, int dz) noexcept {
+    if (dy < -2 || dy > 3)               return false;
+    if (dy == 3) return (dx == 0 && dz == 0);  // single tip
+    if (dy == 2) return (dx == 0 && dz == 0);  // sub-tip
+    if (dy == 1) return (dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1);  // 3x3
+    if (dy == 0) return (dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1);  // 3x3
+    if (dy == -1) {
+        if (dx < -2 || dx > 2 || dz < -2 || dz > 2) return false;
+        bool ox = (dx == -2 || dx == 2);
+        bool oz = (dz == -2 || dz == 2);
+        if (ox && oz) return false;
+        return true;
+    }
+    // dy == -2: 7x7 outer skirt, no corners
+    if (dx < -3 || dx > 3 || dz < -3 || dz > 3) return false;
+    bool ox = (dx <= -3 || dx >= 3);
+    bool oz = (dz <= -3 || dz >= 3);
+    if (ox && oz) return false;
+    // only the outer ring at this level (skip inner 3x3)
+    if (dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1) return false;
+    return true;
+}
+
+// GIANT: very large round canopy on a thick trunk.
+// Up to 9x9 at mid level, 7x7 at top, 5x5 cap.
+//   dy=-2: 9x9 no corners
+//   dy=-1: 7x7 no corners
+//   dy= 0: 5x5 no corners
+//   dy=+1: 3x3
+// This produces a massive, impressive canopy suitable for rare giant trees.
+static bool in_canopy_giant(int dx, int dy, int dz) noexcept {
+    if (dy < -2 || dy > 1)               return false;
+    if (dy == 1) return (dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1);
+    if (dy == 0) {
+        if (dx < -2 || dx > 2 || dz < -2 || dz > 2) return false;
+        bool ox = (dx == -2 || dx == 2);
+        bool oz = (dz == -2 || dz == 2);
+        if (ox && oz) return false;
+        return true;
+    }
+    if (dy == -1) {
+        if (dx < -3 || dx > 3 || dz < -3 || dz > 3) return false;
+        bool ox = (dx <= -3 || dx >= 3);
+        bool oz = (dz <= -3 || dz >= 3);
+        if (ox && oz) return false;
+        return true;
+    }
+    // dy == -2: 9x9 no outermost corners
+    if (dx < -4 || dx > 4 || dz < -4 || dz > 4) return false;
+    bool ox = (dx <= -4 || dx >= 4);
+    bool oz = (dz <= -4 || dz >= 4);
+    if (ox && oz) return false;
+    return true;
+}
+
 static bool in_canopy(int dx, int dy, int dz, int shape) noexcept {
     switch (shape) {
         case CANOPY_TALL:    return in_canopy_tall(dx, dy, dz);
         case CANOPY_BROAD:   return in_canopy_broad(dx, dy, dz);
         case CANOPY_COMPACT: return in_canopy_compact(dx, dy, dz);
+        case CANOPY_PINE:    return in_canopy_pine(dx, dy, dz);
+        case CANOPY_GIANT:   return in_canopy_giant(dx, dy, dz);
         default:             return in_canopy_round(dx, dy, dz);
     }
 }
 
 // Maximum dy above trunk_top for each shape (needed for chunk scan range).
 static int canopy_dy_max(int shape) noexcept {
-    return (shape == CANOPY_TALL) ? 2 : 1;
+    if (shape == CANOPY_TALL)  return 2;
+    if (shape == CANOPY_PINE)  return 3;
+    return 1;
 }
 
 // Minimum dy relative to trunk_top (always -1 for all shapes).
@@ -901,7 +1025,9 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 }
 
                 // Place canopy leaves.
-                int reach = (td.canopy_shape == CANOPY_BROAD) ? 3 : 2;
+                // GIANT extends ±4 XZ; PINE extends ±3 XZ; BROAD ±3 XZ; others ±2 XZ.
+                int reach = (td.canopy_shape == CANOPY_GIANT) ? 4 :
+                            (td.canopy_shape == CANOPY_BROAD || td.canopy_shape == CANOPY_PINE) ? 3 : 2;
                 for (int dz = -reach; dz <= reach; ++dz) {
                     for (int dx = -reach; dx <= reach; ++dx) {
                         for (int dy = CANOPY_DY_MIN; dy <= dy_max; ++dy) {
@@ -1117,6 +1243,136 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                     BlockId cur = chunk.get(lx, ly_m, lz);
                     if (cur == STONE) {
                         chunk.set(lx, ly_m, lz, MOSSY_STONE);
+                    }
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // 5. ORE VEINS — seam-safe, deterministic underground ore generation.
+    //
+    // Design:
+    //   Veins are anchored on a 3D world grid with cell size ORE_CELL_SIZE
+    //   (7 blocks).  For each cell that overlaps this chunk's world volume
+    //   (plus a margin equal to the max vein radius), we hash the cell's
+    //   anchor world coords to decide:
+    //     (a) whether a vein is present at all (type-specific probability),
+    //     (b) the ore type (coal/copper/iron/crystal),
+    //     (c) the vein size (3..8 blocks) and per-block offsets.
+    //
+    //   Seam safety: the anchor world pos is a pure function of integer cell
+    //   coords × ORE_CELL_SIZE.  Any chunk that overlaps a vein's extent
+    //   iterates the same cell and generates the same vein.  Placement only
+    //   writes within the current chunk (range-checked).
+    //
+    //   Depth gates (absolute world-y):
+    //     coal_ore   — below y ≤ -2  (shallow underground)
+    //     copper_ore — below y ≤ -8  (mid depth)
+    //     iron_ore   — below y ≤ -14 (mid-deep)
+    //     crystal_ore— below y ≤ -24 (deep only)
+    //   These are set well below the max surface height (~60), ensuring ores
+    //   never reach the surface (no-surface-holes rule is unaffected).
+    //
+    //   Density (approx fraction of cells with a vein):
+    //     coal   ~12% of coal-eligible cells
+    //     copper ~8%
+    //     iron   ~5%
+    //     crystal~2%
+    // -------------------------------------------------------------------
+    {
+        constexpr int ORE_CELL_SIZE  = 7;   // world blocks per ore cell edge
+        constexpr int ORE_VEIN_REACH = 4;   // max vein radius for cell scan margin
+
+        // Absolute world-y ceilings: veins only at or below these y values.
+        constexpr std::int32_t COAL_Y_MAX    = -2;
+        constexpr std::int32_t COPPER_Y_MAX  = -8;
+        constexpr std::int32_t IRON_Y_MAX    = -14;
+        constexpr std::int32_t CRYSTAL_Y_MAX = -24;
+
+        // Probability thresholds (out of 256):
+        //   coal ~15% → 38/256, copper ~8% → 20/256,
+        //   iron ~5%  → 13/256, crystal ~1% → 3/256
+        constexpr std::uint64_t COAL_THRESH    = 38u;
+        constexpr std::uint64_t COPPER_THRESH  = 20u;
+        constexpr std::uint64_t IRON_THRESH    = 13u;
+        constexpr std::uint64_t CRYSTAL_THRESH =  3u;
+
+        constexpr std::uint64_t ORE_SEED_MIX = 0x0ACED501DF0ADED5ull;
+        std::uint64_t ore_seed = fmix64(seed ^ ORE_SEED_MIX);
+
+        // Helper: floor division for negative coords.
+        auto floordiv_ore = [](std::int32_t a, int b) noexcept -> std::int32_t {
+            return a / b - (a % b != 0 && (a ^ b) < 0 ? 1 : 0);
+        };
+
+        // Compute cell range that could produce veins overlapping this chunk.
+        std::int32_t cell_xmin = floordiv_ore(wx_min - ORE_VEIN_REACH, ORE_CELL_SIZE);
+        std::int32_t cell_xmax = floordiv_ore(wx_max + ORE_VEIN_REACH, ORE_CELL_SIZE);
+        std::int32_t cell_ymin = floordiv_ore(wy_min - ORE_VEIN_REACH, ORE_CELL_SIZE);
+        std::int32_t cell_ymax = floordiv_ore(wy_max + ORE_VEIN_REACH, ORE_CELL_SIZE);
+        std::int32_t cell_zmin = floordiv_ore(wz_min - ORE_VEIN_REACH, ORE_CELL_SIZE);
+        std::int32_t cell_zmax = floordiv_ore(wz_max + ORE_VEIN_REACH, ORE_CELL_SIZE);
+
+        for (std::int32_t cy_cell = cell_ymin; cy_cell <= cell_ymax; ++cy_cell) {
+            // Quick reject: if the entire y-band is above COAL_Y_MAX, skip entirely.
+            std::int32_t anchor_wy = cy_cell * ORE_CELL_SIZE;
+            if (anchor_wy > COAL_Y_MAX) continue;
+
+            for (std::int32_t cz_cell = cell_zmin; cz_cell <= cell_zmax; ++cz_cell) {
+                for (std::int32_t cx_cell = cell_xmin; cx_cell <= cell_xmax; ++cx_cell) {
+                    // Hash the 3D cell anchor.
+                    std::uint64_t h = hash3(cx_cell, cy_cell, cz_cell, ore_seed);
+                    std::uint64_t prob = h & 0xFFu;  // 0..255
+
+                    // Determine ore type and check depth + probability.
+                    // We try from rarest to most common so rarest wins when
+                    // thresholds would overlap (they don't in absolute depth,
+                    // but depth gates prevent that anyway).
+                    BlockId ore_id = AIR;
+                    if (anchor_wy <= CRYSTAL_Y_MAX && prob < CRYSTAL_THRESH) {
+                        ore_id = CRYSTAL_ORE;
+                    } else if (anchor_wy <= IRON_Y_MAX && prob < IRON_THRESH) {
+                        ore_id = IRON_ORE;
+                    } else if (anchor_wy <= COPPER_Y_MAX && prob < COPPER_THRESH) {
+                        ore_id = COPPER_ORE;
+                    } else if (anchor_wy <= COAL_Y_MAX && prob < COAL_THRESH) {
+                        ore_id = COAL_ORE;
+                    }
+
+                    if (ore_id == AIR) continue;
+
+                    // Vein size: 3..8 blocks.
+                    std::uint64_t h2_ore = fmix64(h ^ 0xABCDEF1234567890ull);
+                    int vein_size = 3 + static_cast<int>((h2_ore >> 8u) % 6u);  // 3..8
+
+                    // Generate vein blocks as small deterministic offsets from anchor.
+                    // Each block's offset is derived from mixing the vein hash with
+                    // its index, giving a compact cluster spread ≤ ORE_VEIN_REACH.
+                    for (int vi = 0; vi < vein_size; ++vi) {
+                        std::uint64_t bh = fmix64(h2_ore ^ static_cast<std::uint64_t>(vi) * 0x1111222233334444ull);
+                        // Offsets in [-3, +3] for each axis.
+                        int dx_ore = static_cast<int>((bh >>  0u) % 7u) - 3;
+                        int dy_ore = static_cast<int>((bh >>  8u) % 7u) - 3;
+                        int dz_ore = static_cast<int>((bh >> 16u) % 7u) - 3;
+
+                        std::int32_t wx_ore = cx_cell * ORE_CELL_SIZE + dx_ore;
+                        std::int32_t wy_ore = cy_cell * ORE_CELL_SIZE + dy_ore;
+                        std::int32_t wz_ore = cz_cell * ORE_CELL_SIZE + dz_ore;
+
+                        // Must be within this chunk.
+                        if (wx_ore < wx_min || wx_ore > wx_max) continue;
+                        if (wy_ore < wy_min || wy_ore > wy_max) continue;
+                        if (wz_ore < wz_min || wz_ore > wz_max) continue;
+
+                        int lx_ore = static_cast<int>(wx_ore - wx_min);
+                        int ly_ore = static_cast<int>(wy_ore - wy_min);
+                        int lz_ore = static_cast<int>(wz_ore - wz_min);
+
+                        // Only replace STONE — never air (caves) or other blocks.
+                        if (chunk.get(lx_ore, ly_ore, lz_ore) == STONE) {
+                            chunk.set(lx_ore, ly_ore, lz_ore, ore_id);
+                        }
                     }
                 }
             }

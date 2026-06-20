@@ -181,11 +181,14 @@ bool ContentRegistry::load(const std::string& content_dir) {
                     obj.contains("max_stack") ? obj.get("max_stack")->as_int() : 64);
                 def.tool_tier  = 0;
                 def.tool_kind  = 0;
+                def.tool_durability = 0;
                 if (const auto* tool = obj.get("tool"); tool && tool->is_object()) {
                     if (const auto* tier = tool->get("tier"))
                         def.tool_tier = static_cast<std::uint8_t>(tier->as_int());
                     if (const auto* kind = tool->get("kind"))
                         def.tool_kind = tool_kind_encode(kind->as_string());
+                    if (const auto* dur = tool->get("durability"))
+                        def.tool_durability = static_cast<std::uint16_t>(dur->as_int());
                 }
                 def.places_block = 0; // resolved in cross-ref pass
 

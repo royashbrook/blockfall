@@ -4,62 +4,107 @@
     "name": "wood_pickaxe",
     "display_name": "Wooden Pickaxe",
     "max_stack": 1,
-    "tool": { "kind": "pickaxe", "tier": 1, "durability": 60, "mine_speed": 2.0 }
+    "tool": {
+      "kind": "pickaxe",
+      "tier": 1,
+      "durability": 300,
+      "mine_speed": 2.0
+    }
   },
   {
     "id": 71,
     "name": "wood_axe",
     "display_name": "Wooden Axe",
     "max_stack": 1,
-    "tool": { "kind": "axe", "tier": 1, "durability": 60, "mine_speed": 2.0 }
+    "tool": {
+      "kind": "axe",
+      "tier": 1,
+      "durability": 300,
+      "mine_speed": 2.0
+    }
   },
   {
     "id": 72,
     "name": "wood_shovel",
     "display_name": "Wooden Shovel",
     "max_stack": 1,
-    "tool": { "kind": "shovel", "tier": 1, "durability": 60, "mine_speed": 2.0 }
+    "tool": {
+      "kind": "shovel",
+      "tier": 1,
+      "durability": 300,
+      "mine_speed": 2.0
+    }
   },
   {
     "id": 73,
     "name": "stone_pickaxe",
     "display_name": "Stone Pickaxe",
     "max_stack": 1,
-    "tool": { "kind": "pickaxe", "tier": 2, "durability": 132, "mine_speed": 4.0 }
+    "tool": {
+      "kind": "pickaxe",
+      "tier": 2,
+      "durability": 700,
+      "mine_speed": 4.0
+    }
   },
   {
     "id": 74,
     "name": "stone_axe",
     "display_name": "Stone Axe",
     "max_stack": 1,
-    "tool": { "kind": "axe", "tier": 2, "durability": 132, "mine_speed": 4.0 }
+    "tool": {
+      "kind": "axe",
+      "tier": 2,
+      "durability": 700,
+      "mine_speed": 4.0
+    }
   },
   {
     "id": 75,
     "name": "stone_shovel",
     "display_name": "Stone Shovel",
     "max_stack": 1,
-    "tool": { "kind": "shovel", "tier": 2, "durability": 132, "mine_speed": 4.0 }
+    "tool": {
+      "kind": "shovel",
+      "tier": 2,
+      "durability": 700,
+      "mine_speed": 4.0
+    }
   },
   {
     "id": 76,
     "name": "iron_pickaxe",
     "display_name": "Iron Pickaxe",
     "max_stack": 1,
-    "tool": { "kind": "pickaxe", "tier": 3, "durability": 251, "mine_speed": 6.0 }
+    "tool": {
+      "kind": "pickaxe",
+      "tier": 3,
+      "durability": 1800,
+      "mine_speed": 6.0
+    }
   },
   {
     "id": 77,
     "name": "iron_axe",
     "display_name": "Iron Axe",
     "max_stack": 1,
-    "tool": { "kind": "axe", "tier": 3, "durability": 251, "mine_speed": 6.0 }
+    "tool": {
+      "kind": "axe",
+      "tier": 3,
+      "durability": 1800,
+      "mine_speed": 6.0
+    }
   },
   {
     "id": 78,
     "name": "iron_shovel",
     "display_name": "Iron Shovel",
     "max_stack": 1,
-    "tool": { "kind": "shovel", "tier": 3, "durability": 251, "mine_speed": 6.0 }
+    "tool": {
+      "kind": "shovel",
+      "tier": 3,
+      "durability": 1800,
+      "mine_speed": 6.0
+    }
   }
 ]

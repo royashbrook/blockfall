@@ -331,6 +331,7 @@ public:
         // Combat timers + slow health regeneration (kid-friendly: you bounce back).
         if (hurt_cd_  > 0) hurt_cd_  -= float(dt);
         if (regen_cd_ > 0) regen_cd_ -= float(dt);
+        if (ach_toast_timer_ > 0) ach_toast_timer_ -= float(dt);
         else if (health_ < 20.0f) health_ = std::min(20.0f, health_ + 1.2f * float(dt));
         // Oxygen / drowning: a submerged head drains air over ~16 s; once it's
         // empty you take steady drowning damage until you surface.
@@ -398,6 +399,7 @@ public:
             mine_progress_ += float(dt) / break_time(block_at(target_));
             if (mine_progress_ >= 1.0f) {
                 break_block(target_);
+                damage_held_tool();                 // tools wear out as you mine
                 mine_progress_ = 0.0f; raycast_target();
             }
         } else mine_progress_ = 0.0f;
@@ -660,8 +662,10 @@ private:
         if (idx < 0) { if (!cr.empty()) idx = 0; else return; }
         if (std::size_t(idx) >= cr.size()) return;
         const RecipeEntry& r = content_->recipe(cr[std::size_t(idx)]);
-        if (craft_->commit(*inv_, std::span<const ItemId>(r.pattern.data(), r.pattern.size()), r.grid_size))
+        if (craft_->commit(*inv_, std::span<const ItemId>(r.pattern.data(), r.pattern.size()), r.grid_size)) {
             fx(4, player_voxel());
+            notify_quest("craft", item_name(r.result_item));
+        }
     }
 
     // ---- quest engine (Track J, M5) ---------------------------------------
@@ -703,7 +707,36 @@ private:
             if (obj_progress_[i] < q.objectives[i].count) return false;
         return true;
     }
+    // ---- Achievements: small early-game goals that guide what to do next ----
+    struct Achievement { const char* trig; const char* target; int count; const char* title; };
+    static constexpr Achievement kAchievements[] = {
+        {"collect_item", "oak_log",  1,  "First Wood!"},
+        {"mine_block",   "oak_log",  3,  "Timber!"},
+        {"collect_item", "dirt",     16, "Dirt Collector"},
+        {"mine_block",   "stone",    1,  "Stone Age"},
+        {"craft",        "",         1,  "Crafty"},
+        {"mine_block",   "coal_ore", 1,  "Coal Miner"},
+        {"mine_block",   "iron_ore", 1,  "Iron Prospector"},
+        {"place_block",  "",         10, "Builder"},
+        {"collect_item", "mushroom", 1,  "Forager"},
+        {"place_block",  "crafting_table", 1, "Workbench Ready"},
+    };
+    static constexpr int kAchievementCount = int(sizeof(kAchievements) / sizeof(kAchievements[0]));
+    void check_achievements(const std::string& trig, const std::string& target) {
+        for (int i = 0; i < kAchievementCount; ++i) {
+            const Achievement& a = kAchievements[i];
+            if (ach_done_[std::size_t(i)] || trig != a.trig) continue;
+            if (a.target[0] != '\0' && target != a.target) continue;
+            if (++ach_progress_[std::size_t(i)] >= a.count) {
+                ach_done_[std::size_t(i)] = true; ++ach_done_count_;
+                ach_toast_ = std::string("Achievement: ") + a.title;
+                ach_toast_timer_ = 4.0f;
+                fx(6, player_voxel());
+            }
+        }
+    }
     void notify_quest(const std::string& trig, const std::string& target) {
+        check_achievements(trig, target);
         if (!extra_ || active_quest_ >= extra_->quests().size()) return;
         const QuestDefX& q = extra_->quests()[active_quest_];
         if (obj_progress_.size() != q.objectives.size()) return;
@@ -850,6 +883,19 @@ private:
         fx(7, player_voxel());                           // pickup chime
     }
 
+    // Wear down the held tool by one use; it breaks at 0. Durability initializes
+    // lazily from the item def (0xFFFF on a fresh stack = full).
+    void damage_held_tool() {
+        if (!inv_ || !items_) return;
+        ItemStack sel = inv_->get(selected_);
+        if (sel.item == 0) return;
+        const ItemDef* it = items_->by_id(sel.item);
+        if (!it || it->tool_durability == 0) return;     // not a breakable tool
+        std::uint16_t dur = (sel.durability == 0xFFFF) ? it->tool_durability : sel.durability;
+        if (dur > 0) --dur;
+        if (dur == 0) { inv_->set(std::size_t(selected_), ItemStack{}); fx(0, target_, 0); } // snap!
+        else { sel.durability = dur; inv_->set(std::size_t(selected_), sel); }
+    }
     void hurt_player(float dmg) {
         if (hurt_cd_ > 0.0f) return;
         health_ = std::max(0.0f, health_ - dmg);
@@ -976,10 +1022,10 @@ private:
         // so a big canopy doesn't spawn hundreds of debris at once (lag spike).
         int leaf_bursts = 0, leaves_removed = 0;
         for (IVec3 lw : logs) {
-            if (leaves_removed >= 40) break;             // cap blocks changed → smaller remesh
-            for (int dx = -2; dx <= 2; ++dx)
-            for (int dy = -1; dy <= 2; ++dy)
-            for (int dz = -2; dz <= 2; ++dz) {
+            if (leaves_removed >= 160) break;            // cap blocks changed → bounded remesh
+            for (int dx = -3; dx <= 3; ++dx)             // ±3 catches broad/tall canopies
+            for (int dy = -1; dy <= 4; ++dy)
+            for (int dz = -3; dz <= 3; ++dz) {
                 IVec3 n{lw.x + dx, lw.y + dy, lw.z + dz};
                 BlockId lf = block_at(n);
                 if (!is_leaf(lf)) continue;
@@ -1067,9 +1113,11 @@ private:
             V3 dir{std::sin(c.yaw), 0, std::cos(c.yaw)};
             V3 next = c.pos + dir * (c.speed * dt);
             IVec3 nv{ifloor(next.x), ifloor(next.y), ifloor(next.z)};
-            if (block_at(nv) == AIR) {
+            // Use collide_solid so creatures walk THROUGH grass/flowers/mushrooms
+            // (and water) instead of bumping into them like walls.
+            if (!collide_solid(nv.x, nv.y, nv.z)) {
                 c.pos.x = next.x; c.pos.z = next.z;                       // clear path
-            } else if (block_at(IVec3{nv.x, nv.y + 1, nv.z}) == AIR) {
+            } else if (!collide_solid(nv.x, nv.y + 1, nv.z)) {
                 c.pos.x = next.x; c.pos.z = next.z; c.pos.y += 1.0f;      // step up a 1-block ledge
             } else {
                 c.yaw += 2.4f; c.wander = 0.5f;                          // turn away from a wall
@@ -1304,6 +1352,10 @@ private:
         h.target_block = bf_ivec3{target_.x, target_.y, target_.z};
         h.mine_progress = mine_progress_;
         h.oxygen = oxygen_;
+        h.achievements_done  = std::uint8_t(ach_done_count_);
+        h.achievements_total = std::uint8_t(kAchievementCount);
+        if (ach_toast_timer_ > 0.0f)
+            std::strncpy(h.achievement_toast, ach_toast_.c_str(), sizeof(h.achievement_toast) - 1);
         // Look-at name: a creature under the crosshair takes priority, else the
         // targeted block. Drives the "what am I looking at" label.
         h.look_name[0] = '\0';
@@ -1381,6 +1433,12 @@ private:
     std::vector<std::uint32_t>    obj_progress_;
     bool                          all_quests_done_{false};
     int                           quests_completed_{0};
+    // Achievements
+    int                           ach_progress_[kAchievementCount] = {};
+    bool                          ach_done_[kAchievementCount] = {};
+    int                           ach_done_count_{0};
+    std::string                   ach_toast_;
+    float                         ach_toast_timer_{0.0f};
 
     // Co-op (Track H).
     std::function<void(IVec3, BlockId)> edit_cb_;
