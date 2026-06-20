@@ -17,6 +17,7 @@
 #include "blockcore/mathx.hpp"
 #include "blockcore/lighting.hpp"
 #include "blockcore/content.hpp"
+#include "blockcore/content_extra.hpp"
 #include "blockcore/inventory.hpp"
 #include "blockcore/crafting.hpp"
 #include "blockcore_interfaces.hpp"
@@ -40,25 +41,20 @@ enum M1Block : BlockId {
     SAND = 6, GLOW = 7, BRICK = 8, WATER = 9
 };
 
-// Passive animals (M3). Original, bright, non-scary. (Content-driven creature
-// loading is a later refinement; M3 uses this small table.)
-struct CreatureType { V3 color; float speed; float scale; };
-inline const CreatureType& creature_type(unsigned k) {
-    static const CreatureType kinds[] = {
-        {{0.95f, 0.85f, 0.55f}, 1.6f, 0.8f},   // 0 fluffy meadow-hopper
-        {{0.70f, 0.85f, 0.95f}, 2.2f, 0.7f},   // 1 sky-tufted skipper
-        {{0.85f, 0.55f, 0.85f}, 1.3f, 0.9f},   // 2 mossy plodder
-        {{0.55f, 0.90f, 0.65f}, 1.9f, 0.75f},  // 3 leafback
-    };
-    return kinds[k % 4];
-}
+// Animals + bosses (M3/M5). Original, bright, non-scary. Render/sim params are
+// carried per-creature so the roster is content-driven (Track J).
 struct Creature {
     V3    pos{};
     float yaw{0};
-    float vy{0};       // vertical velocity (gravity)
-    unsigned kind{0};
-    float wander{0};
+    float vy{0};            // vertical velocity (gravity)
+    V3    color{0.9f, 0.8f, 0.5f};
+    float scale{0.8f};
+    float speed{1.6f};
+    int   hp{3};            // calm hits remaining (bosses take more)
+    bool  is_boss{false};
     bool  friendly{false};
+    float wander{0};
+    std::string name;       // content creature name (quest befriend target)
 };
 
 struct MeshRec {
@@ -98,6 +94,7 @@ public:
     // replicate it. Remote edits (applied via apply_remote_edit) do NOT fire it.
     void set_edit_callback(std::function<void(IVec3, BlockId)> cb) { edit_cb_ = std::move(cb); }
     void apply_remote_edit(IVec3 w, BlockId b) { set_block_internal(w, b, /*from_remote=*/true); }
+    void set_extra(const ContentExtra* x) { extra_ = x; }
     void get_player(float& x, float& y, float& z, float& yaw) const {
         x = pos_.x; y = pos_.y; z = pos_.z; yaw = yaw_;
     }
@@ -163,6 +160,8 @@ public:
         recompute_stream_set();
         creatures_.clear();
         creatures_spawned_ = false;                     // spawn once the area streams in
+        all_quests_done_ = false; quests_completed_ = 0; regions_restored_ = 0;
+        start_quest(0);
     }
 
     // ---- M2: disk save/load ----------------------------------------------
@@ -271,6 +270,7 @@ public:
         first_stream_ = true;
         creatures_.clear();
         creatures_spawned_ = false;
+        start_quest(0);
         recompute_stream_set();
         return true;
     }
@@ -320,11 +320,12 @@ public:
             mine_progress_ += float(dt) / break_time(block_at(target_));
             if (mine_progress_ >= 1.0f) {
                 BlockId broken = block_at(target_);
+                notify_quest("mine_block", block_name(broken));
                 // Survival: the block drops an item into the inventory.
                 if (mode_ == BF_MODE_SURVIVAL && inv_ && blocks_) {
                     const BlockDef* bd = blocks_->by_id(broken);
                     ItemId drop = bd ? bd->drop_item : ItemId(0);
-                    if (drop) inv_->add(ItemStack{drop, 1, 0xFFFF});
+                    if (drop) { inv_->add(ItemStack{drop, 1, 0xFFFF}); notify_quest("collect_item", item_name(drop)); }
                 }
                 set_block_internal(target_, AIR);
                 mine_progress_ = 0.0f; raycast_target();
@@ -353,9 +354,11 @@ public:
                 if (pb == 0) break;                    // not a placeable item
                 if (mode_ == BF_MODE_SURVIVAL && !inv_->remove_item(sel.item, 1)) break;
                 set_block_internal(place_, pb);
+                notify_quest("place_block", block_name(pb));
                 if (pb == glow_id_) {
+                    notify_quest("light_beacon", "");
                     ChunkCoord rc = to_chunk(place_);
-                    if (region_sat(rc) < 0.99f) ++regions_restored_;   // brought a Dim region back
+                    if (region_sat(rc) < 0.99f) { ++regions_restored_; notify_quest("restore_region", ""); }
                     restore_region(rc);
                 }
                 break;
@@ -365,12 +368,23 @@ public:
             case BF_ACT_INV_CLOSE:  inv_open_ = false; break;
             case BF_ACT_ATTACK: {                  // calm -> puff away (no death)
                 int idx = creature_in_view();
-                if (idx >= 0) { creatures_.erase(creatures_.begin() + std::ptrdiff_t(idx)); ++creatures_calmed_; }
+                if (idx >= 0) {
+                    Creature& cr = creatures_[std::size_t(idx)];
+                    if (--cr.hp <= 0) {
+                        bool boss = cr.is_boss; std::string nm = cr.name;
+                        creatures_.erase(creatures_.begin() + std::ptrdiff_t(idx));
+                        ++creatures_calmed_;
+                        notify_quest(boss ? "calm_boss" : "befriend_creature", nm);
+                    }
+                }
                 break;
             }
             case BF_ACT_INTERACT: {                // befriend
                 int idx = creature_in_view();
-                if (idx >= 0) { creatures_[std::size_t(idx)].friendly = true; ++creatures_befriended_; }
+                if (idx >= 0) {
+                    creatures_[std::size_t(idx)].friendly = true; ++creatures_befriended_;
+                    notify_quest("befriend_creature", creatures_[std::size_t(idx)].name);
+                }
                 break;
             }
             case BF_ACT_HOTBAR_SELECT:
@@ -420,14 +434,13 @@ public:
         // Creatures (ABI v2 entity draws).
         entities_.clear();
         for (auto& cr : creatures_) {
-            const CreatureType& ct = creature_type(cr.kind);
-            V3 col = cr.friendly ? V3{1.0f, 0.92f, 0.55f} : ct.color;
+            V3 col = cr.friendly ? V3{1.0f, 0.92f, 0.55f} : cr.color;
             bf_entity_draw e{};
             e.position = bf_vec3{cr.pos.x, cr.pos.y, cr.pos.z};
             e.yaw = cr.yaw;
             e.color = bf_vec3{col.x, col.y, col.z};
-            e.scale = ct.scale;
-            e.kind = cr.kind;
+            e.scale = cr.scale;
+            e.kind = cr.is_boss ? 1u : 0u;
             e.sat = region_sat(to_chunk(IVec3{ifloor(cr.pos.x), ifloor(cr.pos.y), ifloor(cr.pos.z)}));
             entities_.push_back(e);
         }
@@ -458,6 +471,12 @@ public:
         if (inv_) for (int i = 0; i < BF_INVENTORY_SLOTS; ++i) inv_->set(std::size_t(i), ItemStack{});
     }
     int     debug_creature_count() const { return int(creatures_.size()); }
+    int     debug_quests_completed() const { return quests_completed_; }
+    std::uint32_t debug_active_quest() const {
+        return (extra_ && active_quest_ < extra_->quests().size() && !all_quests_done_)
+             ? extra_->quests()[active_quest_].id : 0u;
+    }
+    void    debug_notify(const char* trig, const char* target) { notify_quest(trig, target); }
     bool    debug_aim_at_creature0() {
         if (creatures_.empty()) return false;
         V3 d = normalize((creatures_[0].pos + V3{0, 0.5f, 0}) - pos_);
@@ -499,6 +518,45 @@ private:
         }
     }
 
+    // ---- quest engine (Track J, M5) ---------------------------------------
+    std::string block_name(BlockId b) const {
+        const BlockDef* d = blocks_ ? blocks_->by_id(b) : nullptr; return d ? std::string(d->name) : std::string();
+    }
+    std::string item_name(ItemId i) const {
+        const ItemDef* d = items_ ? items_->by_id(i) : nullptr; return d ? std::string(d->name) : std::string();
+    }
+    void start_quest(std::size_t i) {
+        active_quest_ = i; obj_progress_.clear();
+        if (extra_ && i < extra_->quests().size())
+            obj_progress_.assign(extra_->quests()[i].objectives.size(), 0u);
+    }
+    bool quest_done(const QuestDefX& q) const {
+        for (std::size_t i = 0; i < q.objectives.size(); ++i)
+            if (obj_progress_[i] < q.objectives[i].count) return false;
+        return true;
+    }
+    void notify_quest(const std::string& trig, const std::string& target) {
+        if (!extra_ || active_quest_ >= extra_->quests().size()) return;
+        const QuestDefX& q = extra_->quests()[active_quest_];
+        if (obj_progress_.size() != q.objectives.size()) return;
+        bool changed = false;
+        for (std::size_t i = 0; i < q.objectives.size(); ++i) {
+            const auto& o = q.objectives[i];
+            if (o.trigger == trig && (o.target.empty() || o.target == target) && obj_progress_[i] < o.count) {
+                ++obj_progress_[i]; changed = true;
+            }
+        }
+        if (changed && quest_done(q)) {
+            if (inv_) for (auto& [item, cnt] : q.rewards) {
+                ItemId id = item_id_by_name(item.c_str());
+                if (id) inv_->add(ItemStack{id, std::uint16_t(cnt), 0xFFFF});
+            }
+            ++quests_completed_;
+            if (active_quest_ + 1 < extra_->quests().size()) start_quest(active_quest_ + 1);
+            else all_quests_done_ = true;
+        }
+    }
+
     // ---- creatures (Track G, M3) ------------------------------------------
     float rand01() { rng_ = rng_ * 1664525u + 1013904223u; return float(rng_ >> 8) / 16777216.0f; }
 
@@ -512,21 +570,56 @@ private:
         return kNoFloor;
     }
 
+    static V3 hue_rgb(float h) {
+        auto cl = [](float x) { return x < 0 ? 0.f : (x > 1 ? 1.f : x); };
+        float r = std::fabs(std::fmod(h * 6 + 0, 6.f) - 3) - 1;
+        float g = std::fabs(std::fmod(h * 6 + 4, 6.f) - 3) - 1;
+        float b = std::fabs(std::fmod(h * 6 + 2, 6.f) - 3) - 1;
+        return V3{0.45f + 0.5f * cl(r), 0.45f + 0.5f * cl(g), 0.45f + 0.5f * cl(b)};
+    }
+    static V3 color_for(const std::string& disp, std::uint16_t id) {
+        float h = std::fmod(float(id) * 0.6180339f, 1.0f);
+        if (disp == "night_gentle") h = 0.55f + 0.18f * h;     // cool blues/purples
+        else if (disp == "boss")    h = 0.05f + 0.08f * h;     // warm, non-scary
+        return hue_rgb(h);
+    }
+    Creature make_creature(float rmin, float rmax) {
+        float ang = rand01() * 6.2831853f, r = rmin + rand01() * (rmax - rmin);
+        float cx = pos_.x + std::cos(ang) * r, cz = pos_.z + std::sin(ang) * r;
+        int gy = floor_below(ifloor(cx), int(pos_.y) + 30, ifloor(cz));
+        Creature c;
+        c.pos = V3{cx, (gy == kNoFloor) ? pos_.y : float(gy), cz};
+        c.yaw = rand01() * 6.2831853f;
+        c.wander = 1.0f + rand01() * 2.0f;
+        return c;
+    }
     void spawn_creatures() {
         creatures_.clear();
-        for (int i = 0; i < 8; ++i) {
-            float ang = rand01() * 6.2831853f;
-            float r = 3.0f + rand01() * 7.0f;          // close enough to see + meet
-            float cx = pos_.x + std::cos(ang) * r;
-            float cz = pos_.z + std::sin(ang) * r;
-            // Chunks are resident now; find the surface near the player's level.
-            int gy = floor_below(ifloor(cx), int(pos_.y) + 30, ifloor(cz));
-            Creature c;
-            c.pos = V3{cx, (gy == kNoFloor) ? pos_.y : float(gy), cz};
-            c.kind = unsigned(rand01() * 4.0f);
-            c.yaw = rand01() * 6.2831853f;
-            c.wander = 1.0f + rand01() * 2.0f;
-            creatures_.push_back(c);
+        if (extra_ && !extra_->creatures().empty()) {
+            std::vector<const CreatureDefX*> ambient, bosses;
+            for (auto& d : extra_->creatures())
+                (d.disposition == "boss" ? bosses : ambient).push_back(&d);
+            for (int i = 0; i < 9 && !ambient.empty(); ++i) {
+                const CreatureDefX* d = ambient[std::size_t(rand01() * float(ambient.size())) % ambient.size()];
+                Creature c = make_creature(3, 12);
+                c.name = std::string(d->name); c.speed = d->move_speed; c.scale = 0.8f;
+                c.color = color_for(d->disposition, d->id); c.hp = 1; c.is_boss = false;
+                creatures_.push_back(c);
+            }
+            for (int i = 0; i < 2 && !bosses.empty(); ++i) {
+                const CreatureDefX* d = bosses[std::size_t(i) % bosses.size()];
+                Creature c = make_creature(12, 18);
+                c.name = std::string(d->name); c.speed = d->move_speed * 0.7f; c.scale = 2.0f;
+                c.color = color_for("boss", d->id); c.hp = 4; c.is_boss = true;
+                creatures_.push_back(c);
+            }
+        } else {
+            for (int i = 0; i < 8; ++i) {            // fallback roster (no content)
+                Creature c = make_creature(3, 9);
+                c.color = color_for(i % 2 ? "passive" : "night_gentle", std::uint16_t(i + 1));
+                c.speed = 1.4f + rand01(); c.scale = 0.8f; c.hp = 1; c.name = "critter";
+                creatures_.push_back(c);
+            }
         }
     }
 
@@ -543,8 +636,7 @@ private:
                 c.wander = 1.5f + rand01() * 2.5f;
             }
             V3 dir{std::sin(c.yaw), 0, std::cos(c.yaw)};
-            float spd = creature_type(c.kind).speed;
-            V3 next = c.pos + dir * (spd * dt);
+            V3 next = c.pos + dir * (c.speed * dt);
             // turn away from walls
             if (block_at(IVec3{ifloor(next.x), ifloor(next.y), ifloor(next.z)}) != AIR) {
                 c.yaw += 2.4f; c.wander = 0.5f;
@@ -745,16 +837,29 @@ private:
                 h.inventory[i].item = s.item; h.inventory[i].count = s.count; h.inventory[i].durability = s.durability;
             }
         }
-        h.active_quest_id = 1;
-        std::strncpy(h.quest_title, "Bring back the color", sizeof(h.quest_title) - 1);
-        if (regions_restored_ > 0) {
-            std::strncpy(h.quest_objective, "Done! The Dim is fading. Befriend an animal!",
-                         sizeof(h.quest_objective) - 1);
-            h.quest_progress = (creatures_befriended_ > 0) ? 1.0f : 0.6f;
+        // Active quest from content (Track J quest engine).
+        if (extra_ && !all_quests_done_ && active_quest_ < extra_->quests().size()
+            && obj_progress_.size() == extra_->quests()[active_quest_].objectives.size()) {
+            const QuestDefX& q = extra_->quests()[active_quest_];
+            h.active_quest_id = q.id;
+            std::strncpy(h.quest_title, q.title.c_str(), sizeof(h.quest_title) - 1);
+            std::uint32_t done = 0, total = 0; const char* objtext = "";
+            for (std::size_t i = 0; i < q.objectives.size(); ++i) {
+                total += q.objectives[i].count;
+                done += std::min(obj_progress_[i], q.objectives[i].count);
+                if (obj_progress_[i] < q.objectives[i].count && objtext[0] == 0)
+                    objtext = q.objectives[i].text.c_str();
+            }
+            std::strncpy(h.quest_objective, objtext[0] ? objtext : "...", sizeof(h.quest_objective) - 1);
+            h.quest_progress = total ? float(done) / float(total) : 0.0f;
         } else {
-            std::strncpy(h.quest_objective, "Place a glow block in the grey Dim",
+            h.active_quest_id = 0;
+            std::strncpy(h.quest_title, all_quests_done_ ? "The color is back!" : "Bring back the color",
+                         sizeof(h.quest_title) - 1);
+            std::strncpy(h.quest_objective, all_quests_done_ ? "You restored the world!"
+                                                            : "Place a glow block in the grey Dim",
                          sizeof(h.quest_objective) - 1);
-            h.quest_progress = 0.0f;
+            h.quest_progress = all_quests_done_ ? 1.0f : 0.0f;
         }
         h.has_target = has_target_ ? 1 : 0;
         h.target_block = bf_ivec3{target_.x, target_.y, target_.z};
@@ -808,6 +913,13 @@ private:
     int                           regions_restored_{0};
     int                           creatures_befriended_{0};
     int                           creatures_calmed_{0};
+
+    // Content roster + quest engine (Track J, M5).
+    const ContentExtra*           extra_{nullptr};
+    std::size_t                   active_quest_{0};
+    std::vector<std::uint32_t>    obj_progress_;
+    bool                          all_quests_done_{false};
+    int                           quests_completed_{0};
 
     // Co-op (Track H).
     std::function<void(IVec3, BlockId)> edit_cb_;
