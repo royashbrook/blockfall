@@ -76,6 +76,14 @@ bf_engine bf_engine_create(const bf_engine_config* cfg, bf_result* out_err) {
     e->world.set_content(&e->content);
     e->content_extra.load(cfg->content_dir ? cfg->content_dir : ".");
     e->world.set_extra(&e->content_extra);
+    // Forward gameplay effects (audio/particles) to the app event callback.
+    e->world.set_fx_callback([e](int code, bf::IVec3 p) {
+        if (e->evt_fn) {
+            bf_event ev{}; ev.kind = BF_EVT_SFX; ev.i = code;
+            ev.pos = bf_ivec3{p.x, p.y, p.z};
+            e->evt_fn(e->evt_user, &ev);
+        }
+    });
     if (out_err) *out_err = BF_OK;
     g_create_error = "ok";
     return e;

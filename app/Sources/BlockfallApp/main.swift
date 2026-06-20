@@ -16,56 +16,68 @@ func persistentCString(_ s: String) -> UnsafePointer<CChar> {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
-    var renderer: Renderer!
-    var hud: HUDView!
+    var renderer: Renderer?
+    var hud: HUDView?
+    let audio = GameAudio()
+    let menu = MenuController()
+    var device: MTLDevice!
 
     func applicationDidFinishLaunching(_: Notification) {
-        // Verify ABI before doing anything (hard rule from the contract).
         guard bf_abi_version() == BF_ABI_VERSION else {
             fatalError("ABI mismatch: app=\(BF_ABI_VERSION) engine=\(bf_abi_version())")
         }
-
         let frame = NSRect(x: 0, y: 0, width: 1280, height: 800)
         window = NSWindow(contentRect: frame,
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
         window.title = "Blockfall"
         window.center()
+        window.acceptsMouseMovedEvents = true
 
-        guard let device = MTLCreateSystemDefaultDevice() else {
+        guard let dev = MTLCreateSystemDefaultDevice() else {
             fatalError("No Metal device (this build targets Apple Silicon).")
         }
+        device = dev
+        audio.start()
 
+        // Show the main menu first; start the game when a world is chosen.
+        menu.onPlayWorld = { [weak self] saveDir, _, _ in self?.startGame(saveDir: saveDir) }
+        menu.onQuit = { NSApp.terminate(nil) }
+        window.contentView = menu.rootView
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func startGame(saveDir: String) {
+        let frame = window.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         let mtkView = GameView(frame: frame, device: device)
         mtkView.colorPixelFormat = .bgra8Unorm
         mtkView.preferredFramesPerSecond = 60
 
-        renderer = Renderer(view: mtkView, device: device)
-        mtkView.delegate = renderer
-        mtkView.onHost = { [weak self] in self?.renderer.startHost() }   // 'H'
-        mtkView.onJoin = { [weak self] in self?.renderer.joinLAN() }     // 'J'
-        window.acceptsMouseMovedEvents = true
+        let r = Renderer(view: mtkView, device: device, saveDir: saveDir, audio: audio)
+        mtkView.delegate = r
+        mtkView.onHost = { [weak r] in r?.startHost() }
+        mtkView.onJoin = { [weak r] in r?.joinLAN() }
 
-        // HUD overlay drawn on top of the Metal view (AppKit, M0-simple).
-        hud = HUDView(frame: frame)
-        hud.autoresizingMask = [.width, .height]
-        renderer.hud = hud
+        let h = HUDView(frame: frame)
+        h.autoresizingMask = [.width, .height]
+        r.hud = h
 
         let container = NSView(frame: frame)
         mtkView.autoresizingMask = [.width, .height]
         container.addSubview(mtkView)
-        container.addSubview(hud)
+        container.addSubview(h)
         window.contentView = container
-        window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(mtkView)
-
-        NSApp.activate(ignoringOtherApps: true)
+        renderer = r
+        hud = h
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_: Notification) {
         renderer?.shutdown()
+        audio.stop()
     }
 }
 

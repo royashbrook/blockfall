@@ -95,6 +95,10 @@ public:
     void set_edit_callback(std::function<void(IVec3, BlockId)> cb) { edit_cb_ = std::move(cb); }
     void apply_remote_edit(IVec3 w, BlockId b) { set_block_internal(w, b, /*from_remote=*/true); }
     void set_extra(const ContentExtra* x) { extra_ = x; }
+    // Gameplay effects for the app (audio + particles). code: 0 break,1 place,
+    // 2 step,3 jump,4 craft,5 befriend,6 quest-complete.
+    void set_fx_callback(std::function<void(int, IVec3)> cb) { fx_cb_ = std::move(cb); }
+    void fx(int code, IVec3 p) { if (fx_cb_) fx_cb_(code, p); }
     void get_player(float& x, float& y, float& z, float& yaw) const {
         x = pos_.x; y = pos_.y; z = pos_.z; yaw = yaw_;
     }
@@ -164,7 +168,7 @@ public:
         restore_region(ChunkCoord{0, 0, 0});           // spawn region starts colorful
         recompute_stream_set();
         creatures_.clear();
-        creatures_spawned_ = false;                     // spawn once the area streams in
+        creature_timer_ = 0.0f;                     // spawn once the area streams in
         all_quests_done_ = false; quests_completed_ = 0; regions_restored_ = 0;
         start_quest(0);
     }
@@ -274,7 +278,7 @@ public:
         last_center_ = to_chunk(IVec3{ifloor(pos_.x), ifloor(pos_.y), ifloor(pos_.z)});
         first_stream_ = true;
         creatures_.clear();
-        creatures_spawned_ = false;
+        creature_timer_ = 0.0f;
         start_quest(0);
         recompute_stream_set();
         return true;
@@ -318,7 +322,7 @@ public:
             // Survival: walk with AABB voxel collision + gravity + jump.
             pos_.x += hmove.x; if (box_collides(pos_)) pos_.x -= hmove.x;
             pos_.z += hmove.z; if (box_collides(pos_)) pos_.z -= hmove.z;
-            if (in.jump && on_ground_) vy_ = 8.4f;
+            if (in.jump && on_ground_) { vy_ = 8.4f; fx(3, player_voxel()); }
             vy_ = std::max(vy_ - 28.0f * float(dt), -64.0f);
             float dy = vy_ * float(dt);
             pos_.y += dy;
@@ -339,6 +343,7 @@ public:
             mine_progress_ += float(dt) / break_time(block_at(target_));
             if (mine_progress_ >= 1.0f) {
                 BlockId broken = block_at(target_);
+                fx(0, target_);                       // break sound + particles
                 notify_quest("mine_block", block_name(broken));
                 // Survival: the block drops an item into the inventory.
                 if (mode_ == BF_MODE_SURVIVAL && inv_ && blocks_) {
@@ -351,12 +356,17 @@ public:
             }
         } else mine_progress_ = 0.0f;
 
-        // Spawn animals once the area around the player has streamed in (so the
-        // ground exists to place them on).
-        if (gen_ && !creatures_spawned_ && store_.resident_count() > 30) {
-            spawn_creatures();
-            creatures_spawned_ = true;
-        }
+        // View-bob: ramp up while walking on the ground, decay otherwise.
+        bool walking = (mode_ == BF_MODE_SURVIVAL) && on_ground_
+                     && (std::fabs(in.move_forward) + std::fabs(in.move_strafe) > 0.1f);
+        if (walking) {
+            bob_phase_ += float(dt) * 9.5f;
+            bob_amt_ = std::min(bob_amt_ + float(dt) * 5.0f, 1.0f);
+            step_timer_ -= float(dt);
+            if (step_timer_ <= 0.0f) { step_timer_ = 0.34f; fx(2, player_voxel()); }   // footstep
+        } else { bob_amt_ = std::max(bob_amt_ - float(dt) * 7.0f, 0.0f); step_timer_ = 0.0f; }
+
+        maintain_creatures(float(dt));   // spawn near the player, despawn far away
         update_creatures(float(dt));
     }
 
@@ -373,6 +383,7 @@ public:
                 if (pb == 0) break;                    // not a placeable item
                 if (mode_ == BF_MODE_SURVIVAL && !inv_->remove_item(sel.item, 1)) break;
                 set_block_internal(place_, pb);
+                fx(1, place_);                        // place sound
                 notify_quest("place_block", block_name(pb));
                 if (pb == glow_id_) {
                     notify_quest("light_beacon", "");
@@ -393,6 +404,7 @@ public:
                         bool boss = cr.is_boss; std::string nm = cr.name;
                         creatures_.erase(creatures_.begin() + std::ptrdiff_t(idx));
                         ++creatures_calmed_;
+                        fx(5, player_voxel());            // befriend sparkle
                         notify_quest(boss ? "calm_boss" : "befriend_creature", nm);
                     }
                 }
@@ -402,6 +414,7 @@ public:
                 int idx = creature_in_view();
                 if (idx >= 0) {
                     creatures_[std::size_t(idx)].friendly = true; ++creatures_befriended_;
+                    fx(5, player_voxel());
                     notify_quest("befriend_creature", creatures_[std::size_t(idx)].name);
                 }
                 break;
@@ -434,7 +447,13 @@ public:
             draws.push_back(d);
         }
 
-        V3 fwd = forward_dir(), eye = pos_, ctr = eye + fwd;
+        V3 fwd = forward_dir();
+        V3 flat = normalize(V3{fwd.x, 0, fwd.z});
+        V3 rightv = normalize(cross(flat, V3{0, 1, 0}));
+        float bobY = std::sin(bob_phase_ * 2.0f) * 0.06f * bob_amt_;
+        float bobX = std::cos(bob_phase_) * 0.045f * bob_amt_;
+        V3 eye = pos_ + V3{0, bobY, 0} + rightv * bobX;
+        V3 ctr = eye + fwd;
         M4 view = look_at(eye, ctr, V3{0, 1, 0});
         M4 proj = perspective(1.20f, 1.6f, 0.05f, 1024.0f);
         std::memcpy(out.camera.view.m, view.m, sizeof(float) * 16);
@@ -498,7 +517,9 @@ public:
     void    debug_notify(const char* trig, const char* target) { notify_quest(trig, target); }
     bool    debug_aim_at_creature0() {
         if (creatures_.empty()) return false;
-        V3 d = normalize((creatures_[0].pos + V3{0, 0.5f, 0}) - pos_);
+        V3 cp = creatures_[0].pos + V3{0, 0.5f, 0};
+        pos_ = cp + V3{0, 1.0f, 3.0f};            // stand within reach
+        V3 d = normalize(cp - pos_);
         pitch_ = std::asin(std::clamp(d.y, -0.999f, 0.999f));
         yaw_ = std::atan2(d.x, d.z);
         return true;
@@ -532,8 +553,10 @@ private:
         for (std::uint32_t i = 0; i < content_->recipe_count(); ++i) {
             const RecipeEntry& r = content_->recipe(i);
             if (craft_->commit(*inv_, std::span<const ItemId>(r.pattern.data(), r.pattern.size()),
-                               r.grid_size))
+                               r.grid_size)) {
+                fx(4, player_voxel());                 // craft chime
                 return;   // crafted the first recipe the player can make
+            }
         }
     }
 
@@ -571,6 +594,7 @@ private:
                 if (id) inv_->add(ItemStack{id, std::uint16_t(cnt), 0xFFFF});
             }
             ++quests_completed_;
+            fx(6, player_voxel());                     // quest fanfare
             if (active_quest_ + 1 < extra_->quests().size()) start_quest(active_quest_ + 1);
             else all_quests_done_ = true;
         }
@@ -621,44 +645,50 @@ private:
         else if (disp == "boss")    h = 0.05f + 0.08f * h;     // warm, non-scary
         return hue_rgb(h);
     }
-    Creature make_creature(float rmin, float rmax) {
+    // Spawn one creature on real ground in a ring around the player; returns
+    // false if no ground was found there yet (try again next tick).
+    bool spawn_ring_creature(bool boss, float rmin, float rmax) {
         float ang = rand01() * 6.2831853f, r = rmin + rand01() * (rmax - rmin);
         float cx = pos_.x + std::cos(ang) * r, cz = pos_.z + std::sin(ang) * r;
         int gy = floor_below(ifloor(cx), int(pos_.y) + 30, ifloor(cz));
+        if (gy == kNoFloor) return false;
         Creature c;
-        c.pos = V3{cx, (gy == kNoFloor) ? pos_.y : float(gy), cz};
-        c.yaw = rand01() * 6.2831853f;
-        c.wander = 1.0f + rand01() * 2.0f;
-        return c;
-    }
-    void spawn_creatures() {
-        creatures_.clear();
+        c.pos = V3{cx, float(gy), cz}; c.yaw = rand01() * 6.2831853f;
+        c.wander = 1.0f + rand01() * 2.0f; c.is_boss = boss;
         if (extra_ && !extra_->creatures().empty()) {
-            std::vector<const CreatureDefX*> ambient, bosses;
-            for (auto& d : extra_->creatures())
-                (d.disposition == "boss" ? bosses : ambient).push_back(&d);
-            for (int i = 0; i < 9 && !ambient.empty(); ++i) {
-                const CreatureDefX* d = ambient[std::size_t(rand01() * float(ambient.size())) % ambient.size()];
-                Creature c = make_creature(3, 12);
-                c.name = std::string(d->name); c.speed = d->move_speed; c.scale = 0.8f;
-                c.color = color_for(d->disposition, d->id); c.hp = 1; c.is_boss = false;
-                creatures_.push_back(c);
-            }
-            for (int i = 0; i < 2 && !bosses.empty(); ++i) {
-                const CreatureDefX* d = bosses[std::size_t(i) % bosses.size()];
-                Creature c = make_creature(12, 18);
-                c.name = std::string(d->name); c.speed = d->move_speed * 0.7f; c.scale = 2.0f;
-                c.color = color_for("boss", d->id); c.hp = 4; c.is_boss = true;
-                creatures_.push_back(c);
+            std::vector<const CreatureDefX*> pool;
+            for (auto& d : extra_->creatures()) if ((d.disposition == "boss") == boss) pool.push_back(&d);
+            if (!pool.empty()) {
+                const CreatureDefX* d = pool[std::size_t(rand01() * float(pool.size())) % pool.size()];
+                c.name = std::string(d->name);
+                c.color = color_for(boss ? "boss" : d->disposition, d->id);
+                c.speed = boss ? d->move_speed * 0.7f : d->move_speed;
             }
         } else {
-            for (int i = 0; i < 8; ++i) {            // fallback roster (no content)
-                Creature c = make_creature(3, 9);
-                c.color = color_for(i % 2 ? "passive" : "night_gentle", std::uint16_t(i + 1));
-                c.speed = 1.4f + rand01(); c.scale = 0.8f; c.hp = 1; c.name = "critter";
-                creatures_.push_back(c);
-            }
+            c.color = color_for(boss ? "boss" : "passive", std::uint16_t(creatures_.size() + 1));
+            c.speed = boss ? 1.2f : 1.6f; c.name = boss ? "guardian" : "critter";
         }
+        c.scale = boss ? 2.0f : 0.8f; c.hp = boss ? 4 : 1;
+        creatures_.push_back(c);
+        return true;
+    }
+    // Keep a population near the player: despawn far ones, spawn fresh ones in a
+    // ring just out of view as you explore (fixes "same animals follow forever").
+    void maintain_creatures(float dt) {
+        if (!gen_ || store_.resident_count() < 30) return;
+        creature_timer_ -= dt;
+        if (creature_timer_ > 0) return;
+        creature_timer_ = 0.35f;
+        const float kDespawn2 = 80.0f * 80.0f;
+        creatures_.erase(std::remove_if(creatures_.begin(), creatures_.end(),
+            [&](const Creature& c) {
+                float dx = c.pos.x - pos_.x, dz = c.pos.z - pos_.z;
+                return (dx*dx + dz*dz) > kDespawn2;
+            }), creatures_.end());
+        int ambient = 0, bosses = 0;
+        for (auto& c : creatures_) (c.is_boss ? bosses : ambient)++;
+        if (ambient < 9)      spawn_ring_creature(false, 18.0f, 44.0f);
+        else if (bosses < 2)  spawn_ring_creature(true,  30.0f, 60.0f);
     }
 
     void update_creatures(float dt) {
@@ -905,6 +935,7 @@ private:
     }
 
     static int ifloor(float f) { return int(std::floor(f)); }
+    IVec3 player_voxel() const { return IVec3{ifloor(pos_.x), ifloor(pos_.y), ifloor(pos_.z)}; }
     static ChunkCoord to_chunk(IVec3 w) {
         return ChunkCoord{ floordiv(w.x, kChunkDim), floordiv(w.y, kChunkDim), floordiv(w.z, kChunkDim) };
     }
@@ -934,6 +965,7 @@ private:
     bool          mining_{false};
     float         vy_{0.0f};            // vertical velocity (survival walk)
     bool          on_ground_{false};
+    float         bob_phase_{0.0f}, bob_amt_{0.0f};   // view bob
 
     // Track J content + gameplay state.
     const ContentRegistry*        content_{nullptr};
@@ -948,7 +980,7 @@ private:
     // Creatures + quest state (M3).
     std::vector<Creature>         creatures_;
     std::vector<bf_entity_draw>   entities_;
-    bool                          creatures_spawned_{false};
+    float                         creature_timer_{0.0f};
     std::uint32_t                 rng_{0x1234567u};
     int                           regions_restored_{0};
     int                           creatures_befriended_{0};
@@ -963,6 +995,8 @@ private:
 
     // Co-op (Track H).
     std::function<void(IVec3, BlockId)> edit_cb_;
+    std::function<void(int, IVec3)>     fx_cb_;          // audio/particles
+    float                               step_timer_{0.0f};
     std::vector<bf_entity_draw>         remote_avatars_;
     float         mine_progress_{0.0f};
     bool          has_target_{false};

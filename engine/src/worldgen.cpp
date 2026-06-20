@@ -23,6 +23,25 @@
 //   > 0.7 -> desert  (SAND surface, SAND fill)
 //
 // Caves (3D fbm > threshold, only underground, above kColumnMinY+4)
+//
+// Decoration (seam-aware scatter)
+// ---------------------------------
+// Trees are placed on a virtual 8x8 world-block grid of "tree cells".  Each
+// cell either has a tree or not (probability ~18%, plains/hills only).  The
+// tree's exact (wx, wz) root is offset within the cell by hash.  Trunk height
+// (4..6) and type (oak/birch) are also hash-derived from the root column.
+// Canopy is a 5x5x3 leaf blob centred on the top of the trunk (clipped by
+// rounded corners).
+//
+// When generating chunk C, we scan every tree cell whose influence bounding-box
+// (root ± CANOPY_RADIUS_XZ, root.y .. root.y + trunk + CANOPY_HEIGHT) might
+// overlap chunk C.  For each such tree we place only the voxels that actually
+// fall inside C.  Because all decisions derive from (wx,wz,seed) alone, the
+// same tree voxels appear correctly in every adjacent chunk that covers them.
+//
+// Plants (tall grass, flowers, mushrooms) are single-block decorations placed
+// directly on each column's surface — they need no cross-chunk margin because
+// they are exactly 1 block tall.
 // ============================================================================
 #include "blockcore/worldgen.hpp"
 #include "blockcore/chunk.hpp"
@@ -35,12 +54,20 @@ namespace bf {
 // ---------------------------------------------------------------------------
 // Block id constants
 // ---------------------------------------------------------------------------
-static constexpr BlockId AIR   = 0;
-static constexpr BlockId GRASS = 1;
-static constexpr BlockId DIRT  = 2;
-static constexpr BlockId STONE = 3;
-static constexpr BlockId SAND  = 6;
-static constexpr BlockId WATER = 9;
+static constexpr BlockId AIR          = 0;
+static constexpr BlockId GRASS        = 1;
+static constexpr BlockId DIRT         = 2;
+static constexpr BlockId STONE        = 3;
+static constexpr BlockId OAK_LEAVES   = 5;
+static constexpr BlockId SAND         = 6;
+static constexpr BlockId WATER        = 9;
+static constexpr BlockId OAK_LOG      = 21;
+static constexpr BlockId BIRCH_LOG    = 22;
+static constexpr BlockId BIRCH_LEAVES = 27;
+static constexpr BlockId FLOWER_RED   = 36;
+static constexpr BlockId FLOWER_YELLOW= 37;
+static constexpr BlockId TALL_GRASS   = 38;
+static constexpr BlockId MUSHROOM     = 39;
 
 static constexpr int SEA_LEVEL  = 6;
 static constexpr int BASE_Y     = 8;
@@ -242,8 +269,273 @@ static int surface_height(std::int32_t wx, std::int32_t wz,
 }
 
 // ---------------------------------------------------------------------------
-// TerrainGen implementation
+// Decoration constants
 // ---------------------------------------------------------------------------
+
+// Trees are scattered on a world-aligned grid of TREE_CELL_SIZE x TREE_CELL_SIZE
+// blocks.  At most one tree origin exists per cell; the exact (wx,wz) offset
+// within the cell is hash-derived so trees don't line up on a lattice.
+static constexpr int TREE_CELL_SIZE   = 8;   // blocks — min spacing (approx)
+// Canopy is a 5×5×3 blob centred on (trunk_top_wx, trunk_top_wy, trunk_top_wz).
+static constexpr int CANOPY_RADIUS_XZ = 2;   // extends ±2 in X and Z
+static constexpr int CANOPY_RADIUS_Y  = 1;   // extends ±1 in Y
+static constexpr int TRUNK_MIN        = 4;
+static constexpr int TRUNK_MAX        = 6;
+// Probability threshold: a cell spawns a tree when hash < TREE_PROB_THRESH/0xFFFF.
+// 0.18 * 65535 ≈ 11796
+static constexpr std::uint64_t TREE_PROB_THRESH = 11796u;
+
+// ---------------------------------------------------------------------------
+// Decoration seeds — derive from base seed to avoid correlation with terrain
+// ---------------------------------------------------------------------------
+// We use two distinct derived seeds so that the tree scatter hash and plant
+// scatter hash each feel independent.
+static constexpr std::uint64_t TREE_SEED_MIX  = 0xD7C0DECAF00D1234ull;
+static constexpr std::uint64_t PLANT_SEED_MIX = 0xB16B00B5CAFE5EEDull;
+
+// ---------------------------------------------------------------------------
+// Tree queries — pure functions of world (wx, wz) and seed
+// ---------------------------------------------------------------------------
+
+// Given a world column (wx, wz), return the "tree cell" coordinates.
+static void tree_cell(std::int32_t wx, std::int32_t wz,
+                      std::int32_t& cx, std::int32_t& cz) noexcept {
+    // Floor division towards -inf.
+    auto floordiv = [](std::int32_t a, int b) noexcept -> std::int32_t {
+        return a / b - (a % b != 0 && (a ^ b) < 0 ? 1 : 0);
+    };
+    cx = floordiv(wx, TREE_CELL_SIZE);
+    cz = floordiv(wz, TREE_CELL_SIZE);
+}
+
+struct TreeDesc {
+    std::int32_t root_wx;    // world x of trunk base
+    std::int32_t root_wz;    // world z of trunk base
+    int          trunk_height; // 4..6
+    BlockId      log_id;     // OAK_LOG or BIRCH_LOG
+    BlockId      leaf_id;    // OAK_LEAVES or BIRCH_LEAVES
+    bool         present;    // false => no tree in this cell
+};
+
+// Deterministically determine if a tree exists in a given tree cell, and
+// if so, what its properties are.  Pure function of (cell_cx, cell_cz, seed).
+static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
+                               std::uint64_t seed) noexcept {
+    std::uint64_t tseed = fmix64(seed ^ TREE_SEED_MIX);
+
+    // Primary hash for the cell.
+    std::uint64_t h = hash2(cell_cx, cell_cz, tseed);
+
+    // Decide presence.
+    std::uint64_t prob = h & 0xFFFFu;
+    if (prob >= TREE_PROB_THRESH) {
+        return TreeDesc{0, 0, 0, 0, 0, false};
+    }
+
+    // Root offset within the cell (1..TREE_CELL_SIZE-2 to avoid edge collisions).
+    std::int32_t cell_origin_x = cell_cx * TREE_CELL_SIZE;
+    std::int32_t cell_origin_z = cell_cz * TREE_CELL_SIZE;
+    std::uint64_t h2 = fmix64(h ^ 0x1234567890ABCDEFull);
+    std::int32_t off_x = 1 + static_cast<std::int32_t>((h2 >> 0u) & 0x5u);  // 1..5
+    std::int32_t off_z = 1 + static_cast<std::int32_t>((h2 >> 8u) & 0x5u);  // 1..5
+
+    // Trunk height: 4..6
+    int trunk_h = TRUNK_MIN + static_cast<int>((h2 >> 16u) % static_cast<std::uint64_t>(TRUNK_MAX - TRUNK_MIN + 1));
+
+    // Tree type: oak (lower bits) or birch.
+    bool is_birch = ((h2 >> 24u) & 0x3u) == 0u;  // ~25% birch
+
+    return TreeDesc{
+        cell_origin_x + off_x,
+        cell_origin_z + off_z,
+        trunk_h,
+        is_birch ? BIRCH_LOG    : OAK_LOG,
+        is_birch ? BIRCH_LEAVES : OAK_LEAVES,
+        true
+    };
+}
+
+// Returns true if (leaf_dx, leaf_dy, leaf_dz) is inside the rounded canopy blob.
+// Canopy is a 5x5x3 cluster centred at the trunk top.  Corner voxels of the
+// outer ring on the top/bottom slabs are cut to give a rounder shape.
+static bool in_canopy(int dx, int dy, int dz) noexcept {
+    // dx, dz relative to trunk top (horizontal centre); dy relative to trunk top.
+    // Canopy occupies dy in [-1, 0, +1] and dx/dz in [-2, -1, 0, +1, +2].
+    if (dy < -1 || dy > 1)              return false;
+    if (dx < -CANOPY_RADIUS_XZ || dx > CANOPY_RADIUS_XZ) return false;
+    if (dz < -CANOPY_RADIUS_XZ || dz > CANOPY_RADIUS_XZ) return false;
+    // Cut corners: on the outer ring (|dx|==2 or |dz|==2), disallow corners
+    // only on the top and bottom slabs (dy != 0).
+    bool outer_x = (dx == -2 || dx == 2);
+    bool outer_z = (dz == -2 || dz == 2);
+    if (outer_x && outer_z && dy != 0) return false;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Decoration pass — called from generate() after terrain+cave fill
+// ---------------------------------------------------------------------------
+// This function places trees and plants into `chunk`.  It is seam-aware:
+//   - Plants: only affect the column (wx, wz) that belongs to this chunk.
+//   - Trees : scan a margin of tree cells whose canopy might overlap this chunk,
+//             place only voxels that land inside local coords [0..15].
+//
+// All decisions are pure functions of world coords + seed_ — no mutable state.
+static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
+    // World-space bounds of this chunk (inclusive).
+    std::int32_t wx_min = c.x * kChunkDim;
+    std::int32_t wy_min = c.y * kChunkDim;
+    std::int32_t wz_min = c.z * kChunkDim;
+    std::int32_t wx_max = wx_min + kChunkDim - 1;
+    std::int32_t wy_max = wy_min + kChunkDim - 1;
+    std::int32_t wz_max = wz_min + kChunkDim - 1;
+
+    // -------------------------------------------------------------------
+    // 1. TREES
+    //    Determine which tree cells could influence this chunk.
+    //    A tree's canopy extends ±CANOPY_RADIUS_XZ in x/z from its root and
+    //    the trunk can be up to TRUNK_MAX+CANOPY_RADIUS_Y blocks above the surface.
+    //    Surface height is at most BASE_Y + AMP_HILLS = 8 + 24 = 32.
+    //    We conservatively expand the search area by CANOPY_RADIUS_XZ blocks on
+    //    each side in X/Z.
+    // -------------------------------------------------------------------
+    {
+        // Cell indices covering the potentially-influencing range in X and Z.
+        std::int32_t cell_xmin, cell_xmax, cell_zmin, cell_zmax, dummy;
+        tree_cell(wx_min - CANOPY_RADIUS_XZ, wz_min - CANOPY_RADIUS_XZ, cell_xmin, cell_zmin);
+        tree_cell(wx_max + CANOPY_RADIUS_XZ, wz_max + CANOPY_RADIUS_XZ, cell_xmax, dummy);
+        tree_cell(wx_min, wz_max + CANOPY_RADIUS_XZ, dummy, cell_zmax);
+        (void)dummy;
+
+        for (std::int32_t ccz = cell_zmin; ccz <= cell_zmax; ++ccz) {
+            for (std::int32_t ccx = cell_xmin; ccx <= cell_xmax; ++ccx) {
+                TreeDesc td = tree_for_cell(ccx, ccz, seed);
+                if (!td.present) continue;
+
+                // Determine tree's biome and surface height.
+                Biome bio = biome_at(td.root_wx, td.root_wz, seed);
+                // Trees only in grassy biomes above sea level.
+                if (bio == Biome::Desert) continue;
+
+                int H = surface_height(td.root_wx, td.root_wz, seed, bio);
+                if (H <= SEA_LEVEL) continue;  // don't grow trees underwater
+
+                // Check that the surface block is GRASS (not sand/water beach).
+                // Surface is SAND if wy==H && wy<=SEA_LEVEL — already excluded above.
+                // So if H > SEA_LEVEL the surface is GRASS.
+
+                // Trunk voxels: from H+1 to H+trunk_height (inclusive).
+                int trunk_base_wy = H + 1;
+                int trunk_top_wy  = H + td.trunk_height;
+                // Canopy is centred at trunk_top_wy, extends ±CANOPY_RADIUS_Y.
+                int canopy_wy_max = trunk_top_wy + CANOPY_RADIUS_Y;
+
+                // Quick y-range rejection: does any part of this tree overlap chunk?
+                if (canopy_wy_max < wy_min || trunk_base_wy > wy_max) continue;
+
+                // Trunk: place oak/birch log blocks.
+                for (int wy = trunk_base_wy; wy <= trunk_top_wy; ++wy) {
+                    if (wy < wy_min || wy > wy_max) continue;
+                    // World x/z of trunk matches root.
+                    if (td.root_wx < wx_min || td.root_wx > wx_max) continue;
+                    if (td.root_wz < wz_min || td.root_wz > wz_max) continue;
+                    int lx = td.root_wx - wx_min;
+                    int ly = wy - wy_min;
+                    int lz = td.root_wz - wz_min;
+                    // Don't overwrite solid terrain blocks with logs
+                    // (the trunk base sits on the grass surface; H+1 is air).
+                    chunk.set(lx, ly, lz, td.log_id);
+                }
+
+                // Canopy: place leaf blocks in blob around trunk top.
+                for (int dz = -CANOPY_RADIUS_XZ; dz <= CANOPY_RADIUS_XZ; ++dz) {
+                    for (int dx = -CANOPY_RADIUS_XZ; dx <= CANOPY_RADIUS_XZ; ++dx) {
+                        for (int dy = -CANOPY_RADIUS_Y; dy <= CANOPY_RADIUS_Y; ++dy) {
+                            if (!in_canopy(dx, dy, dz)) continue;
+
+                            std::int32_t wlx = td.root_wx + dx;
+                            std::int32_t wly = trunk_top_wy + dy;
+                            std::int32_t wlz = td.root_wz + dz;
+
+                            if (wlx < wx_min || wlx > wx_max) continue;
+                            if (wly < wy_min || wly > wy_max) continue;
+                            if (wlz < wz_min || wlz > wz_max) continue;
+
+                            int lx = wlx - wx_min;
+                            int ly = wly - wy_min;
+                            int lz = wlz - wz_min;
+                            // Only place leaves in air — don't overwrite logs or terrain.
+                            if (chunk.get(lx, ly, lz) == AIR) {
+                                chunk.set(lx, ly, lz, td.leaf_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // 2. PLANTS — tall grass, flowers, mushrooms
+    //    These are single-block, placed directly on the grass surface of
+    //    each column belonging to this chunk only (no margin needed).
+    // -------------------------------------------------------------------
+    {
+        std::uint64_t pseed = fmix64(seed ^ PLANT_SEED_MIX);
+
+        for (int lz = 0; lz < kChunkDim; ++lz) {
+            for (int lx = 0; lx < kChunkDim; ++lx) {
+                std::int32_t wx = wx_min + lx;
+                std::int32_t wz = wz_min + lz;
+
+                Biome bio = biome_at(wx, wz, seed);
+                if (bio == Biome::Desert) continue;  // desert stays bare
+
+                int H = surface_height(wx, wz, seed, bio);
+                if (H <= SEA_LEVEL) continue;        // underwater column
+
+                // The surface block world-y = H; plant goes at H+1.
+                std::int32_t plant_wy = H + 1;
+                if (plant_wy < wy_min || plant_wy > wy_max) continue;
+
+                int ly_surface = H - wy_min;
+                int ly_plant   = ly_surface + 1;
+                if (ly_surface < 0 || ly_surface >= kChunkDim) continue;
+                if (ly_plant   < 0 || ly_plant   >= kChunkDim) continue;
+
+                // The spot must be AIR (a tree trunk or canopy may already occupy it).
+                if (chunk.get(lx, ly_plant, lz) != AIR) continue;
+                // The surface block must be GRASS.
+                if (chunk.get(lx, ly_surface, lz) != GRASS) continue;
+
+                // Plant scatter hash.
+                std::uint64_t ph = hash2(wx, wz, pseed);
+                // Use different bit ranges for independence.
+                std::uint64_t roll = ph & 0xFFu;  // 0..255
+
+                // ~35% probability of any plant (distributed among types).
+                // roll 0..14  => tall grass  (~5.9%)
+                // roll 15..29 => tall grass  (total ~11.8% tall grass)
+                // roll 30..89 => tall grass  (total tall grass ~35%)
+                // Use explicit thresholds:
+                //   0..88  (89/256 ≈ 34.8%) tall grass
+                //   89..100 (12/256 ≈ 4.7%) flower_red
+                //   101..112 (12/256 ≈ 4.7%) flower_yellow
+                //   113..117 (5/256  ≈ 2.0%) mushroom
+                //   118..255 nothing
+                BlockId plant = AIR;
+                if      (roll < 89u)  plant = TALL_GRASS;
+                else if (roll < 101u) plant = FLOWER_RED;
+                else if (roll < 113u) plant = FLOWER_YELLOW;
+                else if (roll < 118u) plant = MUSHROOM;
+
+                if (plant != AIR) {
+                    chunk.set(lx, ly_plant, lz, plant);
+                }
+            }
+        }
+    }
+}
 
 void TerrainGen::seed(std::uint64_t s) {
     seed_ = s;
@@ -305,6 +597,9 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
             }
         }
     }
+
+    // Decoration pass — seam-aware tree and plant scatter.
+    place_decorations(c, chunk, seed_);
 }
 
 // ---------------------------------------------------------------------------

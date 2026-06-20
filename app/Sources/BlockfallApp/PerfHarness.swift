@@ -64,8 +64,7 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
     var fpsSamples: [Double] = []
     var peakMem = 0.0
     let start = CACurrentMediaTime()
-    var lastWander: Double = 0
-    var lastDt = CACurrentMediaTime()
+        var lastDt = CACurrentMediaTime()
 
     func renderOneFrame() {
         frame += 1; registry.currentFrame = frame
@@ -101,9 +100,7 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
         enc.setDepthStencilState(depthState)
         entR.encode(enc, viewProj: viewProj, entities: f.entities, count: Int(f.entity_count))
         enc.endEncoding(); cmd.commit(); cmd.waitUntilCompleted()
-        bf_frame_end(e); registry.collect()
-        _ = lastWander
-    }
+        bf_frame_end(e); registry.collect()    }
 
     // Warm up: stream the world in for ~3 s before measuring.
     while CACurrentMediaTime() - start < 3.0 { renderOneFrame() }
