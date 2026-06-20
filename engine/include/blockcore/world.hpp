@@ -367,12 +367,12 @@ public:
             // Survival: walk with AABB voxel collision + gravity + jump.
             pos_.x += hmove.x; if (box_collides(pos_)) pos_.x -= hmove.x;
             pos_.z += hmove.z; if (box_collides(pos_)) pos_.z -= hmove.z;
-            // Swim when the body is in water: hold Space to rise out, Shift to dive,
-            // otherwise float gently (buoyancy) instead of sinking like a stone.
-            // pos_ is the EYE, so check the chest (~0.8 below) for submersion.
-            bool in_water = block_at(IVec3{ifloor(pos_.x), ifloor(pos_.y - 0.8f), ifloor(pos_.z)}) == WATER;
+            // Swim when chest OR feet are in water (so you can still get lift at
+            // the surface to climb out). pos_ is the EYE.
+            bool in_water = block_at(IVec3{ifloor(pos_.x), ifloor(pos_.y - 0.8f), ifloor(pos_.z)}) == WATER
+                         || block_at(IVec3{ifloor(pos_.x), ifloor(pos_.y - 1.5f), ifloor(pos_.z)}) == WATER;
             if (in_water) {
-                if      (in.jump)  vy_ = 4.6f;                                 // swim up
+                if      (in.jump)  vy_ = 5.2f;                                 // swim up / spring out onto land
                 else if (in.sneak) vy_ = -4.6f;                               // dive
                 else               vy_ = std::max(vy_ - 6.0f * float(dt), -2.0f); // slow sink
             } else {
@@ -515,6 +515,17 @@ public:
         out.camera.sun_dir = bf_vec3{std::cos(ang) * 0.6f, -std::sin(ang) - 0.25f, 0.35f};
         out.camera.underwater =
             (block_at(IVec3{ifloor(eye.x), ifloor(eye.y), ifloor(eye.z)}) == WATER) ? 1.0f : 0.0f;
+        // Cold/snowy area? Scan down from the eye: snow_layer(12)/ice(13) before
+        // solid ground -> precipitation falls as snow here.
+        {
+            bool cold = false; int px = ifloor(eye.x), pz = ifloor(eye.z);
+            for (int y = ifloor(eye.y); y > ifloor(eye.y) - 8 && !cold; --y) {
+                BlockId b = block_at(IVec3{px, y, pz});
+                if (b == 12 || b == 13) { cold = true; }
+                else if (b != AIR && b != WATER && !is_plant(b)) break;
+            }
+            out.camera.biome_cold = cold ? 1.0f : 0.0f;
+        }
         out.interp_alpha = 0.0f;
         out.draws = draws.data();
         out.draw_count = std::uint32_t(draws.size());
@@ -533,7 +544,9 @@ public:
             e.yaw = cr.yaw;
             e.color = bf_vec3{col.x, col.y, col.z};
             e.scale = cr.scale;
-            e.kind = cr.hostile ? 5u : (cr.is_boss ? 4u : std::uint32_t(cr.shape & 3)); // 0-3 animals, 4 boss, 5 monster
+            // Map 8 animal shapes to renderer kinds (4=boss, 5=monster, 6=falling).
+            static const std::uint32_t kAnimalKind[8] = {0u, 1u, 2u, 3u, 7u, 8u, 9u, 10u};
+            e.kind = cr.hostile ? 5u : (cr.is_boss ? 4u : kAnimalKind[std::size_t(cr.shape & 7)]);
             e.sat = region_sat(to_chunk(IVec3{ifloor(cr.pos.x), ifloor(cr.pos.y), ifloor(cr.pos.z)}));
             entities_.push_back(e);
         }
@@ -563,6 +576,11 @@ public:
         pos_ = V3{px, py, pz}; yaw_ = yaw; pitch_ = pitch;
     }
     BlockId debug_block_at(int x, int y, int z) const { return block_at(IVec3{x, y, z}); }
+    int debug_sky_light(int x, int y, int z) const {
+        ChunkCoord cc = to_chunk(IVec3{x, y, z});
+        auto* ch = const_cast<ChunkStore&>(store_).get(cc);
+        return ch ? int(ch->sky_light(mod16(x), mod16(y), mod16(z))) : -1;
+    }
     void    debug_edit(int x, int y, int z, BlockId b) { set_block_internal(IVec3{x, y, z}, b); }
     bool    debug_has_target() const { return has_target_; }
     void    debug_set_selected(std::uint8_t s) { selected_ = s; }
@@ -717,7 +735,7 @@ private:
     // treat "no floor" as ground, or entities drift upward.
     int floor_below(int x, int yTop, int z) const {
         for (int y = yTop; y > yTop - 80; --y)
-            if (block_at(IVec3{x, y, z}) != AIR) return y + 1;
+            if (collide_solid(x, y, z)) return y + 1;   // water/plants aren't standable
         return kNoFloor;
     }
 
@@ -773,11 +791,12 @@ private:
                 c.name = std::string(d->name);
                 c.color = color_for(boss ? "boss" : d->disposition, d->id);
                 c.speed = boss ? d->move_speed * 0.7f : d->move_speed;
-                c.shape = int(d->id) % 4;            // model variant from the def
+                c.shape = int(d->id) % 8;            // model variant from the def (8 species)
             }
         } else {
             c.color = color_for(boss ? "boss" : "passive", std::uint16_t(creatures_.size() + 1));
             c.speed = boss ? 1.2f : 1.6f; c.name = boss ? "guardian" : "critter";
+            c.shape = int(creatures_.size()) % 8;
         }
         c.scale = boss ? 2.0f : 0.8f; c.hp = boss ? 10 : 5;   // multiple hits to defeat
         creatures_.push_back(c);
@@ -869,6 +888,7 @@ private:
             }
             set_block_internal(t, AIR);
             apply_gravity_above(t);                                // undermined sand/gravel falls
+            flow_water(t);                                         // adjacent water flows in + falls
         }
     }
     // ---- Wave 3: destruction physics ---------------------------------------
@@ -895,6 +915,27 @@ private:
         fb.spin_rate = (rand01() - 0.5f) * 8.0f;
         fb.block = b; fb.color = falling_color(b); fb.as_item = as_item;
         falling_.push_back(fb);
+    }
+    // Water flows into a freshly-cleared cell if water is above or beside it,
+    // then falls straight down through any air below. Bounded (no infinite spread:
+    // only the broken cell is filled, plus its fall column).
+    void flow_water(IVec3 t) {
+        if (block_at(t) != AIR) return;
+        bool fed = block_at(IVec3{t.x, t.y + 1, t.z}) == WATER
+                || block_at(IVec3{t.x + 1, t.y, t.z}) == WATER
+                || block_at(IVec3{t.x - 1, t.y, t.z}) == WATER
+                || block_at(IVec3{t.x, t.y, t.z + 1}) == WATER
+                || block_at(IVec3{t.x, t.y, t.z - 1}) == WATER;
+        if (!fed) return;
+        set_block_internal(t, WATER);
+        IVec3 w = t;
+        for (int guard = 0; guard < 64; ++guard) {       // let it fall to the bottom
+            IVec3 below{w.x, w.y - 1, w.z};
+            if (block_at(below) != AIR) break;
+            set_block_internal(w, AIR);
+            set_block_internal(below, WATER);
+            w = below;
+        }
     }
     // Undermined sand/gravel above a cleared cell falls.
     void apply_gravity_above(IVec3 w) {

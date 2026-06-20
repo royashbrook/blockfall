@@ -728,16 +728,17 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor,    index: 0)
                 enc.setFragmentTexture(bloomBright, index: 1)
-                // Determine if it's snowy (cold = time near 0 i.e. midnight, or negative temperature proxy)
-                // We use the same weatherCycle computed above for rain/snow toggle.
-                // Snow when weatherCycle > 0.60 AND timeOfDay is "cold" (night/winter proxy: tod < 0.3 or > 0.7)
-                let tod = frame.camera.time_of_day
-                let isCold = (tod < 0.30 || tod > 0.70)
-                let precipRain = isCold ? 0.0 : rainStrength   // rain strength in warm weather
-                let precipSnow = isCold ? rainStrength : 0.0   // snow strength in cold weather
+                // Snow vs rain: use engine biome_cold (0..1; 1 = snowy/cold biome).
+                // Snow only in storm phase (rainStrength > 0) AND biome_cold > 0.5.
+                // Rain only in storm phase AND biome is warm (biome_cold ≤ 0.5).
+                // No precipitation outside the storm phase (rainStrength ≈ 0).
+                let biomeCold = frame.camera.biome_cold
+                let isColdBiome = (biomeCold > 0.5)
+                let precipRain = isColdBiome ? 0.0 : rainStrength
+                let precipSnow = isColdBiome ? rainStrength : 0.0
                 // Pack rain+snow: composite shader reads rainStrength>0 as rain, <0 as snow (abs = strength)
                 let precipPacked = precipRain > 0.001 ? precipRain : -precipSnow
-                var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.38,
+                var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.38,
                                       rainStrength: precipPacked, wallClockSecs: wallClock)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -1631,24 +1632,35 @@ final class Renderer: NSObject, MTKViewDelegate {
             float3 plantCol = float3(0.0);
 
             if (mat == 38u) {
-                // ---- TALL GRASS: several thin vertical blades ----
-                // 4 blades spaced across U at ~0.15, 0.32, 0.58, 0.75
-                // Each blade is a thin strip, tapers to a point at the top (plantV near 1).
+                // ---- TALL GRASS: soft clumpy tuft of short, rounded blades ----
+                // 5 blades, each short (only fills lower 55-70% of V so there are
+                // no sharp spike tips), and with wide soft-rounded tops rather than
+                // tapering to a point. Blades are slightly taller/shorter individually
+                // for a natural clumped look, not uniform spikes.
                 float3 grassBase = float3(0.28, 0.72, 0.18);
                 float bladeMask = 0.0;
                 float3 hue = float3(0.0);
-                // Blade parameters: centre positions, slight hue variation per blade
-                const float centres[4] = {0.15, 0.32, 0.58, 0.75};
-                const float hues[4]    = {0.04, -0.03, 0.05, -0.04};
-                for (int bi = 0; bi < 4; ++bi) {
-                    float cx = centres[bi];
-                    // Width tapers from 0.06 at base to 0 at top
-                    float bladeWidth = 0.055 * (1.0 - plantV * plantV);
+                // cx=centre, topV=where the blade ends (0.55-0.70), roundR=top-round radius
+                const float centres[5] = {0.12, 0.30, 0.50, 0.68, 0.85};
+                const float topVs[5]   = {0.62, 0.68, 0.58, 0.65, 0.60};  // shorter than 1.0!
+                const float hues[5]    = {0.04, -0.03, 0.05, -0.04, 0.02};
+                for (int bi = 0; bi < 5; ++bi) {
+                    float cx    = centres[bi];
+                    float topV  = topVs[bi];
+                    // Width: 0.07 at base, narrows slightly but stays wider than before
+                    float bladeWidth = 0.065 * (0.6 + 0.4 * (1.0 - plantV / topV));
+                    bladeWidth = max(bladeWidth, 0.012);
                     float dx = abs(plantU - cx);
-                    float inBlade = smoothstep(bladeWidth + 0.012, bladeWidth, dx);
-                    // Only draw where V > small value (blade starts a bit above ground)
-                    float baseStart = smoothstep(0.0, 0.06, plantV);
-                    inBlade *= baseStart;
+                    // Only active in [0, topV] vertical range
+                    float inRange = smoothstep(0.0, 0.05, plantV)        // fade in at base
+                                  * smoothstep(topV + 0.04, topV - 0.01, plantV);  // fade out at top
+                    // Round the tip: use a soft circle cap near topV
+                    float2 tipDiff = float2(plantU - cx, plantV - (topV - 0.06));
+                    float tipDist  = length(tipDiff * float2(1.0 / 0.08, 1.0 / 0.08));
+                    float tipCap   = smoothstep(1.0, 0.5, tipDist);  // soft rounded top
+                    // Body mask: within blade width OR within rounded cap
+                    float bodyMask = smoothstep(bladeWidth + 0.015, bladeWidth, dx) * inRange;
+                    float inBlade  = max(bodyMask, tipCap * inRange);
                     if (inBlade > bladeMask) {
                         bladeMask = inBlade;
                         hue = float3(-hues[bi]*0.5, hues[bi], -hues[bi]*0.3);
@@ -1904,9 +1916,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         skyCol = mix(skyCol, sunColor,          sunDisc  * sunVis);
         skyCol = mix(skyCol, float3(1.0, 1.0, 0.96), sunInner * sunVis);
 
-        // HDR: sun disc pushed above 1 so it blooms — but modestly, so it
-        // doesn't flood the whole frame when near the horizon.
+        // HDR: sun disc pushed above 1 so it blooms.
+        // Only the very inner disc (sunInner, radius ~0.08°) gets the HDR push.
+        // The broad sky/haze/glow region is clamped to ≤1.2 so it never triggers
+        // the bloom bright-pass (threshold 1.6) — prevents view-rotation washout.
         skyCol += sunColor * 1.1 * sunInner * sunVis;
+
+        // Cap the broad sky colour (everything except the inner sun disc) to ≤1.2.
+        // The sun disc itself (sunInner) can still go overbright for bloom.
+        float3 discHDR = sunColor * 1.1 * sunInner * sunVis;
+        skyCol = clamp(skyCol - discHDR, 0.0, 1.2) + discHDR;
 
         float3 moonDir3 = -sunDir3;
         float moonDot  = dot(ray, moonDir3);
@@ -2005,28 +2024,28 @@ final class Renderer: NSObject, MTKViewDelegate {
         return o;
     }
 
-    // FIX (#4): Underwater overlay is now a CONSISTENT light blue tint.
-    // Old version had large position-varying alpha (edgeMod up to 0.22, depthMod
-    // up to 0.18) which made underwater fog heavy and inconsistent depending on
-    // where you looked. New version uses a flat baseFog with only small caustic
-    // variation — the terrain distance fog (in fmain) handles depth-based
-    // occlusion, so this overlay only provides the constant blue tint + caustics.
+    // FIX (#4 / #5): Underwater overlay is a FULLY STEADY light blue tint.
+    // Alpha is constant (no per-frame or per-view variation) so there is zero
+    // fuzziness or inconsistency frame-to-frame. Caustic patterns only affect
+    // the colour (a subtle brightness shimmer), NEVER the alpha — that prevents
+    // the flickering/fuzziness while still giving life to the water.
+    // Terrain distance fog in fmain (exp(-0.046*dist)) handles depth-based
+    // visibility (~15-20 block range) independently of this overlay.
     fragment float4 underwaterFmain(UWVOut in [[stage_in]],
                                     constant WaterUniforms& wu [[buffer(0)]]) {
         float uw = wu.underwater;
         if (uw < 0.01) { discard_fragment(); }
         float t = wu.wallClockSecs;
-        // Animated caustic light patterns — subtle, not heavy
+        // Caustic shimmer: only modulates colour, not alpha.
         float2 cUV1 = in.uv * float2(3.0, 2.5) + float2(t * 0.08, t * 0.05);
         float2 cUV2 = in.uv * float2(2.2, 3.1) + float2(-t * 0.06, t * 0.09);
         float caustic = noise2(cUV1) * 0.6 + noise2(cUV2) * 0.4;
-        caustic = smoothstep(0.55, 0.80, caustic) * 0.10;   // reduced from 0.18
+        caustic = smoothstep(0.55, 0.80, caustic) * 0.08;   // very subtle
         float3 uwColor = float3(0.08, 0.28, 0.44);
-        // Flat, stable alpha: just a light tint (0.14) + small caustic variation.
-        // No position-dependent fog modifiers — those caused the inconsistency.
-        // Capped at 0.22 so it never becomes heavy/opaque.
-        float totalAlpha = clamp((0.14 + caustic * 0.5) * uw, 0.0, 0.22);
-        float3 col = uwColor + float3(caustic * 0.6, caustic * 0.8, caustic * 0.5);
+        float3 col = uwColor + float3(caustic * 0.4, caustic * 0.6, caustic * 0.3);
+        // Constant alpha — no variation of any kind.
+        // 0.16 * uw gives a gentle translucent blue tint without fuzziness.
+        float totalAlpha = 0.16 * clamp(uw, 0.0, 1.0);
         return float4(col, totalAlpha);
     }
 
@@ -2054,9 +2073,15 @@ final class Renderer: NSObject, MTKViewDelegate {
                                     texture2d<float> hdrTex [[texture(0)]]) {
         constexpr sampler s(filter::linear, address::clamp_to_edge);
         float4 c = hdrTex.sample(s, in.uv);
-        // Knee function: soft threshold at 1.0, full contribution above 1.5
+        // Raised threshold: daytime sky sits around 0.7-1.1 HDR (broad region).
+        // We must NOT let the sky into bloom — only the sun disc and emissive blocks
+        // (fireflies, glow blocks) are legitimately overbright at 1.6+.
+        // Old threshold (1.15) caught the entire daytime sky, smearing it across the
+        // frame when the camera rotated upward. New lower bound = 1.6, full at 2.8
+        // so only the sun disc (~1.1 * sunVis boost) and HDR emissives (1.6x mult)
+        // actually bloom.  This eliminates the sky-rotation washout.
         float lum = dot(c.rgb, float3(0.2126, 0.7152, 0.0722));
-        float bright = smoothstep(1.15, 2.40, lum);   // only genuinely bright things bloom
+        float bright = smoothstep(1.60, 2.80, lum);   // only true HDR highlights bloom
         return float4(c.rgb * bright, 1.0);
     }
 
@@ -2139,13 +2164,14 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     // Snow: returns 0..1 flake intensity. Flakes fall downward + gentle sideways drift.
-    // FIX (#8): Metal UV has V=0 at top, V=1 at bottom. To make flakes fall
-    // downward (increasing V over time) we SUBTRACT T from the Y cell offset so
-    // that as time advances the cell coordinate moves in the -Y direction, which
-    // means the flake pattern scrolls downward across the screen.
+    // UV convention: fullscreenVert maps NDC y=+1 (top) → uv.y=0, NDC y=-1 (bottom) → uv.y=1.
+    // So "falling down" means uv.y INCREASES over time.
+    // We achieve this by ADDING T to the cell Y offset: as T grows, cell.y grows,
+    // which means for a fixed flake cellI the same cell.y is reached at a LARGER uv.y
+    // → the flake appears lower on screen (further down). Correct falling motion.
     static float snowFlake(float2 uv, float T, float cellScale) {
         float2 cell = float2(uv.x * cellScale + T * 0.08,   // gentle sideways drift
-                              uv.y * cellScale - T * 0.9);   // fall DOWN (subtract T)
+                              uv.y * cellScale + T * 0.9);   // fall DOWN (add T → uv.y increases)
         float2 cellI = floor(cell);
         float2 cellF = fract(cell);
         // Per-flake hash

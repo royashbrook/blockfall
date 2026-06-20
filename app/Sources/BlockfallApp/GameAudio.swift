@@ -71,13 +71,15 @@ final class GameAudio {
 
     /// Stop everything.
     func stop() {
-        musicNodes.forEach { $0.stop() }
-        sfxPool.forEach    { $0.stop() }
+        musicBankNodes.forEach { $0.stop() }
+        sfxPool.forEach        { $0.stop() }
         ambienceWindNode?.stop()
         birdTimer?.invalidate()
         birdTimer = nil
         trackTimer?.invalidate()
         trackTimer = nil
+        crossfadeTimer?.invalidate()
+        crossfadeTimer = nil
         engine?.stop()
     }
 
@@ -89,7 +91,9 @@ final class GameAudio {
         musicEnabled = on
         guard engine?.isRunning == true else { return }
         if on { startMusic() } else {
-            musicNodes.forEach { $0.stop() }
+            crossfadeTimer?.invalidate()
+            crossfadeTimer = nil
+            musicBankNodes.forEach { $0.stop() }
             trackTimer?.invalidate()
             trackTimer = nil
         }
@@ -193,15 +197,31 @@ final class GameAudio {
     private var ambienceEnabled = true
 
     // -- Music --
-    // Four distinct tracks across two groups (day / evening).
-    // A timer schedules rotation; one music node used at a time per voice layer.
-    private var musicNodes:  [AVAudioPlayerNode] = []   // 4 voice nodes
-    private var musicMixer:  AVAudioMixerNode?
+    // A/B bank architecture: two independent banks of 4 voice nodes, each fed
+    // through its own AVAudioMixerNode so their volumes can be ramped
+    // simultaneously during a crossfade without touching one another.
+    //
+    //   musicBankNodes[0..3] → musicBankMixers[0] → musicMixer → mainMixer
+    //   musicBankNodes[4..7] → musicBankMixers[1] → musicMixer → mainMixer
+    //
+    // During playback one bank is "active" (volume 1) and the other is silent.
+    // On a transition both banks play simultaneously while the outgoing bank
+    // fades from 1→0 and the incoming bank fades from 0→1 over kCrossfadeDur.
+    private var musicBankNodes:  [AVAudioPlayerNode] = []   // 8 nodes (4 per bank)
+    private var musicBankMixers: [AVAudioMixerNode]  = []   // 2 per-bank sub-mixers
+    private var musicMixer:      AVAudioMixerNode?
+    private var activeBank:      Int = 0                    // 0 or 1
+
+    // Crossfade duration in seconds (linear gain curve, no shared-mixer touch).
+    private let kCrossfadeDur: Double = 3.5
+    // How long before scheduling the next rotation.
+    private let kTrackRotationInterval: Double = 60.0
 
     private enum TrackGroup { case day, evening }
     private var currentTrackGroup: TrackGroup = .day
     private var currentTrackIndex: Int        = 0
-    private var trackTimer: Timer?
+    private var trackTimer:     Timer?
+    private var crossfadeTimer: Timer?   // running crossfade step timer
 
     // Pre-rendered track buffers: [trackID][voiceIndex]
     // Tracks 0,1 = day; Tracks 2,3 = evening
@@ -245,7 +265,7 @@ final class GameAudio {
         let outFormat = eng.outputNode.inputFormat(forBus: 0)
         guard outFormat.channelCount > 0 else { return }
 
-        // --- Music mixer ---
+        // --- Music mixer (master gain only — never touched during crossfades) ---
         let mMix = AVAudioMixerNode()
         mMix.outputVolume = 0.20
         eng.attach(mMix)
@@ -266,12 +286,22 @@ final class GameAudio {
         eng.connect(sMix, to: mainMixer, format: outFormat)
         sfxMixer = sMix
 
-        // --- Music nodes (4 voices for melody/bass/arpeggio/pad) ---
-        for _ in 0 ..< 4 {
-            let node = AVAudioPlayerNode()
-            eng.attach(node)
-            eng.connect(node, to: mMix, format: format)
-            musicNodes.append(node)
+        // --- A/B music banks ---
+        // Each bank has its own sub-mixer so its volume can be ramped independently
+        // during crossfades. Bank A starts at full volume, Bank B at zero.
+        for bankIdx in 0 ..< 2 {
+            let bankMix = AVAudioMixerNode()
+            bankMix.outputVolume = bankIdx == 0 ? 1.0 : 0.0
+            eng.attach(bankMix)
+            eng.connect(bankMix, to: mMix, format: outFormat)
+            musicBankMixers.append(bankMix)
+
+            for _ in 0 ..< 4 {
+                let node = AVAudioPlayerNode()
+                eng.attach(node)
+                eng.connect(node, to: bankMix, format: format)
+                musicBankNodes.append(node)
+            }
         }
 
         // --- Ambience wind node ---
@@ -329,19 +359,26 @@ final class GameAudio {
     //   Voice 3 = pad      (sine, sustained chord, very soft backing)
     //
     // Tracks 0,1 belong to .day group; Tracks 2,3 to .evening group.
-    // Rotation: tracks alternate within their group every 48 s via crossFadeToTrack.
+    // Rotation: tracks alternate within their group every 60 s via crossFadeToTrack.
 
     private func startMusic() {
         if allTrackBuffers.isEmpty { buildAllTrackBuffers() }
 
-        // Stop current
-        musicNodes.forEach { $0.stop() }
+        // Cancel any in-progress crossfade and stop all nodes cleanly.
+        crossfadeTimer?.invalidate()
+        crossfadeTimer = nil
         trackTimer?.invalidate()
         trackTimer = nil
+        musicBankNodes.forEach { $0.stop() }
+
+        // Reset bank volumes: A = 1, B = 0.
+        activeBank = 0
+        musicBankMixers[0].outputVolume = 1.0
+        musicBankMixers[1].outputVolume = 0.0
 
         // Pick starting track from current group.
         currentTrackIndex = firstTrackIndex(for: currentTrackGroup)
-        playTrack(currentTrackIndex)
+        playTrackOnBank(currentTrackIndex, bank: activeBank)
         scheduleTrackRotation()
     }
 
@@ -359,20 +396,24 @@ final class GameAudio {
         return groupStart + offset
     }
 
-    private func playTrack(_ idx: Int) {
+    /// Start looping a track's voice buffers on the four nodes of `bank` (0 or 1).
+    /// The caller is responsible for setting `musicBankMixers[bank].outputVolume` beforehand.
+    private func playTrackOnBank(_ idx: Int, bank: Int) {
         guard idx < allTrackBuffers.count else { return }
-        let voiceBuffers = allTrackBuffers[idx]
-        for (i, node) in musicNodes.enumerated() {
-            guard i < voiceBuffers.count else { break }
+        let voiceBuffers  = allTrackBuffers[idx]
+        let nodeOffset    = bank * 4
+        for i in 0 ..< 4 {
+            let node = musicBankNodes[nodeOffset + i]
             node.stop()
+            guard i < voiceBuffers.count else { continue }
             node.scheduleBuffer(voiceBuffers[i], at: nil, options: .loops, completionHandler: nil)
             node.play()
         }
     }
 
     private func scheduleTrackRotation() {
-        // Rotate every 48 seconds so the listener hears variety without a jarring cut.
-        trackTimer = Timer.scheduledTimer(withTimeInterval: 48, repeats: false) { [weak self] _ in
+        // Rotate every 60 seconds — long enough to enjoy a melody before it transitions.
+        trackTimer = Timer.scheduledTimer(withTimeInterval: kTrackRotationInterval, repeats: false) { [weak self] _ in
             guard let self, self.musicEnabled, self.engine?.isRunning == true else { return }
             self.currentTrackIndex = self.nextTrackIndex(after: self.currentTrackIndex)
             self.crossFadeToTrack(self.currentTrackIndex)
@@ -380,28 +421,43 @@ final class GameAudio {
         }
     }
 
-    /// Simple cross-fade: ramp music mixer volume down, switch track, ramp back up.
+    /// True A/B crossfade: the outgoing bank fades 1→0 while the incoming bank
+    /// fades 0→1 simultaneously over kCrossfadeDur seconds (linear gain curve).
+    /// Both banks play audio concurrently during the overlap — no gap, no cut.
     private func crossFadeToTrack(_ idx: Int) {
-        guard let mMix = musicMixer else { return }
-        let steps    = 30
-        let stepDur  = 1.5 / Double(steps)  // 1.5 s total fade
+        // Cancel any still-running crossfade before starting a new one.
+        crossfadeTimer?.invalidate()
+        crossfadeTimer = nil
 
-        // Fade out
-        var count = 0
-        Timer.scheduledTimer(withTimeInterval: stepDur, repeats: true) { [weak self, weak mMix] t in
-            guard let mMix else { t.invalidate(); return }
-            count += 1
-            mMix.outputVolume = 0.20 * (1 - Float(count) / Float(steps))
-            if count >= steps {
-                t.invalidate()
-                self?.playTrack(idx)
-                // Fade in
-                var inCount = 0
-                Timer.scheduledTimer(withTimeInterval: stepDur, repeats: true) { [weak mMix] t2 in
-                    guard let mMix else { t2.invalidate(); return }
-                    inCount += 1
-                    mMix.outputVolume = 0.20 * Float(inCount) / Float(steps)
-                    if inCount >= steps { t2.invalidate() }
+        let outBank = activeBank
+        let inBank  = 1 - activeBank
+        activeBank  = inBank
+
+        // Pre-start the incoming bank at volume 0 so it is audibly silent.
+        musicBankMixers[inBank].outputVolume = 0.0
+        playTrackOnBank(idx, bank: inBank)
+
+        let steps    = 70                               // ~70 steps over 3.5 s → 50 ms/step
+        let stepDur  = kCrossfadeDur / Double(steps)
+        var step     = 0
+
+        crossfadeTimer = Timer.scheduledTimer(withTimeInterval: stepDur, repeats: true) {
+            [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            step += 1
+            // Linear ramp: inBank 0→1, outBank 1→0.
+            let progress = Float(step) / Float(steps)
+            self.musicBankMixers[inBank].outputVolume  = progress
+            self.musicBankMixers[outBank].outputVolume = 1.0 - progress
+            if step >= steps {
+                timer.invalidate()
+                self.crossfadeTimer = nil
+                // Clamp to exact endpoints and stop outgoing voices to free resources.
+                self.musicBankMixers[inBank].outputVolume  = 1.0
+                self.musicBankMixers[outBank].outputVolume = 0.0
+                let nodeOffset = outBank * 4
+                for i in 0 ..< 4 {
+                    self.musicBankNodes[nodeOffset + i].stop()
                 }
             }
         }

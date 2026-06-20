@@ -25,7 +25,11 @@ namespace bf {
 // circular include with world.hpp).
 inline constexpr BlockId LIGHT_AIR = 0, LIGHT_WATER = 9, LIGHT_GLOW = 7;
 
-inline bool light_opaque(BlockId b) { return b != LIGHT_AIR && b != LIGHT_WATER; }
+// Cross-plants (flowers 36/37, tall grass 38, mushroom 39) are billboards, not
+// solid cubes — light passes through them, so their cell stays lit and the ground
+// block beneath isn't rendered black.
+inline bool light_plant(BlockId b) { return b == 36 || b == 37 || b == 38 || b == 39; }
+inline bool light_opaque(BlockId b) { return b != LIGHT_AIR && b != LIGHT_WATER && !light_plant(b); }
 inline std::uint8_t light_emit(BlockId b) { return b == LIGHT_GLOW ? std::uint8_t(14) : std::uint8_t(0); }
 
 class FloodLighting {

@@ -226,7 +226,7 @@ typedef struct bf_camera {
     bf_mat4 view;
     bf_mat4 proj;
     bf_vec3 position;
-    float   _pad0;
+    float   biome_cold;       /* 0..1: 1 = snowy/cold area (precip falls as snow) */
     bf_vec3 forward;
     float   time_of_day;      /* 0..1, 0=midnight 0.5=noon                   */
     bf_vec3 sun_dir;

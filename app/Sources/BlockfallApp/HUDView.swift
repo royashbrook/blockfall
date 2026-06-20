@@ -102,7 +102,11 @@ final class HUDView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         hud.inventory_open != 0 ? self : nil
     }
-    override var acceptsFirstResponder: Bool { hud.inventory_open != 0 }
+    // Never take key focus — the GameView must keep receiving Esc/E so the
+    // inventory can always be closed (clicking a slot was stealing first
+    // responder and killing the close keys). Mouse events still arrive via
+    // hitTest regardless of first responder.
+    override var acceptsFirstResponder: Bool { false }
 
     func update(from h: bf_hud_state) {
         let wasOpen = hud.inventory_open != 0
@@ -373,7 +377,7 @@ final class HUDView: NSView {
                 NSColor.systemYellow.withAlphaComponent(0.7).setStroke(); rr.lineWidth = 1.5; rr.stroke()
                 if cr[i].item != 0 {
                     drawCenteredItem(id: cr[i].item, count: cr[i].count, in: rect, selected: false)
-                    drawText(itemName(cr[i].item), at: NSPoint(x: cx - 6, y: cy - 16), size: 10, color: .white, bold: false)
+                    // (name shown via hover tooltip — inline labels overlapped)
                 }
                 drawText("\(i+1)", at: NSPoint(x: cx + 3, y: cy + slot - 16), size: 12, color: .systemYellow, bold: true)
                 cx += slot + gap
@@ -428,14 +432,40 @@ final class HUDView: NSView {
         (label as NSString).draw(at: NSPoint(x: box.minX + pad, y: box.minY + pad / 2), withAttributes: attrs)
     }
 
+    private func shade(_ c: NSColor, _ f: CGFloat) -> NSColor {
+        let s = c.usingColorSpace(.sRGB) ?? c
+        return NSColor(srgbRed: min(1, s.redComponent * f), green: min(1, s.greenComponent * f),
+                       blue: min(1, s.blueComponent * f), alpha: 1)
+    }
+    private func fillPoly(_ pts: [NSPoint], _ color: NSColor) {
+        let p = NSBezierPath(); p.move(to: pts[0])
+        for q in pts.dropFirst() { p.line(to: q) }
+        p.close(); color.setFill(); p.fill()
+        NSColor.black.withAlphaComponent(0.25).setStroke(); p.lineWidth = 0.5; p.stroke()
+    }
     private func drawCenteredItem(id: bf_item_id, count: UInt16, in rect: NSRect, selected: Bool) {
-        // No icon art yet — a colour-coded chip (matching the block's colour) +
-        // count. The held-item name is shown above the hotbar.
-        itemChipColor(id).setFill()
-        let chip = rect.insetBy(dx: 9, dy: 9)
-        let rr = NSBezierPath(roundedRect: chip, xRadius: 4, yRadius: 4)
-        rr.fill()
-        NSColor.black.withAlphaComponent(0.35).setStroke(); rr.lineWidth = 1; rr.stroke()
+        let base = itemChipColor(id)
+        let chip = rect.insetBy(dx: 8, dy: 8)
+        if id <= 40 {
+            // Block item → little isometric cube icon (top bright, sides shaded).
+            let cx = chip.midX, cy = chip.midY
+            let hw = chip.width * 0.46, qh = chip.height * 0.24, bd = chip.height * 0.34
+            let topApex   = NSPoint(x: cx,      y: cy + bd*0.5 + qh)
+            let rightApex = NSPoint(x: cx + hw, y: cy + bd*0.5)
+            let leftApex  = NSPoint(x: cx - hw, y: cy + bd*0.5)
+            let ctrTop    = NSPoint(x: cx,      y: cy + bd*0.5 - qh)
+            let botLeft   = NSPoint(x: cx - hw, y: cy - bd*0.5)
+            let botRight  = NSPoint(x: cx + hw, y: cy - bd*0.5)
+            let botCtr    = NSPoint(x: cx,      y: cy - bd*0.5 - qh)
+            fillPoly([leftApex, ctrTop, botCtr, botLeft],  shade(base, 0.74))   // left
+            fillPoly([ctrTop, rightApex, botRight, botCtr], shade(base, 0.56))  // right
+            fillPoly([topApex, rightApex, ctrTop, leftApex], shade(base, 1.15)) // top
+        } else {
+            // Tool/material/food → rounded chip.
+            base.setFill()
+            let rr = NSBezierPath(roundedRect: chip, xRadius: 5, yRadius: 5); rr.fill()
+            NSColor.black.withAlphaComponent(0.3).setStroke(); rr.lineWidth = 1; rr.stroke()
+        }
         if count > 1 {
             drawText("\(count)", at: NSPoint(x: rect.maxX - 18, y: rect.minY + 3),
                      size: 12, color: .white, bold: true)

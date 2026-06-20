@@ -982,55 +982,60 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 BlockId plant = AIR;
 
                 if (dom == Biome::Forest) {
-                    // Dense undergrowth: tall_grass most common, flowers, mushrooms,
-                    // and fairly frequent leaf bushes.
+                    // Undergrowth: tall_grass reduced to ~24% (was ~47%), flowers and
+                    // mushrooms kept, bushes unchanged.  Grass now reads as scattered
+                    // tufts under the canopy rather than a dense carpet.
                     if (surf == GRASS) {
-                        if      (roll < 120u) plant = TALL_GRASS;
-                        else if (roll < 140u) plant = FLOWER_RED;
-                        else if (roll < 158u) plant = FLOWER_YELLOW;
-                        else if (roll < 172u) plant = MUSHROOM;
-                        // Bushes: leaf blocks at ground level (20% of columns)
-                        else if (roll < 204u) plant = OAK_LEAVES;
+                        if      (roll <  60u) plant = TALL_GRASS;   // ~24% (was ~47%)
+                        else if (roll <  80u) plant = FLOWER_RED;   // ~8%  (unchanged window)
+                        else if (roll <  98u) plant = FLOWER_YELLOW;// ~7%  (unchanged window)
+                        else if (roll < 112u) plant = MUSHROOM;     // ~5%  (unchanged window)
+                        // Bushes: leaf blocks at ground level (~20% of columns)
+                        else if (roll < 144u) plant = OAK_LEAVES;
                     } else if (surf == DIRT) {
-                        // Shaded dirt: mushrooms more likely
+                        // Shaded dirt: mushrooms more likely, sparse tall grass
                         if      (roll2 < 80u) plant = MUSHROOM;
-                        else if (roll2 < 120u) plant = TALL_GRASS;
+                        else if (roll2 < 100u) plant = TALL_GRASS;  // ~8% (was ~16%)
                     }
                 } else if (dom == Biome::Swamp) {
-                    // Swamp: lots of mushrooms + tall grass, scattered bushes on high spots.
+                    // Swamp: mushrooms + scattered grass tufts, bushes on high spots.
+                    // Tall grass reduced to ~20% (was ~39%).
                     if (surf == GRASS || surf == DIRT) {
-                        if      (roll < 100u) plant = TALL_GRASS;
-                        else if (roll < 150u) plant = MUSHROOM;
-                        else if (roll < 170u) plant = FLOWER_RED;
+                        if      (roll <  50u) plant = TALL_GRASS;   // ~20% (was ~39%)
+                        else if (roll < 100u) plant = MUSHROOM;     // ~20% (unchanged)
+                        else if (roll < 120u) plant = FLOWER_RED;   // ~8%  (unchanged)
                         // Bush (birch leaves for variety in swamp)
-                        else if (roll < 195u) plant = BIRCH_LEAVES;
+                        else if (roll < 145u) plant = BIRCH_LEAVES;
                     }
                 } else if (dom == Biome::Plains) {
-                    // Plains: lots of tall grass, flowers, occasional bushes.
+                    // Plains: scattered grass tufts, flowers prominent, occasional bushes.
+                    // Tall grass reduced to ~20% (was ~39%); flowers kept about the same
+                    // so colorful plants still show as the dominant visual accent.
                     if (surf == GRASS) {
-                        if      (roll < 100u) plant = TALL_GRASS;
-                        else if (roll < 118u) plant = FLOWER_RED;
-                        else if (roll < 136u) plant = FLOWER_YELLOW;
+                        if      (roll <  50u) plant = TALL_GRASS;   // ~20% (was ~39%)
+                        else if (roll <  68u) plant = FLOWER_RED;   // ~7%  (unchanged window)
+                        else if (roll <  86u) plant = FLOWER_YELLOW;// ~7%  (unchanged window)
                         // Occasional mushroom
-                        else if (roll < 142u) plant = MUSHROOM;
+                        else if (roll <  92u) plant = MUSHROOM;     // ~2%  (unchanged)
                         // Scattered bushes (oak leaves, ~8% of grass columns)
-                        else if (roll < 162u) plant = OAK_LEAVES;
+                        else if (roll < 112u) plant = OAK_LEAVES;
                     }
                 } else if (dom == Biome::Mountains) {
-                    // Mountains: sparse grass on lower slopes, no plants above snow line.
+                    // Mountains: very sparse grass on lower slopes, no plants above snow line.
+                    // Tall grass reduced to ~9% (was ~18%).
                     if (H >= SNOW_LINE) {
                         plant = AIR;
                     } else if (surf == GRASS) {
-                        if (roll < 45u) plant = TALL_GRASS;
+                        if (roll < 22u) plant = TALL_GRASS;         // ~9% (was ~18%)
                     }
                 } else {
-                    // Default fallback: plains-like.
+                    // Default fallback: plains-like (sparse).
                     if (surf == GRASS) {
-                        if      (roll < 100u) plant = TALL_GRASS;
-                        else if (roll < 118u) plant = FLOWER_RED;
-                        else if (roll < 136u) plant = FLOWER_YELLOW;
-                        else if (roll < 142u) plant = MUSHROOM;
-                        else if (roll < 162u) plant = OAK_LEAVES;
+                        if      (roll <  50u) plant = TALL_GRASS;   // ~20% (was ~39%)
+                        else if (roll <  68u) plant = FLOWER_RED;
+                        else if (roll <  86u) plant = FLOWER_YELLOW;
+                        else if (roll <  92u) plant = MUSHROOM;
+                        else if (roll < 112u) plant = OAK_LEAVES;
                     }
                 }
 
