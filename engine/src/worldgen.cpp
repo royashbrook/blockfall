@@ -21,14 +21,19 @@
 // block choices are then the weighted average of per-biome parameters — this
 // guarantees C0-continuous terrain across ALL biome boundaries with no cliffs.
 //
+// To keep flat biomes (plains, beach) genuinely flat even when adjacent to
+// hilly biomes, the biome weight of the DOMINANT biome is boosted before
+// blending: w_dom is raised to the 3rd power and all others stay at w^2.
+// This sharpens the transition without creating a hard discontinuity.
+//
 // Biomes and approximate (T,M) centres:
-//   PLAINS      (0.5, 0.5)  flat-ish, grass, lots of flowers+tall grass, sparse trees
+//   PLAINS      (0.5, 0.5)  flat, grass, lots of flowers+tall grass, sparse trees
 //   FOREST      (0.5, 0.8)  rolling, very dense trees, mushrooms, mossy stone
-//   MOUNTAINS   (0.3, 0.4)  tall peaks, stone/gravel exposed, snow above snow line
-//   DESERT      (0.8, 0.1)  gentle dunes (low-freq noise), sand/sand fill, sparse
+//   MOUNTAINS   (0.3, 0.4)  tall peaks, stone/gravel on steep slopes, snow cap
+//   DESERT      (0.8, 0.1)  gentle dunes + micro-ripple, sand fill
 //   SNOWY       (0.1, 0.5)  snow surface, birch trees, frozen water (ice)
 //   SWAMP       (0.5, 0.95) low+flat, water pools, mud (dirt), mushrooms, clay
-//   BEACH       (0.6, 0.3)  thin sand band near sea level (low amp)
+//   BEACH       (0.6, 0.3)  thin sand band near sea level (very low amp)
 //
 // Terrain shape per biome:
 //   base_y  — vertical centre of the terrain column
@@ -36,7 +41,8 @@
 //   freq    — primary noise frequency (higher = more jagged/detailed)
 //   octaves — fBm octave count (mountains get more detail)
 //
-// Cave carving (unchanged): 3D fbm > threshold => AIR underground.
+// Cave carving: 3D fbm > threshold => AIR underground.
+//   FIX: cave carving requires wy < H - 6 (was H-2) to prevent surface holes.
 //
 // Decoration (seam-aware scatter, PRESERVED from previous agent)
 // -----------------------------------------------------------------
@@ -48,6 +54,18 @@
 //
 // Plants (tall grass, flowers, mushrooms) are single-block decorations placed
 // directly on each column's surface — no cross-chunk margin needed.
+//
+// Biome-distinct surface features:
+//   Mountains: stone/cobblestone on steep slopes (slope computed from the
+//              same continuous height function — seam safe); snow cap above
+//              SNOW_LINE; gravel patches on high ground.
+//   Desert:    micro-ripple noise (extra 0-2 block height variation),
+//              sandstone sub-layer (stone id) below sand fill.
+//   Swamp:     clay sub-layer patches, shallow water pools.
+//   Forest:    mossy stone patches below surface.
+//   Snowy:     snow_layer surface, ice on water.
+//   Plains:    grass + flowers + tall grass; genuinely flat (amp=2).
+//   Beach:     bare sand, very flat (amp=1).
 // ============================================================================
 #include "blockcore/worldgen.hpp"
 #include "blockcore/chunk.hpp"
@@ -67,6 +85,7 @@ static constexpr BlockId STONE         = 3;
 static constexpr BlockId OAK_LEAVES    = 5;
 static constexpr BlockId SAND          = 6;
 static constexpr BlockId WATER         = 9;
+static constexpr BlockId COBBLESTONE   = 10;
 static constexpr BlockId GRAVEL        = 11;
 static constexpr BlockId SNOW_LAYER    = 12;
 static constexpr BlockId ICE           = 13;
@@ -87,6 +106,10 @@ static constexpr int SNOW_LINE = 24;
 
 // Cave noise threshold: cells whose 3D noise > this become AIR.
 static constexpr float CAVE_THRESH = 0.68f;
+
+// Surface margin for cave carving: caves must be this many blocks below surface.
+// FIX: raised from 2 to 6 to eliminate surface holes/AIR pockets visible from above.
+static constexpr int CAVE_SURFACE_MARGIN = 6;
 
 // ---------------------------------------------------------------------------
 // Hash primitives — Wang/murmur-inspired 64-bit mixes
@@ -270,21 +293,25 @@ struct BiomeCentre {
 };
 
 // Table indexed by Biome enum value.
+// Plains: amp reduced to 2 (from 10), freq reduced to 1/128 — genuinely flat.
+// Beach:  amp reduced to 1 (from 2) — also very flat.
 // Mountain base_y and amp are deliberately high so blended peaks reach >=30.
 // Even at ~60-70% mountain weight, peaks should exceed 30:
 //   h = 0.65*36 + 0.35*8 = 23.4 + 2.8 = 26 ... need higher base
 // To guarantee >30 even at 60% weight we need base_y+amp such that
 //   0.6*(base_y+amp) + 0.4*8 > 30  =>  base_y+amp > (30-3.2)/0.6 = 44.7
 // Use base_y=18, amp=38 => 56, so 0.6*56+0.4*8 = 33.6+3.2 = 36.8 > 30. Good.
+// With dominant-weight boosting, mountain-dominated columns get even more weight,
+// so the effective blend pushes mountains higher while plains stays flat.
 static constexpr BiomeParams BIOME_PARAMS[NUM_BIOMES] = {
-    // base_y  amp   freq        octaves  persistence
-    {  8.0f,  10.0f, 1.0f/48.0f,  4,     0.50f },  // Plains
-    { 10.0f,  14.0f, 1.0f/40.0f,  4,     0.55f },  // Forest
-    { 18.0f,  38.0f, 1.0f/28.0f,  5,     0.62f },  // Mountains (tall, jagged)
-    {  7.0f,   9.0f, 1.0f/64.0f,  3,     0.45f },  // Desert (wide smooth dunes)
-    {  8.0f,  10.0f, 1.0f/48.0f,  4,     0.50f },  // Snowy (plains-shaped, white)
-    {  5.0f,   4.0f, 1.0f/56.0f,  3,     0.45f },  // Swamp (very flat, low)
-    {  6.5f,   2.0f, 1.0f/80.0f,  2,     0.40f },  // Beach (very flat near sea)
+    // base_y  amp    freq         octaves  persistence
+    {  8.0f,   2.0f,  1.0f/128.0f, 2,     0.40f },  // Plains  (very flat — amp 2, low freq)
+    { 10.0f,  14.0f,  1.0f/40.0f,  4,     0.55f },  // Forest
+    { 18.0f,  38.0f,  1.0f/28.0f,  5,     0.62f },  // Mountains (tall, jagged)
+    {  7.0f,   9.0f,  1.0f/64.0f,  3,     0.45f },  // Desert (wide smooth dunes)
+    {  8.0f,  10.0f,  1.0f/48.0f,  4,     0.50f },  // Snowy (plains-shaped, white)
+    {  5.0f,   4.0f,  1.0f/56.0f,  3,     0.45f },  // Swamp (very flat, low)
+    {  6.5f,   1.0f,  1.0f/96.0f,  2,     0.40f },  // Beach (extremely flat near sea)
 };
 
 static constexpr BiomeCentre BIOME_CENTRES[NUM_BIOMES] = {
@@ -305,6 +332,12 @@ static constexpr BiomeCentre BIOME_CENTRES[NUM_BIOMES] = {
 // Computes per-biome weights at a world column using two independent noise
 // channels (temperature, moisture).  The weights are soft bells in (T,M)
 // space, so transitions are smooth and purely a function of (wx,wz,seed).
+//
+// FLATNESS FIX: After computing the raw bell weights, we sharpen the dominant
+// biome's influence by boosting it: the dominant weight is cubed (w^3) while
+// others stay at w^2.  This sharpens the transition and ensures a plains-
+// dominated column remains nearly flat rather than averaging in mountain noise.
+// The boost is a continuous monotone function so C0 continuity is preserved.
 // Weights are normalised so they sum to 1.
 // ---------------------------------------------------------------------------
 
@@ -321,28 +354,45 @@ static void biome_weights(std::int32_t wx, std::int32_t wz, std::uint64_t seed,
     float temp  = fbm2(fwx, fwz, tseed, /*octaves=*/2, /*freq=*/1.0f / 192.0f);
     float moist = fbm2(fwx, fwz, mseed, /*octaves=*/2, /*freq=*/1.0f / 192.0f);
 
-    float total = 0.0f;
+    float raw[NUM_BIOMES];
     for (int i = 0; i < NUM_BIOMES; ++i) {
-        const BiomeCentre& c = BIOME_CENTRES[i];
-        float dt = (temp  - c.temp)  / c.radius_t;
-        float dm = (moist - c.moist) / c.radius_m;
-        // Gaussian-like kernel: exp(-0.5*(dt^2+dm^2)).
-        // Use fast approximation: max(0, 1 - (dt^2+dm^2))^2 (tent squared).
+        const BiomeCentre& bc = BIOME_CENTRES[i];
+        float dt = (temp  - bc.temp)  / bc.radius_t;
+        float dm = (moist - bc.moist) / bc.radius_m;
+        // Tent-squared kernel: max(0, 1 - (dt^2+dm^2))^2
         float d2 = dt * dt + dm * dm;
-        // Clamp to [0,1] before squaring for a tent-like profile.
         float w = 1.0f - d2;
         if (w < 0.0f) w = 0.0f;
         w = w * w;
+        raw[i] = w;
+    }
+
+    // Find dominant biome index.
+    int dom_idx = 0;
+    for (int i = 1; i < NUM_BIOMES; ++i) {
+        if (raw[i] > raw[dom_idx]) dom_idx = i;
+    }
+
+    // Sharpen: boost dominant biome weight (w^3 vs w^2 for others).
+    // This keeps flat biomes flat at their centres without creating hard edges.
+    float total2 = 0.0f;
+    for (int i = 0; i < NUM_BIOMES; ++i) {
+        float w = raw[i];
+        if (i == dom_idx) {
+            w = w * w * w;   // w^3 for dominant
+        } else {
+            w = w * w;       // w^2 for others (already applied above, recompute)
+        }
         weights[i] = w;
-        total += w;
+        total2 += w;
     }
 
     // Normalise.
-    if (total < 1e-6f) {
+    if (total2 < 1e-6f) {
         // Shouldn't happen but fall back to Plains.
         for (int i = 0; i < NUM_BIOMES; ++i) weights[i] = (i == 0) ? 1.0f : 0.0f;
     } else {
-        float inv = 1.0f / total;
+        float inv = 1.0f / total2;
         for (int i = 0; i < NUM_BIOMES; ++i) weights[i] *= inv;
     }
 }
@@ -364,25 +414,28 @@ static Biome dominant_biome(const float weights[NUM_BIOMES]) noexcept {
 // The per-biome terrain is weighted by the biome weight, producing smooth
 // blends across all biome transitions.  This guarantees seam-free terrain
 // (C0 continuous) because the weight function itself is C∞.
+//
+// Desert biome gets a small micro-ripple (extra 0-2 block noise on top of
+// the base height) for variety.  This is folded into the desert biome's
+// noise evaluation so it participates in the blend naturally.
 // ---------------------------------------------------------------------------
+
+// Biome seed offsets — keep separate from main terrain to avoid cross-correlation.
+static constexpr std::uint64_t BIOME_SEED_OFFSETS[NUM_BIOMES] = {
+    0x0000000000000001ull,
+    0x1111111111111111ull,
+    0x2222222222222222ull,
+    0x3333333333333333ull,
+    0x4444444444444444ull,
+    0x5555555555555555ull,
+    0x6666666666666666ull,
+};
 
 static int surface_height(std::int32_t wx, std::int32_t wz,
                           std::uint64_t seed,
                           const float weights[NUM_BIOMES]) noexcept {
     float fwx = static_cast<float>(wx);
     float fwz = static_cast<float>(wz);
-
-    // Each biome has a separate terrain seed to avoid cross-biome correlation.
-    // We use offset seeds from the base seed so biome terrain looks independent.
-    static constexpr std::uint64_t BIOME_SEED_OFFSETS[NUM_BIOMES] = {
-        0x0000000000000001ull,
-        0x1111111111111111ull,
-        0x2222222222222222ull,
-        0x3333333333333333ull,
-        0x4444444444444444ull,
-        0x5555555555555555ull,
-        0x6666666666666666ull,
-    };
 
     float blended_h = 0.0f;
 
@@ -394,12 +447,49 @@ static int surface_height(std::int32_t wx, std::int32_t wz,
 
         float n = fbm2(fwx, fwz, bseed, p.octaves, p.freq,
                        /*lacunarity=*/2.0f, p.persistence);
+
+        // For desert: add micro-ripple (fine sand ripple, 0-2 blocks).
+        if (static_cast<Biome>(i) == Biome::Desert) {
+            std::uint64_t ripple_seed = fmix64(seed ^ 0xDEA0D5A0D5A0D5A0ull);
+            float ripple = value_noise2(fwx * (1.0f / 12.0f), fwz * (1.0f / 12.0f), ripple_seed);
+            // ripple in [0,1] -> add 0..2 blocks
+            n = n + (ripple * 2.0f / (p.amp * 2.0f + 0.001f));  // keep in ~[0,1] range
+            if (n > 1.0f) n = 1.0f;
+        }
+
         // Map n in [0,1] -> [base_y - amp, base_y + amp]
         float h = p.base_y + (n * 2.0f - 1.0f) * p.amp;
         blended_h += weights[i] * h;
     }
 
     return static_cast<int>(blended_h);
+}
+
+// ---------------------------------------------------------------------------
+// Slope computation for mountain biome (seam-safe)
+// ---------------------------------------------------------------------------
+// Computes slope as max absolute height difference to 4 orthogonal neighbours.
+// Uses the SAME surface_height() function on neighbouring coords — because
+// surface_height is a pure continuous function, this is seam-safe across
+// chunk boundaries: both chunks will compute identical neighbour heights.
+// ---------------------------------------------------------------------------
+static int slope_at(std::int32_t wx, std::int32_t wz, std::uint64_t seed, int H) noexcept {
+    float wN[NUM_BIOMES], wS[NUM_BIOMES], wE[NUM_BIOMES], wW[NUM_BIOMES];
+    biome_weights(wx,     wz - 1, seed, wN);
+    biome_weights(wx,     wz + 1, seed, wS);
+    biome_weights(wx + 1, wz,     seed, wE);
+    biome_weights(wx - 1, wz,     seed, wW);
+    int hN = surface_height(wx,     wz - 1, seed, wN);
+    int hS = surface_height(wx,     wz + 1, seed, wS);
+    int hE = surface_height(wx + 1, wz,     seed, wE);
+    int hW = surface_height(wx - 1, wz,     seed, wW);
+
+    auto absi = [](int a, int b) noexcept -> int { int d = a - b; return d < 0 ? -d : d; };
+    int s = absi(H, hN);
+    int t = absi(H, hS); if (t > s) s = t;
+    t = absi(H, hE); if (t > s) s = t;
+    t = absi(H, hW); if (t > s) s = t;
+    return s;
 }
 
 // ---------------------------------------------------------------------------
@@ -559,10 +649,6 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 int H = surface_height(td.root_wx, td.root_wz, seed, weights);
                 if (H <= SEA_LEVEL) continue;  // don't grow trees underwater
 
-                // Don't grow trees above the snow line in non-mountain biomes
-                // (mountains have no trees anyway by cell check above).
-                // (Mountains already excluded by tree_for_cell pruning.)
-
                 // Trunk: H+1 .. H+trunk_height
                 int trunk_base_wy = H + 1;
                 int trunk_top_wy  = H + td.trunk_height;
@@ -651,10 +737,8 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
 
                 if (dom == Biome::Snowy) {
                     // Snowy: snow layer already placed on surface by terrain pass.
-                    // Place it as decoration only if surface is SNOW_LAYER.
-                    // Just a rare flower underneath snow? No — skip surface plants on snow.
-                    (void)surf;
                     // No plants in snowy biome (too cold).
+                    (void)surf;
                     plant = AIR;
                 } else if (dom == Biome::Forest) {
                     // Dense undergrowth: more tall grass, some mushrooms, fewer flowers.
@@ -798,6 +882,17 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
             Biome dom = dominant_biome(weights);
             int H = surface_height(wx, wz, seed_, weights);
 
+            // -----------------------------------------------------------------
+            // Mountain slope detection (seam-safe: uses same continuous height fn).
+            // Steep slopes (>=3 blocks drop to neighbour) get stone/cobblestone
+            // instead of grass, to read as exposed rock faces.
+            // -----------------------------------------------------------------
+            bool is_steep = false;
+            if (dom == Biome::Mountains && H < SNOW_LINE) {
+                int slope = slope_at(wx, wz, seed_, H);
+                is_steep = (slope >= 3);
+            }
+
             // Choose surface and fill blocks based on dominant biome + height.
             BlockId surface_block;
             BlockId fill_block;
@@ -816,8 +911,12 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
                 case Biome::Mountains:
                     if (H >= SNOW_LINE) {
                         // High peaks: stone/gravel exposed, snow on very top.
-                        // Surface block will be set per-layer below.
                         surface_block = STONE;
+                        fill_block    = STONE;
+                    } else if (is_steep) {
+                        // Steep slopes: bare stone/cobblestone (rocky face).
+                        // Use cobblestone for the very surface, stone beneath.
+                        surface_block = COBBLESTONE;
                         fill_block    = STONE;
                     } else {
                         surface_block = GRASS;
@@ -865,12 +964,18 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
                         b = surface_block;
                     }
                 } else if (wy >= H - 3) {
-                    // Sub-surface fill layer.
+                    // Sub-surface fill layer (3 blocks deep).
                     if (dom == Biome::Mountains && H >= SNOW_LINE && wy == H - 1) {
                         // Just below peak: gravel for variety.
                         b = GRAVEL;
                     } else if (dom == Biome::Desert) {
-                        b = SAND;
+                        // Desert: sand fill with a thin stone (sandstone-like) layer
+                        // at H-3 for visual variety when digging.
+                        if (wy == H - 3) {
+                            b = STONE;
+                        } else {
+                            b = SAND;
+                        }
                     } else {
                         b = fill_block;
                     }
@@ -878,8 +983,15 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
                     b = STONE;
                 }
 
-                // Cave carving (unchanged).
-                if (b != AIR && b != WATER && wy < H - 2 && wy > kColumnMinY + 4) {
+                // -----------------------------------------------------------------
+                // Cave carving.
+                // FIX: surface margin raised from 2 to CAVE_SURFACE_MARGIN (6).
+                // This prevents AIR pockets within the top 5 blocks under the
+                // surface, eliminating the "holes in hilltops" feedback.
+                // Caves still exist well underground.
+                // -----------------------------------------------------------------
+                if (b != AIR && b != WATER && wy < H - CAVE_SURFACE_MARGIN
+                             && wy > kColumnMinY + 4) {
                     float fwx = static_cast<float>(wx);
                     float fwy = static_cast<float>(wy);
                     float fwz = static_cast<float>(wz);

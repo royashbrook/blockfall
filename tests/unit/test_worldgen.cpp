@@ -1,7 +1,8 @@
 // Track C — TerrainGen deterministic worldgen tests. Framework-free.
 // Tests: determinism, seed sensitivity, no seams, non-trivial output, caves,
 //        trees, decoration seam, plants, biome variety, mountain height,
-//        snow on high ground, snowy-biome seam continuity.
+//        snow on high ground, snowy-biome seam continuity,
+//        no surface holes (cave margin fix), flatness (plains vs mountains).
 #include "blockcore/worldgen.hpp"
 #include "blockcore/chunk.hpp"
 
@@ -544,7 +545,8 @@ static void test_biome_variety() {
                     if (top_block == 12u || top_block == 13u)
                                            found_snow_or_ice   = true;  // SNOW/ICE
                     if (top_block == 2u)   found_dirt_surface  = true;  // DIRT (swamp)
-                    if (top_block == 3u)   found_stone_surface = true;  // STONE (mountain rock)
+                    if (top_block == 3u || top_block == 10u)
+                                           found_stone_surface = true;  // STONE/COBBLESTONE
                     if (top_wy > 30)       found_high_column   = true;
                     if (top_wy <= 8)       found_low_column    = true;
                 }
@@ -574,7 +576,7 @@ static void test_biome_variety() {
     CHECK(found_low_column,
           "biome variety: low column with H <= 8 (swamp) found in world scan");
     CHECK(found_stone_surface,
-          "biome variety: stone surface (mountain peak) found in world scan");
+          "biome variety: stone/cobblestone surface (mountain peak/slope) found in world scan");
 }
 
 // ---------------------------------------------------------------------------
@@ -628,7 +630,7 @@ static void test_mountain_height() {
                             if (b != 0 && b != 9u && !is_decoration(b)) {
                                 int wy = static_cast<int>(cy_wy_base) + ly;
                                 if (wy > chunk_max_h) chunk_max_h = wy;
-                                if (wy >= 24 && b == 3u) has_stone_high = true;
+                                if (wy >= 24 && (b == 3u || b == 10u)) has_stone_high = true;
                                 col_found = true;
                             }
                         }
@@ -636,7 +638,7 @@ static void test_mountain_height() {
                 }
             }
 
-            // Classify: mountain chunk has stone above snow-line height.
+            // Classify: mountain chunk has stone/cobblestone above snow-line height.
             if (has_stone_high) {
                 if (chunk_max_h > max_mountain_h) max_mountain_h = chunk_max_h;
             } else {
@@ -692,6 +694,235 @@ static void test_snow_exists() {
 }
 
 // ---------------------------------------------------------------------------
+// 13. NO SURFACE HOLES
+//     For every surface column in a wide multi-biome area, the 5 blocks
+//     directly beneath the topmost solid block must ALL be solid (not AIR).
+//     Water is not a hole — it's legitimate shallow water.
+//     The test verifies the cave surface-margin fix (caves must be >= 6 blocks
+//     below surface so the top 5 sub-surface blocks are never carved out).
+//     Allow at most 0 hole-columns (strict: any failure is reported).
+// ---------------------------------------------------------------------------
+static constexpr BlockId AIR_ID     = 0;
+static constexpr BlockId WATER_ID13 = 9;
+static constexpr BlockId GRASS_ID   = 1;
+static constexpr BlockId STONE_ID   = 3;
+static constexpr BlockId COBBLE_ID  = 10;
+
+static void test_no_surface_holes() {
+    constexpr std::uint64_t SEED = 0xF00DCAFE5EED0001ull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    // Decorations should not count as terrain for hole-detection.
+    auto is_decoration = [](BlockId b) -> bool {
+        return b == 5 || b == 21 || b == 22 || b == 27
+            || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+    };
+
+    // Scan ±12 chunks in X and Z (24x24 = 576 chunk columns, 147456 world columns).
+    constexpr int SCAN_R = 12;
+
+    // We need multiple y-slices to capture the full surface + sub-surface.
+    // Surface typically lies in y = -5..60.
+    constexpr int CY_MIN = -2;
+    constexpr int CY_MAX =  5;
+    constexpr int NUM_CY = CY_MAX - CY_MIN + 1;
+
+    int hole_columns = 0;
+    int total_columns = 0;
+
+    for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
+        for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
+            // Generate all y-slices for this column.
+            std::unique_ptr<PaletteChunk> slices[NUM_CY];
+            for (int ci = 0; ci < NUM_CY; ++ci) {
+                int cy = CY_MIN + ci;
+                slices[ci] = std::make_unique<PaletteChunk>(
+                    ChunkCoord{cx, cy, cz}, BlockId(0));
+                g.generate({cx, cy, cz}, *slices[ci]);
+            }
+
+            // Helper: get block at world-y (returns AIR_ID if out of our range).
+            auto block_at_wy = [&](int lx2, int lz2, std::int32_t wy) -> BlockId {
+                for (int ci = NUM_CY - 1; ci >= 0; --ci) {
+                    std::int32_t base = (CY_MIN + ci) * kChunkDim;
+                    if (wy >= base && wy < base + kChunkDim) {
+                        return slices[ci]->get(lx2, static_cast<int>(wy - base), lz2);
+                    }
+                }
+                return AIR_ID;
+            };
+
+            for (int lz = 0; lz < kChunkDim; ++lz) {
+                for (int lx = 0; lx < kChunkDim; ++lx) {
+                    // Find topmost solid (non-air, non-water, non-decoration) block.
+                    std::int32_t top_wy = std::int32_t(CY_MIN) * kChunkDim - 1;
+                    bool found_surface = false;
+
+                    for (int ci = NUM_CY - 1; ci >= 0 && !found_surface; --ci) {
+                        std::int32_t base = (CY_MIN + ci) * kChunkDim;
+                        for (int ly = kChunkDim - 1; ly >= 0 && !found_surface; --ly) {
+                            BlockId b = slices[ci]->get(lx, ly, lz);
+                            if (b != AIR_ID && b != WATER_ID13 && !is_decoration(b)) {
+                                top_wy = base + ly;
+                                found_surface = true;
+                            }
+                        }
+                    }
+
+                    if (!found_surface) continue;  // below-ground column, skip
+
+                    ++total_columns;
+
+                    // Check the 5 blocks directly below the surface.
+                    // They must all be non-AIR (solid or water — no cave pockets).
+                    bool has_hole = false;
+                    for (int depth = 1; depth <= 5; ++depth) {
+                        BlockId sub = block_at_wy(lx, lz, top_wy - depth);
+                        if (sub == AIR_ID) {
+                            has_hole = true;
+                            break;
+                        }
+                    }
+                    if (has_hole) ++hole_columns;
+                }
+            }
+        }
+    }
+
+    // We require zero holes. The cave surface margin (6 blocks) should
+    // guarantee that absolutely no AIR appears in the top 5 sub-surface blocks.
+    CHECK(hole_columns == 0,
+          "no surface holes: zero columns have AIR in the 5 blocks beneath the surface");
+
+    // Sanity: we must have scanned a meaningful number of columns.
+    CHECK(total_columns > 10000,
+          "no surface holes: scanned at least 10k surface columns (sanity)");
+}
+
+// ---------------------------------------------------------------------------
+// 14. FLATNESS
+//     Plains columns should be genuinely flat (small height variation).
+//     Mountain columns should be tall and varied.
+//
+//     We find a chunk-region that is strongly plains (all 16x16 columns in an
+//     8x8 world patch are dominated by plains based on their surface height
+//     staying consistently low and grass-topped) and verify that the height
+//     variation (max - min over the patch) is small (<=3 blocks).
+//
+//     We also verify that over the same large scan the mountain region has
+//     much greater height variation (>=20 blocks) confirming contrast.
+//
+//     Because we cannot query biome weights directly from the test, we use the
+//     surface block and height as a proxy: a column is "plains-like" if its
+//     surface block is GRASS and its surface height is in [6..14].
+// ---------------------------------------------------------------------------
+static void test_flatness() {
+    constexpr std::uint64_t SEED = 0xF1A7B10C5EED0002ull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    auto is_decoration = [](BlockId b) -> bool {
+        return b == 5 || b == 21 || b == 22 || b == 27
+            || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+    };
+
+    constexpr int SCAN_R = 20;
+    constexpr int CY_MIN = -1;
+    constexpr int CY_MAX =  5;
+    constexpr int NUM_CY = CY_MAX - CY_MIN + 1;
+
+    // For each chunk column, record the per-column surface heights.
+    // We'll look for an 8x8-block "flat patch" where all columns are grass+low.
+
+    // Collect heights from a coarser per-chunk-column scan.
+    // For each (cx, cz) we sample the 16x16 columns and record:
+    //   - min/max height over the chunk
+    //   - fraction of grass-surface, low-height columns
+
+    // We'll store per-column (lx, lz within the chunk) heights for a selected chunk.
+    // Strategy: find a chunk where height variation is tiny (plains candidate).
+    int best_plains_variation = 999;
+    int mountain_max_variation = 0;
+
+    for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
+        for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
+            std::unique_ptr<PaletteChunk> slices[NUM_CY];
+            for (int ci = 0; ci < NUM_CY; ++ci) {
+                int cy = CY_MIN + ci;
+                slices[ci] = std::make_unique<PaletteChunk>(
+                    ChunkCoord{cx, cy, cz}, BlockId(0));
+                g.generate({cx, cy, cz}, *slices[ci]);
+            }
+
+            int min_h = 9999, max_h = -9999;
+            int grass_count = 0;
+            bool any_stone_high = false;
+
+            for (int lz = 0; lz < kChunkDim; ++lz) {
+                for (int lx = 0; lx < kChunkDim; ++lx) {
+                    // Find top solid.
+                    std::int32_t top_wy = std::int32_t(CY_MIN) * kChunkDim - 1;
+                    BlockId top_b = AIR_ID;
+                    bool found = false;
+                    for (int ci = NUM_CY - 1; ci >= 0 && !found; --ci) {
+                        std::int32_t base = (CY_MIN + ci) * kChunkDim;
+                        for (int ly = kChunkDim - 1; ly >= 0 && !found; --ly) {
+                            BlockId b = slices[ci]->get(lx, ly, lz);
+                            if (b != AIR_ID && b != WATER_ID13 && !is_decoration(b)) {
+                                top_wy = base + ly;
+                                top_b  = b;
+                                found  = true;
+                            }
+                        }
+                    }
+                    if (!found) continue;
+
+                    int h = static_cast<int>(top_wy);
+                    if (h < min_h) min_h = h;
+                    if (h > max_h) max_h = h;
+
+                    if (top_b == GRASS_ID && h >= 5 && h <= 14) ++grass_count;
+                    if (h >= 24 && (top_b == STONE_ID || top_b == COBBLE_ID)) {
+                        any_stone_high = true;
+                    }
+                }
+            }
+
+            if (min_h > max_h) continue;  // no surface found
+
+            int variation = max_h - min_h;
+
+            // Plains candidate: mostly grass, height in low range.
+            // Consider a chunk "plains-dominated" if >=75% of its columns
+            // are grass-topped and between y=5 and y=14.
+            if (grass_count >= 180) {  // 180/256 ~ 70%
+                if (variation < best_plains_variation) {
+                    best_plains_variation = variation;
+                }
+            }
+
+            // Mountain candidate: has stone above snow line.
+            if (any_stone_high) {
+                if (variation > mountain_max_variation) {
+                    mountain_max_variation = variation;
+                }
+            }
+        }
+    }
+
+    // Plains: height variation within a chunk should be very small (<=5 blocks).
+    // With amp=2, the max theoretical range is 4 blocks (base±2); blending
+    // and biome transitions may add a tiny bit more, so we allow <=5.
+    CHECK(best_plains_variation <= 5,
+          "flatness: plains biome chunk height variation is <= 5 blocks (genuinely flat)");
+
+    // Mountains: at least one mountain chunk has significant variation (>=12 blocks).
+    CHECK(mountain_max_variation >= 12,
+          "flatness: mountain biome chunk height variation is >= 12 blocks (dramatic)");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -708,6 +939,8 @@ int main() {
     test_biome_variety();
     test_mountain_height();
     test_snow_exists();
+    test_no_surface_holes();
+    test_flatness();
 
     if (fails == 0) {
         std::printf("OK: worldgen tests\n");

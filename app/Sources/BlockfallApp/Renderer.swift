@@ -69,19 +69,29 @@ struct Uniforms {
     var sunDirTime: SIMD4<Float>    // xyz sun dir, w time-of-day
 }
 
-/// Matches the MSL SkyUniforms struct (sunDirTime only — 16 bytes).
+/// Matches the MSL SkyUniforms struct.
+/// Camera basis vectors let the fragment reconstruct a world-space view ray
+/// so the sky dome (sun, clouds, stars) sit fixed in the world and parallax
+/// correctly as you turn and look up/down.
 struct SkyUniforms {
-    var sunDirTime: SIMD4<Float>    // xyz sun dir, w time-of-day
+    var sunDirTime: SIMD4<Float>    // xyz sun dir (pointing FROM sun, i.e. downward), w time-of-day
+    var camRight:   SIMD4<Float>    // xyz world-space camera right, w = tanHalfFov
+    var camUp:      SIMD4<Float>    // xyz world-space camera up,    w = aspect ratio
+    var camFwd:     SIMD4<Float>    // xyz world-space camera forward (into scene), w unused
 }
 
 /// Extra per-frame uniforms passed as fragment bytes at index 2 for terrain pass,
 /// and as both vertex+fragment bytes for the underwater post pass.
-/// 16 bytes — not seen by the engine, set in draw(in:).
+/// 32 bytes — not seen by the engine, set in draw(in:).
+/// Layout must match MSL WaterUniforms struct:
+///   float4 row0: wallClockSecs, underwater, pad0, pad1
+///   float4 row1: cameraPosW (xyz = world camera pos, w = unused)
 struct WaterUniforms {
     var wallClockSecs: Float   // CACurrentMediaTime() mod 3600 — for water anim + weather
     var underwater: Float      // 1.0 if camera is submerged, else 0.0
     var pad0: Float = 0
     var pad1: Float = 0
+    var cameraPosW: SIMD4<Float> = .zero  // xyz = world-space camera pos, w unused
 }
 
 // MARK: - Renderer
@@ -262,7 +272,8 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // 3) camera: engine view, proj recomputed for the live aspect
         let aspect = Float(view.drawableSize.width / max(1, view.drawableSize.height))
-        let proj = Renderer.perspective(fovy: 1.20, aspect: aspect, near: 0.05, far: 512)
+        let fovy: Float = 1.20
+        let proj = Renderer.perspective(fovy: fovy, aspect: aspect, near: 0.05, far: 512)
         let viewM = Renderer.mat(frame.camera.view)
         let viewProj = proj * viewM
         let sun = frame.camera.sun_dir
@@ -270,6 +281,27 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Wall-clock seconds (mod 3600 to stay finite) for water + weather animation.
         let wallClock = Float(now.truncatingRemainder(dividingBy: 3600.0))
         let isUnderwater = frame.camera.underwater
+
+        // --- Camera basis for sky dome view-ray reconstruction ---
+        // The view matrix is column-major: columns are (right, up, -forward, translation)
+        // in view space but the rows are the world-space basis axes.
+        // Row 0 of view matrix = world right, row 1 = world up, row 2 = world -forward.
+        // simd_float4x4 columns: c0=(r0,r1,r2,r3), so row0.x=c0[0], row0.y=c1[0], row0.z=c2[0]
+        let camRight = SIMD3<Float>(viewM.columns.0.x, viewM.columns.1.x, viewM.columns.2.x)
+        let camUp    = SIMD3<Float>(viewM.columns.0.y, viewM.columns.1.y, viewM.columns.2.y)
+        // Forward = -row2 (view matrix row2 points TOWARD -Z in view, which is behind camera)
+        let camFwd   = SIMD3<Float>(-viewM.columns.0.z, -viewM.columns.1.z, -viewM.columns.2.z)
+        let tanHalfFov = tan(fovy * 0.5)
+
+        // Extract camera world position from inverse view: position = -(R^T * t)
+        // where t = view.columns.3. For an orthonormal view matrix R^T = R^-1.
+        let vt = viewM.columns.3
+        let camPosW = SIMD4<Float>(
+            -(viewM.columns.0.x * vt.x + viewM.columns.1.x * vt.y + viewM.columns.2.x * vt.z),
+            -(viewM.columns.0.y * vt.x + viewM.columns.1.y * vt.y + viewM.columns.2.y * vt.z),
+            -(viewM.columns.0.z * vt.x + viewM.columns.1.z * vt.y + viewM.columns.2.z * vt.z),
+            0
+        )
 
         // 4) sky + depth clear
         let sky = skyColor(frame.camera.time_of_day)
@@ -286,11 +318,15 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setRenderPipelineState(skyPipeline)
                 enc.setDepthStencilState(skyDepthState)
                 enc.setCullMode(.none)
-                var su = SkyUniforms(sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day))
-                // Pack wall-clock into a separate call for the sky (weather / cloud drift).
+                var su = SkyUniforms(
+                    sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
+                    camRight:   SIMD4<Float>(camRight.x, camRight.y, camRight.z, tanHalfFov),
+                    camUp:      SIMD4<Float>(camUp.x,    camUp.y,    camUp.z,    aspect),
+                    camFwd:     SIMD4<Float>(camFwd.x,   camFwd.y,   camFwd.z,   0))
                 enc.setVertexBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
                 enc.setFragmentBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
-                var wuSky = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater)
+                var wuSky = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater,
+                                          cameraPosW: camPosW)
                 enc.setFragmentBytes(&wuSky, length: MemoryLayout<WaterUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             }
@@ -302,7 +338,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             enc.setFrontFacing(.counterClockwise)
 
             // Water/extra uniforms bound once for entire terrain pass (fragment index 2).
-            var wu = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater)
+            var wu = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater,
+                                   cameraPosW: camPosW)
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
 
             for i in 0..<Int(frame.draw_count) {
@@ -331,7 +368,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setRenderPipelineState(underwaterPipeline)
                 enc.setDepthStencilState(skyDepthState)  // always-pass, no write
                 enc.setCullMode(.none)
-                var wuPost = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater)
+                var wuPost = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater,
+                                           cameraPosW: camPosW)
                 enc.setVertexBytes(&wuPost, length: MemoryLayout<WaterUniforms>.stride, index: 0)
                 enc.setFragmentBytes(&wuPost, length: MemoryLayout<WaterUniforms>.stride, index: 0)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -406,7 +444,13 @@ final class Renderer: NSObject, MTKViewDelegate {
     struct PackedVertex { uint pos; uint normuv; ushort material; uchar sky; uchar block; uint reserved; };
     struct Uniforms { float4x4 viewProj; float4 chunkOrigin; float4 sunDirTime; };
     // WaterUniforms: separate small uniform, not engine-filled.
-    struct WaterUniforms { float wallClockSecs; float underwater; float pad0; float pad1; };
+    // layout: [0] wallClockSecs, [1] underwater, [2] pad0, [3] pad1,
+    //         [4-6] cameraPos.xyz, [7] pad2  (float4x2 = 32 bytes total)
+    // Using float4 for cameraPos slot to guarantee 16-byte alignment match with Swift SIMD3.
+    struct WaterUniforms { float wallClockSecs; float underwater; float pad0; float pad1;
+                           float4 cameraPosW; };  // xyz = world pos, w = pad
+    // Convenience accessor inside shaders:
+    #define UW_CAM_POS(wu) (wu).cameraPosW.xyz
 
     struct VOut {
         float4 position [[position]];
@@ -685,25 +729,54 @@ final class Renderer: NSObject, MTKViewDelegate {
         // the color back. Luminance-preserving desaturation.
         float lum = dot(col, float3(0.299, 0.587, 0.114));
         col = mix(float3(lum), col, clamp(in.sat, 0.0, 1.0));
+
+        // ---- Underwater distance fog (hides caves beyond ~6-8 blocks) ----
+        // When the camera is submerged, apply a dense exponential distance fog
+        // so geometry farther than ~6 blocks fades to opaque blue-green.
+        // This prevents seeing cave systems through the water column above them.
+        if (wu.underwater > 0.5) {
+            float dist = length(in.worldPos - UW_CAM_POS(wu));
+            // Visibility ~6 blocks: fog density chosen so e^(-density*6) ~ 0.05
+            // density = -ln(0.05)/6 ≈ 0.499
+            float fogDensity = 0.50;
+            float fogFactor = exp(-fogDensity * dist);   // 1=near(clear), 0=far(solid)
+            fogFactor = clamp(fogFactor, 0.0, 1.0);
+            // Fog target: deep water colour
+            float3 waterFogColor = float3(0.04, 0.22, 0.38);
+            col = mix(waterFogColor, col, fogFactor);
+        }
+
         return float4(col, 1.0);
     }
 
     // =========================================================
     // SKY PASS — fullscreen triangle, no depth write
+    //
+    // Key fix: we reconstruct a world-space VIEW RAY per pixel using
+    // the camera basis vectors passed in SkyUniforms (right, up, forward)
+    // and the tangent of the half-FOV.  Every sky feature (gradient, sun,
+    // moon, stars, clouds) is keyed on this ray direction so the dome
+    // stays fixed in the world as you turn and look up/down.
     // =========================================================
-    struct SkyUniforms { float4 sunDirTime; };  // w = time_of_day 0..1
-    struct SkyVOut { float4 position [[position]]; float2 uv; };
+    // SkyUniforms must match Swift SkyUniforms struct (64 bytes).
+    struct SkyUniforms {
+        float4 sunDirTime;   // xyz sun dir (pointing FROM sun downward), w time_of_day 0..1
+        float4 camRight;     // xyz world right,   w = tanHalfFov
+        float4 camUp;        // xyz world up,       w = aspect ratio (w/h)
+        float4 camFwd;       // xyz world forward (into scene), w unused
+    };
+    struct SkyVOut { float4 position [[position]]; float2 ndc; };
 
     vertex SkyVOut skyVmain(uint vid [[vertex_id]],
                             constant SkyUniforms& su [[buffer(0)]]) {
-        // Fullscreen triangle (clip space): covers NDC [-1,1]x[-1,1]
+        // Fullscreen triangle in clip space
         float2 pos;
         if      (vid == 0u) pos = float2(-1.0, -1.0);
         else if (vid == 1u) pos = float2( 3.0, -1.0);
         else                pos = float2(-1.0,  3.0);
         SkyVOut o;
         o.position = float4(pos, 0.9999, 1.0);  // depth almost=1 -> behind terrain
-        o.uv       = pos * 0.5 + 0.5;           // [0,1]
+        o.ndc      = pos;                        // NDC coords passed to fragment
         return o;
     }
 
@@ -716,112 +789,144 @@ final class Renderer: NSObject, MTKViewDelegate {
                               constant SkyUniforms& su [[buffer(0)]],
                               constant WaterUniforms& wu [[buffer(1)]]) {
         float t   = su.sunDirTime.w;        // 0..1 time of day
-        float3 sd = su.sunDirTime.xyz;      // sun direction (world space)
+        float3 sd = su.sunDirTime.xyz;      // sun direction pointing FROM sun (downward)
         float clk = wu.wallClockSecs;       // wall-clock seconds for fast animation
 
-        // --- Sky gradient ---
-        float vy = in.uv.y;  // 0=bottom/horizon, 1=top
+        // --- Reconstruct world-space view ray for this pixel ---
+        // NDC x is screen-right (+1 = right edge), NDC y is screen-up (+1 = top).
+        // Metal NDC: y goes up (+1 top, -1 bottom), x goes right.
+        float tanHalfFov = su.camRight.w;
+        float aspect     = su.camUp.w;
+        float3 right     = su.camRight.xyz;
+        float3 up        = su.camUp.xyz;
+        float3 fwd       = su.camFwd.xyz;
+        // Build ray: forward + right*ndcX*(aspect*tanHalf) + up*ndcY*tanHalf
+        float3 ray = normalize(fwd
+                               + right * (in.ndc.x * aspect * tanHalfFov)
+                               + up    * (in.ndc.y * tanHalfFov));
 
-        float dayT = max(0.0, sin(t * 3.14159265f));      // 0=midnight, 1=noon
-        float dawnT = max(0.0, 1.0 - abs(t - 0.25)*8.0); // peaks at t=0.25 (dawn)
-        float duskT = max(0.0, 1.0 - abs(t - 0.75)*8.0); // peaks at t=0.75 (dusk)
+        // --- Time ---
+        float dayT    = max(0.0, sin(t * 3.14159265f));       // 0=midnight, 1=noon
+        float dawnT   = max(0.0, 1.0 - abs(t - 0.25) * 8.0); // peaks at dawn
+        float duskT   = max(0.0, 1.0 - abs(t - 0.75) * 8.0); // peaks at dusk
         float sunsetT = dawnT + duskT;
 
-        float3 zenithDay   = float3(0.22, 0.50, 0.92);
-        float3 horizDay    = float3(0.68, 0.84, 1.00);
-        float3 zenithSunset= float3(0.22, 0.14, 0.45);
-        float3 horizSunset = float3(1.00, 0.52, 0.18);
-        float3 zenithNight = float3(0.03, 0.04, 0.12);
-        float3 horizNight  = float3(0.08, 0.10, 0.22);
+        // --- Sky gradient keyed on world-space elevation (ray.y) ---
+        // ray.y: -1=straight down, 0=horizon, +1=straight up
+        float3 zenithDay    = float3(0.22, 0.50, 0.92);
+        float3 horizDay     = float3(0.68, 0.84, 1.00);
+        float3 zenithSunset = float3(0.22, 0.14, 0.45);
+        float3 horizSunset  = float3(1.00, 0.52, 0.18);
+        float3 zenithNight  = float3(0.03, 0.04, 0.12);
+        float3 horizNight   = float3(0.08, 0.10, 0.22);
 
-        // Blend zenith and horizon colour for current time
-        float3 zenith = mix(mix(zenithNight, zenithDay, dayT), zenithSunset, sunsetT*0.7);
-        float3 horiz  = mix(mix(horizNight,  horizDay,  dayT), horizSunset,  sunsetT*0.85);
+        float3 zenith = mix(mix(zenithNight, zenithDay, dayT), zenithSunset, sunsetT * 0.7);
+        float3 horiz  = mix(mix(horizNight,  horizDay,  dayT), horizSunset,  sunsetT * 0.85);
 
-        // Gradient: horizon at vy=0.15, zenith at vy=0.80
-        float gradT = smoothstep(0.15, 0.80, vy);
+        // Gradient: smoothly from horizon (ray.y~0) to zenith (ray.y~1)
+        // Use a smooth band: horizon band near 0, zenith above 0.25.
+        float gradT  = smoothstep(0.0, 0.45, ray.y);
         float3 skyCol = mix(horiz, zenith, gradT);
 
-        // --- Prominent sun disc ---
-        float2 ndcXY = in.uv * 2.0 - 1.0;   // [-1,1]
-        float3 ray = normalize(float3(ndcXY.x * 1.6, ndcXY.y - 0.1, 1.0));
-        float sunDot = dot(ray, normalize(sd));
-        // Bigger, brighter sun disc
-        float sunDisc  = smoothstep(0.9975, 1.000, sunDot);   // tight solid disc
-        float sunInner = smoothstep(0.9990, 1.000, sunDot);   // bright core
-        float sunGlow1 = smoothstep(0.94,   1.000, sunDot) * 0.18 * dayT;  // wide halo
-        float sunGlow2 = smoothstep(0.985,  1.000, sunDot) * 0.30 * dayT;  // tight corona
-        float3 sunColor   = mix(float3(1.0, 0.78, 0.40), float3(1.0, 0.98, 0.85), dayT);
-        float3 sunCorona  = sunColor * 1.1;
-        // Apply: glow -> disc -> bright core
-        skyCol = skyCol + sunGlow1 * sunCorona + sunGlow2 * sunCorona;
-        skyCol = mix(skyCol, sunColor,         sunDisc  * dayT);
-        skyCol = mix(skyCol, float3(1.0,1.0,0.95), sunInner * dayT);
+        // Below horizon: show a darker ground/underground colour so the sky
+        // doesn't bleed through the terrain seam.
+        float3 groundCol = mix(float3(0.20, 0.16, 0.12), float3(0.35, 0.30, 0.22), dayT);
+        skyCol = mix(groundCol, skyCol, smoothstep(-0.05, 0.08, ray.y));
 
-        // Faint moon at night (opposite side of sky)
-        float3 moonDir = -sd;  // approximate: opposite sun
-        float moonDot = dot(ray, normalize(moonDir));
+        // Atmospheric horizon haze: slightly lighter/warmer band near ray.y==0
+        float horizBand = exp(-abs(ray.y) * 12.0);
+        float3 hazeCol = mix(float3(0.80, 0.86, 1.00), float3(1.00, 0.70, 0.40), sunsetT * 0.7);
+        skyCol = mix(skyCol, hazeCol, horizBand * 0.35 * dayT + horizBand * 0.25 * sunsetT);
+
+        // --- Sun disc (keyed on ray direction vs. sun direction) ---
+        // sd points FROM sun downward, so the sun is in the direction -sd.
+        float3 sunDir3 = normalize(-sd);   // direction TOWARD the sun in world space
+        float sunDot = dot(ray, sunDir3);
+        float sunDisc  = smoothstep(0.9975, 1.0000, sunDot);   // hard disc edge
+        float sunInner = smoothstep(0.9992, 1.0000, sunDot);   // bright core
+        float sunGlow1 = smoothstep(0.940,  1.0000, sunDot) * 0.22 * max(dayT, sunsetT * 0.5);
+        float sunGlow2 = smoothstep(0.984,  1.0000, sunDot) * 0.35 * max(dayT, sunsetT * 0.5);
+        float3 sunColor  = mix(float3(1.0, 0.72, 0.35), float3(1.0, 0.98, 0.85), dayT);
+        float3 sunCorona = sunColor * 1.15;
+        // Visibility: sun visible during day + vivid at sunset, fades at night
+        float sunVis = max(dayT, sunsetT * 0.6);
+        skyCol += sunGlow1 * sunCorona;
+        skyCol += sunGlow2 * sunCorona;
+        skyCol = mix(skyCol, sunColor,          sunDisc  * sunVis);
+        skyCol = mix(skyCol, float3(1.0, 1.0, 0.96), sunInner * sunVis);
+
+        // --- Moon (opposite the sun, visible at night) ---
+        float3 moonDir3 = -sunDir3;
+        float moonDot  = dot(ray, moonDir3);
         float moonDisc = smoothstep(0.9990, 1.000, moonDot) * (1.0 - dayT) * 0.9;
         skyCol = mix(skyCol, float3(0.90, 0.92, 1.00), moonDisc);
 
-        // Stars: visible at night using hash-based points
+        // --- Stars (keyed on ray direction, not screen UV) ---
         if (dayT < 0.5) {
-            float starFade = 1.0 - smoothstep(0.1, 0.4, dayT);
-            float2 starUV = floor(in.uv * 160.0);
-            float starH = uhash(uint(starUV.x) * 3141u + uint(starUV.y) * 1618u);
-            float starBright = step(0.988, starH);
-            skyCol += float3(starBright * starFade * 0.85);
+            float starFade = 1.0 - smoothstep(0.05, 0.35, dayT);
+            starFade *= smoothstep(0.0, 0.10, ray.y);  // only above horizon
+            // Discretise the ray into a grid on the hemisphere for stable star positions
+            float2 starUV = floor((ray.xz / max(ray.y + 0.01, 0.01)) * 60.0 + float2(200.0));
+            float starH = uhash(uint(starUV.x) * 3141u + uint(starUV.y) * 1618u
+                                 + uint(starUV.x * starUV.y) * 97u);
+            float starBright = step(0.986, starH);
+            skyCol += float3(starBright * starFade * 0.90);
         }
 
-        // --- Weather: overcast + rain effect ---
-        // Weather cycles slowly over time: use a low-frequency noise on time
-        // period ~ 300s per weather cycle; mild so it never fully blacks out.
-        float weatherCycle = sin(clk * (3.14159265f / 150.0f)) * 0.5 + 0.5;  // 0..1
-        float overcast = smoothstep(0.55, 0.80, weatherCycle) * 0.62;  // 0..0.62 opacity
+        // --- Weather cycle ---
+        // Slow sinusoidal cycle (~300 s period). 0=fair, 1=stormy.
+        float weatherCycle = sin(clk * (3.14159265f / 150.0f)) * 0.5f + 0.5f;
+        float overcast = smoothstep(0.52, 0.80, weatherCycle) * 0.65;
 
+        // --- Overcast cloud layer (ray-space, not screen-space) ---
         if (overcast > 0.01) {
-            // Overcast cloud layer: denser, lower, grey
-            float2 ocUV = float2(in.uv.x * 4.0 + clk * 0.008,
-                                 in.uv.y * 2.5 + clk * 0.002);
-            float ocCloud = cloudFbm(ocUV);
-            ocCloud = smoothstep(0.40, 0.65, ocCloud);
-            float3 ocColor = mix(float3(0.60, 0.62, 0.68), float3(0.75, 0.76, 0.80), dayT);
-            skyCol = mix(skyCol, ocColor, ocCloud * overcast * smoothstep(0.1, 0.5, vy));
-
-            // Rain streaks: vertical animated noise in screen space
-            float rainStrength = smoothstep(0.60, 0.80, weatherCycle);
-            if (rainStrength > 0.01) {
-                // Streak UV: compress x, long y stripes, scroll downward fast
-                float2 rUV = float2(in.uv.x * 80.0, in.uv.y * 5.0 + clk * 1.8);
-                float streak1 = noise2(rUV);
-                float streak2 = noise2(rUV * float2(1.3, 1.0) + float2(7.3, 0.0));
-                float rain = pow(max(0.0, streak1 * streak2 - 0.38), 2.5) * 12.0;
-                rain = clamp(rain, 0.0, 1.0);
-                float3 rainColor = mix(float3(0.65, 0.72, 0.85), float3(0.55, 0.65, 0.80), dayT);
-                skyCol = mix(skyCol, rainColor, rain * rainStrength * 0.38);
-            }
+            // Project ray onto a horizontal cloud plane at height 1 above camera.
+            // Only sample when ray points upward (avoid divide-by-zero and below-horizon artefacts).
+            float cloudPlaneHit = (ray.y > 0.02) ? (1.0 / ray.y) : 0.0;
+            float2 ocUV = ray.xz * cloudPlaneHit * 0.35 + float2(clk * 0.006, clk * 0.003);
+            float ocCloud = cloudFbm(ocUV * 1.5);
+            ocCloud = smoothstep(0.38, 0.62, ocCloud);
+            float3 ocColor = mix(float3(0.55, 0.57, 0.64), float3(0.72, 0.74, 0.80), dayT);
+            float ocFade = smoothstep(0.0, 0.12, ray.y);   // fade at/below horizon
+            skyCol = mix(skyCol, ocColor, ocCloud * overcast * ocFade);
         }
 
-        // --- Procedural drifting fair-weather clouds (when not overcast) ---
-        float fairCloud = 1.0 - overcast * 1.4;
-        float cloudVis = smoothstep(0.15, 0.40, dayT) * smoothstep(0.0, 0.25, vy) * clamp(fairCloud, 0.0, 1.0);
+        // --- Rain streaks (screen-space is acceptable for rain — droplets fall straight) ---
+        float rainStrength = smoothstep(0.60, 0.82, weatherCycle);
+        if (rainStrength > 0.01) {
+            // Use NDC directly — rain streaks ARE screen-aligned (they fall vertically).
+            float2 rUV  = float2(in.ndc.x * 40.0, in.ndc.y * 3.5 + clk * 2.0);
+            float2 rUV2 = rUV * float2(1.4, 1.0) + float2(9.1, 0.0);
+            float streak = noise2(rUV) * noise2(rUV2);
+            float rain = pow(max(0.0, streak - 0.36), 2.2) * 10.0;
+            rain = clamp(rain, 0.0, 1.0);
+            float3 rainColor = mix(float3(0.62, 0.70, 0.84), float3(0.50, 0.62, 0.78), dayT);
+            // Keep rain only in the upper ~70% of screen (not on horizon)
+            float rainFade = smoothstep(-0.6, 0.0, in.ndc.y);
+            skyCol = mix(skyCol, rainColor, rain * rainStrength * 0.30 * rainFade);
+        }
+
+        // --- Fair-weather clouds (ray-space, drift horizontally) ---
+        float fairCloud = clamp(1.0 - overcast * 1.6, 0.0, 1.0);
+        float cloudVis  = smoothstep(0.12, 0.38, dayT)
+                        * smoothstep(0.0, 0.10, ray.y)   // above horizon only
+                        * fairCloud;
         if (cloudVis > 0.001) {
-            // Fast wall-clock drift so clouds visibly move
-            float2 cloudUV = float2(in.uv.x * 3.8 + clk * 0.012,
-                                    in.uv.y * 2.0 + clk * 0.004);
-            float cloud = cloudFbm(cloudUV);
-            // Second layer at different scale + direction
-            float2 cloudUV2 = float2(in.uv.x * 2.2 - clk * 0.008,
-                                     in.uv.y * 1.6 + clk * 0.003);
+            // Project ray onto cloud plane at height 1 (sky dome projection).
+            float ry = max(ray.y, 0.02);
+            float2 cloudUV  = (ray.xz / ry) * 0.30 + float2(clk * 0.010,  clk * 0.004);
+            float2 cloudUV2 = (ray.xz / ry) * 0.18 + float2(-clk * 0.007, clk * 0.003);
+            float cloud  = cloudFbm(cloudUV);
             float cloud2 = cloudFbm(cloudUV2);
-            cloud = smoothstep(0.50, 0.72, (cloud + cloud2 * 0.5) / 1.5);
-            float3 cloudCol = mix(float3(0.95, 0.95, 1.00),
-                                  mix(float3(1.0, 0.80, 0.65), float3(0.95,0.95,1.0), dayT),
-                                  sunsetT * 0.65);
-            // Cloud shadow tint on underside (lower vy = darker belly)
-            cloudCol = mix(cloudCol * float3(0.78, 0.78, 0.82), cloudCol,
-                           smoothstep(0.30, 0.65, vy));
-            skyCol = mix(skyCol, cloudCol, cloud * cloudVis * 0.88);
+            float cloudD = smoothstep(0.48, 0.70, (cloud + cloud2 * 0.5) / 1.5);
+
+            float3 cloudTop  = mix(float3(0.96, 0.96, 1.00),
+                                   mix(float3(1.0, 0.82, 0.65), float3(0.96, 0.96, 1.0), dayT),
+                                   sunsetT * 0.60);
+            // Darker underside: more prominent when looking up at a low angle
+            float underBelly = smoothstep(0.06, 0.35, ray.y);
+            float3 cloudCol  = mix(cloudTop * float3(0.72, 0.73, 0.80), cloudTop, underBelly);
+            skyCol = mix(skyCol, cloudCol, cloudD * cloudVis * 0.90);
         }
 
         return float4(skyCol, 1.0);
@@ -968,7 +1073,12 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
             enc.setRenderPipelineState(sp)
             enc.setDepthStencilState(skyDepthState)
             enc.setCullMode(.none)
-            var su = SkyUniforms(sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day))
+            // Identity camera basis for the self-test (looking -Z, world-up Y)
+            var su = SkyUniforms(
+                sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
+                camRight:   SIMD4<Float>(1, 0, 0, 0.6841),   // tanHalfFov for fovy=1.20
+                camUp:      SIMD4<Float>(0, 1, 0, Float(W)/Float(H)),
+                camFwd:     SIMD4<Float>(0, 0, -1, 0))
             enc.setVertexBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
             enc.setFragmentBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
             var wuSky = WaterUniforms(wallClockSecs: Float(f) / 60.0, underwater: 0.0)
@@ -978,7 +1088,8 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
         // Terrain pass
         enc.setRenderPipelineState(pipeline); enc.setDepthStencilState(depthState)
         enc.setCullMode(.back); enc.setFrontFacing(.counterClockwise)
-        var wu = WaterUniforms(wallClockSecs: Float(f) / 60.0, underwater: 0.0)
+        var wu = WaterUniforms(wallClockSecs: Float(f) / 60.0, underwater: 0.0,
+                               cameraPosW: SIMD4<Float>(0, 20, 0, 0))
         enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
         for i in 0..<Int(frame.draw_count) {
             let d = frame.draws[i]
