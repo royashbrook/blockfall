@@ -84,6 +84,11 @@ if let idx = CommandLine.arguments.firstIndex(of: "--screenshot"), idx + 1 < Com
     let ok = runRenderSelfTest(savePath: CommandLine.arguments[idx + 1], width: 960, height: 720)
     exit(ok ? 0 : 1)
 }
+if let idx = CommandLine.arguments.firstIndex(of: "--perftest") {
+    let secs = (idx + 1 < CommandLine.arguments.count) ? (Double(CommandLine.arguments[idx + 1]) ?? 20) : 20
+    let ok = runPerfTest(seconds: secs, jsonPath: "/tmp/blockfall_perf.json")
+    exit(ok ? 0 : 1)
+}
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

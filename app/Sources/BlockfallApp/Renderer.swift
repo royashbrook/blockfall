@@ -43,14 +43,14 @@ final class BufferRegistry {
     }
 }
 
-private func allocTrampoline(_ user: UnsafeMutableRawPointer?, _ bytes: UInt32) -> bf_gpu_buffer {
+func allocTrampoline(_ user: UnsafeMutableRawPointer?, _ bytes: UInt32) -> bf_gpu_buffer {
     guard let user = user else { return bf_gpu_buffer() }
     let reg = Unmanaged<BufferRegistry>.fromOpaque(user).takeUnretainedValue()
     guard let made = reg.make(Int(bytes)) else { return bf_gpu_buffer() }
     var out = bf_gpu_buffer(); out.handle = made.handle; out.contents = made.ptr; out.bytes = bytes
     return out
 }
-private func freeTrampoline(_ user: UnsafeMutableRawPointer?, _ handle: UInt64) {
+func freeTrampoline(_ user: UnsafeMutableRawPointer?, _ handle: UInt64) {
     guard let user = user else { return }
     Unmanaged<BufferRegistry>.fromOpaque(user).takeUnretainedValue().free(handle)
 }

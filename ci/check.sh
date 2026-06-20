@@ -29,6 +29,10 @@ BIN="$ROOT/build/Blockfall.app/Contents/MacOS/Blockfall"
 if "$BIN" --rendertest; then :; else
   echo "   (render test failed or no Metal device — non-fatal in headless CI)"
 fi
+# Perf smoke: a short measured run (the full gate is a 10-min M1 Air run).
+if "$BIN" --perftest 5; then :; else
+  echo "   (perf smoke failed or no Metal device — non-fatal in headless CI)"
+fi
 
 step "4. lint (compiler warnings are errors on the core)"
 # Core already builds with -Wall -Wextra -Wpedantic -Wconversion -Wshadow.
