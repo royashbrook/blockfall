@@ -6,10 +6,26 @@ C++23 core (`blockcore`) + Swift/Metal app shell, talking over a frozen C ABI.
 > Mechanics, controls, and feel mirror Minecraft exactly. **All art, names, and
 > content are original** — no copied assets, textures, names, or lore.
 
-## Status — M0 ✅ · M1 ✅ · M2 ◑ (streaming procedural world + Dim + save/load)
+## Status — M0 ✅ · M1 ✅ · M2 ✅ · M3 ✅ (it's a Minecraft-like sandbox now)
 
-**M2 — mostly done.** Procedural streaming world with the color-restoration
-mechanic and persistence.
+**M3 — done.** The data-driven sandbox is alive.
+- [x] Content registries: **40 blocks, 58 items, 31 recipes** loaded from JSON
+- [x] Inventory + hotbar + stacking; **crafting** (shaped/shapeless) from the
+      recipe data; survival consumes / creative infinite; mining **drops items**;
+      tool-tier mining speed
+- [x] **~40 blocks render** (9 hand-tuned terrain + golden-ratio hash for the rest)
+- [x] **Animals**: 4 passive types wander, settle with gravity, befriend on
+      interact, puff away (no death) on calm — drawn as body+head blocky models
+- [x] **Quest** ("Bring back the color"): light a Dim region + befriend an animal
+- [x] inventory HUD; **E** inventory · **C** creative/survival · **Q** craft
+- ABI v2 (entity render, ADR 0005)
+
+Earlier milestones below.
+
+## (history) M2 — streaming procedural world + Dim + save/load + lighting ✅
+
+**M2 — done.** Procedural streaming world with the color-restoration mechanic,
+persistence, and full lighting.
 - [x] **Track C** deterministic worldgen: value-noise fBm terrain, 3 biomes
       (plains/hills/desert), water + sand beaches, 3D-noise caves; seam-free,
       hash-verified deterministic
@@ -20,8 +36,8 @@ mechanic and persistence.
       or place a glow block)
 - [x] **Day/night** sun-driven shading; **save/load** (edits + player + regions
       persist; procedural chunks regen from seed)
-- [ ] **Track F** incremental lighting (sun + block-light flood-fill) — the
-      remaining M2 piece
+- [x] **Track F** lighting: per-voxel sky + block-light flood-fill (caves dark,
+      glow casts light, night dims), incremental on edit
 
 **M0 — done.** Interface contract frozen, app runs end to end.
 **M1 — done.** Mine & place blocks in a greedy-meshed voxel world, rendered.
