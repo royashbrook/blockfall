@@ -6,7 +6,19 @@ C++23 core (`blockcore`) + Swift/Metal app shell, talking over a frozen C ABI.
 > Mechanics, controls, and feel mirror Minecraft exactly. **All art, names, and
 > content are original** — no copied assets, textures, names, or lore.
 
-## Status — M0 ✅ · M1 ✅ · M2 ✅ · M3 ✅ (it's a Minecraft-like sandbox now)
+## Status — M0–M3 ✅ · M4 ✅ co-op core (LAN run = real-hardware acceptance)
+
+**M4 — co-op (consistency core done).** Reliable-UDP transport (seq/ack/resend,
+ordered/unordered/unreliable channels) verified at 30–40% loss. Server-
+authoritative replication: clients gen the same world from the host's seed;
+edits funnel through the host and converge — two clients editing the same block
+agree (tested with host+2 clients at 30% loss). Bonjour discovery + H host / J
+join in the app. Live 2–4 Air LAN run is the real-hardware M4 acceptance.
+
+Next — **M5**: arm64 `.dmg` verified on a clean M1 Air + sustained 10-min perf
+gate + content volume (bosses, quest engine, content-driven creatures).
+
+
 
 **M3 — done.** The data-driven sandbox is alive.
 - [x] Content registries: **40 blocks, 58 items, 31 recipes** loaded from JSON
