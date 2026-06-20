@@ -1,112 +1,138 @@
 [
   {
-    "id": 17,
+    "id": 21,
     "name": "oak_log",
     "display_name": "Oak Log",
     "hardness": 10,
     "required_tier": 0,
     "preferred_tool": "axe",
-    "textures": { "top": "oak_log_top", "side": "oak_log_side" }
+    "textures": {
+      "top": "oak_log_top",
+      "side": "oak_log_side"
+    }
   },
   {
-    "id": 18,
+    "id": 4,
     "name": "oak_planks",
     "display_name": "Oak Planks",
     "hardness": 10,
     "required_tier": 0,
     "preferred_tool": "axe",
-    "textures": { "all": "oak_planks" }
+    "textures": {
+      "all": "oak_planks"
+    }
   },
   {
-    "id": 19,
+    "id": 22,
     "name": "birch_log",
     "display_name": "Birch Log",
     "hardness": 10,
     "required_tier": 0,
     "preferred_tool": "axe",
-    "textures": { "top": "birch_log_top", "side": "birch_log_side" }
+    "textures": {
+      "top": "birch_log_top",
+      "side": "birch_log_side"
+    }
   },
   {
-    "id": 20,
+    "id": 23,
     "name": "birch_planks",
     "display_name": "Birch Planks",
     "hardness": 10,
     "required_tier": 0,
     "preferred_tool": "axe",
-    "textures": { "all": "birch_planks" }
+    "textures": {
+      "all": "birch_planks"
+    }
   },
   {
-    "id": 21,
+    "id": 8,
     "name": "stone_brick",
     "display_name": "Stone Brick",
     "hardness": 25,
     "required_tier": 1,
     "preferred_tool": "pickaxe",
-    "textures": { "all": "stone_brick" }
+    "textures": {
+      "all": "stone_brick"
+    }
   },
   {
-    "id": 22,
+    "id": 24,
     "name": "clay_brick",
     "display_name": "Clay Brick",
     "hardness": 20,
     "required_tier": 1,
     "preferred_tool": "pickaxe",
-    "textures": { "all": "clay_brick" }
+    "textures": {
+      "all": "clay_brick"
+    }
   },
   {
-    "id": 23,
+    "id": 25,
     "name": "glass_pane",
     "display_name": "Glass",
     "hardness": 3,
     "required_tier": 0,
     "transparent": true,
-    "textures": { "all": "glass" }
+    "textures": {
+      "all": "glass"
+    }
   },
   {
-    "id": 24,
+    "id": 26,
     "name": "colored_glass",
     "display_name": "Colored Glass",
     "hardness": 3,
     "required_tier": 0,
     "transparent": true,
-    "textures": { "all": "colored_glass" }
+    "textures": {
+      "all": "colored_glass"
+    }
   },
   {
-    "id": 25,
+    "id": 5,
     "name": "oak_leaves",
     "display_name": "Oak Leaves",
     "hardness": 2,
     "required_tier": 0,
     "preferred_tool": "none",
     "transparent": true,
-    "textures": { "all": "oak_leaves" }
+    "textures": {
+      "all": "oak_leaves"
+    }
   },
   {
-    "id": 26,
+    "id": 27,
     "name": "birch_leaves",
     "display_name": "Birch Leaves",
     "hardness": 2,
     "required_tier": 0,
     "preferred_tool": "none",
     "transparent": true,
-    "textures": { "all": "birch_leaves" }
+    "textures": {
+      "all": "birch_leaves"
+    }
   },
   {
-    "id": 27,
+    "id": 28,
     "name": "wool_block",
     "display_name": "Wool",
     "hardness": 4,
     "required_tier": 0,
     "preferred_tool": "none",
-    "textures": { "all": "wool_white" }
+    "textures": {
+      "all": "wool_white"
+    }
   },
   {
-    "id": 28,
+    "id": 29,
     "name": "mossy_stone",
     "display_name": "Mossy Stone",
     "hardness": 22,
     "required_tier": 1,
     "preferred_tool": "pickaxe",
-    "textures": { "all": "mossy_stone" }
+    "textures": {
+      "all": "mossy_stone"
+    }
   }
 ]

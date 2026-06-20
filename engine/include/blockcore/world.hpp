@@ -16,6 +16,9 @@
 #include "blockcore/vertex.hpp"
 #include "blockcore/mathx.hpp"
 #include "blockcore/lighting.hpp"
+#include "blockcore/content.hpp"
+#include "blockcore/inventory.hpp"
+#include "blockcore/crafting.hpp"
 #include "blockcore_interfaces.hpp"
 
 #include <unordered_map>
@@ -27,6 +30,7 @@
 #include <fstream>
 #include <filesystem>
 #include <cstdio>
+#include <optional>
 
 namespace bf {
 
@@ -61,15 +65,47 @@ public:
     static constexpr int    MESH_BUDGET  = 8;      // chunks remeshed per frame
 
     explicit World(IMesher& mesher, IWorldGen* gen = nullptr)
-        : mesher_(mesher), gen_(gen) {
-        for (int i = 0; i < BF_HOTBAR_SLOTS; ++i) hotbar_[i] = 0;
-        hotbar_[0] = GLOW; hotbar_[1] = STONE; hotbar_[2] = WOOD;
-        hotbar_[3] = BRICK; hotbar_[4] = GRASS; hotbar_[5] = SAND;
-    }
+        : mesher_(mesher), gen_(gen) {}
 
     void set_allocator(const bf_gpu_allocator& a) { alloc_ = a; has_alloc_ = true; }
     void set_mode(bf_game_mode m) { mode_ = m; }
     void set_worldgen(IWorldGen* g) { gen_ = g; }
+
+    // Wire the loaded content (Track J). Builds the inventory + crafting and
+    // resolves the block ids gameplay needs by name (so the engine never
+    // hard-codes content ids).
+    void set_content(const ContentRegistry* c) {
+        content_ = c;
+        if (!c) return;
+        blocks_  = &c->block_registry();
+        items_   = &c->item_registry();
+        recipes_ = &c->recipe_book();
+        inv_.emplace(BF_INVENTORY_SLOTS, items_);
+        craft_.emplace(recipes_);
+        glow_id_ = block_id_by_name("glow_block");
+        give_starter_items();
+    }
+
+    ItemId  item_id_by_name(const char* n) const {
+        if (!items_) return 0; const ItemDef* d = items_->by_name(n); return d ? d->id : 0;
+    }
+    BlockId block_id_by_name(const char* n) const {
+        if (!blocks_) return 0; const BlockDef* d = blocks_->by_name(n); return d ? d->id : 0;
+    }
+    void give_starter_items() {
+        if (!inv_) return;
+        // Creative-style hotbar of placeable blocks + functional blocks.
+        const char* hot[BF_HOTBAR_SLOTS] = {
+            "glow_block", "stone", "oak_planks", "stone_brick", "sand",
+            "oak_log", "torch", "chest", "crafting_table"
+        };
+        for (int i = 0; i < BF_HOTBAR_SLOTS; ++i) {
+            ItemId id = item_id_by_name(hot[i]);
+            if (id) inv_->set(std::size_t(i), ItemStack{id, 64, 0xFFFF});
+        }
+        // A few raw materials in the main grid so crafting has inputs.
+        if (ItemId log = item_id_by_name("oak_log")) inv_->set(9, ItemStack{log, 16, 0xFFFF});
+    }
 
     // ---- M2: procedural spawn + streaming --------------------------------
     void init_world(std::uint64_t seed) {
@@ -122,7 +158,14 @@ public:
             f.write(reinterpret_cast<const char*>(&health_), 4);
             f.write(reinterpret_cast<const char*>(&hunger_), 4);
             f.write(reinterpret_cast<const char*>(&selected_), 1);
-            f.write(reinterpret_cast<const char*>(hotbar_), sizeof(hotbar_));
+            // Full 36-slot inventory (item,count,durability each). Always
+            // written so the format is fixed even before content is wired.
+            for (int i = 0; i < BF_INVENTORY_SLOTS; ++i) {
+                ItemStack s = inv_ ? inv_->get(std::size_t(i)) : ItemStack{};
+                f.write(reinterpret_cast<const char*>(&s.item), 2);
+                f.write(reinterpret_cast<const char*>(&s.count), 2);
+                f.write(reinterpret_cast<const char*>(&s.durability), 2);
+            }
         }
         std::vector<std::byte> buf(1u << 20);
         for (ChunkCoord cc : edited_) {
@@ -165,7 +208,13 @@ public:
                 pl.read(reinterpret_cast<char*>(&health_), 4);
                 pl.read(reinterpret_cast<char*>(&hunger_), 4);
                 pl.read(reinterpret_cast<char*>(&selected_), 1);
-                pl.read(reinterpret_cast<char*>(hotbar_), sizeof(hotbar_));
+                for (int i = 0; i < BF_INVENTORY_SLOTS; ++i) {
+                    ItemStack s{};
+                    pl.read(reinterpret_cast<char*>(&s.item), 2);
+                    pl.read(reinterpret_cast<char*>(&s.count), 2);
+                    pl.read(reinterpret_cast<char*>(&s.durability), 2);
+                    if (inv_) inv_->set(std::size_t(i), s);
+                }
             }
         }
         for (auto& e : std::filesystem::directory_iterator(dir)) {
@@ -231,7 +280,17 @@ public:
         raycast_target();
         if (mining_ && has_target_) {
             mine_progress_ += float(dt) / break_time(block_at(target_));
-            if (mine_progress_ >= 1.0f) { set_block_internal(target_, AIR); mine_progress_ = 0.0f; raycast_target(); }
+            if (mine_progress_ >= 1.0f) {
+                BlockId broken = block_at(target_);
+                // Survival: the block drops an item into the inventory.
+                if (mode_ == BF_MODE_SURVIVAL && inv_ && blocks_) {
+                    const BlockDef* bd = blocks_->by_id(broken);
+                    ItemId drop = bd ? bd->drop_item : ItemId(0);
+                    if (drop) inv_->add(ItemStack{drop, 1, 0xFFFF});
+                }
+                set_block_internal(target_, AIR);
+                mine_progress_ = 0.0f; raycast_target();
+            }
         } else mine_progress_ = 0.0f;
     }
 
@@ -239,13 +298,21 @@ public:
         switch (a.kind) {
             case BF_ACT_MINE_START: mining_ = true; break;
             case BF_ACT_MINE_STOP:  mining_ = false; mine_progress_ = 0.0f; break;
-            case BF_ACT_PLACE:
-                if (has_target_ && hotbar_[selected_] != 0) {
-                    BlockId b = hotbar_[selected_];
-                    set_block_internal(place_, b);
-                    if (b == GLOW) restore_region(to_chunk(place_));   // light up the Dim
-                }
+            case BF_ACT_PLACE: {
+                if (!has_target_ || !inv_) break;
+                ItemStack sel = inv_->get(selected_);
+                if (sel.item == 0) break;
+                const ItemDef* idef = items_ ? items_->by_id(sel.item) : nullptr;
+                BlockId pb = idef ? idef->places_block : 0;
+                if (pb == 0) break;                    // not a placeable item
+                if (mode_ == BF_MODE_SURVIVAL && !inv_->remove_item(sel.item, 1)) break;
+                set_block_internal(place_, pb);
+                if (pb == glow_id_) restore_region(to_chunk(place_));  // light up the Dim
                 break;
+            }
+            case BF_ACT_CRAFT:      try_craft_available(); break;
+            case BF_ACT_INV_OPEN:   inv_open_ = true;  break;
+            case BF_ACT_INV_CLOSE:  inv_open_ = false; break;
             case BF_ACT_HOTBAR_SELECT:
                 if (a.arg_i >= 0 && a.arg_i < BF_HOTBAR_SLOTS) selected_ = std::uint8_t(a.arg_i);
                 break;
@@ -304,6 +371,12 @@ public:
     void    debug_set_selected(std::uint8_t s) { selected_ = s; }
     std::size_t debug_resident_chunks() const { return store_.resident_count(); }
     float   debug_region_sat(int cx, int cz) const { return region_sat(ChunkCoord{cx, 0, cz}); }
+    ItemId  debug_item_id(const char* n) const { return item_id_by_name(n); }
+    int     debug_item_count(ItemId id) const { return inv_ ? int(inv_->count_item(id)) : 0; }
+    void    debug_give(ItemId id, std::uint16_t n) { if (inv_) inv_->add(ItemStack{id, n, 0xFFFF}); }
+    void    debug_clear_inventory() {
+        if (inv_) for (int i = 0; i < BF_INVENTORY_SLOTS; ++i) inv_->set(std::size_t(i), ItemStack{});
+    }
 
 private:
     // Start in bright morning (+0.30) and cycle ~50 s/day.
@@ -313,8 +386,29 @@ private:
         return normalize(V3{ std::cos(pitch_) * std::sin(yaw_), std::sin(pitch_),
                              std::cos(pitch_) * std::cos(yaw_) });
     }
-    static float break_time(BlockId b) {
-        switch (b) { case STONE: case BRICK: return 0.6f; case AIR: return 1e9f; default: return 0.3f; }
+    // Mining time from block hardness + the selected tool's tier (Track J).
+    float break_time(BlockId b) const {
+        if (b == AIR) return 1e9f;
+        const BlockDef* bd = blocks_ ? blocks_->by_id(b) : nullptr;
+        float hardness = bd ? float(bd->hardness) : 6.0f;
+        std::uint8_t req = bd ? bd->required_tier : std::uint8_t(0);
+        float t = 0.15f + hardness * 0.05f;
+        if (inv_ && items_) {
+            const ItemDef* it = items_->by_id(inv_->get(selected_).item);
+            std::uint8_t tier = it ? it->tool_tier : std::uint8_t(0);
+            if (tier > 0 && tier >= req) t *= 0.35f;          // right tool: faster
+            else if (req > 0 && tier < req) t *= 4.0f;        // wrong tool: slow
+        }
+        return t;
+    }
+    void try_craft_available() {
+        if (!content_ || !inv_ || !craft_) return;
+        for (std::uint32_t i = 0; i < content_->recipe_count(); ++i) {
+            const RecipeEntry& r = content_->recipe(i);
+            if (craft_->commit(*inv_, std::span<const ItemId>(r.pattern.data(), r.pattern.size()),
+                               r.grid_size))
+                return;   // crafted the first recipe the player can make
+        }
     }
 
     BlockId block_at(IVec3 w) const {
@@ -472,12 +566,18 @@ private:
 
     void fill_hud(bf_hud_state& h) {
         h = bf_hud_state{};
-        h.mode = mode_; h.selected_slot = selected_; h.inventory_open = 0;
+        h.mode = mode_; h.selected_slot = selected_;
+        h.inventory_open = inv_open_ ? 1 : 0;
         h.health = health_; h.hunger = hunger_;
-        for (int i = 0; i < BF_HOTBAR_SLOTS; ++i) {
-            h.hotbar[i].item = hotbar_[i];
-            h.hotbar[i].count = std::uint16_t(hotbar_[i] ? 64 : 0);
-            h.hotbar[i].durability = 0xFFFF;
+        if (inv_) {
+            for (int i = 0; i < BF_HOTBAR_SLOTS; ++i) {
+                ItemStack s = inv_->get(std::size_t(i));
+                h.hotbar[i].item = s.item; h.hotbar[i].count = s.count; h.hotbar[i].durability = s.durability;
+            }
+            for (int i = 0; i < BF_INVENTORY_SLOTS; ++i) {
+                ItemStack s = inv_->get(std::size_t(i));
+                h.inventory[i].item = s.item; h.inventory[i].count = s.count; h.inventory[i].durability = s.durability;
+            }
         }
         h.active_quest_id = 1;
         std::strncpy(h.quest_title, "Bring back the color", sizeof(h.quest_title) - 1);
@@ -515,8 +615,17 @@ private:
     bf_game_mode  mode_{BF_MODE_CREATIVE};
     float         health_{20.0f}, hunger_{20.0f};
     std::uint8_t  selected_{0};
-    BlockId       hotbar_[BF_HOTBAR_SLOTS]{};
     bool          mining_{false};
+
+    // Track J content + gameplay state.
+    const ContentRegistry*        content_{nullptr};
+    const IBlockRegistry*         blocks_{nullptr};
+    const IItemRegistry*          items_{nullptr};
+    const IRecipeBook*            recipes_{nullptr};
+    std::optional<Inventory>      inv_;
+    std::optional<CraftingSystem> craft_;
+    BlockId                       glow_id_{GLOW};
+    bool                          inv_open_{false};
     float         mine_progress_{0.0f};
     bool          has_target_{false};
     IVec3         target_{}, place_{};

@@ -255,18 +255,26 @@ final class Renderer: NSObject, MTKViewDelegate {
         if (n == 3) return 0.45;     // bottom
         return 0.72;                 // sides
     }
+    // Distinct, pleasant color for any block id (golden-ratio hue) so all 40+
+    // content blocks render without a hand-tuned entry each.
+    static float3 hashColor(uint m) {
+        float h = fract(float(m) * 0.6180339887);
+        float3 k = float3(1.0, 2.0/3.0, 1.0/3.0);
+        float3 p = abs(fract(float3(h) + k) * 6.0 - 3.0);
+        return clamp(p - 1.0, 0.0, 1.0) * 0.5 + 0.4;
+    }
     static float3 materialColor(uint m) {
         switch (m) {
             case 1: return float3(0.40, 0.74, 0.34);  // grass
             case 2: return float3(0.52, 0.38, 0.26);  // dirt
             case 3: return float3(0.56, 0.56, 0.60);  // stone
-            case 4: return float3(0.55, 0.40, 0.22);  // wood
-            case 5: return float3(0.30, 0.62, 0.30);  // leaf
+            case 4: return float3(0.70, 0.55, 0.34);  // oak planks
+            case 5: return float3(0.32, 0.58, 0.30);  // leaves
             case 6: return float3(0.86, 0.80, 0.55);  // sand
             case 7: return float3(1.00, 0.92, 0.55);  // glow
-            case 8: return float3(0.74, 0.36, 0.30);  // brick
+            case 8: return float3(0.62, 0.62, 0.66);  // stone brick
             case 9: return float3(0.30, 0.50, 0.85);  // water
-            default: return float3(0.80, 0.40, 0.80);
+            default: return hashColor(m);
         }
     }
 

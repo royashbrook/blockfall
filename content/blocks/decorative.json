@@ -6,7 +6,9 @@
     "hardness": 0,
     "required_tier": 0,
     "transparent": true,
-    "textures": { "all": "flower_red" }
+    "textures": {
+      "all": "flower_red"
+    }
   },
   {
     "id": 37,
@@ -15,7 +17,9 @@
     "hardness": 0,
     "required_tier": 0,
     "transparent": true,
-    "textures": { "all": "flower_yellow" }
+    "textures": {
+      "all": "flower_yellow"
+    }
   },
   {
     "id": 38,
@@ -24,7 +28,9 @@
     "hardness": 0,
     "required_tier": 0,
     "transparent": true,
-    "textures": { "all": "tall_grass" }
+    "textures": {
+      "all": "tall_grass"
+    }
   },
   {
     "id": 39,
@@ -33,7 +39,9 @@
     "hardness": 0,
     "required_tier": 0,
     "transparent": true,
-    "textures": { "all": "mushroom_brown" }
+    "textures": {
+      "all": "mushroom_brown"
+    }
   },
   {
     "id": 40,
@@ -43,8 +51,14 @@
     "required_tier": 1,
     "preferred_tool": "pickaxe",
     "light_emit": 8,
-    "light_color": [255, 100, 200],
+    "light_color": [
+      255,
+      100,
+      200
+    ],
     "transparent": true,
-    "textures": { "all": "color_crystal" }
+    "textures": {
+      "all": "color_crystal"
+    }
   }
 ]

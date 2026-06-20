@@ -23,6 +23,7 @@ void set_err(const char* m) { t_last_error = m; }
 
 struct bf_engine_s {
     bf_engine_config cfg{};
+    bf::ContentRegistry content{};
     bf::GreedyMesher mesher{};
     bf::TerrainGen   worldgen{};
     bf::World        world{mesher, &worldgen};
@@ -50,6 +51,9 @@ bf_engine bf_engine_create(const bf_engine_config* cfg, bf_result* out_err) {
     e->cfg = *cfg;
     if (e->cfg.render_distance_chunks == 0) e->cfg.render_distance_chunks = 10;
     e->world.set_mode(cfg->start_mode);
+    // Load data-driven content (blocks/items/recipes) and wire it in (Track J).
+    e->content.load(cfg->content_dir ? cfg->content_dir : ".");
+    e->world.set_content(&e->content);
     if (out_err) *out_err = BF_OK;
     g_create_error = "ok";
     return e;

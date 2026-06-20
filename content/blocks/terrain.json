@@ -1,22 +1,28 @@
 [
   {
-    "id": 1,
+    "id": 2,
     "name": "dirt",
     "display_name": "Dirt",
     "hardness": 5,
     "required_tier": 0,
     "preferred_tool": "shovel",
-    "textures": { "all": "dirt" }
+    "textures": {
+      "all": "dirt"
+    }
   },
   {
-    "id": 2,
+    "id": 1,
     "name": "grass",
     "display_name": "Grass Block",
     "hardness": 5,
     "required_tier": 0,
     "preferred_tool": "shovel",
     "drop_item": "dirt",
-    "textures": { "top": "grass_top", "bottom": "dirt", "side": "grass_side" }
+    "textures": {
+      "top": "grass_top",
+      "bottom": "dirt",
+      "side": "grass_side"
+    }
   },
   {
     "id": 3,
@@ -26,92 +32,112 @@
     "required_tier": 1,
     "preferred_tool": "pickaxe",
     "drop_item": "cobblestone",
-    "textures": { "all": "stone" }
+    "textures": {
+      "all": "stone"
+    }
   },
   {
-    "id": 4,
+    "id": 10,
     "name": "cobblestone",
     "display_name": "Cobblestone",
     "hardness": 22,
     "required_tier": 1,
     "preferred_tool": "pickaxe",
-    "textures": { "all": "cobblestone" }
+    "textures": {
+      "all": "cobblestone"
+    }
   },
   {
-    "id": 5,
+    "id": 6,
     "name": "sand",
     "display_name": "Sand",
     "hardness": 5,
     "required_tier": 0,
     "preferred_tool": "shovel",
     "gravity": true,
-    "textures": { "all": "sand" }
+    "textures": {
+      "all": "sand"
+    }
   },
   {
-    "id": 6,
+    "id": 11,
     "name": "gravel",
     "display_name": "Gravel",
     "hardness": 6,
     "required_tier": 0,
     "preferred_tool": "shovel",
     "gravity": true,
-    "textures": { "all": "gravel" }
+    "textures": {
+      "all": "gravel"
+    }
   },
   {
-    "id": 7,
+    "id": 9,
     "name": "water",
     "display_name": "Water",
     "hardness": 0,
     "required_tier": 0,
     "liquid": true,
     "transparent": true,
-    "textures": { "all": "water" }
+    "textures": {
+      "all": "water"
+    }
   },
   {
-    "id": 8,
+    "id": 12,
     "name": "snow_layer",
     "display_name": "Snow",
     "hardness": 2,
     "required_tier": 0,
     "preferred_tool": "shovel",
     "transparent": true,
-    "textures": { "all": "snow" }
+    "textures": {
+      "all": "snow"
+    }
   },
   {
-    "id": 9,
+    "id": 13,
     "name": "ice",
     "display_name": "Ice",
     "hardness": 8,
     "required_tier": 1,
     "preferred_tool": "pickaxe",
     "transparent": true,
-    "textures": { "all": "ice" }
+    "textures": {
+      "all": "ice"
+    }
   },
   {
-    "id": 10,
+    "id": 14,
     "name": "clay",
     "display_name": "Clay",
     "hardness": 6,
     "required_tier": 0,
     "preferred_tool": "shovel",
-    "textures": { "all": "clay" }
+    "textures": {
+      "all": "clay"
+    }
   },
   {
-    "id": 11,
+    "id": 15,
     "name": "dim_stone",
     "display_name": "Dim Stone",
     "hardness": 25,
     "required_tier": 1,
     "preferred_tool": "pickaxe",
-    "textures": { "all": "dim_stone" }
+    "textures": {
+      "all": "dim_stone"
+    }
   },
   {
-    "id": 12,
+    "id": 16,
     "name": "dim_dirt",
     "display_name": "Dim Dirt",
     "hardness": 5,
     "required_tier": 0,
     "preferred_tool": "shovel",
-    "textures": { "all": "dim_dirt" }
+    "textures": {
+      "all": "dim_dirt"
+    }
   }
 ]

@@ -3,6 +3,7 @@
 // -> mine a block (it disappears) -> place a block (it appears) -> remesh.
 #include "blockcore/world.hpp"
 #include "blockcore/mesher.hpp"
+#include "blockcore/content.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -31,6 +32,10 @@ int main() {
     bf::GreedyMesher mesher;
     bf::World world(mesher);
 
+    bf::ContentRegistry content;
+    content.load("/Users/roy/gh/blockfall/content");
+    world.set_content(&content);                 // hotbar slot 0 = glow_block item
+
     bf_gpu_allocator alloc{};
     alloc.user = nullptr; alloc.alloc = alloc_fn; alloc.free_ = free_fn;
     world.set_allocator(alloc);
@@ -53,7 +58,8 @@ int main() {
     // --- MINE: hold, advance time, block breaks ---
     bf_action mineStart{}; mineStart.kind = BF_ACT_MINE_START;
     world.action(mineStart);
-    world.update(zero, 0.35);                     // > grass break time
+    for (int i = 0; i < 60 && world.debug_block_at(8, 7, 8) != bf::AIR; ++i)
+        world.update(zero, 0.05);                  // hold-to-mine until it breaks
     CHECK(world.debug_block_at(8, 7, 8) == bf::AIR, "mined block is now air");
     bf_action mineStop{}; mineStop.kind = BF_ACT_MINE_STOP;
     world.action(mineStop);

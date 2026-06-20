@@ -102,6 +102,8 @@ public:
     std::optional<RecipeMatch>
         recipe_match(std::span<const ItemId> grid, int dim) const;
     std::uint32_t recipe_count() const;
+    // Enumerate recipes (engine crafting UX). Index < recipe_count().
+    const RecipeEntry& recipe(std::uint32_t i) const { return recipes_.at(i); }
 
 private:
     friend class BlockRegistryImpl;
