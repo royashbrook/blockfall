@@ -106,6 +106,26 @@ struct PostUniforms {
     var pad:           Float   // = 0
 }
 
+/// Wind + weather uniforms passed to terrain vertex shaders (both vmain and shadowVmain).
+/// 16 bytes. Keeps foliage sway + rain factor in a dedicated buffer (index 3) so
+/// Uniforms / WaterUniforms signatures stay unchanged (runPerfTest safe).
+struct WindUniforms {
+    var wallClockSecs: Float    //  4 — wall-clock seconds for sway animation
+    var rainStrength:  Float    //  4 — 0..1 how hard it's raining (scales sway amp)
+    var pad0:          Float = 0
+    var pad1:          Float = 0
+}
+
+/// Uniforms for the ambient-life sprite pass (birds / fireflies). 32 bytes.
+struct AmbientLifeUniforms {
+    var viewProj:      simd_float4x4 = .init(diagonal: .one)   // 64 bytes — camera VP
+    var camPosW:       SIMD4<Float>  = .zero                   // 16 bytes — world cam pos
+    var timeOfDay:     Float         = 0                       // 4 — 0..1 day cycle
+    var wallClock:     Float         = 0                       // 4 — animation time
+    var pad0:          Float         = 0
+    var pad1:          Float         = 0
+}
+
 // MARK: - Renderer
 
 final class Renderer: NSObject, MTKViewDelegate {
@@ -126,6 +146,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var bloomBlurHPipeline: MTLRenderPipelineState!  // horizontal Gaussian
     private var bloomBlurVPipeline: MTLRenderPipelineState!  // vertical Gaussian
     private var compositePipeline: MTLRenderPipelineState!   // ACES + grade + vignette → drawable
+    // Ambient life (birds + fireflies) — renderer-owned, no engine data needed
+    private var ambientLifePipeline: MTLRenderPipelineState!
+    private var ambientLifeDepthState: MTLDepthStencilState!
+    private var ambientLifeBuffer: MTLBuffer!   // AmbientSprite array (CPU-updated each frame)
+    private let kMaxAmbientSprites = 80
     // Sub-systems
     private var entityRenderer: EntityRenderer!
     private var particles: ParticleSystem!
@@ -272,6 +297,32 @@ final class Renderer: NSObject, MTKViewDelegate {
         cpd.colorAttachments[0].pixelFormat = colorFormat   // drawable bgra8
         do { compositePipeline = try device.makeRenderPipelineState(descriptor: cpd) }
         catch { fatalError("composite pipeline failed: \(error)") }
+
+        // ---- Ambient life (birds / fireflies): additive blended point sprites --
+        let ald = MTLRenderPipelineDescriptor()
+        ald.vertexFunction   = lib.makeFunction(name: "ambientLifeVert")
+        ald.fragmentFunction = lib.makeFunction(name: "ambientLifeFrag")
+        ald.colorAttachments[0].pixelFormat = .rgba16Float
+        ald.colorAttachments[0].isBlendingEnabled             = true
+        ald.colorAttachments[0].sourceRGBBlendFactor          = .one
+        ald.colorAttachments[0].destinationRGBBlendFactor     = .one   // additive
+        ald.colorAttachments[0].sourceAlphaBlendFactor        = .one
+        ald.colorAttachments[0].destinationAlphaBlendFactor   = .zero
+        ald.depthAttachmentPixelFormat = .depth32Float
+        do { ambientLifePipeline = try device.makeRenderPipelineState(descriptor: ald) }
+        catch { fatalError("ambient life pipeline failed: \(error)") }
+
+        // Birds: no depth test (sky sprites). Fireflies: less-equal depth test.
+        // We handle both in one pipeline; fireflies use depth, birds skip via discard logic.
+        let aldd = MTLDepthStencilDescriptor()
+        aldd.depthCompareFunction = .lessEqual
+        aldd.isDepthWriteEnabled  = false   // additive sprites never write depth
+        ambientLifeDepthState = device.makeDepthStencilState(descriptor: aldd)
+
+        // Allocate the CPU-writable sprite buffer (updated every frame)
+        ambientLifeBuffer = device.makeBuffer(
+            length: kMaxAmbientSprites * MemoryLayout<AmbientSpritePod>.stride,
+            options: .storageModeShared)!
     }
 
     private func buildShadowMap() {
@@ -421,6 +472,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         let wallClock = Float(now.truncatingRemainder(dividingBy: 3600.0))
         let isUnderwater = frame.camera.underwater
 
+        // Compute rain strength from the same weather cycle used by skyFmain.
+        // weatherCycle = sin(wallClock * π/150) * 0.5 + 0.5
+        let weatherCycle = sin(wallClock * (.pi / 150.0)) * 0.5 + 0.5
+        let rainStrength  = max(0, min(1, (weatherCycle - 0.60) / (0.82 - 0.60)))
+
+        // Wind uniforms (index 3 on vertex shaders — new dedicated buffer)
+        var windU = WindUniforms(wallClockSecs: wallClock, rainStrength: rainStrength)
+
         // Camera basis for sky dome
         let camRight = SIMD3<Float>(viewM.columns.0.x, viewM.columns.1.x, viewM.columns.2.x)
         let camUp    = SIMD3<Float>(viewM.columns.0.y, viewM.columns.1.y, viewM.columns.2.y)
@@ -456,6 +515,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             shadowEnc.setDepthStencilState(shadowDepthState)
             shadowEnc.setCullMode(.front)   // front-face culling reduces acne
             shadowEnc.setDepthBias(2.0, slopeScale: 2.0, clamp: 0.0)
+            // Wind uniforms at index 2 (shadow pass only has buffer 0 = vertices, 1 = ShadowVertUniforms)
+            shadowEnc.setVertexBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 2)
 
             for i in 0..<Int(frame.draw_count) {
                 let d = frame.draws[i]
@@ -520,6 +581,10 @@ final class Renderer: NSObject, MTKViewDelegate {
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
             enc.setFragmentTexture(shadowMap, index: 0)
             enc.setFragmentSamplerState(shadowSampler, index: 0)
+            // Wind/weather available to terrain frag at index 3 (rain wet-darkening)
+            enc.setFragmentBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)
+            // Wind uniforms to terrain vertex shader at index 3 (foliage sway)
+            enc.setVertexBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)
 
             for i in 0..<Int(frame.draw_count) {
                 let d = frame.draws[i]
@@ -543,6 +608,27 @@ final class Renderer: NSObject, MTKViewDelegate {
             entityRenderer.encode(enc, viewProj: viewProj, entities: frame.entities, count: Int(frame.entity_count))
             particles.update(Float(dt))
             particles.encode(enc, viewProj: viewProj)
+
+            // --- Ambient life: birds (day) + fireflies (night) ---
+            let spriteCount = updateAmbientSprites(
+                wallClock: wallClock,
+                timeOfDay: frame.camera.time_of_day,
+                camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z))
+            if spriteCount > 0 {
+                enc.setRenderPipelineState(ambientLifePipeline)
+                enc.setDepthStencilState(ambientLifeDepthState)
+                enc.setCullMode(.none)
+                var alU = AmbientLifeUniforms(
+                    viewProj:   viewProj,
+                    camPosW:    camPosW,
+                    timeOfDay:  frame.camera.time_of_day,
+                    wallClock:  wallClock,
+                    pad0:       0,
+                    pad1:       0)
+                enc.setVertexBuffer(ambientLifeBuffer, offset: 0, index: 0)
+                enc.setVertexBytes(&alU, length: MemoryLayout<AmbientLifeUniforms>.stride, index: 1)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: spriteCount * 6)
+            }
 
             // --- Underwater post-pass ---
             if isUnderwater > 0.01 {
@@ -640,6 +726,69 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
+    }
+
+    // MARK: Ambient life sprite update (CPU procedural, ~80 sprites max)
+
+    /// Fills ambientLifeBuffer with this frame's bird/firefly sprites.
+    /// Returns the sprite count written (may be 0 when completely faded).
+    @discardableResult
+    private func updateAmbientSprites(wallClock: Float, timeOfDay: Float, camPos: SIMD3<Float>) -> Int {
+        // dayT: 0=night, 1=noon
+        let dayT  = max(0, sin(timeOfDay * .pi))
+        // nightT: inverse
+        let nightT = max(0, 1.0 - dayT * 2.0)   // 0 during day, >0 during dusk/night
+
+        // Spawn budget
+        let birdCount: Int     = Int((dayT * dayT * 12).rounded())    // 0..12 birds by day
+        let fireflyCount: Int  = Int((nightT * nightT * 40).rounded()) // 0..40 fireflies by night
+        let totalSprites = min(birdCount + fireflyCount, kMaxAmbientSprites)
+        guard totalSprites > 0 else { return 0 }
+
+        let ptr = ambientLifeBuffer.contents().bindMemory(to: AmbientSpritePod.self, capacity: kMaxAmbientSprites)
+
+        // --- Birds (daytime, sky sprites, large) ---
+        for i in 0..<birdCount {
+            let fi = Float(i)
+            // Each bird orbits the player slowly at a random angle offset
+            let angle = wallClock * 0.06 + fi * 2.399              // golden-angle spacing
+            let radius = 30.0 + sin(fi * 1.618 + wallClock * 0.02) * 18.0
+            let height = camPos.y + 22.0 + sin(fi * 0.9 + wallClock * 0.07) * 6.0
+            let bx = camPos.x + cos(angle) * radius
+            let bz = camPos.z + sin(angle) * radius
+            let by = height
+            // Fade birds out at dawn/dusk edges
+            let birdAlpha = min(1.0, dayT * 3.0)
+            ptr[i] = AmbientSpritePod(
+                posW:  SIMD4<Float>(bx, by, bz, 0.9),                        // w=size
+                color: SIMD4<Float>(0.15, 0.12, 0.10, birdAlpha * 0.85))    // dark silhouette
+        }
+
+        // --- Fireflies (nighttime, near-ground, small emissive) ---
+        for i in 0..<fireflyCount {
+            let fi = Float(i)
+            // Bob around the player at low altitude in a rough disc
+            let angle = wallClock * 0.03 + fi * 2.399 + sin(fi * 1.1 + wallClock * 0.15) * 0.8
+            let radius = 5.0 + fmod(fi * 3.14159, 18.0)
+            let bobY = sin(fi * 0.87 + wallClock * (0.4 + fi * 0.003)) * 1.8
+            let fx = camPos.x + cos(angle) * radius
+            let fz = camPos.z + sin(angle) * radius
+            let fy = camPos.y + 1.5 + bobY   // hover near ground level
+            // Blink: each firefly has its own blink phase
+            let blink = max(0.0, sin(wallClock * (1.0 + fi * 0.37) + fi * 2.1))
+            let blink2 = blink * blink
+            let ffAlpha = min(1.0, nightT * 2.0) * (0.4 + blink2 * 0.6)
+            // Warm yellow-green, HDR overbright so they bloom
+            let r = 1.2 + blink2 * 0.6
+            let g = 1.8 + blink2 * 0.3
+            let b = 0.3 + blink2 * 0.1
+            let idx = birdCount + i
+            ptr[idx] = AmbientSpritePod(
+                posW:  SIMD4<Float>(fx, fy, fz, 0.22),              // w=size (tiny)
+                color: SIMD4<Float>(r, g, b, ffAlpha))
+        }
+
+        return totalSprites
     }
 
     // MARK: Sky colour (clear colour tint — sky pass renders on top)
@@ -773,6 +922,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         float4   chunkOrigin;    // 16 bytes
     };
 
+    // WindUniforms (16 bytes) — foliage sway + weather.  buffer(3) on vertex AND frag.
+    struct WindUniforms {
+        float wallClockSecs;
+        float rainStrength;   // 0..1
+        float pad0;
+        float pad1;
+    };
+
     // Vertex output for terrain pass.
     struct VOut {
         float4 position  [[position]];
@@ -786,6 +943,22 @@ final class Renderer: NSObject, MTKViewDelegate {
         // a position but as a float4 so it interpolates correctly across the face).
         float4 shadowPos;
         float  ao;               // 0=fully occluded, 1=fully open (from bits [3:5])
+    };
+
+    // AmbientSprite: 32 bytes, matches Swift AmbientSpritePod.
+    struct AmbientSprite {
+        float4 posW;    // xyz=world pos, w=size
+        float4 color;   // rgb=HDR colour (>1 ok), a=alpha
+    };
+
+    // AmbientLifeUniforms: matches Swift AmbientLifeUniforms.
+    struct AmbientLifeUniforms {
+        float4x4 viewProj;   // 64 bytes
+        float4   camPosW;    // 16 bytes
+        float    timeOfDay;
+        float    wallClock;
+        float    pad0;
+        float    pad1;
     };
 
     // =========================================================
@@ -930,31 +1103,87 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     // =========================================================
-    // SHADOW MAP — depth-only vertex shader
+    // WIND SWAY — foliage block classification + displacement
+    // =========================================================
+
+    // Returns sway amplitude factor for a given block material id (p.material).
+    //   0   = not foliage, no sway
+    //   1.0 = grass/flower/tall-grass  (full sway)
+    //   0.4 = leaves                   (subtle rustle)
+    //   0.3 = mushroom                 (minimal, stiff cap)
+    static float foliageFactor(uint matID) {
+        // Grasses & flowers: ids 36(flower_red), 37(flower_yellow), 38(tall_grass_block)
+        if (matID == 36u || matID == 37u || matID == 38u) return 1.0;
+        // Leaves: 5(oak_leaves), 27(birch_leaves)
+        if (matID == 5u  || matID == 27u)                  return 0.4;
+        // Mushroom: 39
+        if (matID == 39u)                                  return 0.3;
+        return 0.0;
+    }
+
+    // Shared wind-sway displacement used by BOTH vmain and shadowVmain.
+    //   worldPos  : pre-sway world position of the vertex
+    //   matID     : block material/type id (p.material in BFVertex = block type)
+    //               NOTE: p.block is per-vertex *light level* (0..15), not the type!
+    //   T         : wallClockSecs
+    //   rainStr   : 0..1 weather factor (amplifies sway in storms)
+    // Returns XZ displacement in world units.
+    // NOTE: voxel vertex Y positions are always integers, so we cannot use
+    // fract(y) to distinguish top/bottom of a block. Instead we apply the
+    // sway uniformly to all vertices of a foliage block — this is correct
+    // because the whole grass blade / flower / leaf cluster sways as one unit.
+    // Adjacent leaf blocks at different Y levels naturally sway with slightly
+    // different XZ-phase wind values, giving a convincing rustling canopy.
+    static float2 windSway(float3 worldPos, uint matID, float T, float rainStr) {
+        float ff = foliageFactor(matID);
+        if (ff < 0.001) return float2(0.0);
+        // Wind field: two overlapping sine waves on world XZ so adjacent blocks
+        // share the same phase (no seam at chunk boundaries).
+        float wx = sin(worldPos.x * 0.15 + worldPos.z * 0.10 + T * 1.30);
+        float wz = cos(worldPos.z * 0.17                      + T * 1.10);
+        // Base amplitude: ~0.18 blocks for full-factor foliage.
+        float amp = 0.18 * ff * (1.0 + rainStr * 0.6);
+        return float2(wx, wz) * amp;
+    }
+
+    // =========================================================
+    // SHADOW MAP — depth-only vertex shader (applies foliage sway)
     // =========================================================
     vertex float4 shadowVmain(uint vid [[vertex_id]],
                               device const PackedVertex* verts [[buffer(0)]],
-                              constant ShadowVertUniforms& su [[buffer(1)]]) {
+                              constant ShadowVertUniforms& su [[buffer(1)]],
+                              constant WindUniforms& wu [[buffer(2)]]) {
         PackedVertex p = verts[vid];
         float x = float(p.pos & 0x3f);
         float y = float((p.pos >> 6) & 0x3f);
         float z = float((p.pos >> 12) & 0x3f);
         float3 world = su.chunkOrigin.xyz + float3(x, y, z);
+        // Apply foliage sway — same formula as vmain so shadows track geometry.
+        // p.material holds the block type id; p.block holds per-vertex light level.
+        float2 sway = windSway(world, uint(p.material), wu.wallClockSecs, wu.rainStrength);
+        world.x += sway.x;
+        world.z += sway.y;
         return su.lightViewProj * float4(world, 1.0);
     }
 
     // =========================================================
-    // TERRAIN VERTEX SHADER
+    // TERRAIN VERTEX SHADER (applies foliage wind sway)
     // =========================================================
     vertex VOut vmain(uint vid [[vertex_id]],
                       device const PackedVertex* verts [[buffer(0)]],
-                      constant Uniforms& u [[buffer(1)]]) {
+                      constant Uniforms& u [[buffer(1)]],
+                      constant WindUniforms& wu [[buffer(3)]]) {
         PackedVertex p = verts[vid];
         float x = float(p.pos & 0x3f);
         float y = float((p.pos >> 6) & 0x3f);
         float z = float((p.pos >> 12) & 0x3f);
         float3 world = u.chunkOrigin.xyz + float3(x, y, z);
         uint n = p.normuv & 7u;
+
+        // --- Foliage wind sway ---
+        // p.material = block type id, p.block = per-vertex block light (0..15).
+        float2 sway = windSway(world, uint(p.material), wu.wallClockSecs, wu.rainStrength);
+        float3 swayedWorld = world + float3(sway.x, 0.0, sway.y);
 
         // --- AO from bits [3:5] (0=fully occluded, 3=open) ---
         float ao = float((p.normuv >> 3u) & 3u) / 3.0;
@@ -970,20 +1199,20 @@ final class Renderer: NSObject, MTKViewDelegate {
         float shade  = clamp(lightLevel * facing, 0.0, 1.0);
 
         VOut o;
-        o.position = u.viewProj * float4(world, 1.0);
+        o.position = u.viewProj * float4(swayedWorld, 1.0);
 
         float3 base = materialColor(uint(p.material));
         o.color    = mix(base, base * float3(1.15, 1.02, 0.8), clamp(blockC - skyC, 0.0, 1.0));
         o.shade    = shade;
         o.sat      = u.chunkOrigin.w;
-        o.worldPos = world;
+        o.worldPos = swayedWorld;
         o.faceNorm = n;
         o.material = uint(p.material);
         o.ao       = ao;
 
         // Light-space position for shadow lookup (per-vertex, interpolated).
         // lightViewProj maps world → [−1,1] clip; NDC depth is in [0,1] on Metal.
-        float4 lsClip = u.lightViewProj * float4(world, 1.0);
+        float4 lsClip = u.lightViewProj * float4(swayedWorld, 1.0);
         o.shadowPos = lsClip;   // perspective divide done in fmain
 
         return o;
@@ -1029,6 +1258,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // =========================================================
     fragment float4 fmain(VOut in [[stage_in]],
                           constant WaterUniforms& wu [[buffer(2)]],
+                          constant WindUniforms& wind [[buffer(3)]],
                           depth2d<float, access::sample> shadowTex [[texture(0)]],
                           sampler shadowSamp [[sampler(0)]]) {
         uint mat = in.material;
@@ -1105,6 +1335,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Dim desaturation
         float lum = dot(col, float3(0.299, 0.587, 0.114));
         col = mix(float3(lum), col, clamp(in.sat, 0.0, 1.0));
+
+        // --- Rain wet-darkening: top faces darken + desaturate slightly in rain ---
+        if (wind.rainStrength > 0.01 && !isEmissive) {
+            float topFace = (in.faceNorm == 2u) ? 1.0 : 0.3;   // mostly top faces
+            // Wet surfaces: darken by ~15% at full rain, slight blue push
+            float wetDark = 1.0 - wind.rainStrength * 0.15 * topFace;
+            float3 wetTint = float3(0.96, 0.98, 1.02);          // faint cool tone
+            col *= wetDark;
+            col = mix(col, col * wetTint, wind.rainStrength * 0.35 * topFace);
+        }
 
         // Underwater distance fog
         if (wu.underwater > 0.5) {
@@ -1218,27 +1458,53 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         float weatherCycle = sin(clk * (3.14159265f / 150.0f)) * 0.5f + 0.5f;
         float overcast = smoothstep(0.52, 0.80, weatherCycle) * 0.65;
+        float rainStrength = smoothstep(0.60, 0.82, weatherCycle);
 
         if (overcast > 0.01) {
             float cloudPlaneHit = (ray.y > 0.02) ? (1.0 / ray.y) : 0.0;
             float2 ocUV = ray.xz * cloudPlaneHit * 0.35 + float2(clk * 0.006, clk * 0.003);
             float ocCloud = cloudFbm(ocUV * 1.5);
-            ocCloud = smoothstep(0.38, 0.62, ocCloud);
-            float3 ocColor = mix(float3(0.55, 0.57, 0.64), float3(0.72, 0.74, 0.80), dayT);
+            // Storm clouds: thicker, darker underbellies when raining
+            float stormDark = mix(0.55, 0.35, rainStrength);
+            float stormBright = mix(0.80, 0.62, rainStrength);
+            ocCloud = smoothstep(0.38 - rainStrength * 0.08, 0.62, ocCloud);
+            float3 ocColor = mix(float3(stormDark, stormDark + 0.02, stormDark + 0.09),
+                                 float3(stormBright, stormBright + 0.02, stormBright + 0.06),
+                                 dayT);
             float ocFade = smoothstep(0.0, 0.12, ray.y);
             skyCol = mix(skyCol, ocColor, ocCloud * overcast * ocFade);
         }
 
-        float rainStrength = smoothstep(0.60, 0.82, weatherCycle);
+        // Lightning: rare (appears ~every 45s during storm), brief full-sky flash.
+        if (rainStrength > 0.5) {
+            // Use a sawtooth phase in seconds, trigger a flash near the top.
+            float ltPhase = fmod(clk * (1.0 / 45.0), 1.0);
+            float ltFlash = smoothstep(0.97, 0.99, ltPhase) * smoothstep(1.00, 0.99, ltPhase);
+            // Only light the sky-facing rays (not ground)
+            ltFlash *= smoothstep(0.0, 0.15, ray.y);
+            float ltAmp = rainStrength * ltFlash * 2.5;
+            skyCol = mix(skyCol, float3(0.88, 0.92, 1.00), ltAmp);
+        }
+
         if (rainStrength > 0.01) {
-            float2 rUV  = float2(in.ndc.x * 40.0, in.ndc.y * 3.5 + clk * 2.0);
-            float2 rUV2 = rUV * float2(1.4, 1.0) + float2(9.1, 0.0);
-            float streak = noise2(rUV) * noise2(rUV2);
-            float rain = pow(max(0.0, streak - 0.36), 2.2) * 10.0;
-            rain = clamp(rain, 0.0, 1.0);
-            float3 rainColor = mix(float3(0.62, 0.70, 0.84), float3(0.50, 0.62, 0.78), dayT);
-            float rainFade = smoothstep(-0.6, 0.0, in.ndc.y);
-            skyCol = mix(skyCol, rainColor, rain * rainStrength * 0.30 * rainFade);
+            // Screen-space rain streaks: two layers, slight angle, fade near horizon.
+            // Layer 1: fast fine streaks
+            float2 rUV  = float2(in.ndc.x * 45.0 + in.ndc.y * 0.3,
+                                  in.ndc.y * 4.0 + clk * 2.4);
+            float2 rUV2 = rUV * float2(1.5, 1.0) + float2(11.3, 0.0);
+            float streak1 = noise2(rUV) * noise2(rUV2);
+            float rain1 = pow(max(0.0, streak1 - 0.38), 2.0) * 9.0;
+            // Layer 2: slower thicker streaks
+            float2 rUV3  = float2(in.ndc.x * 22.0 + in.ndc.y * 0.5,
+                                   in.ndc.y * 2.5 + clk * 1.6);
+            float2 rUV4  = rUV3 + float2(7.7, 3.3);
+            float streak2 = noise2(rUV3) * noise2(rUV4);
+            float rain2 = pow(max(0.0, streak2 - 0.40), 1.8) * 7.0;
+            float rain = clamp(rain1 * 0.65 + rain2 * 0.35, 0.0, 1.0);
+            float3 rainColor = mix(float3(0.60, 0.68, 0.82), float3(0.48, 0.60, 0.76), dayT);
+            // Fade near horizon (streaks are nearly vertical — visible above horizon only)
+            float rainFade = smoothstep(-0.5, 0.15, in.ndc.y);
+            skyCol = mix(skyCol, rainColor, rain * rainStrength * 0.28 * rainFade);
         }
 
         float fairCloud = clamp(1.0 - overcast * 1.6, 0.0, 1.0);
@@ -1419,6 +1685,90 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         return float4(tonemapped, 1.0);
     }
+
+    // =========================================================
+    // AMBIENT LIFE — birds (day) + fireflies (night)
+    //
+    // Each sprite occupies 6 vertices (two triangles = billboard quad).
+    // The vertex shader reconstructs which sprite and which corner from
+    // vertex_id: sprite = vid / 6, corner = vid % 6.
+    //
+    // Birds: large (~1 world unit), dark silhouette, drawn at fixed sky
+    //        height — we skip depth testing effect by always writing to
+    //        a far position, so they sit in the sky.
+    // Fireflies: tiny emissive warm-green, HDR > 1, depth-tested so they
+    //            hide behind terrain. They bloom via the existing bloom pass.
+    // =========================================================
+
+    struct ALVOut {
+        float4 position [[position]];
+        float4 color;    // rgba (HDR allowed)
+        float2 uv;       // normalised quad UV (−1..1)
+        uint   isBird [[flat]];  // 1=bird (screen-facing, no depth), 0=firefly
+    };
+
+    vertex ALVOut ambientLifeVert(uint vid [[vertex_id]],
+                                   device const AmbientSprite* sprites [[buffer(0)]],
+                                   constant AmbientLifeUniforms& au [[buffer(1)]]) {
+        // Reconstruct sprite index and corner.
+        uint si = vid / 6u;
+        uint ci = vid % 6u;
+        AmbientSprite sp = sprites[si];
+
+        // Corner offsets for a quad via two triangles.
+        // ci: 0=BL,1=BR,2=TR, 3=BL,4=TR,5=TL
+        const float2 corners[6] = {
+            float2(-1,-1), float2(1,-1), float2(1, 1),
+            float2(-1,-1), float2(1, 1), float2(-1, 1)
+        };
+        float2 corner = corners[ci];
+
+        float size   = sp.posW.w;   // screen-space half-size in clip units
+        float4 clipCenter = au.viewProj * float4(sp.posW.xyz, 1.0);
+
+        // Billboard: offset in clip space so the quad always faces the camera.
+        // We scale the offset by size / clipCenter.w to keep it view-independent.
+        float screenSize = size / max(clipCenter.w, 0.001);
+        float4 pos = clipCenter + float4(corner.x * screenSize,
+                                          corner.y * screenSize * 1.5, // slight vertical stretch for birds
+                                          0.0, 0.0);
+
+        ALVOut o;
+        o.position = pos;
+        o.color    = sp.color;
+        o.uv       = corner;
+        // Determine bird vs firefly by size: birds have size > 0.5, fireflies < 0.5
+        o.isBird   = (size > 0.5) ? 1u : 0u;
+        return o;
+    }
+
+    fragment float4 ambientLifeFrag(ALVOut in [[stage_in]]) {
+        // Soft circular mask (both birds and fireflies are round/dot)
+        float d = dot(in.uv, in.uv);
+        if (d > 1.0) discard_fragment();
+
+        float alpha = in.color.a;
+
+        if (in.isBird == 1u) {
+            // Bird silhouette: simple V-wing shape using the UV.
+            // Wing tips: |x| > |y|*1.5 → draw, else discard for the body gap.
+            float wingMask = step(abs(in.uv.y) * 1.6, abs(in.uv.x));
+            // Also mask off the inner part to make a V (not a full disc)
+            float innerGap = 1.0 - step(abs(in.uv.y) * 0.6, d);
+            float mask = wingMask * (1.0 - innerGap * 0.5);
+            if (mask < 0.1) discard_fragment();
+            // Soft edge
+            float edge = 1.0 - smoothstep(0.60, 1.0, d);
+            return float4(in.color.rgb * edge * mask, alpha * edge * mask);
+        } else {
+            // Firefly: gaussian glow dot.  Multiply out to HDR levels for bloom.
+            float glow = exp(-d * 3.5);
+            // Outer halo (broader, dimmer)
+            float halo = exp(-d * 1.2) * 0.35;
+            float total = glow + halo;
+            return float4(in.color.rgb * total, alpha * total);
+        }
+    }
     """
 }
 
@@ -1428,6 +1778,13 @@ final class Renderer: NSObject, MTKViewDelegate {
 struct ShadowVertUniforms {
     var lightViewProj: simd_float4x4
     var chunkOrigin:   SIMD4<Float>
+}
+
+// MARK: - Ambient sprite POD (matches MSL AmbientSprite, 32 bytes)
+/// 32 bytes per sprite, written by Swift, read by MSL ambientLifeVert.
+struct AmbientSpritePod {
+    var posW:    SIMD4<Float>   // xyz = world pos, w = size (screen-space radius)
+    var color:   SIMD4<Float>   // rgb = HDR colour (>1 allowed for bloom), a = alpha
 }
 
 // MARK: - Offscreen render self-test (CI: proves terrain pixels actually draw)
@@ -1571,6 +1928,8 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
                 enc.setDepthStencilState(shadowDepthState)
                 enc.setCullMode(.front)
                 enc.setDepthBias(2.0, slopeScale: 2.0, clamp: 0.0)
+                var windST = WindUniforms(wallClockSecs: Float(f)/60.0, rainStrength: 0)
+                enc.setVertexBytes(&windST, length: MemoryLayout<WindUniforms>.stride, index: 2)
                 for i in 0..<Int(frame.draw_count) {
                     let d = frame.draws[i]
                     guard d.index_count > 0,
@@ -1628,6 +1987,9 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
             enc.setFragmentTexture(shadowTex, index: 0)
             enc.setFragmentSamplerState(shadowSampler, index: 0)
+            var windST = WindUniforms(wallClockSecs: Float(f)/60.0, rainStrength: 0)
+            enc.setVertexBytes(&windST, length: MemoryLayout<WindUniforms>.stride, index: 3)
+            enc.setFragmentBytes(&windST, length: MemoryLayout<WindUniforms>.stride, index: 3)
             for i in 0..<Int(frame.draw_count) {
                 let d = frame.draws[i]
                 guard d.index_count > 0,

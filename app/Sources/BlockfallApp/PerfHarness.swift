@@ -136,6 +136,7 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
             sunDir: SIMD3<Float>(sun.x, sun.y, sun.z),
             camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z), camFwd: camFwd)
 
+        var windU = WindUniforms(wallClockSecs: wallClock, rainStrength: 0)
         let cmd = queue.makeCommandBuffer()!
 
         // PASS 1: shadow depth
@@ -155,6 +156,7 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
                         chunkOrigin: SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), 0))
                     enc.setVertexBuffer(vb, offset: Int(d.vertex_offset), index: 0)
                     enc.setVertexBytes(&su, length: MemoryLayout<ShadowVertUniforms>.stride, index: 1)
+                    enc.setVertexBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 2)
                     enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
                                               indexType: .uint32, indexBuffer: ib, indexBufferOffset: Int(d.index_offset))
                 }
@@ -187,6 +189,7 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
             enc.setCullMode(.back); enc.setFrontFacing(.counterClockwise)
             var wu = WaterUniforms(wallClockSecs: wallClock, underwater: 0, cameraPosW: camPosW)
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
+            enc.setFragmentBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)
             enc.setFragmentTexture(shadowTex, index: 0)
             enc.setFragmentSamplerState(shadowSampler, index: 0)
             for i in 0..<Int(f.draw_count) {
@@ -199,6 +202,7 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
                     lightViewProj: lightViewProj)
                 enc.setVertexBuffer(vb, offset: Int(d.vertex_offset), index: 0)
                 enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+                enc.setVertexBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
                                           indexType: .uint32, indexBuffer: ib, indexBufferOffset: Int(d.index_offset))
             }
