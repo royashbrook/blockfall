@@ -375,7 +375,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         cfg.start_mode = BF_MODE_SURVIVAL
         cfg.render_distance_chunks = 10
         cfg.memory_budget_bytes = 10 * 1024 * 1024 * 1024
-        cfg.content_dir = persistentCString(Bundle.main.resourcePath ?? ".")
+        // Content is bundled at Resources/content (build.sh copies it there).
+        // The registry loads <dir>/blocks, <dir>/items, … so point at that folder,
+        // not Resources itself — otherwise NO blocks/items/recipes load and there
+        // are no drops, starter items, or recipes.
+        let resDir = Bundle.main.resourcePath ?? "."
+        let contentDir = FileManager.default.fileExists(atPath: resDir + "/content/blocks")
+            ? resDir + "/content" : resDir
+        cfg.content_dir = persistentCString(contentDir)
         cfg.save_dir = persistentCString(saveDir)
         cfg.player_name = persistentCString("kid")
         var err = BF_OK
@@ -708,8 +715,18 @@ final class Renderer: NSObject, MTKViewDelegate {
             }
         }
 
-        cmd.present(drawable)
-        cmd.commit()
+        // Present inside the Core Animation transaction so the AppKit HUD overlay
+        // (hotbar, hearts, inventory) composites ON TOP of the Metal layer. With
+        // the default async present the metal content draws over the overlay and
+        // the HUD is invisible. Requires view.presentsWithTransaction = true.
+        if view.presentsWithTransaction {
+            cmd.commit()
+            cmd.waitUntilScheduled()
+            drawable.present()
+        } else {
+            cmd.present(drawable)
+            cmd.commit()
+        }
 
         // Audio: drive day/evening music + splash when entering water.
         audio?.setTimeOfDay(frame.camera.time_of_day)

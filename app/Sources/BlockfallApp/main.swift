@@ -49,9 +49,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.startGame(saveDir: saveDir, fresh: isNew, seed: seed)
         }
         menu.onQuit = { NSApp.terminate(nil) }
-        window.contentView = menu.rootView
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        // --playtest: boot straight into a fresh world (skips the menu) so the
+        // live in-game HUD can be screenshot for verification.
+        if CommandLine.arguments.contains("--playtest") {
+            let dir = NSTemporaryDirectory() + "bf_playtest_\(Int.random(in: 0...99999))"
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            startGame(saveDir: dir, fresh: true, seed: 24)
+        } else {
+            window.contentView = menu.rootView
+        }
     }
 
     private func startGame(saveDir: String, fresh: Bool = false, seed: UInt64 = 0) {
@@ -59,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mtkView = GameView(frame: frame, device: device)
         mtkView.colorPixelFormat = .bgra8Unorm
         mtkView.preferredFramesPerSecond = 60
+        mtkView.presentsWithTransaction = true   // so the AppKit HUD overlay composites on top
 
         let r = Renderer(view: mtkView, device: device, saveDir: saveDir, audio: audio,
                          fresh: fresh, seed: seed)
