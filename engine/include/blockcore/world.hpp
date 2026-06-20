@@ -348,11 +348,17 @@ public:
                 BlockId broken = block_at(target_);
                 fx(0, target_);                       // break sound + particles
                 notify_quest("mine_block", block_name(broken));
-                // Survival: the block drops an item into the inventory.
-                if (mode_ == BF_MODE_SURVIVAL && inv_ && blocks_) {
+                // The broken block drops an item into the inventory (both modes,
+                // so you always get the block you mined).
+                if (inv_ && blocks_) {
                     const BlockDef* bd = blocks_->by_id(broken);
                     ItemId drop = bd ? bd->drop_item : ItemId(0);
-                    if (drop) { inv_->add(ItemStack{drop, 1, 0xFFFF}); notify_quest("collect_item", item_name(drop)); }
+                    if (drop == 0) drop = item_that_places(broken);   // fall back to the block's own item
+                    if (drop) {
+                        inv_->add(ItemStack{drop, 1, 0xFFFF});
+                        fx(7, target_);               // pickup sound
+                        notify_quest("collect_item", item_name(drop));
+                    }
                 }
                 set_block_internal(target_, AIR);
                 mine_progress_ = 0.0f; raycast_target();
@@ -585,6 +591,14 @@ private:
     std::string item_name(ItemId i) const {
         const ItemDef* d = items_ ? items_->by_id(i) : nullptr; return d ? std::string(d->name) : std::string();
     }
+    ItemId item_that_places(BlockId b) const {
+        if (!items_ || b == 0) return 0;
+        for (ItemId id = 1; id < 400; ++id) {
+            const ItemDef* d = items_->by_id(id);
+            if (d && d->places_block == b) return d->id;
+        }
+        return 0;
+    }
     void start_quest(std::size_t i) {
         active_quest_ = i; obj_progress_.clear();
         if (extra_ && i < extra_->quests().size())
@@ -694,11 +708,10 @@ private:
     // Keep a population near the player: despawn far ones, spawn fresh ones in a
     // ring just out of view as you explore (fixes "same animals follow forever").
     void maintain_creatures(float dt) {
-        if (!gen_ || store_.resident_count() < 30) return;
+        if (!gen_ || store_.resident_count() < 20) return;
         creature_timer_ -= dt;
         if (creature_timer_ > 0) return;
-        creature_timer_ = 0.35f;
-        const float kDespawn2 = 80.0f * 80.0f;
+        const float kDespawn2 = 90.0f * 90.0f;
         creatures_.erase(std::remove_if(creatures_.begin(), creatures_.end(),
             [&](const Creature& c) {
                 float dx = c.pos.x - pos_.x, dz = c.pos.z - pos_.z;
@@ -706,8 +719,11 @@ private:
             }), creatures_.end());
         int ambient = 0, bosses = 0;
         for (auto& c : creatures_) (c.is_boss ? bosses : ambient)++;
-        if (ambient < 9)      spawn_ring_creature(false, 18.0f, 44.0f);
-        else if (bosses < 2)  spawn_ring_creature(true,  30.0f, 60.0f);
+        // Fill the area quickly at first (small timer), then top up slowly.
+        creature_timer_ = (ambient < 4) ? 0.08f : 0.5f;
+        // Spawn in view range so you actually meet them.
+        if (ambient < 9)      spawn_ring_creature(false, 8.0f, 26.0f);
+        else if (bosses < 2)  spawn_ring_creature(true,  18.0f, 40.0f);
     }
 
     void update_creatures(float dt) {

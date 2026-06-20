@@ -83,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // ---- pause menu (Esc) ----
     @objc private func pauseGame() {
         guard pauseOverlay == nil, let container = gameContainer else { return }
-        gameView?.releaseMouse()
+        gameView?.setPaused(true)
         let ov = NSView(frame: container.bounds)
         ov.autoresizingMask = [.width, .height]
         ov.wantsLayer = true
@@ -115,6 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func resumeGame() {
         pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
+        gameView?.setPaused(false)
         gameView?.grabMouse()
         if let gv = gameView { window.makeFirstResponder(gv) }
     }

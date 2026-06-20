@@ -225,6 +225,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         case 4: audio?.play(.craft)
         case 5: audio?.play(.befriend)
         case 6: audio?.play(.questComplete)
+        case 7: audio?.play(.pickup)
         default: break
         }
     }

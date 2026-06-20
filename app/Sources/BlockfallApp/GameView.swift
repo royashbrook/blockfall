@@ -23,8 +23,10 @@ final class GameView: MTKView {
     var onJoin: (() -> Void)?
     var onPause: (() -> Void)?
 
+    private var gamePaused = false
     func releaseMouse() { releasePointer() }
     func grabMouse() { capturePointer() }
+    func setPaused(_ b: Bool) { gamePaused = b; if b { releasePointer() } }
 
     // Accumulated mouse look since the last frame (consumed by Renderer).
     private(set) var lookDX: Float = 0
@@ -43,6 +45,7 @@ final class GameView: MTKView {
 
     // ---- per-frame snapshot ------------------------------------------------
     func makeFrameInput() -> bf_frame_input {
+        if gamePaused { return bf_frame_input() }      // no movement/look while paused
         var inp = bf_frame_input()
         inp.move_forward = (pressed.contains(K.w) ? 1 : 0) - (pressed.contains(K.s) ? 1 : 0)
         inp.move_strafe  = (pressed.contains(K.d) ? 1 : 0) - (pressed.contains(K.a) ? 1 : 0)
@@ -97,6 +100,7 @@ final class GameView: MTKView {
 
     // ---- mouse -------------------------------------------------------------
     override func mouseDown(with e: NSEvent) {
+        if gamePaused { return }               // let the pause overlay get clicks
         if !captured { capturePointer() } else { queue(BF_ACT_MINE_START) }
     }
     override func mouseUp(with e: NSEvent) { if captured { queue(BF_ACT_MINE_STOP) } }
