@@ -6,17 +6,23 @@ C++23 core (`blockcore`) + Swift/Metal app shell, talking over a frozen C ABI.
 > Mechanics, controls, and feel mirror Minecraft exactly. **All art, names, and
 > content are original** — no copied assets, textures, names, or lore.
 
-## Status — M0–M3 ✅ · M4 ✅ co-op core (LAN run = real-hardware acceptance)
+## Status — M0–M5 ✅ implemented (3 acceptance gates are on-device)
 
-**M4 — co-op (consistency core done).** Reliable-UDP transport (seq/ack/resend,
-ordered/unordered/unreliable channels) verified at 30–40% loss. Server-
-authoritative replication: clients gen the same world from the host's seed;
-edits funnel through the host and converge — two clients editing the same block
-agree (tested with host+2 clients at 30% loss). Bonjour discovery + H host / J
-join in the app. Live 2–4 Air LAN run is the real-hardware M4 acceptance.
+All six milestones are built, integrated, and green on a clean checkout
+(`ci/check.sh`: 16 unit tests + content validation + render + perf smoke + lint).
 
-Next — **M5**: arm64 `.dmg` verified on a clean M1 Air + sustained 10-min perf
-gate + content volume (bosses, quest engine, content-driven creatures).
+- **M0** contract frozen · **M1** mine/place loop · **M2** procedural streaming
+  world + Dim + day/night + save/load + lighting · **M3** inventory/crafting +
+  ~40 blocks + survival/creative + animals + quest · **M4** co-op (reliable UDP,
+  server-authoritative convergence under loss, Bonjour) · **M5** arm64 `.dmg` +
+  perf harness + content volume (9 animals + 2 bosses, 15-quest engine).
+
+**Three gates are inherently real-hardware** and remain to verify on the target:
+1. sustained 10-min **≥60 FPS / ≥30 1%-low on an M1 Air** (`--perftest 600`),
+2. clean-**M1 Air install** from the `.dmg`,
+3. live **2–4 Air LAN co-op**.
+The dev-box (M4 Pro) reference perf has large headroom (~2670 FPS median release,
+< 700 MB), and the co-op consistency core is proven headlessly at 30% loss.
 
 
 
