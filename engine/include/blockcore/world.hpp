@@ -26,6 +26,8 @@
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
+#include <set>
+#include <tuple>
 #include <cmath>
 #include <string>
 #include <fstream>
@@ -58,6 +60,20 @@ struct Creature {
     float wander{0};
     int   shape{0};         // renderer model variant (0..3 animals)
     std::string name;       // content creature name (quest befriend target)
+};
+
+// A block in mid-air: undermined sand/gravel, or logs from a felled tree.
+// Rendered as entity kind 6 (a tumbling cube). On landing it either becomes a
+// solid block again (gravity) or drops into the inventory (tree logs).
+struct FallingBlock {
+    V3      pos{};
+    V3      vel{};
+    float   spin{0};
+    float   spin_rate{0};
+    BlockId block{0};
+    V3      color{0.6f, 0.6f, 0.6f};
+    bool    as_item{false};   // true: drop as item on land; false: re-place as a block
+    float   life{6.0f};
 };
 
 struct MeshRec {
@@ -366,22 +382,7 @@ public:
         if (mining_ && has_target_) {
             mine_progress_ += float(dt) / break_time(block_at(target_));
             if (mine_progress_ >= 1.0f) {
-                BlockId broken = block_at(target_);
-                fx(0, target_, sound_class_for(broken)); // break sound (by material) + particles
-                notify_quest("mine_block", block_name(broken));
-                // The broken block drops an item into the inventory (both modes,
-                // so you always get the block you mined).
-                if (inv_ && blocks_) {
-                    const BlockDef* bd = blocks_->by_id(broken);
-                    ItemId drop = bd ? bd->drop_item : ItemId(0);
-                    if (drop == 0) drop = item_that_places(broken);   // fall back to the block's own item
-                    if (drop) {
-                        inv_->add(ItemStack{drop, 1, 0xFFFF});
-                        fx(7, target_);               // pickup sound
-                        notify_quest("collect_item", item_name(drop));
-                    }
-                }
-                set_block_internal(target_, AIR);
+                break_block(target_);
                 mine_progress_ = 0.0f; raycast_target();
             }
         } else mine_progress_ = 0.0f;
@@ -398,6 +399,7 @@ public:
 
         maintain_creatures(float(dt));   // spawn near the player, despawn far away
         update_creatures(float(dt));
+        update_falling(float(dt));        // sand/gravel + felled-tree logs in mid-air
     }
 
     void action(const bf_action& a) {
@@ -510,6 +512,17 @@ public:
             e.sat = region_sat(to_chunk(IVec3{ifloor(cr.pos.x), ifloor(cr.pos.y), ifloor(cr.pos.z)}));
             entities_.push_back(e);
         }
+        // Falling blocks (gravity sand/gravel, felled-tree logs) as kind 6 cubes.
+        for (const auto& fb : falling_) {
+            bf_entity_draw e{};
+            e.position = bf_vec3{fb.pos.x, fb.pos.y, fb.pos.z};
+            e.yaw = fb.spin;
+            e.color = bf_vec3{fb.color.x, fb.color.y, fb.color.z};
+            e.scale = 1.0f;
+            e.kind = 6u;                                  // tumbling cube
+            e.sat = region_sat(to_chunk(IVec3{ifloor(fb.pos.x), ifloor(fb.pos.y), ifloor(fb.pos.z)}));
+            entities_.push_back(e);
+        }
         // Other players (co-op) drawn as taller avatars.
         for (const auto& a : remote_avatars_) entities_.push_back(a);
         out.entities = entities_.data();
@@ -541,6 +554,8 @@ public:
         int n = 0; for (auto& c : creatures_) if (c.hostile) ++n; return n;
     }
     float   debug_health() const { return health_; }
+    int     debug_falling_count() const { return int(falling_.size()); }
+    void    debug_break_at(int x, int y, int z) { break_block(IVec3{x, y, z}); }
     float   debug_day_time() const { return day_time(world_clock_); }
     int     debug_quests_completed() const { return quests_completed_; }
     std::uint32_t debug_active_quest() const {
@@ -796,6 +811,124 @@ private:
         creatures_.erase(std::remove_if(creatures_.begin(), creatures_.end(),
             [](const Creature& c){ return c.hostile; }), creatures_.end());
         fx(6, player_voxel());                           // respawn chime
+    }
+
+    // Break a block: drop its item (or fell the whole tree for logs), play the
+    // material break sound, and let undermined sand/gravel fall.
+    void break_block(IVec3 t) {
+        BlockId broken = block_at(t);
+        if (broken == AIR) return;
+        fx(0, t, (int(broken) << 4) | sound_class_for(broken));   // sound + debris colour
+        notify_quest("mine_block", block_name(broken));
+        if (is_log(broken)) {
+            notify_quest("collect_item", item_name(item_that_places(broken)));
+            fell_tree(t);                                          // whole tree comes down
+        } else {
+            if (inv_ && blocks_) {
+                const BlockDef* bd = blocks_->by_id(broken);
+                ItemId drop = bd ? bd->drop_item : ItemId(0);
+                if (drop == 0) drop = item_that_places(broken);
+                if (drop) {
+                    inv_->add(ItemStack{drop, 1, 0xFFFF});
+                    fx(7, t);                                      // pickup sound
+                    notify_quest("collect_item", item_name(drop));
+                }
+            }
+            set_block_internal(t, AIR);
+            apply_gravity_above(t);                                // undermined sand/gravel falls
+        }
+    }
+    // ---- Wave 3: destruction physics ---------------------------------------
+    static bool is_gravity_block(BlockId b) { return b == 6 || b == 11; }   // sand, gravel
+    static bool is_log(BlockId b)           { return b == 21 || b == 22; }  // oak/birch log
+    static bool is_leaf(BlockId b)          { return b == 5 || b == 27; }   // oak/birch leaves
+    static V3   falling_color(BlockId b) {
+        switch (b) {
+            case 6:  return {0.86f, 0.79f, 0.55f};   // sand
+            case 11: return {0.55f, 0.53f, 0.50f};   // gravel
+            case 21: return {0.50f, 0.36f, 0.20f};   // oak log
+            case 22: return {0.78f, 0.72f, 0.56f};   // birch log
+            case 5:  return {0.27f, 0.55f, 0.24f};   // oak leaves
+            case 27: return {0.40f, 0.62f, 0.32f};   // birch leaves
+            default: return {0.6f, 0.6f, 0.6f};
+        }
+    }
+    void spawn_falling(IVec3 w, BlockId b, bool as_item, V3 vel) {
+        if (falling_.size() > 200) return;               // perf cap
+        FallingBlock fb;
+        fb.pos = V3{float(w.x) + 0.5f, float(w.y), float(w.z) + 0.5f};
+        fb.vel = vel;
+        fb.spin = rand01() * 6.2831853f;
+        fb.spin_rate = (rand01() - 0.5f) * 8.0f;
+        fb.block = b; fb.color = falling_color(b); fb.as_item = as_item;
+        falling_.push_back(fb);
+    }
+    // Undermined sand/gravel above a cleared cell falls.
+    void apply_gravity_above(IVec3 w) {
+        IVec3 up{w.x, w.y + 1, w.z};
+        while (is_gravity_block(block_at(up))) {
+            BlockId b = block_at(up);
+            set_block_internal(up, AIR);
+            spawn_falling(up, b, /*as_item=*/false, V3{0, -1.0f, 0});
+            up.y += 1;
+        }
+    }
+    // Chop a trunk → the whole tree comes down: logs fall (and drop as items),
+    // leaves burst into particles.
+    void fell_tree(IVec3 base) {
+        std::vector<IVec3> logs, stack{base};
+        std::set<std::tuple<int,int,int>> seen{{base.x, base.y, base.z}};
+        while (!stack.empty() && logs.size() < 48) {
+            IVec3 w = stack.back(); stack.pop_back();
+            logs.push_back(w);
+            for (int dx = -1; dx <= 1; ++dx)
+            for (int dy = 0; dy <= 1; ++dy)              // grow upward/sideways, not down
+            for (int dz = -1; dz <= 1; ++dz) {
+                IVec3 n{w.x + dx, w.y + dy, w.z + dz};
+                if (!is_log(block_at(n))) continue;
+                auto key = std::make_tuple(n.x, n.y, n.z);
+                if (seen.insert(key).second) stack.push_back(n);
+            }
+        }
+        // Logs fall outward+up from the base, then drop as items.
+        for (IVec3 w : logs) {
+            BlockId b = block_at(w);
+            set_block_internal(w, AIR);
+            float h = float(w.y - base.y);
+            V3 vel{(rand01() - 0.5f) * 2.0f, 1.5f + h * 0.4f, (rand01() - 0.5f) * 2.0f};
+            spawn_falling(w, b, /*as_item=*/true, vel);
+        }
+        // Attached leaves shatter into particles.
+        for (IVec3 lw : logs)
+            for (int dx = -2; dx <= 2; ++dx)
+            for (int dy = -1; dy <= 2; ++dy)
+            for (int dz = -2; dz <= 2; ++dz) {
+                IVec3 n{lw.x + dx, lw.y + dy, lw.z + dz};
+                if (is_leaf(block_at(n))) { BlockId lf = block_at(n); set_block_internal(n, AIR); fx(0, n, (int(lf) << 4) | 6); }
+            }
+        fx(2, base);                                     // "timber" thud
+    }
+    void update_falling(float dt) {
+        for (auto& fb : falling_) {
+            fb.vel.y -= 26.0f * dt;
+            fb.pos = fb.pos + fb.vel * dt;
+            fb.spin += fb.spin_rate * dt;
+            fb.life -= dt;
+            int fy = floor_below(ifloor(fb.pos.x), int(std::floor(fb.pos.y)) + 1, ifloor(fb.pos.z));
+            if (fy != kNoFloor && fb.pos.y <= float(fy)) {
+                IVec3 land{ifloor(fb.pos.x), fy, ifloor(fb.pos.z)};
+                if (fb.as_item) {
+                    if (inv_) { if (ItemId id = item_that_places(fb.block)) inv_->add(ItemStack{id, 1, 0xFFFF}); }
+                    fx(7, land);                          // pickup chime
+                } else if (block_at(land) == AIR) {
+                    set_block_internal(land, fb.block);   // gravity block settles
+                    fx(0, land, (int(fb.block) << 4) | sound_class_for(fb.block));
+                }
+                fb.life = 0.0f;
+            }
+        }
+        falling_.erase(std::remove_if(falling_.begin(), falling_.end(),
+            [](const FallingBlock& f){ return f.life <= 0.0f; }), falling_.end());
     }
 
     // Keep a population near the player: despawn far ones, spawn fresh ones in a
@@ -1138,6 +1271,7 @@ private:
 
     // Creatures + quest state (M3).
     std::vector<Creature>         creatures_;
+    std::vector<FallingBlock>     falling_;
     std::vector<bf_entity_draw>   entities_;
     float                         creature_timer_{0.0f};
     std::uint32_t                 rng_{0x1234567u};

@@ -27,6 +27,14 @@
 //           (luminance > 1 → bloom), gaping mouth slit, skittering lurching gait.
 //           silhouette: hunched pointed mass with splayed limbs and glowing eyes.
 //
+// kind 6 — FALLING BLOCK:   single 0.9³ cube centered on entity position.
+//           uses entity color directly (block colour from engine — no creature
+//           palette). entity yaw drives a continuous Y-axis spin so the cube
+//           tumbles visibly; a fixed 0.35-rad X tilt makes the spin read in 3D.
+//           directional shading applied (top bright, sides mid, bottom dark)
+//           so the block has visible form — no legs, eyes, or animation beyond
+//           the tumble. sat from entity is passed through unchanged.
+//
 // Animation list (unchanged from M5):
 //   BLINK       — per-creature cadence: eyes squish flat for ~0.08s every 3-6s
 //   BREATHE     — gentle body Y-bob + slight XZ scale pulse, ~0.4 Hz
@@ -137,6 +145,7 @@ final class EntityRenderer {
             case 3:  drawKind3(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash)
             case 4:  drawKind4(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash)
             case 5:  drawKind5(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash)
+            case 6:  drawKind6(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase)
             default: drawKind0(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash)
             }
         }
@@ -1237,6 +1246,45 @@ final class EntityRenderer {
                 * EntityRenderer.scaleM(SIMD3(arm2W, arm2H, arm2D))
             drawCube(enc: enc, viewProj: viewProj, model: foreArmRModel, rgb: clawCol, sat: sat)
         }
+    }
+
+    // =========================================================================
+    // KIND 6 — FALLING BLOCK (sand, gravel, or log from felled tree)
+    //
+    // A single cube, 0.9 units on each side, centered on the entity position.
+    // Color comes directly from the engine via e.color (the actual block colour).
+    // The entity's yaw is used as a continuously-supplied tumble angle: the
+    // engine increments it each tick so the cube spins as it falls.  A fixed
+    // 0.35-rad X tilt is composed in so the spin reads clearly in 3D (a
+    // pure Y-spin on a unit cube looks flat from the side).
+    // Directional shading is provided by the existing vertex shader via the
+    // face normals in cubeVB — no extra setup needed here.
+    // sat is passed through from the entity so the desaturation path works.
+    // No legs, eyes, blink, breathe, or any creature animation.
+    // =========================================================================
+    private func drawKind6(enc: MTLRenderCommandEncoder,
+                           viewProj: simd_float4x4,
+                           e: bf_entity_draw,
+                           pos: SIMD3<Float>,
+                           phase: Float) {
+        let s   = e.scale
+        let sat = e.sat
+        let blockCol = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+
+        // The cube is 0.9 × scale on each axis, centered at pos.
+        let side = s * 0.9
+
+        // Tumble: yaw supplies a Y-spin; a fixed X tilt of 0.35 rad makes
+        // the rotation visible in 3D even when viewed from a shallow angle.
+        let spinY = EntityRenderer.rotY(e.yaw)
+        let tiltX = EntityRenderer.rotX(0.35)
+
+        let model = EntityRenderer.trans(pos)
+            * spinY
+            * tiltX
+            * EntityRenderer.scaleM(SIMD3<Float>(side, side, side))
+
+        drawCube(enc: enc, viewProj: viewProj, model: model, rgb: blockCol, sat: sat)
     }
 
     // -----------------------------------------------------------------------

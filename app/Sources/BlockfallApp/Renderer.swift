@@ -421,7 +421,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     func handleEvent(_ ev: bf_event) {
         guard ev.kind == BF_EVT_SFX else { return }
         switch ev.i {
-        case 0: audio?.playBreak(materialClass: Int(ev.j)); spawnBreakParticles(ev.pos)
+        case 0:                                    // packed: (blockId<<4 | soundClass)
+            let packed = Int(ev.j)
+            audio?.playBreak(materialClass: packed & 0xF)
+            spawnBreakParticles(ev.pos, blockId: packed >> 4)
         case 1: audio?.play(.place)
         case 2: audio?.play(.step)
         case 3: audio?.play(.jump)
@@ -435,7 +438,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
     }
 
-    func spawnBreakParticles(_ pos: bf_ivec3) { particles.spawn(at: pos) }
+    func spawnBreakParticles(_ pos: bf_ivec3, blockId: Int = 0) { particles.spawn(at: pos, blockId: blockId) }
 
     func shutdown() {
         if let e = engine { _ = bf_world_save(e); bf_engine_destroy(e); engine = nil }
