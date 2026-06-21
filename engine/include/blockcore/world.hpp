@@ -399,6 +399,9 @@ public:
         if (!(pc == last_center_) || first_stream_) {
             last_center_ = pc; first_stream_ = false;
             recompute_stream_set();
+            // Entering a still-drained region = reaching the Dim Barrens (drives
+            // quest 5; "dim_barrens" is the colour-drained state, not a biome).
+            if (region_sat(pc) < 0.99f) notify_quest("reach_location", "dim_barrens");
         }
         stream_tick();
 
@@ -452,7 +455,7 @@ public:
                 if (pb == glow_id_) {
                     notify_quest("light_beacon", "");
                     ChunkCoord rc = to_chunk(place_);
-                    if (region_sat(rc) < 0.99f) { ++regions_restored_; notify_quest("restore_region", ""); }
+                    if (region_sat(rc) < 0.99f) { ++regions_restored_; notify_quest("restore_region", "dim_barrens"); }
                     restore_region(rc);
                 }
                 break;
@@ -749,6 +752,15 @@ private:
         {"place_block",  "",         10, "Builder"},
         {"collect_item", "mushroom", 1,  "Forager"},
         {"place_block",  "crafting_table", 1, "Workbench Ready"},
+        // Mid / late-game goals so there's always something to chase.
+        {"befriend_creature", "",   1,  "Animal Friend!"},
+        {"defeat_monster",    "",   1,  "Monster Hunter"},
+        {"mine_block",   "iron_ore", 5,  "Iron Miner"},
+        {"collect_item", "color_dust", 4, "Color Catcher"},
+        {"reach_location", "dim_barrens", 1, "Into the Dim"},
+        {"calm_boss",    "",         1,  "Colossus Tamer"},
+        {"light_beacon", "",         1,  "Beacon Builder"},
+        {"restore_region", "dim_barrens", 1, "Color Returns!"},
     };
     static constexpr int kAchievementCount = int(sizeof(kAchievements) / sizeof(kAchievements[0]));
     void check_achievements(const std::string& trig, const std::string& target) {
@@ -962,10 +974,15 @@ private:
     void drop_creature_loot(const Creature& cr) {
         if (!inv_) return;
         auto give = [&](const char* nm, int n) {
-            if (ItemId id = item_id_by_name(nm)) inv_->add(ItemStack{id, std::uint16_t(n), 0xFFFF});
+            if (ItemId id = item_id_by_name(nm)) {
+                inv_->add(ItemStack{id, std::uint16_t(n), 0xFFFF});
+                notify_quest("collect_item", nm);   // loot counts toward collect quests/achievements
+            }
         };
-        if (cr.hostile)      { give("glow_dust", 1 + int(rand01() * 2.0f)); if (rand01() < 0.5f) give("coal", 1); }
-        else if (cr.is_boss) { give("crystal_shard", 2 + int(rand01() * 2.0f)); }
+        // Dim/shadow creatures hold the world's lost colour — defeating them frees
+        // colour dust (drives quest 7's "collect color_dust").
+        if (cr.hostile)      { give("color_dust", 1 + int(rand01() * 2.0f)); give("glow_dust", 1 + int(rand01() * 2.0f)); if (rand01() < 0.5f) give("coal", 1); }
+        else if (cr.is_boss) { give("crystal_shard", 2 + int(rand01() * 2.0f)); give("color_dust", 2); }
         else                 { give("feather", 1 + int(rand01() * 2.0f)); if (rand01() < 0.4f) give("berry_cluster", 1); }
         fx(7, player_voxel());                           // pickup chime
     }
