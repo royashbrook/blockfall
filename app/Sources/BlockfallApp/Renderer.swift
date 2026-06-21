@@ -654,7 +654,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z),
             camFwd: camFwd)
 
-        guard let cmd = queue.makeCommandBuffer() else { return }
+        // Must release the acquired frame even on this early-out, or `borrowed`
+        // sticks true and every later acquire returns the same frame forever.
+        guard let cmd = queue.makeCommandBuffer() else { bf_frame_end(e); return }
 
         // =====================================================================
         // PASS 1: Shadow depth pass (chunk meshes + entities → shadow map)

@@ -128,10 +128,12 @@ bf_result bf_frame_begin(bf_engine e, const bf_frame_input* in, double real_dt) 
 
 bf_result bf_frame_acquire_render(bf_engine e, bf_render_frame* out) {
     if (!e || !out) { set_err("null arg"); return BF_ERR_BAD_ARG; }
-    // Reject a second acquire before bf_frame_end: rebuilding e->draws/entities_
-    // here can reallocate the vectors and dangle the pointers the previous acquire
-    // handed to Swift (which the GPU reads directly on UMA).
-    if (e->borrowed) { set_err("frame already acquired"); return BF_ERR_NOT_READY; }
+    // If a frame is already acquired (double-acquire / a skipped frame_end), hand
+    // back the SAME already-built frame instead of rebuilding. Rebuilding would
+    // realloc e->draws/entities_ and dangle the pointers the prior acquire gave
+    // Swift; returning an empty/unfilled frame would blank the world and zero the
+    // HUD (black-through-ground + a false "you died"). So: return the live frame.
+    if (e->borrowed) { *out = e->frame; return BF_OK; }
     e->frame = bf_render_frame{};
     e->world.build_frame(e->frame, e->draws, e->clock);
     e->borrowed = true;

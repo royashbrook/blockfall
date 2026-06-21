@@ -190,9 +190,11 @@ final class HUDView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let b = bounds
 
-        // Detect death+respawn (health was near-empty and is suddenly full again).
+        // Detect death+respawn (health was a small positive, then jumps back to
+        // full). prevHealth must be > 0.5 so a startup/zero-frame health (0) can
+        // NEVER look like a death — that was firing a false "you died" on spawn.
         if hud.mode == BF_MODE_SURVIVAL {
-            if prevHealth < 6 && hud.health >= prevHealth + 8 {
+            if prevHealth > 0.5 && prevHealth < 6 && hud.health >= prevHealth + 8 {
                 deathFlashUntil = Date().timeIntervalSinceReferenceDate + 2.0
             }
             prevHealth = hud.health
