@@ -118,7 +118,9 @@
 #include "blockcore/chunk.hpp"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace bf {
 
@@ -440,20 +442,41 @@ static constexpr float OCEAN_BASIN_FREQ  = 1.0f / 64.0f;
 static constexpr std::uint64_t OCEAN_BASIN_SEED_MIX = 0x0CE4B0CA5E1D0C5Aull;
 
 // Returns the extra depth below H to carve for a submerged ocean column.
-// Returns 0 for dry-land or shore columns (H > SEA_LEVEL - 2).
+//
+// SHORELINE-CONTINUOUS BASIN (fix): the old version had a hard threshold — extra
+// jumped from 0 (H > SEA_LEVEL-2) to 3..8 the instant H dropped one block below,
+// so two adjacent columns straddling the shoreline had ocean floors differing by
+// 3..8 even though their surface H differed by only 1 — a visible seam.
+//
+// We carve down to a smooth TARGET ocean-floor height:
+//
+//   target = SEA_LEVEL - OCEAN_BASIN_MIN - bed_noise*(MAX-MIN)   // smooth bed
+//   floor  = min(H, target)                                      // never raise land
+//   extra  = H - floor
+//
+// Both H (Lipschitz-1 from the seam limiter) and `target` (1/64-frequency noise,
+// gradient <<1) are Lipschitz-bounded, so floor = min(H,target) is Lipschitz too:
+// the ocean BED itself has no internal cliffs.  The only residual step is right at
+// the waterline (a column just below sea level carving to the bed vs. the dry
+// neighbour just above it), and that is hidden beneath the water surface.  This
+// is dramatically smoother than the old hard 0→3..8 threshold while keeping open
+// water genuinely deep (down to OCEAN_BASIN_MAX blocks).
 static int ocean_basin_extra(std::int32_t wx, std::int32_t wz,
                               int H, std::uint64_t seed) noexcept {
-    if (H > SEA_LEVEL - 2) return 0;  // shoreline or dry land: no basin carving
+    if (H >= SEA_LEVEL) return 0;  // not submerged
 
     std::uint64_t bseed = fmix64(seed ^ OCEAN_BASIN_SEED_MIX);
-    // 2-octave noise in [0,1] for varied ocean floor undulation.
     float n = fbm2(static_cast<float>(wx), static_cast<float>(wz),
-                   bseed, 2, OCEAN_BASIN_FREQ, 2.0f, 0.5f);
-    // Map [0,1] -> [OCEAN_BASIN_MIN, OCEAN_BASIN_MAX].
-    int extra = OCEAN_BASIN_MIN
-              + static_cast<int>(n * static_cast<float>(OCEAN_BASIN_MAX - OCEAN_BASIN_MIN + 1));
-    if (extra < OCEAN_BASIN_MIN) extra = OCEAN_BASIN_MIN;
-    if (extra > OCEAN_BASIN_MAX) extra = OCEAN_BASIN_MAX;
+                   bseed, 2, OCEAN_BASIN_FREQ, 2.0f, 0.5f);          // [0,1]
+
+    float span    = static_cast<float>(OCEAN_BASIN_MAX - OCEAN_BASIN_MIN);
+    float targetf = static_cast<float>(SEA_LEVEL - OCEAN_BASIN_MIN) - n * span;
+    int   target  = static_cast<int>(std::floor(targetf));
+
+    int floor = (H < target) ? H : target;   // never carve above natural surface
+    int extra = H - floor;                    // >= 0
+    if (extra < 0) extra = 0;
+    if (extra > OCEAN_BASIN_MAX) extra = OCEAN_BASIN_MAX;  // safety clamp
     return extra;
 }
 
@@ -511,7 +534,7 @@ static constexpr BiomeParams BIOME_PARAMS[NUM_BIOMES] = {
     // base_y  amp    freq         octaves  persistence
     {  8.0f,   2.0f,  1.0f/128.0f, 2,     0.40f },  // Plains  (very flat — amp 2, low freq)
     { 10.0f,  18.0f,  1.0f/40.0f,  4,     0.55f },  // Forest (more rolling hills)
-    { 18.0f,  38.0f,  1.0f/28.0f,  5,     0.62f },  // Mountains (tall, jagged)
+    { 28.0f,  56.0f,  1.0f/40.0f,  5,     0.62f },  // Mountains (tall+broad; raised/widened so peaks survive the Lipschitz limiter)
     {  7.0f,   9.0f,  1.0f/64.0f,  3,     0.45f },  // Desert (wide smooth dunes)
     {  8.0f,  14.0f,  1.0f/48.0f,  4,     0.50f },  // Snowy (hillier white plains)
     {  4.0f,   5.0f,  1.0f/56.0f,  3,     0.45f },  // Swamp (very flat, lower)
@@ -585,12 +608,17 @@ static void biome_weights(std::int32_t wx, std::int32_t wz, std::uint64_t seed,
     float fwx = static_cast<float>(wx);
     float fwz = static_cast<float>(wz);
 
-    // Mid-frequency biome noise for more variety (was 1/192, 2 octaves).
-    // 1/192, 3 octaves: same large-scale period but 3rd octave adds fine texture,
-    // producing ~8-12 biome zones per 512-block transect while keeping seam-safe
-    // height gradients (the base period is unchanged; only detail is added).
-    float temp  = fbm2(fwx, fwz, tseed, /*octaves=*/3, /*freq=*/1.0f / 192.0f);
-    float moist = fbm2(fwx, fwz, mseed, /*octaves=*/3, /*freq=*/1.0f / 192.0f);
+    // Mid-frequency biome noise for more variety.
+    // SMALLER BIOMES (player request): period shrunk 1/192 -> 1/120 so a short
+    // walk crosses several biomes (avg run ~60-110 blocks instead of ~150-220).
+    // The biome T/M period only controls how *wide* biome zones are; it does NOT
+    // change the per-biome surface-height noise frequency/amplitude, so the
+    // height-gradient (and thus seam safety) is unaffected by this constant.
+    // Seam safety is independently guaranteed by smoothing the blended height
+    // field to a <=1 block/step Lipschitz bound (see surface_height()).
+    static constexpr float BIOME_NOISE_FREQ = 1.0f / 120.0f;
+    float temp  = fbm2(fwx, fwz, tseed, /*octaves=*/3, BIOME_NOISE_FREQ);
+    float moist = fbm2(fwx, fwz, mseed, /*octaves=*/3, BIOME_NOISE_FREQ);
 
     float raw[NUM_BIOMES];
     for (int i = 0; i < NUM_BIOMES; ++i) {
@@ -672,9 +700,14 @@ static constexpr std::uint64_t BIOME_SEED_OFFSETS[NUM_BIOMES] = {
     0x6666666666666666ull,
 };
 
-static int surface_height(std::int32_t wx, std::int32_t wz,
-                          std::uint64_t seed,
-                          const float weights[NUM_BIOMES]) noexcept {
+// Raw blended surface height (float) — C-infinity in (wx,wz) but NOT slope-
+// limited: steep biomes (mountains) can locally exceed a 1-block-per-block
+// gradient.  This is the un-clamped terrain shape; surface_height() below wraps
+// it in a Lipschitz-1 limiter so adjacent columns never differ by > 1, which is
+// what makes chunk seams safe regardless of where biome borders land.
+static float surface_height_raw(std::int32_t wx, std::int32_t wz,
+                                std::uint64_t seed,
+                                const float weights[NUM_BIOMES]) noexcept {
     float fwx = static_cast<float>(wx);
     float fwz = static_cast<float>(wz);
 
@@ -711,35 +744,223 @@ static int surface_height(std::int32_t wx, std::int32_t wz,
         blended_h += weights[i] * h;
     }
 
-    return static_cast<int>(blended_h);
+    return blended_h;
+}
+
+// Convenience: raw height re-deriving weights for an arbitrary anchor column.
+static float surface_height_raw_at(std::int32_t wx, std::int32_t wz,
+                                   std::uint64_t seed) noexcept {
+    float w[NUM_BIOMES];
+    biome_weights(wx, wz, seed, w);
+    return surface_height_raw(wx, wz, seed, w);
 }
 
 // ---------------------------------------------------------------------------
-// Slope computation for mountain biome (seam-safe)
+// Lipschitz-1 height limiter (SEAM SAFETY — the load-bearing piece)
 // ---------------------------------------------------------------------------
-// Computes slope as max absolute height difference to 4 orthogonal neighbours.
-// Uses the SAME surface_height() function on neighbouring coords — because
-// surface_height is a pure continuous function, this is seam-safe across
-// chunk boundaries: both chunks will compute identical neighbour heights.
+// The raw blended height can rise/fall faster than 1 block per horizontal block
+// on steep mountain faces.  When biomes are made smaller, steep biome borders
+// land on chunk boundaries more often, and a >1 step there shows up as a visible
+// seam (and fails the seam unit test).  The previous design only avoided this by
+// luck of seed choice.
+//
+// We make the height field provably 1-Lipschitz by an infimal/supremal
+// convolution with a unit cone (a min-plus / max-plus "erode + dilate" pair) over
+// a coarse anchor lattice of spacing SEAM_ANCHOR_STEP:
+//
+//   upper(x)  = min over anchors a of ( raw(a) + dist(x,a) )   // 1-Lipschitz
+//   lower(x)  = max over anchors a of ( raw(a) - dist(x,a) )   // 1-Lipschitz
+//   H(x)      = 0.5 * ( upper(x) + lower(x) )                  // 1-Lipschitz
+//
+// `dist` is Euclidean, so each cone is exactly 1-Lipschitz and the average of two
+// 1-Lipschitz functions is 1-Lipschitz.  This guarantees |H(x)-H(x+1)| <= 1 for
+// every pair of horizontally adjacent columns, hence adjacent chunks always agree
+// on a shared boundary column to within 1 block — seam-safe for ANY seed/biome
+// layout.  It is a pure function of (wx,wz,seed): no chunk-local state.
+//
+// The cone erodes thin peaks, so mountain BIOME_PARAMS are tuned taller/broader
+// to keep post-limiter peaks dramatic (see BIOME_PARAMS comments).
 // ---------------------------------------------------------------------------
-static int slope_at(std::int32_t wx, std::int32_t wz, std::uint64_t seed, int H) noexcept {
-    float wN[NUM_BIOMES], wS[NUM_BIOMES], wE[NUM_BIOMES], wW[NUM_BIOMES];
-    biome_weights(wx,     wz - 1, seed, wN);
-    biome_weights(wx,     wz + 1, seed, wS);
-    biome_weights(wx + 1, wz,     seed, wE);
-    biome_weights(wx - 1, wz,     seed, wW);
-    int hN = surface_height(wx,     wz - 1, seed, wN);
-    int hS = surface_height(wx,     wz + 1, seed, wS);
-    int hE = surface_height(wx + 1, wz,     seed, wE);
-    int hW = surface_height(wx - 1, wz,     seed, wW);
+static constexpr int SEAM_ANCHOR_STEP   = 12;  // anchor lattice spacing (blocks)
+static constexpr int SEAM_ANCHOR_RADIUS = 5;   // window radius in anchors (reach = 60 blocks)
 
-    auto absi = [](int a, int b) noexcept -> int { int d = a - b; return d < 0 ? -d : d; };
-    int s = absi(H, hN);
-    int t = absi(H, hS); if (t > s) s = t;
-    t = absi(H, hE); if (t > s) s = t;
-    t = absi(H, hW); if (t > s) s = t;
-    return s;
+static int seam_floordiv(std::int32_t a, int b) noexcept {
+    return a / b - (a % b != 0 && (a ^ b) < 0 ? 1 : 0);
 }
+
+// Core cone evaluation: given a way to fetch the raw height at a lattice anchor
+// (acx,acz in anchor-cell units), return the 1-Lipschitz limited height at the
+// world column (wx,wz).  Templated on the anchor fetch so it works both with the
+// slow on-demand path and the fast chunk-local cache.
+template <class FetchAnchor>
+static int seam_cone_eval(std::int32_t wx, std::int32_t wz,
+                          FetchAnchor&& fetch) noexcept {
+    int acx = seam_floordiv(wx, SEAM_ANCHOR_STEP);
+    int acz = seam_floordiv(wz, SEAM_ANCHOR_STEP);
+
+    float upper =  1e30f;
+    float lower = -1e30f;
+
+    for (int dz = -SEAM_ANCHOR_RADIUS; dz <= SEAM_ANCHOR_RADIUS; ++dz) {
+        for (int dx = -SEAM_ANCHOR_RADIUS; dx <= SEAM_ANCHOR_RADIUS; ++dx) {
+            int gx = acx + dx;
+            int gz = acz + dz;
+            float hraw = fetch(gx, gz);
+
+            float ex = static_cast<float>(wx - gx * SEAM_ANCHOR_STEP);
+            float ez = static_cast<float>(wz - gz * SEAM_ANCHOR_STEP);
+            float dist = std::sqrt(ex * ex + ez * ez);
+
+            float up = hraw + dist;
+            float lo = hraw - dist;
+            if (up < upper) upper = up;
+            if (lo > lower) lower = lo;
+        }
+    }
+    return static_cast<int>(std::floor(0.5f * (upper + lower)));
+}
+
+// Thread-local memo for raw anchor-lattice heights (PERFORMANCE).
+//
+// The slow surface_height() path is used by scattered callers (struct_surface,
+// the public probe) that touch a handful of nearby columns.  Each cone eval
+// reads 121 lattice anchors; adjacent columns share almost all of them, and a
+// single raw anchor evaluation is expensive (~9 fbm2 calls).  We memoize raw
+// anchor heights in a small direct-mapped thread_local cache keyed by
+// (gx, gz, seed).  It is a pure function of its key, so determinism and
+// thread-safety hold (each thread has its own table; identical inputs always
+// yield identical outputs regardless of cache state).
+namespace {
+struct AnchorMemo {
+    static constexpr std::size_t N = 4096;  // power of two
+    struct Slot { std::int32_t gx; std::int32_t gz; std::uint64_t seed; float h; bool valid; };
+    Slot slots[N];
+    AnchorMemo() noexcept { for (auto& s : slots) s.valid = false; }
+
+    float get(std::int32_t gx, std::int32_t gz, std::uint64_t seed) noexcept {
+        std::uint64_t key = hash2(gx, gz, seed ^ 0xA11C0DEA11C0DEull);
+        std::size_t i = static_cast<std::size_t>(key) & (N - 1);
+        Slot& s = slots[i];
+        if (s.valid && s.gx == gx && s.gz == gz && s.seed == seed) return s.h;
+        float v = surface_height_raw_at(
+            static_cast<std::int32_t>(gx) * SEAM_ANCHOR_STEP,
+            static_cast<std::int32_t>(gz) * SEAM_ANCHOR_STEP, seed);
+        s.gx = gx; s.gz = gz; s.seed = seed; s.h = v; s.valid = true;
+        return v;
+    }
+};
+}  // namespace
+
+// Slow on-demand path: evaluate raw height at each anchor as needed (memoized).
+// Used by the scattered callers (struct_surface, public probe) that touch only a
+// handful of columns.  The hot per-chunk path uses the cached variant below.
+static int surface_height(std::int32_t wx, std::int32_t wz,
+                          std::uint64_t seed,
+                          const float weights[NUM_BIOMES]) noexcept {
+    (void)weights;  // anchors are other columns; caller's weights not reusable here
+    static thread_local AnchorMemo memo;
+    return seam_cone_eval(wx, wz, [seed](int gx, int gz) {
+        return memo.get(static_cast<std::int32_t>(gx),
+                        static_cast<std::int32_t>(gz), seed);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Chunk-local anchor cache (PERFORMANCE) — precomputes raw anchor heights for
+// the lattice window covering an entire chunk once, so the cone for all 256
+// columns is just min/max arithmetic over cached floats (no repeated noise).
+// This is local, deterministic state (no statics) so determinism/purity hold.
+// ---------------------------------------------------------------------------
+struct SeamAnchorCache {
+    int gx0, gz0;          // anchor-cell index of the cache origin (top-left)
+    int nx, nz;            // cache dimensions in anchors
+    std::vector<float> h;  // raw heights, row-major [iz*nx + ix]
+
+    float at(int gx, int gz) const noexcept {
+        int ix = gx - gx0, iz = gz - gz0;
+        // Window is sized to always contain every anchor the cone needs for any
+        // column in the chunk, so this is always in-range; clamp defensively.
+        if (ix < 0) ix = 0; else if (ix >= nx) ix = nx - 1;
+        if (iz < 0) iz = 0; else if (iz >= nz) iz = nz - 1;
+        return h[static_cast<std::size_t>(iz) * static_cast<std::size_t>(nx)
+                 + static_cast<std::size_t>(ix)];
+    }
+};
+
+// Build the anchor cache for chunk world-x range [wx_min, wx_min+15] (same z).
+static SeamAnchorCache build_anchor_cache(std::int32_t wx_min, std::int32_t wz_min,
+                                          std::uint64_t seed) {
+    std::int32_t wx_max = wx_min + kChunkDim - 1;
+    std::int32_t wz_max = wz_min + kChunkDim - 1;
+    // Anchor-cell span covering every column's cone window.
+    int gxlo = seam_floordiv(wx_min, SEAM_ANCHOR_STEP) - SEAM_ANCHOR_RADIUS;
+    int gxhi = seam_floordiv(wx_max, SEAM_ANCHOR_STEP) + SEAM_ANCHOR_RADIUS;
+    int gzlo = seam_floordiv(wz_min, SEAM_ANCHOR_STEP) - SEAM_ANCHOR_RADIUS;
+    int gzhi = seam_floordiv(wz_max, SEAM_ANCHOR_STEP) + SEAM_ANCHOR_RADIUS;
+
+    SeamAnchorCache c;
+    c.gx0 = gxlo; c.gz0 = gzlo;
+    c.nx = gxhi - gxlo + 1;
+    c.nz = gzhi - gzlo + 1;
+    c.h.resize(static_cast<std::size_t>(c.nx) * static_cast<std::size_t>(c.nz));
+    // Reuse the thread-local anchor memo so anchors shared with already-generated
+    // neighbouring chunks (adjacent chunks overlap most of their 12-block lattice
+    // window) are not recomputed.  Pure function of (gx,gz,seed) — deterministic.
+    static thread_local AnchorMemo memo;
+    for (int iz = 0; iz < c.nz; ++iz) {
+        for (int ix = 0; ix < c.nx; ++ix) {
+            c.h[static_cast<std::size_t>(iz) * static_cast<std::size_t>(c.nx)
+                + static_cast<std::size_t>(ix)] =
+                memo.get(gxlo + ix, gzlo + iz, seed);
+        }
+    }
+    return c;
+}
+
+// Fast cached cone evaluation for a column known to be inside the cache window.
+static int surface_height_cached(std::int32_t wx, std::int32_t wz,
+                                 const SeamAnchorCache& cache) noexcept {
+    return seam_cone_eval(wx, wz, [&cache](int gx, int gz) {
+        return cache.at(gx, gz);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Per-chunk column cache (PERFORMANCE) — computes the limited surface height,
+// biome weights, and dominant biome ONCE per column for the whole 16x16 chunk
+// footprint, so the five+ in-chunk passes (terrain fill, swamp, plants, clay,
+// mossy stone) reuse the values instead of recomputing biome_weights (2 fbm2,
+// 3 octaves) and the 121-iteration cone per pass.  Local state only — no
+// statics — so determinism/thread-safety hold.
+// ---------------------------------------------------------------------------
+struct ChunkColumnCache {
+    int     H[kChunkDim * kChunkDim];                 // limited surface height
+    Biome   dom[kChunkDim * kChunkDim];               // dominant biome
+    float   weights[kChunkDim * kChunkDim][NUM_BIOMES];
+
+    static int idx(int lx, int lz) noexcept { return lz * kChunkDim + lx; }
+};
+
+// Build the column cache for the chunk whose world origin is (wx_min, wz_min),
+// reusing the already-built anchor cache for the limited-height cone.
+static void build_column_cache(std::int32_t wx_min, std::int32_t wz_min,
+                               std::uint64_t seed,
+                               const SeamAnchorCache& anchor_cache,
+                               ChunkColumnCache& out) noexcept {
+    for (int lz = 0; lz < kChunkDim; ++lz) {
+        for (int lx = 0; lx < kChunkDim; ++lx) {
+            std::int32_t wx = wx_min + lx;
+            std::int32_t wz = wz_min + lz;
+            int i = ChunkColumnCache::idx(lx, lz);
+            biome_weights(wx, wz, seed, out.weights[i]);
+            out.dom[i] = dominant_biome(out.weights[i]);
+            out.H[i]   = surface_height_cached(wx, wz, anchor_cache);
+        }
+    }
+}
+
+// (Mountain slope detection now lives inline in generate() using the chunk
+// anchor cache — see surface_height_cached usage there.)
 
 // ---------------------------------------------------------------------------
 // Decoration constants
@@ -813,7 +1034,36 @@ struct TreeDesc {
     bool         thick_trunk;    // if true, trunk is 2×2 logs (for giant/big forest trees)
     int          lean_dx;        // trunk lean offset: 0 = straight, ±1 = leans in X
     int          lean_dz;        // trunk lean offset: 0 = straight, ±1 = leans in Z
+    int          branch_count;   // number of log "arms" off the upper trunk (0..3)
+    std::uint64_t branch_hash;   // deterministic bits driving branch direction/height
 };
+
+// Branch geometry (M6 — visual variety).  A branch is a short run of log blocks
+// stepping out-and-up from a point on the upper trunk, capped with a small leaf
+// cluster at its tip.  Up to MAX_BRANCHES arms are placed at distinct heights and
+// compass directions chosen from the tree's branch_hash, so the geometry is a
+// pure function of the (global) cell hash — identical from every chunk the tree
+// overlaps (seam-consistent).  All branch + cluster voxels go through the same
+// per-voxel chunk-bounds guard the canopy uses, so nothing is written OOB.
+static constexpr int MAX_BRANCHES        = 3;
+static constexpr int BRANCH_LEN_MIN      = 2;   // log steps along the arm
+static constexpr int BRANCH_LEN_MAX      = 3;
+static constexpr int BRANCH_REACH_XZ     = BRANCH_LEN_MAX + 1;  // +1 for tip cluster
+// Seam-safety invariant: the tree cell-scan margin (CANOPY_MAX_REACH_XZ) must be
+// at least the farthest a branch tip can reach from the trunk, or a tree just
+// outside this chunk could have a branch tip inside that we'd never iterate.
+// (CANOPY_MAX_REACH_XZ is defined just below; assert is placed there.)
+// Per-branch step offsets for the 8 compass directions (dx,dz), unit length.
+static constexpr int BRANCH_DIRS[8][2] = {
+    { 1, 0}, {-1, 0}, { 0, 1}, { 0,-1},
+    { 1, 1}, { 1,-1}, {-1, 1}, {-1,-1},
+};
+
+// Seam-safety: the cell-scan margin must cover the farthest a branch reaches, or
+// a tree just outside this chunk could have a branch tip inside it that we never
+// iterate (an asymmetric, non-seam-consistent omission).
+static_assert(CANOPY_MAX_REACH_XZ >= BRANCH_REACH_XZ,
+              "tree scan margin must cover branch reach for seam consistency");
 
 // Determine if a tree exists in the given tree cell, and its properties.
 // The presence threshold is biome-dependent.  We sample the biome weights at
@@ -837,7 +1087,7 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
 
     // Biomes that never have trees.
     if (dom == Biome::Desert || dom == Biome::Beach) {
-        return TreeDesc{0, 0, 0, 0, 0, 0, false, false, 0, 0};
+        return TreeDesc{0, 0, 0, 0, 0, 0, false, false, 0, 0, 0, 0};
     }
 
     // Choose density threshold based on dominant biome.
@@ -851,7 +1101,7 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
 
     std::uint64_t prob = h & 0xFFFFu;
     if (prob >= thresh) {
-        return TreeDesc{0, 0, 0, 0, 0, 0, false, false, 0, 0};
+        return TreeDesc{0, 0, 0, 0, 0, 0, false, false, 0, 0, 0, 0};
     }
 
     // Root offset within cell (1..TREE_CELL_SIZE-2).
@@ -884,9 +1134,13 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
     std::uint64_t lean_dir    = (h2 >> 32u) & 0x3u;  // 0..3 (lean direction)
     std::uint64_t lean_gate   = (h2 >> 34u) & 0x7u;  // 0..7 (lean gate, lean if <=1)
     std::uint64_t thick_bit   = (h2 >> 37u) & 0x1u;  // 0..1
+    // Independent hash stream for branch geometry so adding branches does not
+    // perturb the existing trunk/canopy/lean bit assignments above.
+    std::uint64_t branch_hash = fmix64(h2 ^ 0xB7A11C4E5B7A11C4ull);
 
     // Rare GIANT tree: appears ~6% of non-desert/beach cells regardless of biome.
     // Trunk 10..12, giant canopy, always oak, always thick trunk (2×2 logs).
+    // Giants get the full set of arms for a gnarled, characterful silhouette.
     if (giant_bits == 0u && dom != Biome::Desert && dom != Biome::Beach) {
         trunk_h      = 10 + static_cast<int>(trunk_bits % 3u);  // 10, 11, or 12
         canopy_shape = CANOPY_GIANT;
@@ -898,7 +1152,8 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
             OAK_LOG, OAK_LEAVES,
             true,
             /*thick_trunk=*/true,
-            /*lean_dx=*/0, /*lean_dz=*/0
+            /*lean_dx=*/0, /*lean_dz=*/0,
+            /*branch_count=*/MAX_BRANCHES, branch_hash
         };
     }
 
@@ -979,6 +1234,30 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
             break;
     }
 
+    // --- Branch count (M6) ---
+    // Branches read as real boughs on broad, leafy crowns; they would spoil the
+    // crisp silhouette of conifers and slender birches, so:
+    //   - PINE keeps its bare conical skirt → no branches.
+    //   - Slender TALL birches → no branches (keep them whippy).
+    //   - Otherwise: trees with trunk >= 6 grow 1..2 arms; broad/round oak crowns
+    //     a bit more often.  Short trees (trunk < 6) stay branchless so they read
+    //     as bushes/saplings.  All gated on branch_hash → deterministic & global.
+    int branch_count = 0;
+    bool slender_birch = is_birch && canopy_shape == CANOPY_TALL;
+    if (canopy_shape != CANOPY_PINE && !slender_birch && trunk_h >= 6) {
+        std::uint64_t bgate = branch_hash & 0x3u;          // 0..3
+        bool leafy = (canopy_shape == CANOPY_BROAD ||
+                      canopy_shape == CANOPY_ROUND ||
+                      canopy_shape == CANOPY_WEEPING ||
+                      canopy_shape == CANOPY_GIANT);
+        if (leafy) {
+            branch_count = (bgate == 0u) ? 1 : 2;          // 75% get 2 arms
+        } else if (bgate >= 2u) {
+            branch_count = 1;                               // ~50% of others get 1
+        }
+        if (branch_count > MAX_BRANCHES) branch_count = MAX_BRANCHES;
+    }
+
     return TreeDesc{
         cell_origin_x + off_x,
         cell_origin_z + off_z,
@@ -989,7 +1268,9 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
         true,
         thick_trunk,
         lean_dx,
-        lean_dz
+        lean_dz,
+        branch_count,
+        branch_hash
     };
 }
 
@@ -1666,7 +1947,9 @@ static void place_structure(const StructDesc& sd, std::uint64_t seed,
 // ---------------------------------------------------------------------------
 // Decoration pass — seam-aware, biome-aware
 // ---------------------------------------------------------------------------
-static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
+static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
+                              const SeamAnchorCache& anchor_cache,
+                              const ChunkColumnCache& col_cache) {
     std::int32_t wx_min = c.x * kChunkDim;
     std::int32_t wy_min = c.y * kChunkDim;
     std::int32_t wz_min = c.z * kChunkDim;
@@ -1699,7 +1982,7 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 // Tree-bearing biomes only (desert/beach have no trees).
                 if (dom == Biome::Desert || dom == Biome::Beach) continue;
 
-                int H = surface_height(td.root_wx, td.root_wz, seed, weights);
+                int H = surface_height_cached(td.root_wx, td.root_wz, anchor_cache);
                 if (H <= SEA_LEVEL) continue;  // don't grow trees underwater
 
                 // Trunk: H+1 .. H+trunk_height
@@ -1710,7 +1993,16 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 int canopy_wy_max = trunk_top_wy + dy_max_v;
                 int canopy_wy_min = trunk_top_wy + dy_min_v;
 
-                if (canopy_wy_max < wy_min || trunk_base_wy > wy_max) continue;
+                // Branch arms can rise a couple blocks above the canopy top and
+                // their tip clusters add one more; widen the vertical overlap test
+                // so a chunk that contains ONLY a branch tip still draws it.
+                int feature_wy_max = canopy_wy_max;
+                if (td.branch_count > 0) {
+                    int branch_top = trunk_top_wy + 2 /*rise*/ + 1 /*tip cluster*/;
+                    if (branch_top > feature_wy_max) feature_wy_max = branch_top;
+                }
+
+                if (feature_wy_max < wy_min || trunk_base_wy > wy_max) continue;
                 if (canopy_wy_min > wy_max) continue;
 
                 // Place trunk logs.
@@ -1781,6 +2073,76 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                         }
                     }
                 }
+
+                // -----------------------------------------------------------
+                // BRANCHES (M6) — short log arms off the upper trunk, each
+                // ending in a small leaf cluster.  Geometry is a pure function
+                // of td.branch_hash (global cell hash), so every chunk the arm
+                // overlaps draws it identically (seam-consistent).  Each voxel
+                // is range-checked against the chunk bounds before writing, so
+                // arms that cross a chunk edge are simply clipped — no OOB writes.
+                // -----------------------------------------------------------
+                for (int bi = 0; bi < td.branch_count; ++bi) {
+                    // Per-branch deterministic parameters from distinct hash bits.
+                    std::uint64_t bh = fmix64(td.branch_hash
+                        ^ (static_cast<std::uint64_t>(bi + 1) * 0x9E3779B97F4A7C15ull));
+                    int dir = static_cast<int>(bh & 0x7u);                 // 0..7 compass
+                    int blen = BRANCH_LEN_MIN
+                             + static_cast<int>((bh >> 3u) % static_cast<std::uint64_t>(
+                                   BRANCH_LEN_MAX - BRANCH_LEN_MIN + 1));   // 2..3
+
+                    // Attach point on the upper trunk: spread arms across the top
+                    // third so they don't all sprout from one ring.  Keep at least
+                    // 1 block below the trunk top so the crown still sits above.
+                    int span = (td.trunk_height >= 3) ? (td.trunk_height / 3) : 1;
+                    int attach_wy = trunk_top_wy - 1
+                                  - static_cast<int>((bh >> 8u) % static_cast<std::uint64_t>(span + 1));
+                    if (attach_wy < trunk_base_wy + 1) attach_wy = trunk_base_wy + 1;
+
+                    // Arm root XZ = trunk XZ at the attach height (account for lean
+                    // on the upper half, matching the trunk-placement logic).
+                    int lean_start = trunk_base_wy + td.trunk_height / 2;
+                    int arm_wx = td.root_wx + ((attach_wy >= lean_start) ? td.lean_dx : 0);
+                    int arm_wz = td.root_wz + ((attach_wy >= lean_start) ? td.lean_dz : 0);
+
+                    int sdx = BRANCH_DIRS[dir][0];
+                    int sdz = BRANCH_DIRS[dir][1];
+
+                    // Step out-and-up: each step moves 1 in the compass direction
+                    // and (every other step) 1 up, giving a gentle diagonal bough.
+                    int cx = arm_wx, cz = arm_wz, cy = attach_wy;
+                    for (int s = 1; s <= blen; ++s) {
+                        cx += sdx;
+                        cz += sdz;
+                        if ((s & 1) == 1) cy += 1;  // rise on odd steps
+                        // Place the log segment (clipped to chunk).
+                        if (cx >= wx_min && cx <= wx_max &&
+                            cy >= wy_min && cy <= wy_max &&
+                            cz >= wz_min && cz <= wz_max) {
+                            int lx = cx - wx_min, ly = cy - wy_min, lz = cz - wz_min;
+                            if (chunk.get(lx, ly, lz) == AIR) chunk.set(lx, ly, lz, td.log_id);
+                        }
+                    }
+
+                    // Small leaf cluster at the arm tip: a 3×3×3 plus-ish blob.
+                    int tipx = cx, tipy = cy, tipz = cz;
+                    for (int lz2 = -1; lz2 <= 1; ++lz2) {
+                        for (int lx2 = -1; lx2 <= 1; ++lx2) {
+                            for (int ly2 = 0; ly2 <= 1; ++ly2) {
+                                // Trim the 4 top corners so the cluster reads round.
+                                if (ly2 == 1 && lx2 != 0 && lz2 != 0) continue;
+                                std::int32_t wlx = tipx + lx2;
+                                std::int32_t wly = tipy + ly2;
+                                std::int32_t wlz = tipz + lz2;
+                                if (wlx < wx_min || wlx > wx_max) continue;
+                                if (wly < wy_min || wly > wy_max) continue;
+                                if (wlz < wz_min || wlz > wz_max) continue;
+                                int lx = wlx - wx_min, ly = wly - wy_min, lz = wlz - wz_min;
+                                if (chunk.get(lx, ly, lz) == AIR) chunk.set(lx, ly, lz, td.leaf_id);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1805,14 +2167,13 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 std::int32_t wx = wx_min + lx;
                 std::int32_t wz = wz_min + lz;
 
-                float weights[NUM_BIOMES];
-                biome_weights(wx, wz, seed, weights);
-                Biome dom = dominant_biome(weights);
+                int ci = ChunkColumnCache::idx(lx, lz);
+                Biome dom = col_cache.dom[ci];
 
                 // Desert, Beach, and Snowy have minimal/no surface plants.
                 if (dom == Biome::Desert || dom == Biome::Beach || dom == Biome::Snowy) continue;
 
-                int H = surface_height(wx, wz, seed, weights);
+                int H = col_cache.H[ci];
                 if (H <= SEA_LEVEL) continue;  // underwater
 
                 std::int32_t plant_wy = H + 1;
@@ -1938,13 +2299,12 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 std::int32_t wx = wx_min + lx;
                 std::int32_t wz = wz_min + lz;
 
-                float weights[NUM_BIOMES];
-                biome_weights(wx, wz, seed, weights);
-                Biome dom = dominant_biome(weights);
+                int ci = ChunkColumnCache::idx(lx, lz);
+                Biome dom = col_cache.dom[ci];
 
                 if (dom != Biome::Swamp) continue;
 
-                int H = surface_height(wx, wz, seed, weights);
+                int H = col_cache.H[ci];
 
                 // Clay at H-1 (just below surface dirt).
                 std::int32_t clay_wy = H - 1;
@@ -1976,13 +2336,12 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 std::int32_t wx = wx_min + lx;
                 std::int32_t wz = wz_min + lz;
 
-                float weights[NUM_BIOMES];
-                biome_weights(wx, wz, seed, weights);
-                Biome dom = dominant_biome(weights);
+                int ci = ChunkColumnCache::idx(lx, lz);
+                Biome dom = col_cache.dom[ci];
 
                 if (dom != Biome::Forest) continue;
 
-                int H = surface_height(wx, wz, seed, weights);
+                int H = col_cache.H[ci];
 
                 // Mossy stone at H-2 (below dirt layer).
                 std::int32_t mwy = H - 2;
@@ -2142,6 +2501,20 @@ bool worldgen_is_cave_entrance(std::int32_t wx, std::int32_t wz,
     return is_cave_entrance(wx, wz, seed);
 }
 
+int worldgen_dominant_biome(std::int32_t wx, std::int32_t wz,
+                            std::uint64_t seed) noexcept {
+    float w[NUM_BIOMES];
+    biome_weights(wx, wz, seed, w);
+    return static_cast<int>(dominant_biome(w));
+}
+
+int worldgen_surface_height(std::int32_t wx, std::int32_t wz,
+                            std::uint64_t seed) noexcept {
+    float w[NUM_BIOMES];
+    biome_weights(wx, wz, seed, w);
+    return surface_height(wx, wz, seed, w);
+}
+
 // ---------------------------------------------------------------------------
 // Terrain fill — per-column block placement
 // ---------------------------------------------------------------------------
@@ -2150,16 +2523,38 @@ void TerrainGen::seed(std::uint64_t s) {
 }
 
 void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
+    // Precompute the seam-limiter anchor cache once for this chunk so the
+    // per-column Lipschitz height is cheap min/max arithmetic (no repeated noise).
+    std::int32_t wx_min0 = c.x * kChunkDim;
+    std::int32_t wz_min0 = c.z * kChunkDim;
+    SeamAnchorCache anchor_cache =
+        build_anchor_cache(wx_min0, wz_min0, seed_);
+
+    // Precompute per-column height/biome ONCE for the whole chunk so every pass
+    // (terrain fill, swamp, plants, clay, mossy, decorations) reuses them
+    // instead of recomputing biome_weights + the cone limiter per pass.
+    static thread_local ChunkColumnCache col_cache;
+    build_column_cache(wx_min0, wz_min0, seed_, anchor_cache, col_cache);
+
+    // Height lookup that serves in-chunk columns from the column cache and falls
+    // back to the cone for the (rare) out-of-chunk neighbour (slope edges).
+    auto height_at = [&](std::int32_t wx, std::int32_t wz) -> int {
+        int lx = static_cast<int>(wx - wx_min0);
+        int lz = static_cast<int>(wz - wz_min0);
+        if (lx >= 0 && lx < kChunkDim && lz >= 0 && lz < kChunkDim)
+            return col_cache.H[ChunkColumnCache::idx(lx, lz)];
+        return surface_height_cached(wx, wz, anchor_cache);
+    };
+
     for (int lz = 0; lz < kChunkDim; ++lz) {
         for (int lx = 0; lx < kChunkDim; ++lx) {
             std::int32_t wx = c.x * kChunkDim + lx;
             std::int32_t wz = c.z * kChunkDim + lz;
 
-            // Compute biome weights and blended surface height.
-            float weights[NUM_BIOMES];
-            biome_weights(wx, wz, seed_, weights);
-            Biome dom = dominant_biome(weights);
-            int H = surface_height(wx, wz, seed_, weights);
+            // Reuse precomputed dominant biome and blended surface height.
+            int ci = ChunkColumnCache::idx(lx, lz);
+            Biome dom = col_cache.dom[ci];
+            int H = col_cache.H[ci];
 
             // -----------------------------------------------------------------
             // Mountain slope detection (seam-safe: uses same continuous height fn).
@@ -2168,7 +2563,19 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
             // -----------------------------------------------------------------
             bool is_steep = false;
             if (dom == Biome::Mountains && H < SNOW_LINE) {
-                int slope = slope_at(wx, wz, seed_, H);
+                // Cached slope: max |H - neighbour| over the 4 orthogonal columns,
+                // all within the anchor-cache window.  After the Lipschitz limiter
+                // the per-block slope is <=1, so this rarely flags; the rocky look
+                // now comes mainly from snow-line stone caps.
+                int hN = height_at(wx,     wz - 1);
+                int hS = height_at(wx,     wz + 1);
+                int hE = height_at(wx + 1, wz);
+                int hW = height_at(wx - 1, wz);
+                auto ad = [](int a, int b){ int d = a - b; return d < 0 ? -d : d; };
+                int slope = ad(H, hN);
+                int t = ad(H, hS); if (t > slope) slope = t;
+                t = ad(H, hE); if (t > slope) slope = t;
+                t = ad(H, hW); if (t > slope) slope = t;
                 is_steep = (slope >= 3);
             }
 
@@ -2351,16 +2758,12 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
     // This is done in a second pass so we don't interfere with the first.
     for (int lz = 0; lz < kChunkDim; ++lz) {
         for (int lx = 0; lx < kChunkDim; ++lx) {
-            std::int32_t wx = c.x * kChunkDim + lx;
-            std::int32_t wz = c.z * kChunkDim + lz;
-
-            float weights[NUM_BIOMES];
-            biome_weights(wx, wz, seed_, weights);
-            Biome dom = dominant_biome(weights);
+            int ci = ChunkColumnCache::idx(lx, lz);
+            Biome dom = col_cache.dom[ci];
 
             if (dom != Biome::Swamp) continue;
 
-            int H = surface_height(wx, wz, seed_, weights);
+            int H = col_cache.H[ci];
             // Swamp pools: columns at or below SEA_LEVEL+1 that are fully AIR
             // above H get filled with water up to SEA_LEVEL.
             if (H <= SEA_LEVEL + 1) {
@@ -2377,7 +2780,7 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
     }
 
     // Decoration pass — seam-aware tree and plant scatter.
-    place_decorations(c, chunk, seed_);
+    place_decorations(c, chunk, seed_, anchor_cache, col_cache);
 }
 
 // ---------------------------------------------------------------------------

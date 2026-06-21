@@ -583,7 +583,13 @@ public:
             d.index_buffer  = rec.ibuf.handle;
             d.index_count   = rec.index_count;
             d.chunk_origin  = bf_ivec3{cc.x * kChunkDim, cc.y * kChunkDim, cc.z * kChunkDim};
+            // Saturation at this chunk's 4 horizontal corners (this region + the
+            // +X/+Z/+XZ neighbour regions) so the shader bilerps the grey->colour
+            // transition across region seams instead of a hard chunk-grid line.
             d.dim_saturation = region_sat(cc);
+            d.dim_sat_px  = region_sat(ChunkCoord{cc.x + 1, cc.y, cc.z});
+            d.dim_sat_pz  = region_sat(ChunkCoord{cc.x, cc.y, cc.z + 1});
+            d.dim_sat_pxz = region_sat(ChunkCoord{cc.x + 1, cc.y, cc.z + 1});
             draws.push_back(d);
         }
 

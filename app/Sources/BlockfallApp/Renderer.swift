@@ -81,12 +81,13 @@ func eventTrampoline(_ user: UnsafeMutableRawPointer?, _ ev: UnsafePointer<bf_ev
 // MARK: - Uniforms (must match the MSL struct byte layout)
 
 /// Terrain pass uniforms (64 bytes).
-/// Swift layout: viewProj(64) + chunkOrigin(16) + sunDirTime(16) + lightViewProj(64) = 160 bytes.
+/// Swift layout: viewProj(64) + chunkOrigin(16) + sunDirTime(16) + lightViewProj(64) + dimSatN(16) = 176 bytes.
 struct Uniforms {
     var viewProj:      simd_float4x4           // 64 bytes
-    var chunkOrigin:   SIMD4<Float>            // 16 bytes  xyz=origin, w=dim_saturation
+    var chunkOrigin:   SIMD4<Float>            // 16 bytes  xyz=origin, w=dim_saturation (min corner)
     var sunDirTime:    SIMD4<Float>            // 16 bytes  xyz=sun_dir, w=time_of_day
     var lightViewProj: simd_float4x4           // 64 bytes  sun light-space VP matrix
+    var dimSatN:       SIMD4<Float>            // 16 bytes  x=+X corner, y=+Z, z=+XZ (for grey bilerp)
 }
 
 /// Matches the MSL SkyUniforms struct.
@@ -758,7 +759,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                     viewProj:      viewProj,
                     chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime:    SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
-                    lightViewProj: lightViewProj)
+                    lightViewProj: lightViewProj,
+                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
                 enc.setVertexBuffer(vbuf, offset: Int(d.vertex_offset), index: 0)
                 enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
@@ -818,7 +820,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                     viewProj:      viewProj,
                     chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime:    SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
-                    lightViewProj: lightViewProj)
+                    lightViewProj: lightViewProj,
+                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
                 enc.setVertexBuffer(vbuf, offset: Int(d.vertex_offset), index: 0)
                 enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
@@ -1151,13 +1154,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         uint     reserved;
     };
 
-    // Terrain uniforms: must EXACTLY match Swift Uniforms struct (160 bytes).
-    //   viewProj      (64), chunkOrigin (16), sunDirTime (16), lightViewProj (64)
+    // Terrain uniforms: must EXACTLY match Swift Uniforms struct (176 bytes).
+    //   viewProj (64), chunkOrigin (16), sunDirTime (16), lightViewProj (64), dimSatN (16)
     struct Uniforms {
         float4x4 viewProj;
-        float4   chunkOrigin;   // xyz=origin, w=dim_saturation
+        float4   chunkOrigin;   // xyz=origin, w=dim_saturation (min corner)
         float4   sunDirTime;    // xyz=sun_dir, w=time_of_day
         float4x4 lightViewProj; // sun shadow matrix
+        float4   dimSatN;       // x=+X corner, y=+Z, z=+XZ saturation (grey bilerp)
     };
 
     // WaterUniforms (32 bytes) — not engine-filled.
@@ -1856,9 +1860,9 @@ final class Renderer: NSObject, MTKViewDelegate {
                               constant ShadowVertUniforms& su [[buffer(1)]],
                               constant WindUniforms& wu [[buffer(2)]]) {
         PackedVertex p = verts[vid];
-        float x = float(p.pos & 0x3f);
-        float y = float((p.pos >> 6) & 0x3f);
-        float z = float((p.pos >> 12) & 0x3f);
+        float x = float(p.pos & 0x3f)         + float((p.pos >> 18) & 0xf) / 16.0;
+        float y = float((p.pos >> 6) & 0x3f)  + float((p.pos >> 22) & 0xf) / 16.0;
+        float z = float((p.pos >> 12) & 0x3f) + float((p.pos >> 26) & 0xf) / 16.0;
         float3 world = su.chunkOrigin.xyz + float3(x, y, z);
         // Apply foliage sway — same formula as vmain so shadows track geometry.
         // p.material holds the block type id; p.block holds per-vertex light level.
@@ -1876,9 +1880,9 @@ final class Renderer: NSObject, MTKViewDelegate {
                       constant Uniforms& u [[buffer(1)]],
                       constant WindUniforms& wu [[buffer(3)]]) {
         PackedVertex p = verts[vid];
-        float x = float(p.pos & 0x3f);
-        float y = float((p.pos >> 6) & 0x3f);
-        float z = float((p.pos >> 12) & 0x3f);
+        float x = float(p.pos & 0x3f)         + float((p.pos >> 18) & 0xf) / 16.0;
+        float y = float((p.pos >> 6) & 0x3f)  + float((p.pos >> 22) & 0xf) / 16.0;
+        float z = float((p.pos >> 12) & 0x3f) + float((p.pos >> 26) & 0xf) / 16.0;
         float3 world = u.chunkOrigin.xyz + float3(x, y, z);
         uint n = p.normuv & 7u;
 
@@ -1906,7 +1910,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 base = materialColor(uint(p.material));
         o.color    = mix(base, base * float3(1.15, 1.02, 0.8), clamp(blockC - skyC, 0.0, 1.0));
         o.shade    = shade;
-        o.sat      = u.chunkOrigin.w;
+        // Bilinearly blend saturation across the chunk's 4 corner regions so the
+        // grey->colour edge feathers instead of snapping on the region grid.
+        {
+            float fx = clamp(x / float(16), 0.0, 1.0);
+            float fz = clamp(z / float(16), 0.0, 1.0);
+            float s00 = u.chunkOrigin.w, s10 = u.dimSatN.x, s01 = u.dimSatN.y, s11 = u.dimSatN.z;
+            o.sat = mix(mix(s00, s10, fx), mix(s01, s11, fx), fz);
+        }
         o.worldPos = swayedWorld;
         o.faceNorm = n;
         o.material = uint(p.material);
@@ -2389,8 +2400,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         float sunDot = dot(ray, sunDir3);
         float sunDisc  = smoothstep(0.9975, 1.0000, sunDot);
         float sunInner = smoothstep(0.9992, 1.0000, sunDot);
-        float sunGlow1 = smoothstep(0.965,  1.0000, sunDot) * 0.12 * max(dayT, sunsetT * 0.5);
-        float sunGlow2 = smoothstep(0.990,  1.0000, sunDot) * 0.20 * max(dayT, sunsetT * 0.5);
+        float sunGlow1 = smoothstep(0.978,  1.0000, sunDot) * 0.09 * max(dayT, sunsetT * 0.5);
+        float sunGlow2 = smoothstep(0.992,  1.0000, sunDot) * 0.15 * max(dayT, sunsetT * 0.5);
         float3 sunColor  = mix(float3(1.0, 0.72, 0.35), float3(1.0, 0.98, 0.85), dayT);
         float3 sunCorona = sunColor * 1.15;
         float sunVis = max(dayT, sunsetT * 0.6);
@@ -2700,7 +2711,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 bloomClamped = clamp(bloom * pu.bloomStrength, 0.0, 0.20);
         // Exposure < 1 keeps bright scenes (open desert, low sun, bright sky in
         // view) off the ACES white point, so facing the sun no longer washes out.
-        float3 combined = (hdr + bloomClamped) * 0.82;
+        float3 combined = (hdr + bloomClamped) * 0.80;
 
         // ACES filmic tone-map
         float3 tonemapped = ACESFilmic(combined);
@@ -3077,7 +3088,8 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
                     viewProj: viewProj,
                     chunkOrigin: SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
-                    lightViewProj: testLightVP)
+                    lightViewProj: testLightVP,
+                    dimSatN: SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
                 enc.setVertexBuffer(vb, offset: Int(d.vertex_offset), index: 0)
                 enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),

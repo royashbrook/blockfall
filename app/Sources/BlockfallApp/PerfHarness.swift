@@ -199,7 +199,8 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
                 var u = Uniforms(viewProj: viewProj,
                     chunkOrigin: SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, f.camera.time_of_day),
-                    lightViewProj: lightViewProj)
+                    lightViewProj: lightViewProj,
+                    dimSatN: SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
                 enc.setVertexBuffer(vb, offset: Int(d.vertex_offset), index: 0)
                 enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
                 enc.setVertexBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)

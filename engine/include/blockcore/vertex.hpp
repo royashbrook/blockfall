@@ -34,8 +34,14 @@ enum BFNormal : std::uint32_t {
     BF_NZ_POS = 4, BF_NZ_NEG = 5,
 };
 
-inline std::uint32_t bf_pack_pos(std::uint32_t x, std::uint32_t y, std::uint32_t z) {
-    return (x & 0x3F) | ((y & 0x3F) << 6) | ((z & 0x3F) << 12);
+// Position packs the integer block corner (6 bits/axis, 0..16 within a chunk) plus
+// an optional 4-bit sub-cell fraction per axis (bits 18..29, value/16 of a block)
+// so small props like torches can be placed off the block grid. Default frac = 0
+// keeps all normal block geometry byte-identical to before.
+inline std::uint32_t bf_pack_pos(std::uint32_t x, std::uint32_t y, std::uint32_t z,
+                                 std::uint32_t fx = 0, std::uint32_t fy = 0, std::uint32_t fz = 0) {
+    return (x & 0x3F) | ((y & 0x3F) << 6) | ((z & 0x3F) << 12)
+         | ((fx & 0xF) << 18) | ((fy & 0xF) << 22) | ((fz & 0xF) << 26);
 }
 inline std::uint32_t bf_pack_normal_uv(std::uint32_t normal, std::uint32_t ao,
                                        std::uint32_t u, std::uint32_t v) {

@@ -7,7 +7,7 @@
     "objectives": [
       {
         "trigger": "befriend_creature",
-        "target": "woolly_lamb",
+        "target": "sky_necker",
         "count": 2,
         "objective_text": "Befriend 2 woolly lambs using berry clusters."
       },
@@ -19,8 +19,14 @@
       }
     ],
     "rewards": [
-      { "item": "string_fiber", "count": 8 },
-      { "item": "berry_cluster", "count": 6 }
+      {
+        "item": "string_fiber",
+        "count": 8
+      },
+      {
+        "item": "berry_cluster",
+        "count": 6
+      }
     ]
   },
   {
@@ -37,8 +43,14 @@
       }
     ],
     "rewards": [
-      { "item": "mushroom_stew", "count": 3 },
-      { "item": "berry_cluster", "count": 8 }
+      {
+        "item": "mushroom_stew",
+        "count": 3
+      },
+      {
+        "item": "berry_cluster",
+        "count": 8
+      }
     ]
   },
   {
@@ -61,8 +73,14 @@
       }
     ],
     "rewards": [
-      { "item": "iron_ingot", "count": 3 },
-      { "item": "coal", "count": 8 }
+      {
+        "item": "iron_ingot",
+        "count": 3
+      },
+      {
+        "item": "coal",
+        "count": 8
+      }
     ]
   }
 ]

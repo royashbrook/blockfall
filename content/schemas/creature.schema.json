@@ -15,6 +15,8 @@
     "max_health": { "type": "integer", "minimum": 1, "maximum": 200 },
     "move_speed": { "type": "number", "minimum": 0.0, "default": 2.0 },
     "spawn_biomes": { "type": "array", "items": { "type": "string" } },
+    "biome": { "type": "string",
+      "description": "primary spawn biome: plains|forest|mountains|desert|snowy|swamp|beach|any" },
     "spawn_light_max": { "type": "integer", "minimum": 0, "maximum": 15,
                          "description": "night mobs spawn at/below this light" },
     "breeds": { "type": "boolean", "default": false,

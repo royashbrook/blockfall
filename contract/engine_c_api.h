@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 8u   /* v8: craftable list widened 8->24 (scrollable craft UI) */
+#define BF_ABI_VERSION 9u   /* v9: per-corner dim saturation for smooth grey blend */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -199,7 +199,12 @@ typedef struct bf_draw_item {
     uint32_t  index_count;    /* draw count (or vertex_count if non-indexed) */
     uint32_t  material_id;    /* index into the material/atlas table         */
     bf_ivec3  chunk_origin;   /* world coords of chunk min corner            */
-    float     dim_saturation; /* 0=fully Dim/grey ... 1=full colour          */
+    float     dim_saturation; /* 0=fully Dim/grey ... 1=full colour (min corner) */
+    /* Region saturation at the chunk's +X, +Z and +XZ corners, so the shader can
+     * bilinearly blend the Dim->colour transition across region seams (v9). */
+    float     dim_sat_px;
+    float     dim_sat_pz;
+    float     dim_sat_pxz;
 } bf_draw_item;
 
 /* Per-region restoration state, supplied so the post-effect can blend the

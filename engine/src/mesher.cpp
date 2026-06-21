@@ -156,19 +156,32 @@ inline bool is_cross_plant(BlockId id) {
     return id == 36 || id == 37 || id == 38 || id == 39;
 }
 
+// Torch block id (32): a thin sub-cell prop, not a full cube.  Like cross-plants
+// it is non-opaque (does not cull neighbours' cube faces), is not an AO occluder,
+// and emits its own custom geometry instead of cube faces (see emit_torch).
+inline bool is_torch(BlockId id) {
+    return id == 32;
+}
+
+// A "billboard"/prop block emits custom geometry in the prop pass instead of
+// greedy cube faces: cross-plants (36-39) and torches (32).
+inline bool is_prop(BlockId id) {
+    return is_cross_plant(id) || is_torch(id);
+}
+
 // ---- opacity / transparency helpers -----------------------------------------
 
-// A cell is OPAQUE if it is non-air, not water (id 9), and not a cross-plant.
-// Air (0), water (9), and plants (36-39) are NON-opaque (transparent).
+// A cell is OPAQUE if it is non-air, not water (id 9), and not a prop.
+// Air (0), water (9), plants (36-39), and torches (32) are NON-opaque.
 inline bool is_opaque(BlockId id) {
-    return id != 0 && id != 9 && !is_cross_plant(id);
+    return id != 0 && id != 9 && !is_prop(id);
 }
 
 // ---- AO helpers -------------------------------------------------------------
 
-// Is this block id an AO-occluder?  Air (0), water (9), and plants do not occlude.
+// Is this block id an AO-occluder?  Air (0), water (9), and props do not occlude.
 inline bool is_occluder(BlockId id) {
-    return id != 0 && id != 9 && !is_cross_plant(id);
+    return id != 0 && id != 9 && !is_prop(id);
 }
 
 // Sample a block at an arbitrary world offset from (x,y,z) in chunk cc.
@@ -479,6 +492,107 @@ bool emit_cross_plant(int bx, int by, int bz,
     return true;
 }
 
+// ---- torch emission ---------------------------------------------------------
+// Emit a THIN torch for a single torch cell (id 32) at (bx, by, bz).
+//
+// Geometry: a square post centred in the cell, 4/16 wide (X and Z span the
+// block-local fractions 6..10), rising from the cell floor (y frac 0) to a
+// short 10/16 height stub.  We emit the 4 side faces (+X,-X,+Z,-Z) and a top
+// cap (+Y) — 5 quads = 20 verts = 30 indices.  No bottom face (it sits on the
+// floor / is never seen).
+//
+// Sub-cell positions use bf_pack_pos(x,y,z, fx,fy,fz) where fx/fy/fz are
+// sixteenths of a block.  The post's X/Z faces sit at frac 6 and 10; the top
+// cap sits at the integer block y plus frac 10 (the shader adds frac/16).
+//
+// Winding matches the cube faces (CCW from outside) using the same BFNormal
+// codes.  AO = full (3); light = the torch cell's own sky/block values, like
+// the cross-plant pass.
+//
+// Returns false if buffers are full (caller stops).
+bool emit_torch(int bx, int by, int bz,
+                std::uint8_t sky, std::uint8_t blk,
+                std::span<std::byte>& vtx_out, std::uint32_t& vtx_written,
+                std::span<std::byte>& idx_out, std::uint32_t& idx_written,
+                std::uint32_t& vtx_count) {
+    // 5 quads: 20 verts + 30 indices.
+    if (vtx_out.size() - vtx_written < 20 * sizeof(BFVertex))       return false;
+    if (idx_out.size()  - idx_written < 30 * sizeof(std::uint32_t)) return false;
+
+    constexpr std::uint32_t AO = 3u;                  // fully unoccluded
+    const std::uint16_t mat = static_cast<std::uint16_t>(32);
+
+    // Integer block coords (each fits the 6-bit pos field).
+    const std::uint32_t X = static_cast<std::uint32_t>(bx);
+    const std::uint32_t Y = static_cast<std::uint32_t>(by);
+    const std::uint32_t Z = static_cast<std::uint32_t>(bz);
+
+    // Sub-cell fractions (sixteenths). Post spans X/Z frac 6..10, Y frac 0..10.
+    constexpr std::uint32_t LO = 6u;   // -X / -Z face plane
+    constexpr std::uint32_t HI = 10u;  // +X / +Z face plane
+    constexpr std::uint32_t BOT = 0u;  // bottom (sits on floor)
+    constexpr std::uint32_t TOP = 10u; // short stub height
+
+    // Build a BFVertex directly with fractional position + packed normal/uv.
+    auto vert = [&](std::uint32_t fx, std::uint32_t fy, std::uint32_t fz,
+                    std::uint32_t normal, std::uint32_t u, std::uint32_t v) -> BFVertex {
+        return BFVertex{
+            bf_pack_pos(X, Y, Z, fx, fy, fz),
+            bf_pack_normal_uv(normal, AO, u, v),
+            mat, sky, blk, 0u
+        };
+    };
+
+    // Emit one quad (4 verts, 6 indices) with the given corner order. Corner
+    // order is chosen per-face so triangles (0,1,2),(0,2,3) are CCW from outside.
+    auto quad = [&](const BFVertex& v0, const BFVertex& v1,
+                    const BFVertex& v2, const BFVertex& v3) {
+        std::uint32_t b = vtx_count;
+        std::memcpy(vtx_out.data() + vtx_written, &v0, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        std::memcpy(vtx_out.data() + vtx_written, &v1, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        std::memcpy(vtx_out.data() + vtx_written, &v2, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        std::memcpy(vtx_out.data() + vtx_written, &v3, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        vtx_count += 4;
+        std::uint32_t idx[6] = {b+0, b+1, b+2, b+0, b+2, b+3};
+        std::memcpy(idx_out.data() + idx_written, idx, 6 * sizeof(std::uint32_t));
+        idx_written += static_cast<std::uint32_t>(6 * sizeof(std::uint32_t));
+    };
+
+    // +X face (plane at frac HI, normal +X). Corner order is CCW from outside:
+    // start lo, walk +Y, then +Z so cross(e0,e1) points +X.
+    quad(vert(HI, BOT, LO, BF_NX_POS, 0u, 0u),
+         vert(HI, TOP, LO, BF_NX_POS, 0u, 1u),
+         vert(HI, TOP, HI, BF_NX_POS, 1u, 1u),
+         vert(HI, BOT, HI, BF_NX_POS, 1u, 0u));
+
+    // -X face (plane at frac LO, normal -X). CCW from outside (-X side).
+    quad(vert(LO, BOT, HI, BF_NX_NEG, 0u, 0u),
+         vert(LO, TOP, HI, BF_NX_NEG, 0u, 1u),
+         vert(LO, TOP, LO, BF_NX_NEG, 1u, 1u),
+         vert(LO, BOT, LO, BF_NX_NEG, 1u, 0u));
+
+    // +Z face (plane at frac HI, normal +Z). CCW from outside (+Z side).
+    quad(vert(HI, BOT, HI, BF_NZ_POS, 0u, 0u),
+         vert(HI, TOP, HI, BF_NZ_POS, 0u, 1u),
+         vert(LO, TOP, HI, BF_NZ_POS, 1u, 1u),
+         vert(LO, BOT, HI, BF_NZ_POS, 1u, 0u));
+
+    // -Z face (plane at frac LO, normal -Z). CCW from outside (-Z side).
+    quad(vert(LO, BOT, LO, BF_NZ_NEG, 0u, 0u),
+         vert(LO, TOP, LO, BF_NZ_NEG, 0u, 1u),
+         vert(HI, TOP, LO, BF_NZ_NEG, 1u, 1u),
+         vert(HI, BOT, LO, BF_NZ_NEG, 1u, 0u));
+
+    // +Y top cap (plane at frac TOP, normal +Y). Outward +Y, CCW from above:
+    // walk -X then +Z so cross(edge0,edge1) points +Y.
+    quad(vert(HI, TOP, LO, BF_NY_POS, 0u, 0u),
+         vert(LO, TOP, LO, BF_NY_POS, 1u, 0u),
+         vert(LO, TOP, HI, BF_NY_POS, 1u, 1u),
+         vert(HI, TOP, HI, BF_NY_POS, 0u, 1u));
+
+    return true;
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -610,23 +724,33 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
         }
     }
 
-    // ---- Cross-plant billboard pass ----------------------------------------
-    // Scan every cell; for each cross-plant, emit the X-shaped billboard.
-    // This is done after the greedy cube meshing so plant geometry is appended.
+    // ---- Prop pass ---------------------------------------------------------
+    // Scan every cell; for each prop block emit its custom geometry:
+    //   cross-plants (36-39) -> X-shaped billboard (emit_cross_plant)
+    //   torch (32)           -> thin torch post + cap (emit_torch)
+    // This is done after the greedy cube meshing so prop geometry is appended.
     for (int y = 0; y < kChunkDim; ++y) {
         for (int x = 0; x < kChunkDim; ++x) {
             for (int z = 0; z < kChunkDim; ++z) {
                 BlockId here = chunk_get(chunk, x, y, z);
-                if (!is_cross_plant(here)) continue;
+                if (!is_prop(here)) continue;
 
-                // Sample light from the plant cell itself (not an adjacent air face).
+                // Sample light from the prop cell itself (not an adjacent air face).
                 std::uint8_t sky = chunk->sky_light(x, y, z);
                 std::uint8_t blk = chunk->block_light(x, y, z);
 
-                bool ok = emit_cross_plant(x, y, z, here, sky, blk,
-                                           vtx_out, vtx_written,
-                                           idx_out, idx_written,
-                                           vtx_count);
+                bool ok;
+                if (is_torch(here)) {
+                    ok = emit_torch(x, y, z, sky, blk,
+                                    vtx_out, vtx_written,
+                                    idx_out, idx_written,
+                                    vtx_count);
+                } else {
+                    ok = emit_cross_plant(x, y, z, here, sky, blk,
+                                          vtx_out, vtx_written,
+                                          idx_out, idx_written,
+                                          vtx_count);
+                }
                 if (!ok) {
                     std::uint32_t ic2 = idx_written / static_cast<std::uint32_t>(sizeof(std::uint32_t));
                     return MeshResult{vtx_written, idx_written, ic2, false};
