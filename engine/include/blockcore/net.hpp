@@ -225,6 +225,11 @@ public:
     // Bind to a local port (host mode).
     bool bind(std::uint16_t port);
 
+    // Open an unbound non-blocking socket (client mode): the OS assigns an
+    // ephemeral local port on the first sendto. Without this the client never
+    // had a socket at all and LAN join silently did nothing.
+    bool open_unbound();
+
     // Send datagram to address:port.
     bool sendto(std::string_view address, std::uint16_t port,
                 std::span<const std::byte> data);

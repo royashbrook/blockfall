@@ -89,7 +89,7 @@ public:
             }
             case PktType::Welcome: {
                 std::uint64_t seed = 0; std::uint8_t mode = 0;
-                r.get(seed); r.get(mode);
+                if (!r.get(seed) || !r.get(mode)) break;   // ignore truncated packets
                 world_.set_mode(bf_game_mode(mode));
                 world_.init_world(seed);          // deterministic: matches host
                 joined_ = true;
@@ -97,13 +97,16 @@ public:
             }
             case PktType::BlockEdit: {
                 IVec3 w{}; BlockId b = 0;
-                r.get(w); r.get(b);
+                if (!r.get(w) || !r.get(b)) break; // truncated: don't corrupt the world
                 world_.apply_remote_edit(w, b);   // authoritative apply, no re-fire
                 if (role_ == NetRole::Host) broadcast_edit(w, b);  // relay to everyone
                 break;
             }
             case PktType::PlayerPos: {
-                float x, y, z, yaw; r.get(x); r.get(y); r.get(z); r.get(yaw);
+                // Zero-init + checked reads: a short packet must never leave NaN/garbage
+                // here — these floats become entity vertex positions on the GPU.
+                float x{}, y{}, z{}, yaw{};
+                if (!r.get(x) || !r.get(y) || !r.get(z) || !r.get(yaw)) break;
                 remote_[peer] = {x, y, z, yaw};
                 rebuild_avatars();
                 break;

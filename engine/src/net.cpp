@@ -152,6 +152,12 @@ void ReliableEndpoint::send(NetChannel ch, std::span<const std::byte> payload)
                payload.data() + plen);
 
     if (ch == NetChannel::ReliableOrdered || ch == NetChannel::ReliableUnordered) {
+        // Bound memory if a peer goes silent (crash / abrupt quit): a live peer
+        // acks constantly so this stays tiny, but a dead peer never acks and the
+        // backlog would otherwise grow without limit. At an 8192-deep backlog the
+        // peer is effectively gone, so drop the oldest instead of leaking.
+        constexpr std::size_t kMaxUnacked = 8192;
+        if (unacked_.size() >= kMaxUnacked) unacked_.erase(unacked_.begin());
         UnackedPacket pkt;
         pkt.seq     = seq;
         pkt.channel = ch;
@@ -252,8 +258,15 @@ void ReliableEndpoint::mark_received(std::uint32_t seq)
 void ReliableEndpoint::try_deliver_ordered(std::uint32_t seq,
                                            std::span<const std::byte> payload)
 {
+    // Guard against forged/huge seq numbers exhausting memory: drop already-
+    // delivered seqs and anything implausibly far ahead of what we're waiting for,
+    // and hard-cap the buffer size. A legit in-flight window is far below this.
+    constexpr std::uint32_t kReorderWindow = 4096;
+    if (seq < next_expected_ord_) return;                    // old / duplicate
+    if (seq - next_expected_ord_ >= kReorderWindow) return;  // implausibly far ahead
     // Store this arrival in the reorder buffer.
     if (reorder_buf_.find(seq) == reorder_buf_.end()) {
+        if (reorder_buf_.size() >= kReorderWindow) return;   // buffer full — drop
         reorder_buf_[seq] = std::vector<std::byte>(payload.begin(), payload.end());
     }
 
@@ -297,6 +310,11 @@ void ReliableEndpoint::on_datagram(std::span<const std::byte> bytes)
     // seqs immediately above rel_cum_ack_ have also been received.
     // This guarantees old seqs never "fall out" of the ack window on the sender.
     if (ch == NetChannel::ReliableOrdered || ch == NetChannel::ReliableUnordered) {
+        // Same anti-flood guard: a seq far beyond the cumulative ack is forged
+        // (or hopelessly out of range) — don't let received_rel_set_ grow without
+        // bound. Old/duplicate seqs below the cumulative ack are harmless to skip.
+        constexpr std::uint32_t kAckWindow = 4096;
+        if (h.seq > rel_cum_ack_ && h.seq - rel_cum_ack_ >= kAckWindow) return;
         received_rel_set_[h.seq] = true;
 
         // Advance cumulative ack as far as possible.
@@ -434,6 +452,20 @@ bool UdpSocket::bind(std::uint16_t port) {
 #endif
 }
 
+bool UdpSocket::open_unbound() {
+#ifndef BF_NO_SOCKETS
+    fd_ = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd_ < 0) return false;
+    int flags = ::fcntl(fd_, F_GETFL, 0);
+    if (flags < 0 || ::fcntl(fd_, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(); return false;
+    }
+    return true;   // no ::bind — ephemeral local port assigned on first sendto
+#else
+    return false;
+#endif
+}
+
 bool UdpSocket::sendto(std::string_view address, std::uint16_t port,
                        std::span<const std::byte> data) {
 #ifndef BF_NO_SOCKETS
@@ -491,6 +523,9 @@ bool UdpTransport::connect(std::string_view host, std::uint16_t port)
     is_host_  = false;
     host_addr_ = std::string(host);
     host_port_ = port;
+    // Open the client socket — without this fd_ stayed -1 and every send/recv
+    // silently bailed, so the handshake never happened and join did nothing.
+    if (!socket_.open_unbound()) return false;
     // Create a peer entry for the server (peer_id=1 by convention for client).
     find_or_create_peer(host_addr_, host_port_);
     return true;  // Non-blocking; actual handshake happens via poll().
