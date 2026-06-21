@@ -2256,10 +2256,24 @@ final class Renderer: NSObject, MTKViewDelegate {
             col = mix(col, flatCol, 0.80);
 
             float dist = length(in.worldPos - UW_CAM_POS(wu));
-            float rawFog = exp(-0.030 * dist);
+            // FIX (#1): The submerged-SOLID fog was over-tinting the lake bottom:
+            // at a grazing view the far part of a sandy floor sits 30-50 blocks
+            // away, where exp(-0.030*dist) drove fogFactor down to ~0.3, blending
+            // the sand ~70% toward WATER_FOG_COL — it blued out completely and
+            // vanished into the water while the kelp (lit separately) stayed
+            // visible. Two changes keep the bottom readable as SAND, just tinted:
+            //   - Gentler coefficient (0.030 -> 0.018) so tint builds far slower
+            //     with distance (e.g. at 30 blocks ~58% scene, was ~41%).
+            //   - Floor the fog so a submerged solid is NEVER blended more than
+            //     45% toward the fog colour. The base albedo always shows through,
+            //     so sand stays sandy (just blue-tinted), never a flat blue wall.
+            float rawFog = exp(-0.018 * dist);
             // Ramp: no tint at all within 4 blocks; smoothly add fog beyond that.
             float ramp = smoothstep(4.0, 14.0, dist);
             float fogFactor = clamp(mix(1.0, rawFog, ramp), 0.0, 1.0);
+            // Keep at least 55% of the surface's own albedo at any distance so the
+            // material (sand/dirt/stone) always stays distinguishable from water.
+            fogFactor = max(fogFactor, 0.55);
             // Same colour the full-screen overlay uses (WATER_FOG_COL) so the
             // submerged-solid tint and the water volume read as one body of water.
             col = mix(WATER_FOG_COL, col, fogFactor);
@@ -2350,7 +2364,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         // so the surface never vanishes at grazing angles and never double-blends
         // unevenly. Top face slightly more opaque (you mostly look down through it);
         // side faces a touch more see-through so shorelines read cleanly.
-        float alpha = topFace ? 0.58 : 0.50;
+        // FIX (#1): Lowered (top 0.58 -> 0.42, side 0.50 -> 0.38) so the sandy
+        // lake bottom is clearly visible THROUGH the surface from above instead of
+        // being hidden behind a near-opaque blue sheet. The surface still reads as
+        // water (colour + specular + fresnel on the top face) but no longer stacks
+        // a heavy blue layer on top of the (now-readable) submerged terrain.
+        float alpha = topFace ? 0.42 : 0.38;
         return float4(col, alpha);
     }
 

@@ -1025,6 +1025,8 @@ private:
         float cx = pos_.x + std::cos(ang) * r, cz = pos_.z + std::sin(ang) * r;
         int gy = floor_below(ifloor(cx), int(pos_.y) + 30, ifloor(cz));
         if (gy == kNoFloor) return false;
+        // Don't drop a land animal into a lake/ocean (its body cell would be water) — #27.
+        if (block_at(IVec3{ifloor(cx), gy + 1, ifloor(cz)}) == WATER) return false;
         Creature c;
         c.pos = V3{cx, float(gy), cz}; c.yaw = rand01() * 6.2831853f;
         c.wander = 1.0f + rand01() * 2.0f; c.is_boss = boss;
@@ -1438,7 +1440,9 @@ private:
                 V3 nx = c.pos + d2 * (c.speed * dt);
                 if (block_at(IVec3{ifloor(nx.x), ifloor(nx.y), ifloor(nx.z)}) == WATER) {
                     c.pos.x = nx.x; c.pos.z = nx.z;
-                } else { c.yaw += 2.2f; c.wander = 0.3f; }     // edge of water — turn back
+                } else if (c.wander <= 0.0f) {                  // edge of water — turn back (gated, no spin)
+                    c.yaw += 2.0f + rand01() * 2.2f; c.wander = 0.6f + rand01() * 0.6f;
+                }
                 c.pos.y += std::sin(float(world_clock_) * 2.0f + c.pos.x) * 0.4f * dt;   // bob
                 // stay submerged: sink toward water if we drifted above it
                 if (block_at(IVec3{ifloor(c.pos.x), ifloor(c.pos.y), ifloor(c.pos.z)}) != WATER &&
@@ -1481,14 +1485,15 @@ private:
             // THROUGH grass/flowers/mushrooms instead of bumping into them.
             bool intoWater = !c.aquatic && (block_at(IVec3{nv.x, nv.y, nv.z}) == WATER
                                          || block_at(IVec3{nv.x, nv.y - 1, nv.z}) == WATER);
-            if (intoWater) {
-                c.yaw += 2.4f; c.wander = 0.5f;                           // turn away from water
-            } else if (!collide_solid(nv.x, nv.y, nv.z)) {
+            if (!intoWater && !collide_solid(nv.x, nv.y, nv.z)) {
                 c.pos.x = next.x; c.pos.z = next.z;                       // clear path
-            } else if (!collide_solid(nv.x, nv.y + 1, nv.z)) {
+            } else if (!intoWater && !collide_solid(nv.x, nv.y + 1, nv.z)) {
                 c.pos.x = next.x; c.pos.z = next.z; c.pos.y += 1.0f;      // step up a 1-block ledge
-            } else {
-                c.yaw += 2.4f; c.wander = 0.5f;                          // turn away from a wall
+            } else if (c.wander <= 0.0f) {
+                // Blocked by water or a wall: pick a NEW heading, but only when the
+                // wander cooldown elapses — turning every frame made stuck animals
+                // spin frantically in place (#27).
+                c.yaw += 2.0f + rand01() * 2.2f; c.wander = 0.6f + rand01() * 0.6f;
             }
             // gravity, then land on the floor below (never pushed upward).
             c.vy -= 24.0f * dt;
@@ -1733,6 +1738,7 @@ private:
         h.achievements_total = std::uint8_t(kAchievementCount);
         h.weather = std::uint8_t(weather_);
         std::strncpy(h.biome_name, biome_label(), sizeof(h.biome_name) - 1);
+        h.in_dim = region_sat(to_chunk(IVec3{ifloor(pos_.x), ifloor(pos_.y), ifloor(pos_.z)})) < 0.99f ? 1 : 0;
         if (ach_toast_timer_ > 0.0f)
             std::strncpy(h.achievement_toast, ach_toast_.c_str(), sizeof(h.achievement_toast) - 1);
         // Look-at name: a creature under the crosshair takes priority, else the

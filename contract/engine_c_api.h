@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 9u   /* v9: per-corner dim saturation for smooth grey blend */
+#define BF_ABI_VERSION 10u  /* v10: HUD in_dim flag (Grey-region indicator) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -281,6 +281,7 @@ typedef struct bf_hud_state {
     uint8_t      achievements_total;
     uint8_t      weather;          /* 0=clear, 1=rain, 2=snow (for the HUD label) */
     char         biome_name[24];   /* current biome, e.g. "Meadow", "Desert"       */
+    uint8_t      in_dim;           /* 1 = standing in an unrestored "Grey" region   */
 } bf_hud_state;
 
 /* The whole frame, borrowed from the engine between acquire/end. */

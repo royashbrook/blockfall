@@ -6,6 +6,7 @@
 // this into the Metal layer; the data contract (bf_hud_state) stays the same.
 // ============================================================================
 import AppKit
+import QuartzCore   // CACurrentMediaTime for the #29 FPS counter
 import CBlockcore
 
 // Item id -> (display name, chip colour). Mirrors content/items so the HUD can
@@ -195,6 +196,14 @@ final class HUDView: NSView {
     private var playerZ: Float = 0
     private var playerFacing: Float = 0   // yaw radians
 
+    // --- #29: FPS counter ---
+    // Derived purely from the time between draw(_:) calls (the renderer already
+    // drives one redraw per frame), so no timer is added. We keep an exponential
+    // moving average of the instantaneous FPS so the number reads steadily
+    // instead of flickering every frame. lastDrawTime < 0 means "no prior frame".
+    private var lastDrawTime: CFTimeInterval = -1
+    private var smoothedFPS: Double = 0
+
     // --- #16: scrollable craft list ---
     // Vertical scroll offset (in points) into the craft band. 0 = top of list.
     // Clamped to [0, maxCraftScroll] each draw against the real content height.
@@ -369,6 +378,23 @@ final class HUDView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let b = bounds
 
+        // --- #29: FPS from draw-to-draw timing (no timer) ---
+        // Measure the delta since the previous draw. Clamp the delta to a sane
+        // range so a paused/backgrounded gap can't produce a wild value, then
+        // fold the instantaneous FPS into an exponential moving average. We do
+        // this every frame (even with the inventory open) so the number stays
+        // current and the box shows a stable reading the instant it's drawn.
+        let nowT = CACurrentMediaTime()
+        if lastDrawTime > 0 {
+            let dt = nowT - lastDrawTime
+            if dt > 0.0001 && dt < 1.0 {            // ignore zero / huge gaps
+                let inst = 1.0 / dt
+                // EMA: weight new samples lightly so the readout doesn't jitter.
+                smoothedFPS = smoothedFPS <= 0 ? inst : smoothedFPS * 0.9 + inst * 0.1
+            }
+        }
+        lastDrawTime = nowT
+
         // Detect death+respawn (health was a small positive, then jumps back to
         // full). prevHealth must be > 0.5 so a startup/zero-frame health (0) can
         // NEVER look like a death — that was firing a false "you died" on spawn.
@@ -525,10 +551,12 @@ final class HUDView: NSView {
                                          withAttributes: coAttrs)
         }
 
-        // Mode badge (top-right)
-        let modeStr = (hud.mode == BF_MODE_CREATIVE) ? "CREATIVE" : "SURVIVAL"
-        drawText(modeStr, at: NSPoint(x: b.maxX - 110, y: b.maxY - 32), size: 13,
-                 color: (hud.mode == BF_MODE_CREATIVE) ? .systemTeal : .systemOrange, bold: true)
+        // --- #28 / #29: Environment status box (top-right) ---
+        // A single bordered panel replacing the old loose mode/weather/biome
+        // labels. Lines: game mode (coloured), FPS, weather, the Grey indicator,
+        // and the biome. The box is sized to the widest line and anchored to the
+        // top-right with a margin so it never overlaps the top-left quest panel.
+        drawStatusBox(in: b)
 
         // Always-visible Guide hint (bottom-right) so kids discover the helper.
         let guideHint = "❓ Stuck? Press G for the Guide"
@@ -539,28 +567,6 @@ final class HUDView: NSView {
         ]
         let ghSz = (guideHint as NSString).size(withAttributes: ghAttrs)
         (guideHint as NSString).draw(at: NSPoint(x: b.maxX - ghSz.width - 14, y: 14), withAttributes: ghAttrs)
-
-        // Weather line (under the mode badge). Tells the player what the
-        // on-screen precipitation overlay represents. 0=clear, 1=rain, 2=snow.
-        switch hud.weather {
-        case 1:
-            drawText("Rain", at: NSPoint(x: b.maxX - 110, y: b.maxY - 50), size: 12,
-                     color: NSColor(srgbRed: 0.62, green: 0.78, blue: 0.95, alpha: 1), bold: false)
-        case 2:
-            drawText("Snow", at: NSPoint(x: b.maxX - 110, y: b.maxY - 50), size: 12,
-                     color: NSColor(srgbRed: 0.92, green: 0.95, blue: 0.98, alpha: 1), bold: false)
-        default:
-            break   // clear: no label (unobtrusive)
-        }
-
-        // Biome name under the mode/weather badges.
-        let biome = withUnsafeBytes(of: hud.biome_name) { raw -> String in
-            String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
-        }
-        if !biome.isEmpty {
-            drawText(biome, at: NSPoint(x: b.maxX - 110, y: b.maxY - 68), size: 12,
-                     color: NSColor.white.withAlphaComponent(0.85), bold: false)
-        }
 
         // Achievement toast (top-center banner) when one was just unlocked.
         let toast = withUnsafeBytes(of: hud.achievement_toast) { raw -> String in
@@ -581,6 +587,104 @@ final class HUDView: NSView {
             NSColor(red: 1.0, green: 0.86, blue: 0.30, alpha: 0.8).setStroke()
             let bp = NSBezierPath(roundedRect: bg, xRadius: 10, yRadius: 10); bp.lineWidth = 2; bp.stroke()
             (toast as NSString).draw(at: NSPoint(x: b.midX - sz.width/2, y: by), withAttributes: attrs)
+        }
+    }
+
+    // ===== #28 / #29: Environment status box ================================
+    // A single tidy bordered panel in the top-right corner that gathers the
+    // game mode, FPS, weather, the "In the Grey" indicator and the biome into
+    // compact, aligned lines. Matches the other HUD panels (rounded rect,
+    // semi-transparent dark fill, subtle border). Sized to the widest line and
+    // anchored top-right with a margin, so it stays clear of the top-left quest
+    // panel. The view is non-flipped: +x right, +y up.
+    private func drawStatusBox(in b: NSRect) {
+        // One status line = text + colour. Built top-to-bottom in reading order.
+        struct StatusLine { let text: String; let color: NSColor; let bold: Bool }
+        var lines: [StatusLine] = []
+
+        // Game mode — keep the existing teal/orange colour cue.
+        let creative = (hud.mode == BF_MODE_CREATIVE)
+        lines.append(StatusLine(text: creative ? "CREATIVE" : "SURVIVAL",
+                                color: creative ? .systemTeal : .systemOrange,
+                                bold: true))
+
+        // FPS (#29) — rounded smoothed value. Shows "—" until the first delta.
+        let fpsText = smoothedFPS > 0 ? "\(Int(smoothedFPS.rounded())) FPS" : "— FPS"
+        lines.append(StatusLine(text: fpsText,
+                                color: NSColor.white.withAlphaComponent(0.9), bold: false))
+
+        // Weather: 0=Clear, 1=Rain, 2=Snow.
+        let weather: (String, NSColor)
+        switch hud.weather {
+        case 1:  weather = ("Weather: Rain", NSColor(srgbRed: 0.62, green: 0.78, blue: 0.95, alpha: 1))
+        case 2:  weather = ("Weather: Snow", NSColor(srgbRed: 0.92, green: 0.95, blue: 0.98, alpha: 1))
+        default: weather = ("Weather: Clear", NSColor.white.withAlphaComponent(0.85))
+        }
+        lines.append(StatusLine(text: weather.0, color: weather.1, bold: false))
+
+        // "In the Grey" indicator (#28). Make the Grey state obvious (that's the
+        // whole point); when restored, show a quiet rainbow line so the contrast
+        // reads clearly for kids.
+        if hud.in_dim != 0 {
+            lines.append(StatusLine(text: "⬛ The Grey",
+                                    color: NSColor(white: 0.62, alpha: 1.0), bold: true))
+        } else {
+            lines.append(StatusLine(text: "🌈 Restored",
+                                    color: NSColor.white.withAlphaComponent(0.85), bold: false))
+        }
+
+        // Biome name (NUL-terminated char[] like the other char fields).
+        let biome = withUnsafeBytes(of: hud.biome_name) { raw -> String in
+            String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+        }
+        if !biome.isEmpty {
+            lines.append(StatusLine(text: biome,
+                                    color: NSColor.white.withAlphaComponent(0.85), bold: false))
+        }
+
+        // Layout: measure every line, size the box to the widest, stack them
+        // with consistent padding + line spacing.
+        let fontSize: CGFloat = 13
+        let pad: CGFloat = 8           // inner padding
+        let lineGap: CGFloat = 3       // gap between lines
+        let margin: CGFloat = 16       // distance from the top-right corner
+
+        func attrs(_ l: StatusLine) -> [NSAttributedString.Key: Any] {
+            [
+                .font: l.bold ? NSFont.boldSystemFont(ofSize: fontSize)
+                              : NSFont.systemFont(ofSize: fontSize),
+                .foregroundColor: l.color,
+                .strokeColor: NSColor.black, .strokeWidth: -2.0,
+            ]
+        }
+
+        var maxW: CGFloat = 0
+        var lineH: CGFloat = 0
+        for l in lines {
+            let sz = (l.text as NSString).size(withAttributes: attrs(l))
+            maxW = max(maxW, sz.width)
+            lineH = max(lineH, sz.height)
+        }
+        let count = CGFloat(lines.count)
+        let boxW = maxW + pad * 2
+        let boxH = count * lineH + (count - 1) * lineGap + pad * 2
+
+        let box = NSRect(x: b.maxX - boxW - margin, y: b.maxY - boxH - margin,
+                         width: boxW, height: boxH)
+
+        // Panel: semi-transparent dark fill + subtle border (matches HUD style).
+        NSColor.black.withAlphaComponent(0.45).setFill()
+        let rr = NSBezierPath(roundedRect: box, xRadius: 8, yRadius: 8)
+        rr.fill()
+        NSColor.white.withAlphaComponent(0.20).setStroke()
+        rr.lineWidth = 1; rr.stroke()
+
+        // Draw lines top-to-bottom inside the box.
+        var ly = box.maxY - pad - lineH
+        for l in lines {
+            (l.text as NSString).draw(at: NSPoint(x: box.minX + pad, y: ly),
+                                      withAttributes: attrs(l))
+            ly -= lineH + lineGap
         }
     }
 
