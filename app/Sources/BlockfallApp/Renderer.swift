@@ -851,7 +851,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         case 2:  precipPacked = -1.0   // snow
         default: precipPacked =  0.0   // clear
         }
-        var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.38,
+        var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.18,
                               rainStrength: precipPacked, wallClockSecs: wallClock)
 
         // =====================================================================
@@ -2364,8 +2364,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         float sunDot = dot(ray, sunDir3);
         float sunDisc  = smoothstep(0.9975, 1.0000, sunDot);
         float sunInner = smoothstep(0.9992, 1.0000, sunDot);
-        float sunGlow1 = smoothstep(0.940,  1.0000, sunDot) * 0.22 * max(dayT, sunsetT * 0.5);
-        float sunGlow2 = smoothstep(0.984,  1.0000, sunDot) * 0.35 * max(dayT, sunsetT * 0.5);
+        float sunGlow1 = smoothstep(0.965,  1.0000, sunDot) * 0.12 * max(dayT, sunsetT * 0.5);
+        float sunGlow2 = smoothstep(0.990,  1.0000, sunDot) * 0.20 * max(dayT, sunsetT * 0.5);
         float3 sunColor  = mix(float3(1.0, 0.72, 0.35), float3(1.0, 0.98, 0.85), dayT);
         float3 sunCorona = sunColor * 1.15;
         float sunVis = max(dayT, sunsetT * 0.6);
@@ -2672,30 +2672,24 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Max bloom additive per channel is 0.25 — enough for a visible glow around
         // the sun and emissives but far below the point where it lifts everything to
         // flat-bright. (bloomStrength=0.08 * clamp(bloom, 0, ~3) ≤ 0.25 per channel.)
-        float3 bloomClamped = clamp(bloom * pu.bloomStrength, 0.0, 0.25);
-        float3 combined = hdr + bloomClamped;
+        float3 bloomClamped = clamp(bloom * pu.bloomStrength, 0.0, 0.20);
+        // Exposure < 1 keeps bright scenes (open desert, low sun, bright sky in
+        // view) off the ACES white point, so facing the sun no longer washes out.
+        float3 combined = (hdr + bloomClamped) * 0.82;
 
         // ACES filmic tone-map
         float3 tonemapped = ACESFilmic(combined);
 
-        // Colour grade: warm highlights (slightly push R, pull B at high luminance)
+        // Gentle warm highlight tint.
         float lumG = dot(tonemapped, float3(0.2126, 0.7152, 0.0722));
-        float3 warmHighlight = float3(1.04, 1.00, 0.95);
-        tonemapped = mix(tonemapped, tonemapped * warmHighlight, lumG * lumG * 0.30);
+        tonemapped = mix(tonemapped, tonemapped * float3(1.03, 1.00, 0.97), lumG * lumG * 0.18);
 
-        // Saturation boost — pushed higher for vivid kid-friendly palette.
+        // Moderate saturation (no midtone lift / heavy contrast — those pumped
+        // brightness and caused the view-dependent wash-out).
         float lumSat = dot(tonemapped, float3(0.2126, 0.7152, 0.0722));
         tonemapped   = mix(float3(lumSat), tonemapped, pu.satBoost);
-
-        // S-curve midtone contrast: bring midtones up while leaving black/white alone.
-        // Steeper than before for punchier look.
-        tonemapped = clamp(tonemapped, 0.0, 1.0);
-        // Apply a gentle power curve to lift midtones (gamma ~0.88 in mids):
-        float3 midLift = pow(tonemapped, float3(0.90));
-        // Then S-curve: compress shadows and highlights slightly while stretching mids.
-        tonemapped = mix(tonemapped, midLift, 0.40);
-        tonemapped = clamp((tonemapped - 0.5) * 1.18 + 0.5, 0.0, 1.0);
-        tonemapped = clamp(tonemapped, 0.0, 1.0);
+        // Light contrast only.
+        tonemapped   = clamp((tonemapped - 0.5) * 1.06 + 0.5, 0.0, 1.0);
 
         // Vignette: smooth falloff toward screen edges
         float2 centred = in.uv - 0.5;
@@ -3149,7 +3143,7 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
                 enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor,  index: 0)
                 enc.setFragmentTexture(bloomBrt,  index: 1)
-                var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.38,
+                var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.18,
                                       rainStrength: 0, wallClockSecs: Float(f)/60.0)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
