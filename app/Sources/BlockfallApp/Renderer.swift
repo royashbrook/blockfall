@@ -596,7 +596,6 @@ final class Renderer: NSObject, MTKViewDelegate {
         let dt = now - lastTime; lastTime = now
         frameCounter += 1
         registry.currentFrame = frameCounter
-        let bufs = registry.snapshot()   // lock-free handle resolution for this frame's encode
 
         // Lazy texture init / resize check
         let dSize = view.drawableSize
@@ -615,6 +614,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         // 2) acquire render
         var frame = bf_render_frame()
         _ = bf_frame_acquire_render(e, &frame)
+
+        // Snapshot the buffer registry AFTER acquire: this frame's update/remesh
+        // (inside frame_begin/acquire) may have allocated brand-new mesh buffers,
+        // and the draw list references them. Snapshotting earlier missed those, so
+        // a just-remeshed chunk wasn't drawn for a frame — flashing holes that let
+        // you see the caves below, especially while chunks stream/light settles.
+        let bufs = registry.snapshot()
 
         // 3) camera matrices
         let aspect = Float(dSize.width / max(1, dSize.height))
