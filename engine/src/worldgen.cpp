@@ -1221,9 +1221,12 @@ static int canopy_dy_max(int shape) noexcept {
 }
 
 // Minimum dy relative to trunk_top.
-// WEEPING has leaves 3 below trunk_top (dy=-3); others -1.
+// WEEPING has leaves 3 below trunk_top (dy=-3); PINE has its outer skirt at -2;
+// others -1. (Must cover the lowest dy any in_canopy_* returns, or that leaf
+// layer is never iterated and silently omitted.)
 static int canopy_dy_min(int shape) noexcept {
     if (shape == CANOPY_WEEPING) return -3;
+    if (shape == CANOPY_PINE)    return -2;
     return -1;
 }
 
@@ -1394,8 +1397,10 @@ static void place_ruined_hut(std::int32_t ax, std::int32_t az,
                               IChunk& chunk,
                               std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
     // Find the max surface height in the 5×5 wall footprint — this is the
-    // shared "floor level" from which wall height is counted.
-    int floor_h = 0;
+    // shared "floor level" from which wall height is counted. Start below any
+    // real terrain (surfaces can be negative in low swamp) so a hut at a biome
+    // edge doesn't anchor at 0 and float / sink.
+    int floor_h = -1000000;
     for (int dz = -2; dz <= 2; ++dz)
         for (int dx = -2; dx <= 2; ++dx) {
             bool on_xwall = (dx == -2 || dx == 2);
@@ -1519,7 +1524,7 @@ static void place_watchtower(std::int32_t ax, std::int32_t az,
     // Find the MAX surface height of the 4 corner columns so the platform
     // sits above all of them.  Add STILT_H=3 above that max.
     constexpr int STILT_H = 3;
-    int max_corner_h = 0;
+    int max_corner_h = -1000000;   // below any real terrain (surfaces can be negative)
     for (auto& cor : corners) {
         int sh = struct_surface(ax + cor[0], az + cor[1], seed);
         if (sh > max_corner_h) max_corner_h = sh;
