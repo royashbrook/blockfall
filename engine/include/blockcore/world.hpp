@@ -655,9 +655,14 @@ private:
     void craftable_recipes(std::vector<std::uint32_t>& out) const {
         out.clear();
         if (!content_ || !inv_) return;
+        // 3x3 recipes (tools/weapons/big items) need a crafting table in your pack —
+        // the early progression beat: log → planks → table → tools.
+        bool hasTable = false;
+        if (ItemId ct = item_id_by_name("crafting_table")) hasTable = inv_->count_item(ct) > 0;
         for (std::uint32_t i = 0; i < content_->recipe_count() && out.size() < 8; ++i) {
             const RecipeEntry& r = content_->recipe(i);
             if (r.pattern.empty() || r.result_item == 0) continue;
+            if (r.grid_size >= 3 && !hasTable) continue;   // needs a crafting table
             std::unordered_map<ItemId, int> need;
             for (ItemId it : r.pattern) if (it != 0) need[it]++;
             bool ok = true;
@@ -674,7 +679,7 @@ private:
         const RecipeEntry& r = content_->recipe(cr[std::size_t(idx)]);
         if (craft_->commit(*inv_, std::span<const ItemId>(r.pattern.data(), r.pattern.size()), r.grid_size)) {
             fx(4, player_voxel());
-            notify_quest("craft", item_name(r.result_item));
+            notify_quest("craft_item", item_name(r.result_item));   // matches quest triggers
         }
     }
 
@@ -724,7 +729,7 @@ private:
         {"mine_block",   "oak_log",  3,  "Timber!"},
         {"collect_item", "dirt",     16, "Dirt Collector"},
         {"mine_block",   "stone",    1,  "Stone Age"},
-        {"craft",        "",         1,  "Crafty"},
+        {"craft_item",   "",         1,  "Crafty"},
         {"mine_block",   "coal_ore", 1,  "Coal Miner"},
         {"mine_block",   "iron_ore", 1,  "Iron Prospector"},
         {"place_block",  "",         10, "Builder"},
