@@ -7,6 +7,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${1:-debug}"          # debug | release
+
+# Self-install the commit hook (require a #issue ref on every commit). Idempotent;
+# this is how the hook gets enforced on a fresh clone without a manual step.
+git -C "$ROOT" config core.hooksPath .githooks 2>/dev/null || true
 BUILD="$ROOT/build"
 APP_OUT="$BUILD/Blockfall.app"
 export PATH="/opt/homebrew/bin:$PATH"
