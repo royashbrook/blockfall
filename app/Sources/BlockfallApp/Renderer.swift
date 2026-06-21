@@ -1943,23 +1943,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         // ---- Glowing blocks skip shadowing (they emit light) ----
         bool isEmissive = (mat==7u||mat==32u||mat==34u||mat==35u||mat==40u);
 
-        // ---- Day factor (for shadow strength scaling) ----
-        // We can extract this from shade indirectly; use the sunDirTime.w-driven
-        // dayB from the vertex shader. In the fragment we just use in.shade,
-        // but we need a "sun contribution" fraction.
-        // We'll derive dayFactor as: sun contribution ≈ in.shade (already encodes dayB).
-        float dayFactor = clamp(in.shade * 1.5, 0.0, 1.0);
-
-        // ---- PCF Shadow ----
+        // ---- Shadows ----
+        // Dynamic cast-shadow maps were removed: they wobbled/swam and washed out
+        // relative to the view, which read worse than no shadows. Depth now comes
+        // from per-vertex AO + the directional sun term (in.shade) + sky/block
+        // light, which is consistent in every direction. (A proper cascaded shadow
+        // map can be reintroduced later as a dedicated task.)
         float shadowFactor = 1.0;
-        if (!isEmissive) {
-            float rawShadow = sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos, dayFactor);
-            // When in shadow, sun/sky contribution is 0.35 of normal.
-            // Block light (torches, glow) is unaffected -> caves stay lit.
-            // Shadow strength scales with dayFactor so shadows disappear at night.
-            float shadowStrength = 0.65 * dayFactor;  // max darkening = 65% at noon
-            shadowFactor = 1.0 - shadowStrength * (1.0 - rawShadow);
-        }
 
         // ---- AO multiplier: fold into lit colour (multiplied with shade) ----
         // ao=0 → dark corner (multiply by 0.45), ao=1 → open (multiply by 1.0)
@@ -2210,14 +2200,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         // Underwater distance fog
-        // FIX (#4): Use a stable camera-to-fragment distance (worldPos minus the
-        // camera world position passed via wu.cameraPosW — this never spikes).
-        // Decay constant k = 0.046 gives ~50% scene colour at 15 blocks and
-        // ~30% at 20 blocks, matching "clear/translucent ~15-20 block visibility."
-        // Old value (0.12) left only 16% scene colour at 15 blocks — too opaque.
+        // FIX (#10): Gentler in-water fog so nearby blocks are clearly visible.
+        // k = 0.030 gives ~63% scene colour at 15 blocks and ~55% at 20 blocks.
+        // Additionally, smoothstep ramp means blocks 0-4 blocks away have near-zero
+        // fog tint; tint builds gradually beyond that. This ensures walls, floor,
+        // and ledges directly around the player are clearly readable.
         if (wu.underwater > 0.5) {
             float dist = length(in.worldPos - UW_CAM_POS(wu));
-            float fogFactor = clamp(exp(-0.046 * dist), 0.0, 1.0);
+            float rawFog = exp(-0.030 * dist);
+            // Ramp: no tint at all within 4 blocks; smoothly add fog beyond that.
+            float ramp = smoothstep(4.0, 14.0, dist);
+            float fogFactor = clamp(mix(1.0, rawFog, ramp), 0.0, 1.0);
             float3 waterFogColor = float3(0.08, 0.28, 0.40);
             col = mix(waterFogColor, col, fogFactor);
         } else {
@@ -2510,8 +2503,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 uwColor = float3(0.08, 0.28, 0.44);
         float3 col = uwColor + float3(caustic * 0.4, caustic * 0.6, caustic * 0.3);
         // Constant alpha — no variation of any kind.
-        // 0.16 * uw gives a gentle translucent blue tint without fuzziness.
-        float totalAlpha = 0.16 * clamp(uw, 0.0, 1.0);
+        // FIX (#10): Reduced from 0.16 to 0.08 so the post-pass overlay is a
+        // light blue wash rather than a blue wall. Nearby terrain blocks remain
+        // clearly readable through the tint; depth-based fade in fmain handles
+        // far-distance blue-out independently.
+        float totalAlpha = 0.08 * clamp(uw, 0.0, 1.0);
         return float4(col, totalAlpha);
     }
 
@@ -2608,28 +2604,32 @@ final class Renderer: NSObject, MTKViewDelegate {
     // ---- Precipitation helpers -----------------------------------------------
     // Rain: returns 0..1 streak intensity at screen UV (uv in [0,1]).
     // Each "cell" is a tall thin column; the streak falls through the column over time.
+    // FIX (#11): Increased streak length (0.32+), narrower X width for contrast,
+    // and higher base brightness so streaks are unmistakably visible.
     static float rainStreak(float2 uv, float T, float cellScale) {
-        // Scale uv into rain-cell space: many narrow columns, short in Y.
+        // Scale uv into rain-cell space: many narrow columns.
         // uv.y=0 is TOP, uv.y=1 is BOTTOM. Subtracting T from cell.y means that
         // as T increases, the same cell fragment is at a LARGER uv.y → streaks
         // move downward (falling rain). Adding T would move them upward.
-        float2 cell = float2(uv.x * cellScale, uv.y * 3.0 - T * 3.5);
+        float2 cell = float2(uv.x * cellScale, uv.y * 3.0 - T * 4.5);
         float2 cellI = floor(cell);
         float2 cellF = fract(cell);
         // Per-column hash: random X offset and brightness
         float colH = uhash(uint(cellI.x) * 1664525u + 1013904223u);
         float colH2 = uhash(uint(cellI.x) * 22695477u ^ 1664525u);
         // Streak X position within column (slight jitter)
-        float streakX = 0.35 + colH * 0.30;
+        float streakX = 0.30 + colH * 0.40;
         // Streak presence: each column has a random phase offset so they fall at different times
         float phase = fmod(cell.y + colH2 * 10.0, 1.0);
-        // Narrow in X, short streak in Y (length ~0.18 of cell height)
+        // Narrow in X for high contrast; longer streak in Y (~32-45% of cell height)
         float dx = abs(cellF.x - streakX);
-        float inX = smoothstep(0.04, 0.0, dx);
-        // The streak occupies ~20% of the vertical cell — compute if we're in it
-        float streakLen = 0.18 + colH * 0.10;
-        float inY = smoothstep(0.0, 0.04, phase) * smoothstep(streakLen, streakLen - 0.04, phase);
-        return inX * inY * (0.4 + colH * 0.6);  // varying brightness
+        float inX = smoothstep(0.028, 0.0, dx);   // narrower = sharper streak
+        // Longer streak so it's clearly visible (was 0.18)
+        float streakLen = 0.32 + colH * 0.13;
+        float inY = smoothstep(0.0, 0.03, phase) * smoothstep(streakLen, streakLen - 0.03, phase);
+        // Head-of-streak brightness gradient: brighter at leading edge for motion-blur look
+        float headGrad = 1.0 - (phase / max(streakLen, 0.01)) * 0.4;
+        return inX * inY * headGrad * (0.65 + colH * 0.35);  // higher base brightness
     }
 
     // Snow: returns 0..1 flake intensity. Flakes fall downward + gentle sideways drift.
@@ -2637,9 +2637,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     // So "falling down" means uv.y INCREASES over time.
     // We SUBTRACT T from the cell Y offset: as T grows, cell.y decreases, so for a fixed
     // flake (fixed cellI+cellF) it maps to a LARGER uv.y → flake moves downward. Correct.
+    // FIX (#11): Larger flake radii and higher base brightness so snow is unmistakably visible.
     static float snowFlake(float2 uv, float T, float cellScale) {
-        float2 cell = float2(uv.x * cellScale + T * 0.08,   // gentle sideways drift
-                              uv.y * cellScale - T * 0.9);   // fall DOWN (subtract T → flake at larger uv.y)
+        float2 cell = float2(uv.x * cellScale + T * 0.10,   // gentle sideways drift
+                              uv.y * cellScale - T * 1.1);   // fall DOWN (subtract T → flake at larger uv.y)
         float2 cellI = floor(cell);
         float2 cellF = fract(cell);
         // Per-flake hash
@@ -2650,10 +2651,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         float2 flakePos = float2(0.5) + flakePosOffset;
         float2 diff = cellF - flakePos;
         float dist = dot(diff, diff);
-        // Tiny circular flake — radius in cell units ~0.06..0.10
-        float r = 0.05 + flakeH * 0.05;
+        // Larger circular flake — radius in cell units ~0.10..0.17 (was 0.05..0.10)
+        float r = 0.10 + flakeH * 0.07;
         float inFlake = 1.0 - smoothstep(r * r * 0.5, r * r, dist);
-        return inFlake * (0.5 + flakeH * 0.5);
+        return inFlake * (0.70 + flakeH * 0.30);   // higher base brightness (was 0.5+)
     }
 
     fragment float4 compositeFrag(FSVOut in [[stage_in]],
@@ -2711,24 +2712,30 @@ final class Renderer: NSObject, MTKViewDelegate {
             bool isSnow = (pu.rainStrength < 0.0);
 
             if (isSnow) {
-                // Snow: two layers of flakes at different densities / speeds
-                float layer1 = snowFlake(in.uv, T * 1.0,  22.0);
-                float layer2 = snowFlake(in.uv, T * 0.65, 14.0) * 0.65;
-                float flakes = clamp(layer1 + layer2, 0.0, 1.0);
-                float3 snowCol = float3(0.92, 0.94, 1.00);
+                // FIX (#11): Three layers of snow flakes at different densities / speeds
+                // for clearly visible, dense-looking snowfall.
+                float layer1 = snowFlake(in.uv, T * 1.0,  32.0);         // dense fine layer
+                float layer2 = snowFlake(in.uv, T * 0.70, 20.0) * 0.85;  // medium layer
+                float layer3 = snowFlake(in.uv + float2(0.37, 0.19), T * 0.45, 12.0) * 0.75; // large slow
+                float flakes = clamp(layer1 + layer2 + layer3, 0.0, 1.0);
+                float3 snowCol = float3(0.93, 0.95, 1.00);
                 // Fade near the top (flakes enter screen from above)
-                float topFade = smoothstep(0.0, 0.12, in.uv.y) * smoothstep(1.0, 0.85, in.uv.y);
-                tonemapped = mix(tonemapped, snowCol, flakes * precipStr * 0.85 * topFade);
+                float topFade = smoothstep(0.0, 0.10, in.uv.y) * smoothstep(1.0, 0.82, in.uv.y);
+                // Raised from 0.85 to 1.0 — flakes replace underlying colour fully at peak
+                tonemapped = mix(tonemapped, snowCol, flakes * precipStr * 1.0 * topFade);
             } else {
-                // Rain: two streak layers — fine fast + coarse slow
-                float s1 = rainStreak(in.uv, T, 60.0);
-                float s2 = rainStreak(in.uv + float2(0.5, 0.3), T * 0.8, 38.0) * 0.70;
-                float streaks = clamp(s1 * 0.65 + s2 * 0.35, 0.0, 1.0);
+                // FIX (#11): Three rain streak layers — fine fast + medium + coarse slow.
+                // Increased cell densities and higher mix weight so streaks are unmistakable.
+                float s1 = rainStreak(in.uv, T, 80.0);                              // fine dense
+                float s2 = rainStreak(in.uv + float2(0.50, 0.30), T * 0.80, 52.0) * 0.85;  // medium
+                float s3 = rainStreak(in.uv + float2(0.22, 0.61), T * 0.55, 30.0) * 0.65;  // coarse
+                float streaks = clamp(s1 * 0.50 + s2 * 0.30 + s3 * 0.20, 0.0, 1.0);
                 // Rain colour: blue-grey, slightly transparent
-                float3 rainCol = float3(0.70, 0.75, 0.88);
-                // Streaks are more visible top-to-bottom (vertical, so fade near edge)
-                float edgeFade = smoothstep(0.0, 0.08, in.uv.x) * smoothstep(0.0, 0.08, 1.0 - in.uv.x);
-                tonemapped = mix(tonemapped, rainCol, streaks * precipStr * 0.55 * edgeFade);
+                float3 rainCol = float3(0.72, 0.78, 0.92);
+                // Streaks are more visible top-to-bottom (vertical, so fade near edges)
+                float edgeFade = smoothstep(0.0, 0.06, in.uv.x) * smoothstep(0.0, 0.06, 1.0 - in.uv.x);
+                // Raised from 0.55 to 0.82 — streaks are clearly visible (not just hinted)
+                tonemapped = mix(tonemapped, rainCol, streaks * precipStr * 0.82 * edgeFade);
             }
         }
 

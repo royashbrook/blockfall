@@ -557,7 +557,8 @@ public:
             e.scale = cr.scale;
             // Map 8 animal shapes to renderer kinds (4=boss, 5=monster, 6=falling).
             static const std::uint32_t kAnimalKind[8] = {0u, 1u, 2u, 3u, 7u, 8u, 9u, 10u};
-            e.kind = cr.hostile ? 5u : (cr.is_boss ? 4u : kAnimalKind[std::size_t(cr.shape & 7)]);
+            e.kind = cr.hostile ? (cr.shape == 1 ? 11u : 5u)
+                                : (cr.is_boss ? 4u : kAnimalKind[std::size_t(cr.shape & 7)]);
             e.sat = region_sat(to_chunk(IVec3{ifloor(cr.pos.x), ifloor(cr.pos.y), ifloor(cr.pos.z)}));
             entities_.push_back(e);
         }
@@ -781,6 +782,25 @@ private:
         return kNoFloor;
     }
     static bool solid_block(BlockId b) { return b != AIR && b != WATER && !is_plant(b); }
+    // Cheap biome label from the surface block under the player + nearby trees.
+    const char* biome_label() const {
+        int px = ifloor(pos_.x), pz = ifloor(pos_.z);
+        int top = -100000; BlockId surf = AIR;
+        for (int y = ifloor(pos_.y) + 2; y > ifloor(pos_.y) - 30; --y) {
+            BlockId b = block_at(IVec3{px, y, pz});
+            if (solid_block(b) || b == WATER) { surf = b; top = y; break; }
+        }
+        if (surf == 12 || surf == 13) return "Snowy";
+        if (surf == 6)                return "Desert";
+        if (surf == WATER)            return "Ocean";
+        if (top < -50000)             return "Meadow";
+        int logs = 0;
+        for (int dx = -9; dx <= 9 && logs < 3; dx += 3)
+            for (int dz = -9; dz <= 9 && logs < 3; dz += 3)
+                for (int y = top + 1; y <= top + 6; ++y)
+                    if (is_log(block_at(IVec3{px + dx, y, pz + dz}))) { ++logs; break; }
+        return logs >= 3 ? "Forest" : "Meadow";
+    }
     // Top standable block at a world column, GENERATING the column if it isn't
     // resident (used by respawn so you never land in unloaded void or dirt).
     int surface_top(int wx, int wz) const {
@@ -873,7 +893,10 @@ private:
         Creature c;
         c.pos = V3{cx, float(gy), cz}; c.yaw = rand01() * 6.2831853f;
         c.hostile = true; c.speed = 2.6f; c.hp = 6; c.scale = 1.0f;
-        c.color = V3{0.12f, 0.10f, 0.16f}; c.name = "monster";
+        // shape 1 = humanoid (kind 11), shape 0 = beast (kind 5).
+        c.shape = (rand01() < 0.5f) ? 1 : 0;
+        c.color = (c.shape == 1) ? V3{0.16f, 0.13f, 0.20f} : V3{0.12f, 0.10f, 0.16f};
+        c.name = (c.shape == 1) ? "lurker" : "monster";
         creatures_.push_back(c);
         return true;
     }
@@ -1169,15 +1192,19 @@ private:
     // The creature most in line with the camera within reach (or -1).
     int creature_in_view() {
         V3 o = pos_, d = forward_dir();
-        int best = -1; float bestT = 5.0f;
+        int best = -1; float bestT = 6.0f;
         for (std::size_t i = 0; i < creatures_.size(); ++i) {
-            V3 cc = creatures_[i].pos + V3{0, 0.5f, 0};
+            const Creature& c = creatures_[i];
+            V3 cc = c.pos + V3{0, c.scale * 0.5f, 0};       // aim at body centre, scaled
             V3 rel = cc - o;
             float t = dot(rel, d);
             if (t < 0 || t > bestT) continue;
             V3 closest = o + d * t;
             V3 off = cc - closest;
-            if (dot(off, off) < 0.7f) { bestT = t; best = int(i); }
+            // Hit radius grows with the creature's size so big animals/bosses are
+            // easy to hit (was a fixed 0.84 radius regardless of size).
+            float rad = 0.55f + c.scale * 0.7f;
+            if (dot(off, off) < rad * rad) { bestT = t; best = int(i); }
         }
         return best;
     }
@@ -1390,6 +1417,7 @@ private:
         h.achievements_done  = std::uint8_t(ach_done_count_);
         h.achievements_total = std::uint8_t(kAchievementCount);
         h.weather = std::uint8_t(weather_);
+        std::strncpy(h.biome_name, biome_label(), sizeof(h.biome_name) - 1);
         if (ach_toast_timer_ > 0.0f)
             std::strncpy(h.achievement_toast, ach_toast_.c_str(), sizeof(h.achievement_toast) - 1);
         // Look-at name: a creature under the crosshair takes priority, else the

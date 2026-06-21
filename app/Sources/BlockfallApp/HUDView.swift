@@ -295,6 +295,15 @@ final class HUDView: NSView {
             break   // clear: no label (unobtrusive)
         }
 
+        // Biome name under the mode/weather badges.
+        let biome = withUnsafeBytes(of: hud.biome_name) { raw -> String in
+            String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+        }
+        if !biome.isEmpty {
+            drawText(biome, at: NSPoint(x: b.maxX - 110, y: b.maxY - 68), size: 12,
+                     color: NSColor.white.withAlphaComponent(0.85), bold: false)
+        }
+
         // Achievement toast (top-center banner) when one was just unlocked.
         let toast = withUnsafeBytes(of: hud.achievement_toast) { raw -> String in
             String(cString: raw.bindMemory(to: CChar.self).baseAddress!)

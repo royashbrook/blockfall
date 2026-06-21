@@ -64,7 +64,26 @@
 //            PALETTE: warm tan back / white spots & belly / dark legs & antlers
 //            silhouette: tall slender figure with branched antlers.
 //
-// Animation list (unchanged from M5):
+// kind 11 — HUMANOID MONSTER (goblin/shadow-person, scary-but-cartoonish):
+//            fully upright bipedal figure — torso, head on top, TWO arms that
+//            swing OPPOSITE PHASE to legs, TWO legs with a walk cycle, like a
+//            person. Silhouette is unmistakably humanoid: tall narrow column with
+//            a round head and long dangling arms.
+//            FACE: two GLOWING HDR yellow-green eyes (emissive, luminance > 1 →
+//            bloom) like the beast but different color, a dark horizontal brow
+//            bar angled inward (menacing scowl), a wide jagged grin with uneven
+//            teeth — creepy but goofy, not gory.
+//            PALETTE: near-black body tinted from entity color / slightly lighter
+//            torso / accent on hands, feet, and face region — multi-color so
+//            adjacent parts are distinct. Entity tint provides variety so a crowd
+//            of kind-11s aren't identical.
+//            ANIMATION: walk cycle (legs alternate, arms opposite), idle breathe
+//            Y-bob, whole-body sway (lurking menace), blink, hit-reaction squash
+//            all folded through the existing squashRig so every part recoils.
+//            Distinct from kind-5 (which is hunched, 6-limbed, skittering) —
+//            this one is erect, 4-limbed, walks with deliberate loping strides.
+//
+// Animation list (updated for M5+kind11):
 //   BLINK       — per-creature cadence: eyes squish flat for ~0.08s every 3-6s
 //   BREATHE     — gentle body Y-bob + slight XZ scale pulse, ~0.4 Hz
 //   TAIL WAG    — continuous side-to-side sine, always-on, independent freq
@@ -74,7 +93,10 @@
 //   BOSS STOMP  — squared abs(sin) so foot slams hard then holds
 //   BOSS HDR    — emissive eyes write luminance > 1.0 into rgba16Float; bloom pass picks them up
 //   MONSTER SKITTER — fast erratic leg flicker, body rocks, arms claw forward/back
-//   MONSTER HDR — glowing RED eyes (3.5, 0.05, 0.05) → strong bloom
+//   MONSTER HDR     — glowing RED eyes (3.5, 0.05, 0.05) → strong bloom
+//   HUMANOID LOPE   — upright two-legged walk: legs alternate, arms swing opposite
+//   HUMANOID SWAY   — slow whole-body side-to-side sway (predator stalk)
+//   HUMANOID HDR    — glowing YELLOW-GREEN eyes (0.8, 3.0, 0.1) → bloom
 //
 // Per-entity phase derivation:
 //   phaseHash = sin(pos.x * 1.3 + pos.z * 2.7)          — spatial scatter
@@ -311,6 +333,7 @@ final class EntityRenderer {
             case 8:  drawKind8(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             case 9:  drawKind9(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             case 10: drawKind10(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 11: drawKind11(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             default: drawKind0(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             }
             // Clear so kind 6 (and the next iter before it sets) never inherit.
@@ -2564,6 +2587,285 @@ final class EntityRenderer {
                 * EntityRenderer.trans(SIMD3(0, antBranchH*0.5, 0))
                 * EntityRenderer.scaleM(SIMD3(antBranchW, antBranchH, antBranchD))
             drawCube(enc: enc, viewProj: viewProj, model: antRBranch, rgb: antlerCol, sat: sat)
+        }
+    }
+
+    // =========================================================================
+    // KIND 11 — HUMANOID MONSTER (goblin / shadow-person)
+    //
+    // Silhouette: erect two-legged figure. From any angle: a squarish HEAD on top
+    // of a taller TORSO, two ARMS hanging low on the sides (with visible hands),
+    // two LEGS beneath. At a glance reads instantly as "a person" — which is what
+    // makes it uncanny/creepy for kids.
+    //
+    // Anatomy (bottom-up, in local Y):
+    //   groundY → legH → hipY → torsoH → shoulderY → neckH → headY
+    //
+    // Walk: two legs alternate phases. Arms swing OPPOSITE phase to legs (when
+    //       left leg swings forward, left arm swings back, like a real person).
+    // Sway: slow side-to-side whole-body tilt (predator stalking motion).
+    // Blink: erratic flicker like kind-5 (night creature cadence).
+    // Breathe: subtle Y-bob on the whole body.
+    // Eyes: HDR yellow-green (0.8, 3.0, 0.1) — distinct from beast's red.
+    // Face: scowl brow (dark bars angled inward-down), jagged grin (dark slash
+    //       with irregular white teeth notches).
+    //
+    // PALETTE (from entity base tint, forced dark):
+    //   bodyCol   = near-black with purple-grey tint (body + limbs)
+    //   torsoCol  = slightly lighter than bodyCol (the layered torso plate)
+    //   accentCol = deep muted teal (hands, feet, face region patch) — a menacing
+    //               accent that differs from kind-5's entirely purple-black palette
+    //   mouthCol  = dark cavity red
+    //   eyeGlow   = (0.8, 3.0, 0.1) HDR yellow-green → bloom
+    //
+    // Parts: legs-upper(2) legs-lower(2) feet(2) arms-upper(2) arms-lower(2)
+    //        hands(2) torso(1) torso-plate(1) neck(1) head(1) brow(2)
+    //        eye-glow(2) mouth(1) teeth(3) = 22 parts
+    // =========================================================================
+    private func drawKind11(enc: MTLRenderCommandEncoder,
+                            viewProj: simd_float4x4,
+                            e: bf_entity_draw,
+                            pos: SIMD3<Float>,
+                            phase: Float,
+                            hash: Float,
+                            squash: SIMD3<Float>) {
+        let s   = e.scale * 1.05   // slightly taller than an animal, but not boss-sized
+        let sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+
+        // Force the color dark — humanoids are near-black with a teal-purple tint.
+        // Entity color provides individual variation so a pack doesn't all look identical.
+        let tint     = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+        // bodyCol: very dark blue-grey with a hint of the entity tint
+        let bodyCol  = tint * 0.08 + SIMD3<Float>(0.05, 0.06, 0.09)
+        // torsoCol: a shade lighter — makes the chest plate read as a separate layer
+        let torsoCol = tint * 0.12 + SIMD3<Float>(0.09, 0.10, 0.14)
+        // accentCol: muted teal on hands, feet, face patch — cooler than body
+        let accentCol = tint * 0.06 + SIMD3<Float>(0.04, 0.14, 0.12)
+        // Mouth: deep dark red cavity
+        let mouthCol  = SIMD3<Float>(0.42, 0.02, 0.04)
+        // HDR yellow-green glowing eyes — luminance >> 1, blooms into eerie glow.
+        // Distinct from beast's (3.5, 0.05, 0.05) red: this is a sickly yellow-green.
+        let eyeGlowCol = SIMD3<Float>(0.8, 3.0, 0.1)
+
+        // ---- ANIMATION PHASES ----
+        let blinkPhase  = phase * 1.8 + hash * 5.4    // erratic like beast blink
+        let breathPhase = phase * 0.42 + hash * 1.9
+        let walkSpeed: Float = 2.2                     // deliberate loping stride
+
+        // Leg swing: legs alternate, left leads right by π
+        let legSwingL  =  sin(phase * walkSpeed) * 0.38
+        let legSwingR  = -sin(phase * walkSpeed) * 0.38   // opposite leg
+        // Arm swing OPPOSITE to same-side leg:
+        //   left arm swings back when left leg swings forward → negate legSwingL
+        let armSwingL  = -legSwingL * 0.55    // arms swing less than legs
+        let armSwingR  = -legSwingR * 0.55
+
+        // Whole-body sway (predator stalk): slow sine on rotZ of the whole rig
+        let swayAngle  = sin(phase * 0.70 + hash * 1.2) * 0.06
+        let bodySway   = EntityRenderer.rotZ(swayAngle)
+
+        let breatheY   = breatheYOffset(breathPhase, scale: s)
+        let eyeBlinkSY = blinkScale(blinkPhase)
+
+        // ---- PROPORTIONS (upright humanoid) ----
+        // Legs: two segments (upper + lower), narrow, humanoid length
+        let ulW = s * 0.17;  let ulH = s * 0.38;  let ulD = s * 0.17   // upper leg
+        let llW = s * 0.14;  let llH = s * 0.34;  let llD = s * 0.14   // lower leg
+        let footW = s * 0.22; let footH = s * 0.08; let footD = s * 0.26 // flat foot
+        let legTotalH = ulH + llH + footH
+
+        // Torso: upright block, taller than wide
+        let tW = s * 0.52;  let tH = s * 0.54;  let tD = s * 0.34
+        // Torso plate (chest): thinner slab on front of torso
+        let tpW = tW * 0.78; let tpH = tH * 0.60; let tpD = s * 0.05
+
+        // Neck: short connector
+        let nkW = s * 0.18; let nkH = s * 0.10; let nkD = s * 0.18
+
+        // Head: squarish but taller than wide for that creepy elongated look
+        let hW = s * 0.46;  let hH = s * 0.50;  let hD = s * 0.40
+
+        // Arms: two segments (upper arm + forearm) — hang from shoulders
+        let uaW = s * 0.14;  let uaH = s * 0.36;  let uaD = s * 0.14   // upper arm
+        let faW = s * 0.12;  let faH = s * 0.30;  let faD = s * 0.12   // forearm
+        let handW = s * 0.20; let handH = s * 0.10; let handD = s * 0.22 // blocky hands
+
+        // ---- WORLD CENTRE (at body mid) ----
+        let groundY = pos.y
+        let bodyY   = groundY + legTotalH + tH * 0.5 + breatheY
+        let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+
+        // Fold hit-squash + yaw into R; then bodySway is applied per-part via pw.
+        let R = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
+
+        // Part-world closure: trans(wc) * R * bodySway * trans(local) * scale
+        // bodySway rotates the whole creature in local space, so the humanoid
+        // rocks side-to-side as a unit (head, torso, arms, all together).
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * bodySway * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+
+        // ---- LEGS (in world space so feet plant correctly despite body sway) ----
+        // Hip positions in body-local space (below torso centre, which is at 0,0,0)
+        let hipY = -tH * 0.5   // bottom of torso
+
+        // Upper leg: pivots at hip
+        func ulwH(_ hip: SIMD3<Float>, _ ang: Float) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * bodySway * EntityRenderer.trans(hip)
+                * EntityRenderer.rotX(ang)
+                * EntityRenderer.trans(SIMD3(0, -ulH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(ulW, ulH, ulD))
+        }
+        // Lower leg: hangs from bottom of upper leg
+        func llwH(_ hip: SIMD3<Float>, _ ang: Float) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * bodySway * EntityRenderer.trans(hip)
+                * EntityRenderer.rotX(ang)
+                * EntityRenderer.trans(SIMD3(0, -ulH - llH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(llW, llH, llD))
+        }
+        // Foot: flat block at bottom of lower leg
+        func footW_(_ hip: SIMD3<Float>, _ ang: Float) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * bodySway * EntityRenderer.trans(hip)
+                * EntityRenderer.rotX(ang)
+                * EntityRenderer.trans(SIMD3(0, -ulH - llH - footH * 0.5, footD * 0.12))
+                * EntityRenderer.scaleM(SIMD3(footW, footH, footD))
+        }
+
+        let hipL = SIMD3<Float>(-tW * 0.22, hipY, 0)
+        let hipR = SIMD3<Float>( tW * 0.22, hipY, 0)
+
+        // Draw legs (upper, lower, foot for each side)
+        drawCube(enc: enc, viewProj: viewProj, model: ulwH(hipL, legSwingL), rgb: bodyCol,   sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: ulwH(hipR, legSwingR), rgb: bodyCol,   sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: llwH(hipL, legSwingL), rgb: bodyCol,   sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: llwH(hipR, legSwingR), rgb: bodyCol,   sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: footW_(hipL, legSwingL), rgb: accentCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: footW_(hipR, legSwingR), rgb: accentCol, sat: sat)
+
+        // ---- TORSO ----
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, 0, 0), SIMD3(tW, tH, tD)), rgb: bodyCol, sat: sat)
+        // Chest plate — slightly lighter slab on front of torso; makes the figure
+        // look "armored" and breaks the flat silhouette.
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, tH * 0.06, tD * 0.50), SIMD3(tpW, tpH, tpD)),
+                 rgb: torsoCol, sat: sat)
+
+        // ---- ARMS ----
+        // Shoulders sit at upper sides of torso
+        let shoulderY = tH * 0.42
+        let shoulderXL = -(tW * 0.50 + uaW * 0.42)
+        let shoulderXR =  (tW * 0.50 + uaW * 0.42)
+
+        // Upper arm: pivots at shoulder, swings on X (forward/back)
+        func uaFunc(_ shoulderX: Float, _ swingAng: Float) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * bodySway
+                * EntityRenderer.trans(SIMD3(shoulderX, shoulderY, 0))
+                * EntityRenderer.rotX(swingAng)
+                * EntityRenderer.trans(SIMD3(0, -uaH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(uaW, uaH, uaD))
+        }
+        // Forearm: hangs from bottom of upper arm
+        func faFunc(_ shoulderX: Float, _ swingAng: Float) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * bodySway
+                * EntityRenderer.trans(SIMD3(shoulderX, shoulderY, 0))
+                * EntityRenderer.rotX(swingAng)
+                * EntityRenderer.trans(SIMD3(0, -uaH - faH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(faW, faH, faD))
+        }
+        // Blocky hand: dangles below forearm
+        func handFunc(_ shoulderX: Float, _ swingAng: Float) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * bodySway
+                * EntityRenderer.trans(SIMD3(shoulderX, shoulderY, 0))
+                * EntityRenderer.rotX(swingAng)
+                * EntityRenderer.trans(SIMD3(0, -uaH - faH - handH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(handW, handH, handD))
+        }
+
+        drawCube(enc: enc, viewProj: viewProj, model: uaFunc(shoulderXL, armSwingL), rgb: bodyCol,   sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: uaFunc(shoulderXR, armSwingR), rgb: bodyCol,   sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: faFunc(shoulderXL, armSwingL), rgb: bodyCol,   sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: faFunc(shoulderXR, armSwingR), rgb: bodyCol,   sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: handFunc(shoulderXL, armSwingL), rgb: accentCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: handFunc(shoulderXR, armSwingR), rgb: accentCol, sat: sat)
+
+        // ---- NECK + HEAD ----
+        let neckY = tH * 0.50 + nkH * 0.5
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, neckY, 0), SIMD3(nkW, nkH, nkD)), rgb: bodyCol, sat: sat)
+
+        let headY: Float = tH * 0.50 + nkH + hH * 0.50
+        // Head local Z: face is on the +Z side (forward) so eyes/mouth always
+        // face the creature's heading direction.
+        let headZ: Float = 0
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, headY, headZ), SIMD3(hW, hH, hD)),
+                 rgb: bodyCol, sat: sat)
+
+        // ---- FACE (all parts placed on the +Z front face of the head) ----
+        // hFaceZ is the local Z of the front face of the head block.
+        // headZ is 0 (head centre is 0 local-Z), so hFaceZ = hD*0.5 + thin offset.
+        let hFaceZ: Float = headZ + hD * 0.50 + s * 0.01   // front face of head
+
+        // Accent face patch: a slightly teal-tinted slab covering the face area.
+        // Gives the head a "masked" look and sets the eyes apart from the black head.
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, headY + hH * 0.06, hFaceZ - s*0.01),
+                           SIMD3(hW * 0.80, hH * 0.62, s * 0.04)),
+                 rgb: accentCol, sat: sat)
+
+        // GLOWING HDR YELLOW-GREEN EYES — emissive, no shading multiply (sat: -1.0)
+        // Wide-set, large, angled inward-down slightly so they read as a menacing
+        // look without being friendly. The sickly yellow-green is the monster's
+        // signature — distinct from the beast's red and the boss's amber.
+        let eyeW = s * 0.12; let eyeH = s * 0.12 * eyeBlinkSY; let eyeD = s * 0.04
+        let eyeY = headY + hH * 0.14
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(-hW * 0.24, eyeY, hFaceZ), SIMD3(eyeW, eyeH, eyeD)),
+                 rgb: eyeGlowCol, sat: -1.0)   // emissive → bloom
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3( hW * 0.24, eyeY, hFaceZ), SIMD3(eyeW, eyeH, eyeD)),
+                 rgb: eyeGlowCol, sat: -1.0)   // emissive → bloom
+
+        // ANGRY BROWS — two dark bars angled inward-down (inner end lower, outer higher)
+        // The classic angry-V scowl, in heavy goblin style.
+        let browCol = torsoCol   // slightly lighter than body so they read as separate
+        let browLM = EntityRenderer.trans(wc) * R * bodySway
+            * EntityRenderer.trans(SIMD3(-hW * 0.24, eyeY + s * 0.16, hFaceZ))
+            * EntityRenderer.rotZ(-0.42)
+            * EntityRenderer.scaleM(SIMD3(s * 0.22, s * 0.06, s * 0.05))
+        let browRM = EntityRenderer.trans(wc) * R * bodySway
+            * EntityRenderer.trans(SIMD3( hW * 0.24, eyeY + s * 0.16, hFaceZ))
+            * EntityRenderer.rotZ( 0.42)
+            * EntityRenderer.scaleM(SIMD3(s * 0.22, s * 0.06, s * 0.05))
+        drawCube(enc: enc, viewProj: viewProj, model: browLM, rgb: browCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: browRM, rgb: browCol, sat: sat)
+
+        // WIDE JAGGED GRIN — a wide horizontal dark slash below the eyes.
+        // The grin goes all the way to the cheeks (wider than the eye spacing)
+        // which makes it look unsettling yet cartoonish.
+        let grinY  = headY - hH * 0.18
+        let grinW  = hW * 0.78
+        let grinH  = s * 0.08
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, grinY, hFaceZ), SIMD3(grinW, grinH, s * 0.04)),
+                 rgb: mouthCol, sat: sat)
+        // Irregular jagged teeth — 4 teeth, alternating up/down, uneven widths
+        // (some missing) for a gap-toothed goblin grin.
+        let toothCol = SIMD3<Float>(0.92, 0.88, 0.78)   // slightly yellowed ivory
+        // Tooth positions in X as fractions of grin half-width; gaps at ±0.5 (missing)
+        let teethData: [(Float, Float, Bool)] = [
+            (-0.34, s * 0.07, true),   // left big tooth, downward
+            (-0.12, s * 0.055, false), // small tooth, upward
+            ( 0.14, s * 0.07, true),   // right big tooth, downward
+            ( 0.40, s * 0.045, false), // small outer tooth, upward
+        ]
+        for (tx, th, down) in teethData {
+            let ty = grinY + (down ? grinH * 0.20 : -grinH * 0.20)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(grinW * tx, ty, hFaceZ + s * 0.01), SIMD3(s * 0.04, th, s * 0.03)),
+                     rgb: toothCol, sat: sat)
         }
     }
 

@@ -129,8 +129,10 @@ static constexpr BlockId AIR           = 0;
 static constexpr BlockId GRASS         = 1;
 static constexpr BlockId DIRT          = 2;
 static constexpr BlockId STONE         = 3;
+static constexpr BlockId OAK_PLANKS    = 4;
 static constexpr BlockId OAK_LEAVES    = 5;
 static constexpr BlockId SAND          = 6;
+static constexpr BlockId GLOW_BLOCK    = 7;
 static constexpr BlockId WATER         = 9;
 static constexpr BlockId COBBLESTONE   = 10;
 static constexpr BlockId GRAVEL        = 11;
@@ -145,6 +147,7 @@ static constexpr BlockId OAK_LOG       = 21;
 static constexpr BlockId BIRCH_LOG     = 22;
 static constexpr BlockId BIRCH_LEAVES  = 27;
 static constexpr BlockId MOSSY_STONE   = 29;
+static constexpr BlockId CHEST         = 31;
 static constexpr BlockId FLOWER_RED    = 36;
 static constexpr BlockId FLOWER_YELLOW = 37;
 static constexpr BlockId TALL_GRASS    = 38;
@@ -601,17 +604,25 @@ static constexpr int TREE_CELL_SIZE   = 8;
 //   COMPACT — dense squat: 5x3x5 fully filled (used for swamp/plains short trees)
 //   PINE    — conical layered: multiple decreasing rings from base to tip (spruce/pine)
 //   GIANT   — very large round canopy 9x5x9 on a thick trunk (rare)
+//   WEEPING — drooping willow-ish: wide top that tapers outward below (dy=-2 outer skirt)
+//   FORKED  — double-top: two separate smaller crowns at trunk top (forked silhouette)
 static constexpr int CANOPY_ROUND   = 0;
 static constexpr int CANOPY_TALL    = 1;
 static constexpr int CANOPY_BROAD   = 2;
 static constexpr int CANOPY_COMPACT = 3;
 static constexpr int CANOPY_PINE    = 4;
 static constexpr int CANOPY_GIANT   = 5;
+static constexpr int CANOPY_WEEPING = 6;
+static constexpr int CANOPY_FORKED  = 7;
 
 // Trunk height range: now 4..12 for more variety.
 // Short trees (shrubs): 2..3. Standard: 4..8. Tall: 8..12. Giant: 10..12.
 static constexpr int TRUNK_MIN = 4;
 static constexpr int TRUNK_MAX = 12;
+
+// Thick-trunk flag: when set, the trunk is 2×2 logs instead of 1×1.
+// Used for GIANT trees and some BROAD/WEEPING forest trees.
+// Seam-safe: thick-ness is determined from the same cell hash as shape.
 
 // Max canopy reach for seam-safe cell scanning.
 // GIANT canopy extends ±4 XZ; we use 4 as the conservative upper bound.
@@ -646,10 +657,13 @@ struct TreeDesc {
     std::int32_t root_wx;
     std::int32_t root_wz;
     int          trunk_height;
-    int          canopy_shape;   // CANOPY_ROUND / TALL / BROAD / COMPACT
+    int          canopy_shape;   // CANOPY_ROUND / TALL / BROAD / COMPACT / WEEPING / FORKED
     BlockId      log_id;
     BlockId      leaf_id;
     bool         present;
+    bool         thick_trunk;    // if true, trunk is 2×2 logs (for giant/big forest trees)
+    int          lean_dx;        // trunk lean offset: 0 = straight, ±1 = leans in X
+    int          lean_dz;        // trunk lean offset: 0 = straight, ±1 = leans in Z
 };
 
 // Determine if a tree exists in the given tree cell, and its properties.
@@ -670,7 +684,7 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
 
     // Biomes that never have trees.
     if (dom == Biome::Desert || dom == Biome::Beach) {
-        return TreeDesc{0, 0, 0, 0, 0, 0, false};
+        return TreeDesc{0, 0, 0, 0, 0, 0, false, false, 0, 0};
     }
 
     // Choose density threshold based on dominant biome.
@@ -684,7 +698,7 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
 
     std::uint64_t prob = h & 0xFFFFu;
     if (prob >= thresh) {
-        return TreeDesc{0, 0, 0, 0, 0, 0, false};
+        return TreeDesc{0, 0, 0, 0, 0, 0, false, false, 0, 0};
     }
 
     // Root offset within cell (1..TREE_CELL_SIZE-2).
@@ -699,18 +713,27 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
     //   bits 20..22 (3 bits)  -> canopy shape selector (0..7, biome-gated)
     //   bits 24..25 (2 bits)  -> birch vs oak selector
     //   bits 28..31 (4 bits)  -> giant-tree rarity gate (0..15; giant if ==0)
+    //   bits 32..33 (2 bits)  -> lean direction (0=straight, 1=+X, 2=-X, 3=+Z)
+    //   bits 34..36 (3 bits)  -> lean gate (0..7; leans if <=1, ~25% of non-giant trees)
+    //   bits 37    (1 bit)   -> thick trunk override for large forest trees
     //
     int trunk_h;
     int canopy_shape;
     bool is_birch;
+    bool thick_trunk  = false;
+    int  lean_dx      = 0;
+    int  lean_dz      = 0;
 
     std::uint64_t trunk_bits  = (h2 >> 16u) & 0xFu;  // 0..15
     std::uint64_t shape_bits  = (h2 >> 20u) & 0x7u;  // 0..7
     std::uint64_t birch_bits  = (h2 >> 24u) & 0x3u;  // 0..3
     std::uint64_t giant_bits  = (h2 >> 28u) & 0xFu;  // 0..15; giant when ==0 (~6%)
+    std::uint64_t lean_dir    = (h2 >> 32u) & 0x3u;  // 0..3 (lean direction)
+    std::uint64_t lean_gate   = (h2 >> 34u) & 0x7u;  // 0..7 (lean gate, lean if <=1)
+    std::uint64_t thick_bit   = (h2 >> 37u) & 0x1u;  // 0..1
 
     // Rare GIANT tree: appears ~6% of non-desert/beach cells regardless of biome.
-    // Trunk 10..12, giant canopy, always oak.
+    // Trunk 10..12, giant canopy, always oak, always thick trunk (2×2 logs).
     if (giant_bits == 0u && dom != Biome::Desert && dom != Biome::Beach) {
         trunk_h      = 10 + static_cast<int>(trunk_bits % 3u);  // 10, 11, or 12
         canopy_shape = CANOPY_GIANT;
@@ -720,32 +743,49 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
             cell_origin_z + off_z,
             trunk_h, canopy_shape,
             OAK_LOG, OAK_LEAVES,
-            true
+            true,
+            /*thick_trunk=*/true,
+            /*lean_dx=*/0, /*lean_dz=*/0
         };
+    }
+
+    // Determine lean for non-giant trees: ~25% of trees lean slightly.
+    if (lean_gate <= 1u) {
+        switch (lean_dir) {
+            case 1u: lean_dx = +1; break;
+            case 2u: lean_dx = -1; break;
+            case 3u: lean_dz = +1; break;
+            default: lean_dz = -1; break;
+        }
     }
 
     switch (dom) {
         case Biome::Forest:
-            // Forest: varied tall trees — BROAD oaks, some GIANT, some ROUND.
-            // Trunk 6..10.
+            // Forest: varied tall trees — BROAD oaks, WEEPING willows, some FORKED,
+            // and slender birch TALLs.  Trunk 6..10; big trees ~25% chance thick.
             trunk_h      = 6 + static_cast<int>(trunk_bits % 5u);  // 6..10
-            canopy_shape = (shape_bits == 0u) ? CANOPY_ROUND  :
-                           (shape_bits == 1u) ? CANOPY_BROAD  :
-                           (shape_bits == 2u) ? CANOPY_BROAD  :
-                           (shape_bits == 3u) ? CANOPY_TALL   :
-                           (shape_bits == 4u) ? CANOPY_BROAD  :
-                           (shape_bits == 5u) ? CANOPY_ROUND  :
-                           (shape_bits == 6u) ? CANOPY_PINE   : CANOPY_BROAD;
+            canopy_shape = (shape_bits == 0u) ? CANOPY_ROUND   :
+                           (shape_bits == 1u) ? CANOPY_BROAD   :
+                           (shape_bits == 2u) ? CANOPY_WEEPING :
+                           (shape_bits == 3u) ? CANOPY_TALL    :
+                           (shape_bits == 4u) ? CANOPY_FORKED  :
+                           (shape_bits == 5u) ? CANOPY_ROUND   :
+                           (shape_bits == 6u) ? CANOPY_PINE    : CANOPY_BROAD;
             is_birch     = (birch_bits <= 1u);  // 50% birch (slender tall birches)
             // Birch in forest: tall slender trunk 7..10.
             if (is_birch) {
                 trunk_h      = 7 + static_cast<int>(trunk_bits % 4u);  // 7..10
                 canopy_shape = CANOPY_TALL;
             }
+            // Large oak/weeping/forked trees get thick trunks ~25% of the time.
+            if (!is_birch && thick_bit == 1u && trunk_h >= 8) {
+                thick_trunk = true;
+            }
             break;
 
         case Biome::Mountains:
             // Mountains: PINE (conical) and TALL shapes, medium trunks 5..8.
+            // Some lean on steep slopes.
             trunk_h      = 5 + static_cast<int>(trunk_bits % 4u);   // 5..8
             canopy_shape = (shape_bits <= 3u) ? CANOPY_PINE :
                            (shape_bits <= 5u) ? CANOPY_TALL : CANOPY_ROUND;
@@ -762,15 +802,18 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
 
         case Biome::Swamp:
             // Swamp: short wide squat trees, trunk 4..6.
+            // Some weeping willow-ish canopies in swamp.
             trunk_h      = 4 + static_cast<int>(trunk_bits % 3u);   // 4..6
-            canopy_shape = (shape_bits <= 3u) ? CANOPY_COMPACT : CANOPY_BROAD;
+            canopy_shape = (shape_bits <= 2u) ? CANOPY_COMPACT :
+                           (shape_bits <= 5u) ? CANOPY_BROAD   : CANOPY_WEEPING;
             is_birch     = (birch_bits <= 1u);  // 50% birch
             break;
 
         case Biome::Plains:
-            // Plains: sparse, mostly short ROUND/COMPACT, occasional medium.
+            // Plains: sparse, mostly short ROUND/COMPACT, occasional medium FORKED.
             trunk_h      = 4 + static_cast<int>(trunk_bits % 3u);   // 4..6
-            canopy_shape = (shape_bits <= 2u) ? CANOPY_ROUND : CANOPY_COMPACT;
+            canopy_shape = (shape_bits <= 2u) ? CANOPY_ROUND  :
+                           (shape_bits <= 5u) ? CANOPY_COMPACT : CANOPY_FORKED;
             is_birch     = (birch_bits == 0u);  // 25% birch
             break;
 
@@ -790,7 +833,10 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
         canopy_shape,
         is_birch ? BIRCH_LOG    : OAK_LOG,
         is_birch ? BIRCH_LEAVES : OAK_LEAVES,
-        true
+        true,
+        thick_trunk,
+        lean_dx,
+        lean_dz
     };
 }
 
@@ -941,6 +987,65 @@ static bool in_canopy_giant(int dx, int dy, int dz) noexcept {
     return true;
 }
 
+// WEEPING: drooping willow-ish canopy.
+// Wide flat top (like BROAD) with extra drooping outer skirt that goes *down* 2 more layers.
+//   dy=+1: 3x3 crown
+//   dy= 0: 5x5 minus corners (mid layer)
+//   dy=-1: 7x7 minus corners (wide skirt at trunk top)
+//   dy=-2: 5x5 minus inner 3x3 (outer droop ring — hangs down)
+//   dy=-3: 3x3 minus inner 1x1 (lowest drooping leaves — wispy)
+static bool in_canopy_weeping(int dx, int dy, int dz) noexcept {
+    if (dy < -3 || dy > 1) return false;
+    if (dy == 1) return (dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1);
+    if (dy == 0) {
+        if (dx < -2 || dx > 2 || dz < -2 || dz > 2) return false;
+        return !((dx == -2 || dx == 2) && (dz == -2 || dz == 2));
+    }
+    if (dy == -1) {
+        if (dx < -3 || dx > 3 || dz < -3 || dz > 3) return false;
+        bool ox = (dx <= -3 || dx >= 3);
+        bool oz = (dz <= -3 || dz >= 3);
+        if (ox && oz) return false;
+        return true;
+    }
+    if (dy == -2) {
+        // Outer ring only (skip inner 3×3).
+        if (dx < -2 || dx > 2 || dz < -2 || dz > 2) return false;
+        bool inner = (dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1);
+        if (inner) return false;
+        return true;
+    }
+    // dy == -3: wispy droop — just the 4 cardinal sides at radius 2.
+    if (!(dx == 0 || dz == 0)) return false;  // only cardinal
+    int r = (dx == 0) ? (dz < 0 ? -dz : dz) : (dx < 0 ? -dx : dx);
+    return (r == 2);
+}
+
+// FORKED: double-top tree — trunk forks into two sub-crowns side by side.
+// The base canopy is a 3×3 round at dy=-1..0, then two 3×3 blobs at dy=+1..+2
+// offset ±1 in X.
+static bool in_canopy_forked(int dx, int dy, int dz) noexcept {
+    if (dy < -1 || dy > 2) return false;
+    if (dy == -1 || dy == 0) {
+        // Base: 5×5 minus outer corners.
+        if (dx < -2 || dx > 2 || dz < -2 || dz > 2) return false;
+        bool ox = (dx == -2 || dx == 2);
+        bool oz = (dz == -2 || dz == 2);
+        if (ox && oz) return false;
+        return true;
+    }
+    // dy == 1 or 2: two forked sub-crowns offset at dx=-1 and dx=+1.
+    // Left fork: centre at (-1, dy, 0), right fork: centre at (+1, dy, 0).
+    bool left_fork  = (dx >= -2 && dx <= 0 && dz >= -1 && dz <= 1);
+    bool right_fork = (dx >= 0  && dx <= 2 && dz >= -1 && dz <= 1);
+    if (dy == 2) {
+        // Tip of forks: tighter (only ±1 from each centre).
+        left_fork  = (dx >= -2 && dx <= 0 && dz == 0);
+        right_fork = (dx >= 0  && dx <= 2 && dz == 0);
+    }
+    return left_fork || right_fork;
+}
+
 static bool in_canopy(int dx, int dy, int dz, int shape) noexcept {
     switch (shape) {
         case CANOPY_TALL:    return in_canopy_tall(dx, dy, dz);
@@ -948,19 +1053,457 @@ static bool in_canopy(int dx, int dy, int dz, int shape) noexcept {
         case CANOPY_COMPACT: return in_canopy_compact(dx, dy, dz);
         case CANOPY_PINE:    return in_canopy_pine(dx, dy, dz);
         case CANOPY_GIANT:   return in_canopy_giant(dx, dy, dz);
+        case CANOPY_WEEPING: return in_canopy_weeping(dx, dy, dz);
+        case CANOPY_FORKED:  return in_canopy_forked(dx, dy, dz);
         default:             return in_canopy_round(dx, dy, dz);
     }
 }
 
 // Maximum dy above trunk_top for each shape (needed for chunk scan range).
 static int canopy_dy_max(int shape) noexcept {
-    if (shape == CANOPY_TALL)  return 2;
-    if (shape == CANOPY_PINE)  return 3;
+    if (shape == CANOPY_TALL)    return 2;
+    if (shape == CANOPY_PINE)    return 3;
+    if (shape == CANOPY_FORKED)  return 2;
     return 1;
 }
 
-// Minimum dy relative to trunk_top (always -1 for all shapes).
-static constexpr int CANOPY_DY_MIN = -1;
+// Minimum dy relative to trunk_top.
+// WEEPING has leaves 3 below trunk_top (dy=-3); others -1.
+static int canopy_dy_min(int shape) noexcept {
+    if (shape == CANOPY_WEEPING) return -3;
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
+// Structure system — seam-safe deterministic world landmarks
+// ---------------------------------------------------------------------------
+//
+// Structures are placed on a coarse 64×64 world grid (STRUCT_CELL_SIZE).
+// One candidate per cell; a hash of the cell anchor decides if a structure
+// spawns (low probability ~12%) and which type.  Structure types are biome-
+// aware; the whole structure is derived from the anchor hash so every chunk
+// that overlaps it generates it identically.
+//
+// Structure types:
+//   STRUCT_RUINED_HUT   — 5×4×4 cobblestone/oak_planks walls + partial roof
+//   STRUCT_STONE_PILLAR — 3-block tall 1×1 stone pillar, optional arch pieces
+//   STRUCT_CAMPFIRE     — cobblestone ring (3×3 perimeter) + glow_block center
+//   STRUCT_WATCHTOWER   — 3×3 oak_planks floor on 4-log stilts + platform
+//   STRUCT_TREASURE     — chest buried 1 below surface with cobblestone marker
+//   STRUCT_CAIRN        — pile of 2..5 stone/mossy_stone blocks stacked up
+//
+// Seam safety: the anchor world pos is derived from cell integer coords.
+// Surface height at each column within the structure is sampled via the same
+// pure surface_height() function all chunks use — identical across chunk borders.
+// Structures never carve terrain (additive only) and never place below surface.
+//
+// Cell size chosen so structures are rare (one candidate per 64×64 region)
+// but appear regularly enough to feel discoverable.  Spawning probability ~12%.
+// ---------------------------------------------------------------------------
+
+static constexpr int STRUCT_CELL_SIZE    = 64;
+static constexpr std::uint64_t STRUCT_SEED_MIX = 0x57AC7EDEDBEF5717ull;
+
+// Structure type codes.
+static constexpr int STRUCT_NONE         = 0;
+static constexpr int STRUCT_RUINED_HUT   = 1;
+static constexpr int STRUCT_STONE_PILLAR = 2;
+static constexpr int STRUCT_CAMPFIRE     = 3;
+static constexpr int STRUCT_WATCHTOWER   = 4;
+static constexpr int STRUCT_TREASURE     = 5;
+static constexpr int STRUCT_CAIRN        = 6;
+
+// Max XZ reach from anchor for seam-safe cell scan (conservative).
+// Ruined hut is up to 4 blocks from anchor center; tower is 2.
+static constexpr int STRUCT_MAX_REACH_XZ = 5;
+
+struct StructDesc {
+    std::int32_t anchor_wx;    // world X of structure anchor
+    std::int32_t anchor_wz;    // world Z of structure anchor
+    int          type;         // STRUCT_* constant
+    std::uint64_t cell_hash;   // deterministic bits for per-structure variety
+    bool         present;
+};
+
+// Floor-division (works correctly for negative coords).
+static std::int32_t struct_floordiv(std::int32_t a, int b) noexcept {
+    return a / b - (a % b != 0 && (a ^ b) < 0 ? 1 : 0);
+}
+
+// Query whether a structure exists in the given structure cell.
+static StructDesc struct_for_cell(std::int32_t scx, std::int32_t scz,
+                                   std::uint64_t seed) noexcept {
+    std::uint64_t sseed = fmix64(seed ^ STRUCT_SEED_MIX);
+    std::uint64_t h = hash2(scx, scz, sseed);
+
+    // Spawn probability ~12%: keep if (h & 0xFFu) < 31.
+    if ((h & 0xFFu) >= 31u) {
+        return StructDesc{0, 0, STRUCT_NONE, 0, false};
+    }
+
+    // Anchor position: offset within cell so it is not always at corner.
+    std::uint64_t h2s = fmix64(h ^ 0xFACEBEEF0BABULL);
+    std::int32_t off_x = 4 + static_cast<std::int32_t>((h2s >>  0u) & 0x37u);  // 4..59
+    std::int32_t off_z = 4 + static_cast<std::int32_t>((h2s >> 16u) & 0x37u);  // 4..59
+
+    std::int32_t ax = scx * STRUCT_CELL_SIZE + off_x;
+    std::int32_t az = scz * STRUCT_CELL_SIZE + off_z;
+
+    // Biome at anchor determines eligible structure types.
+    float weights[NUM_BIOMES];
+    biome_weights(ax, az, seed, weights);
+    Biome dom = dominant_biome(weights);
+
+    // No structures in water biomes (beach below sea) or deep desert interior.
+    // Surface height at anchor.
+    int H = surface_height(ax, az, seed, weights);
+    if (H <= SEA_LEVEL) {
+        return StructDesc{0, 0, STRUCT_NONE, 0, false};
+    }
+
+    // Choose structure type based on biome and hash bits.
+    std::uint64_t type_bits = (h2s >> 32u) & 0x7u;  // 0..7
+    int stype;
+
+    switch (dom) {
+        case Biome::Mountains:
+            // Mountains: cairns and stone pillars.
+            stype = (type_bits <= 4u) ? STRUCT_CAIRN : STRUCT_STONE_PILLAR;
+            break;
+        case Biome::Desert:
+            // Desert: stone pillar standing stones.
+            stype = STRUCT_STONE_PILLAR;
+            break;
+        case Biome::Forest:
+            // Forest: ruined hut or campfire.
+            stype = (type_bits <= 3u) ? STRUCT_RUINED_HUT : STRUCT_CAMPFIRE;
+            break;
+        case Biome::Plains:
+            // Plains: any structure — mostly campfires and watchtowers.
+            stype = (type_bits == 0u) ? STRUCT_RUINED_HUT  :
+                    (type_bits <= 3u) ? STRUCT_CAMPFIRE     :
+                    (type_bits <= 5u) ? STRUCT_WATCHTOWER   : STRUCT_TREASURE;
+            break;
+        case Biome::Snowy:
+            // Snowy: stone pillars and cairns.
+            stype = (type_bits <= 3u) ? STRUCT_CAIRN : STRUCT_STONE_PILLAR;
+            break;
+        case Biome::Swamp:
+            // Swamp: watchtower on stilts, campfire ring.
+            stype = (type_bits <= 3u) ? STRUCT_WATCHTOWER : STRUCT_CAMPFIRE;
+            break;
+        default:
+            stype = STRUCT_CAIRN;
+            break;
+    }
+
+    return StructDesc{ax, az, stype, h2s, true};
+}
+
+// Helper: safely set a block at a world position into the current chunk.
+// Returns true if the position is within the chunk and the block was set.
+// Only sets AIR->anything or solid->solid (never replaces existing non-AIR
+// with AIR, and never replaces non-AIR with AIR to avoid terrain damage).
+static bool struct_set(IChunk& chunk,
+                       std::int32_t wx, std::int32_t wy, std::int32_t wz,
+                       std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min,
+                       BlockId b) noexcept {
+    if (wx < wx_min || wx > wx_min + kChunkDim - 1) return false;
+    if (wy < wy_min || wy > wy_min + kChunkDim - 1) return false;
+    if (wz < wz_min || wz > wz_min + kChunkDim - 1) return false;
+    int lx = static_cast<int>(wx - wx_min);
+    int ly = static_cast<int>(wy - wy_min);
+    int lz = static_cast<int>(wz - wz_min);
+    // Only place if target is AIR (additive only — never destroy terrain).
+    if (chunk.get(lx, ly, lz) == AIR) {
+        chunk.set(lx, ly, lz, b);
+    } else if (b != AIR) {
+        // For non-AIR blocks being placed on non-AIR: overwrite (e.g. chest on dirt).
+        chunk.set(lx, ly, lz, b);
+    }
+    return true;
+}
+
+// Get the surface height at an anchor-relative column for structure placement.
+// We sample the real surface_height() function — same as terrain generation.
+static int struct_surface(std::int32_t wx, std::int32_t wz, std::uint64_t seed) noexcept {
+    float w[NUM_BIOMES];
+    biome_weights(wx, wz, seed, w);
+    return surface_height(wx, wz, seed, w);
+}
+
+// Place a RUINED HUT at the anchor. The hut is a 5×3×5 cobblestone shell
+// (outer walls only, doorway gap on south face) with oak_planks partial roof.
+// Wall columns are filled from each column's natural surface up to the wall
+// top — this prevents floating blocks with exposed AIR underneath.
+static void place_ruined_hut(std::int32_t ax, std::int32_t az,
+                              std::uint64_t h, std::uint64_t seed,
+                              IChunk& chunk,
+                              std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    // Find the max surface height in the 5×5 wall footprint — this is the
+    // shared "floor level" from which wall height is counted.
+    int floor_h = 0;
+    for (int dz = -2; dz <= 2; ++dz)
+        for (int dx = -2; dx <= 2; ++dx) {
+            bool on_xwall = (dx == -2 || dx == 2);
+            bool on_zwall = (dz == -2 || dz == 2);
+            if (!(on_xwall || on_zwall)) continue;  // only wall columns matter for floor
+            int sh = struct_surface(ax + dx, az + dz, seed);
+            if (sh > floor_h) floor_h = sh;
+        }
+
+    // Doorway is on one side (biased by hash): south (dz=+2) or north (dz=-2).
+    bool door_south = ((h >> 40u) & 1u) == 0u;
+    int door_dz = door_south ? 2 : -2;
+
+    // Wall height: 3 blocks above shared floor level.
+    constexpr int WALL_H = 3;
+    int wall_top = floor_h + WALL_H;
+
+    for (int dz = -2; dz <= 2; ++dz) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            bool on_xwall = (dx == -2 || dx == 2);
+            bool on_zwall = (dz == -2 || dz == 2);
+            bool is_wall = on_xwall || on_zwall;
+            if (!is_wall) continue;  // interior is open
+
+            // Doorway gap: 2-block opening in the middle of the door wall.
+            bool is_doorway_col = (dz == door_dz && dx >= -1 && dx <= 1);
+
+            // Column's own natural surface — fill from surface up to wall top.
+            int col_h = struct_surface(ax + dx, az + dz, seed);
+
+            // Doorway columns: only fill from terrain surface up to floor_h
+            // (i.e., below the doorway opening). The doorway opening itself
+            // (floor+1..floor+wall_h) is left completely open — no wall blocks
+            // above the terrain fill. This ensures the topmost solid at a doorway
+            // column is at floor_h (terrain level), with solid below.
+            // Non-doorway columns: fill continuously from terrain surface up to wall top.
+            int fill_top = is_doorway_col ? floor_h : wall_top;
+
+            for (int wy = col_h + 1; wy <= fill_top; ++wy) {
+                // Partial ruin: top row has 25% chance to be missing (non-doorway only).
+                if (!is_doorway_col && wy == wall_top) {
+                    std::uint64_t ruin_h = fmix64(h ^ (static_cast<std::uint64_t>(dx + dz * 7 + 100)));
+                    if ((ruin_h & 0x3u) == 0u) continue;
+                }
+                struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, COBBLESTONE);
+            }
+        }
+    }
+
+    // Roofless — open sky over the interior. Purely cobblestone walls + doorway.
+    // OAK_PLANKS is placed only at corners as a lintel block ON the wall_top
+    // itself (same y level), replacing the corner cobblestone to add variety.
+    // Since this is at the same y as the already-placed wall block, no AIR gap
+    // is ever introduced above it.
+    for (int dz = -2; dz <= 2; ++dz) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            bool is_corner = (dx == -2 || dx == 2) && (dz == -2 || dz == 2);
+            if (!is_corner) continue;
+            if (dz == door_dz) continue;  // skip doorway wall corners
+            // Place oak_planks AT the wall top (not above it) — always safe.
+            struct_set(chunk, ax + dx, wall_top, az + dz,
+                       wx_min, wy_min, wz_min, OAK_PLANKS);
+        }
+    }
+}
+
+// Place a STONE PILLAR / standing stone at the anchor.
+// Height 3..5 blocks, optionally with a 1-block "lintel" cobblestone arch on top.
+static void place_stone_pillar(std::int32_t ax, std::int32_t az,
+                                std::uint64_t h, std::uint64_t seed,
+                                IChunk& chunk,
+                                std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    int H = struct_surface(ax, az, seed);
+    int pillar_h = 3 + static_cast<int>((h >> 8u) & 0x3u);  // 3..6
+
+    // Single 1×1 column.
+    for (int dy = 1; dy <= pillar_h; ++dy) {
+        BlockId b = ((dy % 2 == 0) && ((h >> 12u) & 1u)) ? MOSSY_STONE : STONE;
+        struct_set(chunk, ax, H + dy, az, wx_min, wy_min, wz_min, b);
+    }
+
+    // Optional arch: cobblestone block to one side at the top.
+    bool has_arch = ((h >> 16u) & 0x3u) <= 1u;
+    if (has_arch) {
+        int arch_dx = ((h >> 18u) & 1u) ? 1 : -1;
+        struct_set(chunk, ax + arch_dx, H + pillar_h, az,
+                   wx_min, wy_min, wz_min, COBBLESTONE);
+    }
+}
+
+// Place a CAMPFIRE RING: cobblestone perimeter of a 3×3 ring + glow_block center.
+// Each column is placed at its own natural surface height so no column is left
+// with floating blocks and exposed AIR underneath.
+static void place_campfire(std::int32_t ax, std::int32_t az,
+                            std::uint64_t /*h*/, std::uint64_t seed,
+                            IChunk& chunk,
+                            std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    // Outer ring of cobblestone at each column's own surface level.
+    // Center gets glow_block at its own surface.
+    for (int dz = -1; dz <= 1; ++dz) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            bool is_center = (dx == 0 && dz == 0);
+            int  col_h     = struct_surface(ax + dx, az + dz, seed);
+            BlockId b      = is_center ? GLOW_BLOCK : COBBLESTONE;
+            struct_set(chunk, ax + dx, col_h, az + dz, wx_min, wy_min, wz_min, b);
+        }
+    }
+}
+
+// Place a WATCHTOWER: 4-log stilt base, 3×3 oak_planks platform,
+// then short parapet posts at platform corners.
+// Stilts rise from each corner column's own surface up to a common platform height.
+// This ensures no floating blocks and no exposed-AIR subsurface columns.
+static void place_watchtower(std::int32_t ax, std::int32_t az,
+                              std::uint64_t /*h*/, std::uint64_t seed,
+                              IChunk& chunk,
+                              std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    // Corner stilt positions (±1, ±1).
+    int corners[4][2] = {{-1,-1},{1,-1},{-1,1},{1,1}};
+
+    // Find the MAX surface height of the 4 corner columns so the platform
+    // sits above all of them.  Add STILT_H=3 above that max.
+    constexpr int STILT_H = 3;
+    int max_corner_h = 0;
+    for (auto& cor : corners) {
+        int sh = struct_surface(ax + cor[0], az + cor[1], seed);
+        if (sh > max_corner_h) max_corner_h = sh;
+    }
+    int platform_y = max_corner_h + STILT_H + 1;
+
+    // Stilts: from each corner's natural surface+1 up to platform_y-1.
+    for (auto& cor : corners) {
+        int col_h = struct_surface(ax + cor[0], az + cor[1], seed);
+        for (int wy = col_h + 1; wy < platform_y; ++wy) {
+            struct_set(chunk, ax + cor[0], wy, az + cor[1],
+                       wx_min, wy_min, wz_min, OAK_LOG);
+        }
+    }
+
+    // Platform: oak_planks placed ONLY at the 4 stilt corner tops and the 4
+    // edge midpoints between them. We skip the inner 3×3 centre to avoid
+    // floating planks over columns that have no stilt support below.
+    // Corners (±1,±1) have stilts directly below — always safe.
+    // Edge midpoints (±1,0) and (0,±1): these columns also have stilt-adjacent
+    // fill from the stilt loop if the terrain there is lower.
+    // To be safe we ONLY place planks at the 4 stilt corner positions.
+    for (auto& cor : corners) {
+        struct_set(chunk, ax + cor[0], platform_y, az + cor[1],
+                   wx_min, wy_min, wz_min, OAK_PLANKS);
+    }
+    // Also place planks connecting the corners with single-block edges.
+    int edges[4][2] = {{-1,0},{1,0},{0,-1},{0,1}};
+    for (auto& ed : edges) {
+        // Edge positions: only place plank if it's directly adjacent to a stilt.
+        // Both adjacent stilt columns were filled to platform_y-1, so placing
+        // the platform plank here at platform_y is only 1 above the stilt top.
+        // But the COLUMN ITSELF (ax+ed[0], az+ed[1]) may have natural terrain
+        // several blocks below platform_y. We fill the gap between natural
+        // surface and platform with logs to support the plank.
+        int edge_col_h = struct_surface(ax + ed[0], az + ed[1], seed);
+        // Fill from natural surface+1 to platform_y-1 with logs.
+        for (int wy = edge_col_h + 1; wy < platform_y; ++wy) {
+            struct_set(chunk, ax + ed[0], wy, az + ed[1],
+                       wx_min, wy_min, wz_min, OAK_LOG);
+        }
+        // Place the platform plank at the top.
+        struct_set(chunk, ax + ed[0], platform_y, az + ed[1],
+                   wx_min, wy_min, wz_min, OAK_PLANKS);
+    }
+
+    // Short parapet posts at platform corners (1 log each above platform).
+    for (auto& cor : corners) {
+        struct_set(chunk, ax + cor[0], platform_y + 1, az + cor[1],
+                   wx_min, wy_min, wz_min, OAK_LOG);
+    }
+}
+
+// Place a TREASURE MARKER: a chest buried 1 block below surface, with a
+// cobblestone marker block on the surface directly above, and a cross of
+// mossy_stone around it.
+static void place_treasure(std::int32_t ax, std::int32_t az,
+                            std::uint64_t /*h*/, std::uint64_t seed,
+                            IChunk& chunk,
+                            std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    int H = struct_surface(ax, az, seed);
+
+    // Chest one block below the surface top.
+    struct_set(chunk, ax, H - 1, az, wx_min, wy_min, wz_min, CHEST);
+
+    // Cobblestone marker on surface directly above.
+    struct_set(chunk, ax, H, az, wx_min, wy_min, wz_min, COBBLESTONE);
+
+    // Mossy stone cross on surface around marker.
+    int cross[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
+    for (auto& cr : cross) {
+        int sh = struct_surface(ax + cr[0], az + cr[1], seed);
+        struct_set(chunk, ax + cr[0], sh, az + cr[1],
+                   wx_min, wy_min, wz_min, MOSSY_STONE);
+    }
+}
+
+// Place a ROCK CAIRN: 2..5 stone/mossy_stone blocks stacked in a 1×1 column,
+// with optional small scatter of rocks around the base.
+static void place_cairn(std::int32_t ax, std::int32_t az,
+                         std::uint64_t h, std::uint64_t seed,
+                         IChunk& chunk,
+                         std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    int H = struct_surface(ax, az, seed);
+    int cairn_h = 2 + static_cast<int>((h >> 4u) & 0x3u);  // 2..5
+
+    for (int dy = 1; dy <= cairn_h; ++dy) {
+        BlockId b = ((h >> (static_cast<unsigned>(dy) + 8u)) & 1u) ? MOSSY_STONE : STONE;
+        struct_set(chunk, ax, H + dy, az, wx_min, wy_min, wz_min, b);
+    }
+
+    // Scatter a couple of rocks around the base.
+    int scatter[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
+    for (int si = 0; si < 4; ++si) {
+        std::uint64_t sh = fmix64(h ^ static_cast<std::uint64_t>(si + 200));
+        if ((sh & 0x3u) >= 2u) continue;  // ~50% chance per side
+        int sdx = scatter[si][0];
+        int sdz = scatter[si][1];
+        int sH = struct_surface(ax + sdx, az + sdz, seed);
+        BlockId sb = ((sh >> 2u) & 1u) ? MOSSY_STONE : STONE;
+        struct_set(chunk, ax + sdx, sH + 1, az + sdz,
+                   wx_min, wy_min, wz_min, sb);
+    }
+}
+
+// Dispatch to the right placer.
+static void place_structure(const StructDesc& sd, std::uint64_t seed,
+                             IChunk& chunk,
+                             std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    switch (sd.type) {
+        case STRUCT_RUINED_HUT:
+            place_ruined_hut(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
+                             chunk, wx_min, wy_min, wz_min);
+            break;
+        case STRUCT_STONE_PILLAR:
+            place_stone_pillar(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
+                               chunk, wx_min, wy_min, wz_min);
+            break;
+        case STRUCT_CAMPFIRE:
+            place_campfire(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
+                           chunk, wx_min, wy_min, wz_min);
+            break;
+        case STRUCT_WATCHTOWER:
+            place_watchtower(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
+                             chunk, wx_min, wy_min, wz_min);
+            break;
+        case STRUCT_TREASURE:
+            place_treasure(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
+                           chunk, wx_min, wy_min, wz_min);
+            break;
+        case STRUCT_CAIRN:
+            place_cairn(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
+                        chunk, wx_min, wy_min, wz_min);
+            break;
+        default: break;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Decoration pass — seam-aware, biome-aware
@@ -1004,34 +1547,68 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
                 // Trunk: H+1 .. H+trunk_height
                 int trunk_base_wy = H + 1;
                 int trunk_top_wy  = H + td.trunk_height;
-                int dy_max        = canopy_dy_max(td.canopy_shape);
-                int canopy_wy_max = trunk_top_wy + dy_max;
+                int dy_max_v      = canopy_dy_max(td.canopy_shape);
+                int dy_min_v      = canopy_dy_min(td.canopy_shape);
+                int canopy_wy_max = trunk_top_wy + dy_max_v;
+                int canopy_wy_min = trunk_top_wy + dy_min_v;
 
                 if (canopy_wy_max < wy_min || trunk_base_wy > wy_max) continue;
+                if (canopy_wy_min > wy_max) continue;
 
                 // Place trunk logs.
-                for (int wy = trunk_base_wy; wy <= trunk_top_wy; ++wy) {
-                    if (wy < wy_min || wy > wy_max) continue;
-                    if (td.root_wx < wx_min || td.root_wx > wx_max) continue;
-                    if (td.root_wz < wz_min || td.root_wz > wz_max) continue;
-                    int lx = td.root_wx - wx_min;
-                    int ly = wy - wy_min;
-                    int lz = td.root_wz - wz_min;
-                    chunk.set(lx, ly, lz, td.log_id);
+                // Leaning trunk: for the upper half, shift log position by lean_dx/lean_dz.
+                // This produces a gentle L-bend (bottom half straight, top half offset by 1).
+                {
+                    int lean_start = trunk_base_wy + td.trunk_height / 2;  // upper half leans
+                    for (int wy = trunk_base_wy; wy <= trunk_top_wy; ++wy) {
+                        if (wy < wy_min || wy > wy_max) continue;
+                        // Compute log XZ position (lean in upper half).
+                        int wx_log = td.root_wx;
+                        int wz_log = td.root_wz;
+                        if (wy >= lean_start) {
+                            wx_log += td.lean_dx;
+                            wz_log += td.lean_dz;
+                        }
+                        if (wx_log < wx_min || wx_log > wx_max) continue;
+                        if (wz_log < wz_min || wz_log > wz_max) continue;
+                        int lx = wx_log - wx_min;
+                        int ly = wy - wy_min;
+                        int lz = wz_log - wz_min;
+                        chunk.set(lx, ly, lz, td.log_id);
+
+                        // Thick trunk: 2×2 logs — also fill the (+1,0), (0,+1), (+1,+1) offsets.
+                        if (td.thick_trunk) {
+                            for (int tx = 0; tx <= 1; ++tx) {
+                                for (int tz = 0; tz <= 1; ++tz) {
+                                    if (tx == 0 && tz == 0) continue;  // already placed above
+                                    int wx2 = wx_log + tx;
+                                    int wz2 = wz_log + tz;
+                                    if (wx2 < wx_min || wx2 > wx_max) continue;
+                                    if (wz2 < wz_min || wz2 > wz_max) continue;
+                                    chunk.set(wx2 - wx_min, ly, wz2 - wz_min, td.log_id);
+                                }
+                            }
+                        }
+                    }
                 }
 
+                // Canopy anchor XZ: trunk top position accounts for lean.
+                int canopy_wx = td.root_wx + td.lean_dx;
+                int canopy_wz = td.root_wz + td.lean_dz;
+
                 // Place canopy leaves.
-                // GIANT extends ±4 XZ; PINE extends ±3 XZ; BROAD ±3 XZ; others ±2 XZ.
-                int reach = (td.canopy_shape == CANOPY_GIANT) ? 4 :
+                // GIANT/WEEPING extend ±4 XZ; PINE/BROAD ±3 XZ; FORKED ±2 XZ; others ±2 XZ.
+                int reach = (td.canopy_shape == CANOPY_GIANT)   ? 4 :
+                            (td.canopy_shape == CANOPY_WEEPING)  ? 4 :
                             (td.canopy_shape == CANOPY_BROAD || td.canopy_shape == CANOPY_PINE) ? 3 : 2;
                 for (int dz = -reach; dz <= reach; ++dz) {
                     for (int dx = -reach; dx <= reach; ++dx) {
-                        for (int dy = CANOPY_DY_MIN; dy <= dy_max; ++dy) {
+                        for (int dy = dy_min_v; dy <= dy_max_v; ++dy) {
                             if (!in_canopy(dx, dy, dz, td.canopy_shape)) continue;
 
-                            std::int32_t wlx = td.root_wx + dx;
+                            std::int32_t wlx = canopy_wx + dx;
                             std::int32_t wly = trunk_top_wy + dy;
-                            std::int32_t wlz = td.root_wz + dz;
+                            std::int32_t wlz = canopy_wz + dz;
 
                             if (wlx < wx_min || wlx > wx_max) continue;
                             if (wly < wy_min || wly > wy_max) continue;
@@ -1103,46 +1680,50 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
 
                 if (dom == Biome::Forest) {
                     // Undergrowth: tall_grass scattered tufts under the canopy.
+                    // TRIMMED ~25%: thresholds multiplied by 0.75 vs prior version.
                     if (surf == GRASS) {
-                        if      (roll <  60u) plant = TALL_GRASS;   // ~24%
-                        else if (roll <  80u) plant = FLOWER_RED;   // ~8%
-                        else if (roll <  98u) plant = FLOWER_YELLOW;// ~7%
-                        else if (roll < 112u) plant = MUSHROOM;     // ~5%
+                        if      (roll <  45u) plant = TALL_GRASS;   // ~18% (was ~24%)
+                        else if (roll <  60u) plant = FLOWER_RED;   // ~6%  (was ~8%)
+                        else if (roll <  75u) plant = FLOWER_YELLOW;// ~6%  (was ~7%)
+                        else if (roll <  85u) plant = MUSHROOM;     // ~4%  (was ~5%)
                     } else if (surf == DIRT) {
-                        // Shaded dirt: mushrooms more likely, sparse tall grass
-                        if      (roll2 < 80u) plant = MUSHROOM;
-                        else if (roll2 < 100u) plant = TALL_GRASS;  // ~8% (was ~16%)
+                        // Shaded dirt: mushrooms more likely, sparse tall grass.
+                        // TRIMMED ~25%.
+                        if      (roll2 < 60u) plant = MUSHROOM;     // ~24% (was ~31%)
+                        else if (roll2 < 75u) plant = TALL_GRASS;   // ~6%  (was ~8%)
                     }
                 } else if (dom == Biome::Swamp) {
                     // Swamp: mushrooms + scattered grass tufts.
+                    // TRIMMED ~25%.
                     if (surf == GRASS || surf == DIRT) {
-                        if      (roll <  50u) plant = TALL_GRASS;   // ~20%
-                        else if (roll < 100u) plant = MUSHROOM;     // ~20%
-                        else if (roll < 120u) plant = FLOWER_RED;   // ~8%
+                        if      (roll <  38u) plant = TALL_GRASS;   // ~15% (was ~20%)
+                        else if (roll <  75u) plant = MUSHROOM;     // ~15% (was ~20%)
+                        else if (roll <  90u) plant = FLOWER_RED;   // ~6%  (was ~8%)
                     }
                 } else if (dom == Biome::Plains) {
                     // Plains: scattered grass tufts, flowers prominent.
+                    // TRIMMED ~25%.
                     if (surf == GRASS) {
-                        if      (roll <  50u) plant = TALL_GRASS;   // ~20%
-                        else if (roll <  68u) plant = FLOWER_RED;   // ~7%
-                        else if (roll <  86u) plant = FLOWER_YELLOW;// ~7%
-                        else if (roll <  92u) plant = MUSHROOM;     // ~2%
+                        if      (roll <  38u) plant = TALL_GRASS;   // ~15% (was ~20%)
+                        else if (roll <  57u) plant = FLOWER_RED;   // ~7%  (was ~7%)
+                        else if (roll <  75u) plant = FLOWER_YELLOW;// ~7%  (was ~7%)
+                        else if (roll <  81u) plant = MUSHROOM;     // ~2%  (was ~2%)
                     }
                 } else if (dom == Biome::Mountains) {
                     // Mountains: very sparse grass on lower slopes, no plants above snow line.
-                    // Tall grass reduced to ~9% (was ~18%).
+                    // TRIMMED ~25%: 22→16.
                     if (H >= SNOW_LINE) {
                         plant = AIR;
                     } else if (surf == GRASS) {
-                        if (roll < 22u) plant = TALL_GRASS;         // ~9% (was ~18%)
+                        if (roll < 16u) plant = TALL_GRASS;         // ~6% (was ~9%)
                     }
                 } else {
-                    // Default fallback: plains-like (sparse).
+                    // Default fallback: plains-like (sparse). TRIMMED ~25%.
                     if (surf == GRASS) {
-                        if      (roll <  50u) plant = TALL_GRASS;   // ~20%
-                        else if (roll <  68u) plant = FLOWER_RED;
-                        else if (roll <  86u) plant = FLOWER_YELLOW;
-                        else if (roll <  92u) plant = MUSHROOM;
+                        if      (roll <  38u) plant = TALL_GRASS;   // ~15% (was ~20%)
+                        else if (roll <  57u) plant = FLOWER_RED;
+                        else if (roll <  75u) plant = FLOWER_YELLOW;
+                        else if (roll <  81u) plant = MUSHROOM;
                     }
                 }
 
@@ -1154,7 +1735,41 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
     }
 
     // -------------------------------------------------------------------
-    // 3. SWAMP CLAY PATCHES — scatter clay blocks in swamp surface.
+    // 3. STRUCTURES — seam-safe deterministic landmarks scattered across the world.
+    //    One candidate per STRUCT_CELL_SIZE×STRUCT_CELL_SIZE region; ~12% spawn chance.
+    //    Each structure writes into any chunk it overlaps (additive only).
+    // -------------------------------------------------------------------
+    {
+        // Scan structure cells whose extents could overlap this chunk.
+        std::int32_t scx_min = struct_floordiv(wx_min - STRUCT_MAX_REACH_XZ, STRUCT_CELL_SIZE);
+        std::int32_t scx_max = struct_floordiv(wx_max + STRUCT_MAX_REACH_XZ, STRUCT_CELL_SIZE);
+        std::int32_t scz_min = struct_floordiv(wz_min - STRUCT_MAX_REACH_XZ, STRUCT_CELL_SIZE);
+        std::int32_t scz_max = struct_floordiv(wz_max + STRUCT_MAX_REACH_XZ, STRUCT_CELL_SIZE);
+
+        // Quick y-range check: structures sit on surface, max STRUCT_MAX_REACH_Y above.
+        // If this chunk is entirely far underground, skip.
+        // (Surface is roughly y=4..60; structures place blocks y=H-1..H+9 at most.)
+        // We allow chunks from wy=-16 upward to be safe.
+        if (wy_max >= -16) {
+            for (std::int32_t scz = scz_min; scz <= scz_max; ++scz) {
+                for (std::int32_t scx = scx_min; scx <= scx_max; ++scx) {
+                    StructDesc sd = struct_for_cell(scx, scz, seed);
+                    if (!sd.present) continue;
+
+                    // Quick XZ range check before dispatching.
+                    if (sd.anchor_wx + STRUCT_MAX_REACH_XZ < wx_min) continue;
+                    if (sd.anchor_wx - STRUCT_MAX_REACH_XZ > wx_max) continue;
+                    if (sd.anchor_wz + STRUCT_MAX_REACH_XZ < wz_min) continue;
+                    if (sd.anchor_wz - STRUCT_MAX_REACH_XZ > wz_max) continue;
+
+                    place_structure(sd, seed, chunk, wx_min, wy_min, wz_min);
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // 5. SWAMP CLAY PATCHES — scatter clay blocks in swamp surface.
     //    Clay is placed 1-3 blocks below the surface (replacing stone/dirt).
     // -------------------------------------------------------------------
     {
@@ -1193,7 +1808,7 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
     }
 
     // -------------------------------------------------------------------
-    // 4. FOREST MOSSY STONE PATCHES — replace some surface stone with mossy stone.
+    // 6. FOREST MOSSY STONE PATCHES — replace some surface stone with mossy stone.
     // -------------------------------------------------------------------
     {
         std::uint64_t moss_seed = fmix64(seed ^ 0x405577EDA40550C0ull);
@@ -1231,7 +1846,7 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
     }
 
     // -------------------------------------------------------------------
-    // 5. ORE VEINS — seam-safe, deterministic underground ore generation.
+    // 7. ORE VEINS — seam-safe, deterministic underground ore generation.
     //
     // Design:
     //   Veins are anchored on a 3D world grid with cell size ORE_CELL_SIZE

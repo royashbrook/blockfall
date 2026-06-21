@@ -1164,6 +1164,230 @@ static void test_extended_tree_variety() {
 }
 
 // ---------------------------------------------------------------------------
+// 18. STRUCTURES EXIST
+//     Scan a large world region and verify that at least one world structure
+//     appears.  We look for telltale blocks that only structures place:
+//       - CHEST (31)       — treasure marker
+//       - GLOW_BLOCK (7)   — campfire ring center
+//       - OAK_PLANKS (4)   — hut walls / watchtower platform
+//     These blocks only appear in structures (trees use OAK_LOG not OAK_PLANKS;
+//     terrain never uses CHEST or GLOW_BLOCK).
+//     We also verify cobblestone on the surface (from cairns, pillars, huts,
+//     campfire rings, or treasure markers) appears somewhere above sea level.
+//
+//     Coverage: structures spawn ~12% of 64×64 cells; a ±192 block scan
+//     (~12 cells per axis, 144 cells total) gives a ~99.99% hit rate.
+// ---------------------------------------------------------------------------
+static void test_structures_exist() {
+    constexpr std::uint64_t SEED = 0x5704C705EED2024ull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    constexpr BlockId CHEST_ID      = 31;
+    constexpr BlockId GLOW_BLOCK_ID = 7;
+    constexpr BlockId OAK_PLANKS_ID = 4;
+    constexpr BlockId COBBLE_ID2    = 10;
+    constexpr int SEA_LEVEL_TEST    = 6;
+
+    bool found_chest     = false;
+    bool found_glow      = false;
+    bool found_planks    = false;
+    bool found_cobble_surf = false;
+
+    // Scan a ±12 chunk radius (±192 world blocks), y-chunks 0..3 (surface range).
+    constexpr int SCAN_R = 12;
+
+    for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
+        for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
+            for (int cy = -1; cy <= 3; ++cy) {
+                PaletteChunk ch({cx, cy, cz}, 0);
+                g.generate({cx, cy, cz}, ch);
+                std::int32_t wy_base = cy * kChunkDim;
+
+                for (int lz = 0; lz < kChunkDim; ++lz) {
+                    for (int ly = 0; ly < kChunkDim; ++ly) {
+                        for (int lx = 0; lx < kChunkDim; ++lx) {
+                            BlockId b = ch.get(lx, ly, lz);
+                            std::int32_t wy = wy_base + ly;
+                            if (b == CHEST_ID)      found_chest  = true;
+                            if (b == GLOW_BLOCK_ID) found_glow   = true;
+                            if (b == OAK_PLANKS_ID) found_planks = true;
+                            if (b == COBBLE_ID2 && wy > SEA_LEVEL_TEST)
+                                found_cobble_surf = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // At least one of these structure-specific blocks must be present.
+    bool any_structure_block = found_chest || found_glow || found_planks;
+    CHECK(any_structure_block,
+          "structures exist: chest, glow_block, or oak_planks found in world scan");
+    CHECK(found_cobble_surf,
+          "structures exist: cobblestone found above sea level (from structures)");
+}
+
+// ---------------------------------------------------------------------------
+// 19. NEW TREE VARIETY — thick trunks and leaning trees
+//     Verify that:
+//       a) Thick (2×2) trunks exist in the world scan: two adjacent log columns
+//          at the same y both contain log blocks.
+//       b) Leaning trees exist: a log column where the upper half is offset
+//          by 1 block from the lower half (L-bend signature).
+//       c) WEEPING or FORKED canopy shapes exist: check for leaf blocks
+//          significantly below (≥2 below) the trunk-top of a tree.
+// ---------------------------------------------------------------------------
+static void test_new_tree_variety() {
+    constexpr std::uint64_t SEED = 0x30B1D5EED3C7E8FFull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    constexpr BlockId OAK_LOG_ID      = 21;
+    constexpr BlockId BIRCH_LOG_ID    = 22;
+    constexpr BlockId OAK_LEAVES_ID   = 5;
+    constexpr BlockId BIRCH_LEAVES_ID = 27;
+
+    bool found_thick_trunk  = false;  // two adjacent logs at same y level
+    bool found_leaning_tree = false;  // L-bend: upper trunk offset from lower
+    bool found_drooping_leaves = false;  // leaves ≥2 below a trunk top (weeping)
+
+    constexpr int SCAN_R = 15;
+
+    for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
+        for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
+            PaletteChunk ch0({cx, 0, cz}, 0);
+            PaletteChunk ch1({cx, 1, cz}, 0);
+            PaletteChunk ch2({cx, 2, cz}, 0);
+            g.generate({cx, 0, cz}, ch0);
+            g.generate({cx, 1, cz}, ch1);
+            g.generate({cx, 2, cz}, ch2);
+
+            auto get_block = [&](int lx, int wy, int lz) -> BlockId {
+                if (wy >= 0  && wy < 16) return ch0.get(lx, wy,      lz);
+                if (wy >= 16 && wy < 32) return ch1.get(lx, wy - 16, lz);
+                if (wy >= 32 && wy < 48) return ch2.get(lx, wy - 32, lz);
+                return BlockId(0);
+            };
+            auto is_log = [](BlockId b) -> bool {
+                return b == OAK_LOG_ID || b == BIRCH_LOG_ID;
+            };
+            auto is_leaf = [](BlockId b) -> bool {
+                return b == OAK_LEAVES_ID || b == BIRCH_LEAVES_ID;
+            };
+
+            for (int lz = 0; lz < kChunkDim; ++lz) {
+                for (int lx = 0; lx < kChunkDim; ++lx) {
+                    // Thick trunk: check (lx, lz) and its +X neighbor both have
+                    // contiguous log columns starting at the same y.
+                    if (lx + 1 < kChunkDim) {
+                        // Find lowest log at (lx, lz).
+                        int log_start_a = -1;
+                        for (int wy = 0; wy < 48; ++wy) {
+                            if (is_log(get_block(lx, wy, lz))) {
+                                log_start_a = wy;
+                                break;
+                            }
+                        }
+                        if (log_start_a >= 0) {
+                            int log_start_b = -1;
+                            for (int wy = 0; wy < 48; ++wy) {
+                                if (is_log(get_block(lx+1, wy, lz))) {
+                                    log_start_b = wy;
+                                    break;
+                                }
+                            }
+                            // Same start y and both have ≥3 consecutive logs:
+                            // this is a thick trunk.
+                            if (log_start_b == log_start_a && log_start_a >= 0) {
+                                int count_a = 0, count_b = 0;
+                                for (int wy = log_start_a; wy < 48 && is_log(get_block(lx,   wy, lz)); ++wy) ++count_a;
+                                for (int wy = log_start_b; wy < 48 && is_log(get_block(lx+1, wy, lz)); ++wy) ++count_b;
+                                if (count_a >= 3 && count_b >= 3) {
+                                    found_thick_trunk = true;
+                                }
+                            }
+                        }
+                    }
+
+                    // Leaning trunk (L-bend): the lower half of the trunk is at
+                    // (lx, lz), the upper half shifts by 1 block to (lx+ldx, lz)
+                    // or (lx, lz+ldz).  Detection: a log column at (lx, lz)
+                    // ends at some y, and EXACTLY at that y+1 an adjacent column
+                    // starts a new log run.  This creates a clear L-bend signature.
+                    {
+                        // Find where the log column at (lx, lz) ends.
+                        int log_start = -1, log_end = -1;
+                        for (int wy = 1; wy < 40; ++wy) {
+                            if (is_log(get_block(lx, wy, lz))) {
+                                if (log_start < 0) log_start = wy;
+                                log_end = wy;
+                            } else if (log_start >= 0) {
+                                break;  // column ends here
+                            }
+                        }
+                        if (log_start >= 0 && log_end > log_start + 1) {
+                            // A log column exists at (lx, lz) from log_start..log_end.
+                            // For a leaning tree, the upper portion continues in an
+                            // adjacent column starting at log_end + 1 (or within 1-2 y).
+                            for (int ldx = -1; ldx <= 1; ldx += 2) {
+                                if (lx + ldx < 0 || lx + ldx >= kChunkDim) continue;
+                                // Neighbor should have NO log at log_start (not a side-by-side
+                                // thick trunk started earlier) but HAVE a log right above
+                                // this column's top.
+                                bool no_early_log = !is_log(get_block(lx+ldx, log_start, lz));
+                                bool has_upper_log = is_log(get_block(lx+ldx, log_end+1, lz))
+                                                  || is_log(get_block(lx+ldx, log_end,   lz));
+                                if (no_early_log && has_upper_log) {
+                                    found_leaning_tree = true;
+                                }
+                            }
+                        }
+                    }
+
+                    // Weeping/droopy leaves: find a log column top (highest log y),
+                    // then check if leaves exist 2 or more blocks below that top
+                    // in adjacent columns.
+                    {
+                        int trunk_top = -1;
+                        for (int wy = 47; wy >= 0; --wy) {
+                            if (is_log(get_block(lx, wy, lz))) {
+                                trunk_top = wy;
+                                break;
+                            }
+                        }
+                        if (trunk_top >= 4) {
+                            // Check adjacent columns for leaves at trunk_top - 2 or lower.
+                            for (int ldx = -1; ldx <= 1; ++ldx) {
+                                for (int ldz = -1; ldz <= 1; ++ldz) {
+                                    if (ldx == 0 && ldz == 0) continue;
+                                    int nlx = lx + ldx;
+                                    int nlz = lz + ldz;
+                                    if (nlx < 0 || nlx >= kChunkDim) continue;
+                                    if (nlz < 0 || nlz >= kChunkDim) continue;
+                                    if (is_leaf(get_block(nlx, trunk_top - 2, nlz)) ||
+                                        is_leaf(get_block(nlx, trunk_top - 3, nlz))) {
+                                        found_drooping_leaves = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    CHECK(found_thick_trunk,
+          "new tree variety: thick (2x2) trunks found in world scan");
+    CHECK(found_leaning_tree,
+          "new tree variety: leaning (L-bend) trees found in world scan");
+    CHECK(found_drooping_leaves,
+          "new tree variety: drooping leaves (weeping canopy) found in world scan");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -1185,6 +1409,8 @@ int main() {
     test_tree_variety_and_undergrowth();
     test_ore_generation();
     test_extended_tree_variety();
+    test_structures_exist();
+    test_new_tree_variety();
 
     if (fails == 0) {
         std::printf("OK: worldgen tests\n");
