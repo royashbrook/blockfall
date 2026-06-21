@@ -421,7 +421,9 @@ final class GameAudio {
 
     private func startMusic() {
         guard isReady else { return }
-        if allTrackBuffers.isEmpty { buildAllTrackBuffers() }
+        // Buffers are always built (off the main thread) before isReady flips; never
+        // synthesize here — that would freeze the main thread for seconds.
+        guard !allTrackBuffers.isEmpty else { return }
 
         // Cancel any in-progress crossfade and stop all nodes cleanly.
         crossfadeTimer?.invalidate()
@@ -466,12 +468,23 @@ final class GameAudio {
         guard idx < allTrackBuffers.count else { return }
         let voiceBuffers  = allTrackBuffers[idx]
         let nodeOffset    = bank * 4
+        // Schedule every voice first, THEN start them all at one shared host time
+        // so the 4 layers begin sample-aligned. (alignVoiceLengths keeps them equal
+        // length; separate node.play() calls let them start in different render
+        // cycles and drift ~11ms, which never self-corrects across loops.)
+        var tb = mach_timebase_info_data_t()
+        mach_timebase_info(&tb)
+        let delayNs = UInt64(0.08 * 1_000_000_000)   // 80 ms ahead — enough to schedule
+        let delayHost = (tb.numer != 0) ? delayNs * UInt64(tb.denom) / UInt64(tb.numer) : delayNs
+        let when = AVAudioTime(hostTime: mach_absolute_time() + delayHost)
         for i in 0 ..< 4 {
             let node = musicBankNodes[nodeOffset + i]
             node.stop()
             guard i < voiceBuffers.count else { continue }
             node.scheduleBuffer(voiceBuffers[i], at: nil, options: .loops, completionHandler: nil)
-            node.play()
+        }
+        for i in 0 ..< 4 where i < voiceBuffers.count {
+            musicBankNodes[nodeOffset + i].play(at: when)
         }
     }
 
@@ -3187,6 +3200,7 @@ final class GameAudio {
     /// materialClass out of range falls back to 0.
     func playBreak(materialClass: Int) {
         guard sfxEnabled, isReady, let engine, engine.isRunning else { return }
+        guard !breakMaterialBuffers.isEmpty else { return }   // nothing built yet
         let cls = (materialClass >= 0 && materialClass < breakMaterialBuffers.count)
                   ? materialClass : 0
         guard !breakMaterialBuffers[cls].isEmpty else { return }
