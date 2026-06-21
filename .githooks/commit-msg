@@ -1,0 +1,11 @@
+#!/bin/sh
+# Every commit must reference an issue from docs/issues/ (e.g. "#12").
+# Use "#0" for project/meta chores. See docs/issues/README.md.
+msg_file="$1"
+if ! grep -qE '#[0-9]+' "$msg_file"; then
+    echo "✗ commit rejected: the message must reference an issue, e.g. '#12'." >&2
+    echo "  Issues live in docs/issues/ (index: docs/issues/README.md)." >&2
+    echo "  Use '#0' for project/meta chores." >&2
+    exit 1
+fi
+exit 0
