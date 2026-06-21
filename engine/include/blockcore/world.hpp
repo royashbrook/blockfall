@@ -20,7 +20,11 @@
 #include "blockcore/content_extra.hpp"
 #include "blockcore/inventory.hpp"
 #include "blockcore/crafting.hpp"
+#include "blockcore/jobs.hpp"
 #include "blockcore_interfaces.hpp"
+
+#include <mutex>
+#include <memory>
 
 #include <unordered_map>
 #include <unordered_set>
@@ -106,8 +110,8 @@ public:
     // budget = a big hitch when you cross a chunk boundary. Smaller budgets
     // spread the same work over more frames → much smoother 1%-low (pop-in is
     // marginally slower, which is the right trade for kids).
-    static constexpr int    GEN_BUDGET   = 6;      // chunks generated per frame
-    static constexpr int    MESH_BUDGET  = 4;      // chunks remeshed per frame
+    static constexpr int    GEN_BUDGET   = 6;      // chunks generated per frame (sync fallback only)
+    static constexpr int    MESH_BUDGET  = 6;      // chunks remeshed per frame (gen is now off-thread, #25)
 
     explicit World(IMesher& mesher, IWorldGen* gen = nullptr)
         : mesher_(mesher), gen_(gen) {}
@@ -182,6 +186,15 @@ public:
         seed_ = seed;
         if (!gen_) { generate_test_world(); return; }
         gen_->seed(seed);
+        // Spin up worker threads for async chunk generation (#25). Generation is a
+        // pure fn of (seed, coord), so E-core workers can churn chunks in parallel
+        // while the main thread just inserts + meshes them.
+        if (!sched_) {
+            CoreTopology topo = detect_core_topology();
+            unsigned e = std::max(2u, topo.e_cores);
+            unsigned p = std::max(1u, topo.p_cores > 1 ? topo.p_cores - 1 : 1u);
+            sched_ = std::make_unique<JobScheduler>(p, e);
+        }
         // Find the surface at spawn column (0,0): generate the vertical band and
         // scan from the top for the first solid block.
         int surface = 8; bool found = false;
@@ -707,6 +720,7 @@ public:
         return ch ? int(ch->sky_light(mod16(x), mod16(y), mod16(z))) : -1;
     }
     void    debug_edit(int x, int y, int z, BlockId b) { set_block_internal(IVec3{x, y, z}, b); }
+    void    debug_set_sync_streaming(bool s) { sync_stream_ = s; }   // tests: deterministic inline gen
     bool    debug_has_target() const { return has_target_; }
     void    debug_set_selected(std::uint8_t s) { selected_ = s; }
     std::size_t debug_resident_chunks() const { return store_.resident_count(); }
@@ -1578,20 +1592,61 @@ private:
             store_.evict(cc);
         }
     }
+    // Worker-thread entry: generate one chunk (pure fn of seed+coord) and hand it
+    // back to the main thread. Touches only gen_ (outlives World) + gen_done_/mtx.
+    struct GenTask { World* w; ChunkCoord cc; };
+    static void gen_trampoline(void* user) noexcept {
+        auto* t = static_cast<GenTask*>(user);
+        t->w->run_gen_job(t->cc);
+        delete t;
+    }
+    void run_gen_job(ChunkCoord cc) {
+        auto ch = std::make_unique<PaletteChunk>(cc);
+        gen_->generate(cc, *ch);
+        std::lock_guard<std::mutex> lk(gen_mtx_);
+        gen_done_.emplace_back(cc, std::move(ch));
+    }
+
     void stream_tick() {
         if (!gen_) return;
-        int made = 0;
-        while (!gen_queue_.empty() && made < GEN_BUDGET) {
-            ChunkCoord cc = gen_queue_.back(); gen_queue_.pop_back();
+        // Synchronous mode (tests): generate inline so chunk availability is
+        // deterministic per update() call rather than dependent on worker wall-clock.
+        if (!sync_stream_ && !sched_) {   // lazy-create workers (init_world + load paths)
+            CoreTopology topo = detect_core_topology();
+            unsigned e = std::max(2u, topo.e_cores);
+            unsigned p = std::max(1u, topo.p_cores > 1 ? topo.p_cores - 1 : 1u);
+            sched_ = std::make_unique<JobScheduler>(p, e);
+        }
+        if (sync_stream_ || !sched_) {
+            int made = 0;
+            while (!gen_queue_.empty() && made < GEN_BUDGET) {
+                ChunkCoord cc = gen_queue_.back(); gen_queue_.pop_back();
+                if (store_.is_resident(cc)) continue;
+                auto ch = std::make_unique<PaletteChunk>(cc);
+                gen_->generate(cc, *ch);
+                if (ch->is_uniform() && ch->get(0,0,0) == AIR) { ++made; continue; }
+                store_.insert(std::move(ch)); dirty_.insert(cc); ++made;
+            }
+            return;
+        }
+        // 1) Collect chunks finished on worker threads and insert them (main thread).
+        std::vector<std::pair<ChunkCoord, std::unique_ptr<PaletteChunk>>> done;
+        { std::lock_guard<std::mutex> lk(gen_mtx_); done.swap(gen_done_); }
+        for (auto& [cc, ch] : done) {
+            gen_inflight_.erase(cc);
             if (store_.is_resident(cc)) continue;
-            auto ch = std::make_unique<PaletteChunk>(cc);
-            gen_->generate(cc, *ch);
-            // Skip pure-air chunks (above terrain): they cost nothing as "not
-            // resident" and block_at() already returns AIR for them.
-            if (ch->is_uniform() && ch->get(0,0,0) == AIR) { ++made; continue; }
+            // Skip pure-air chunks (above terrain) — block_at() returns AIR anyway.
+            if (ch->is_uniform() && ch->get(0,0,0) == AIR) continue;
             store_.insert(std::move(ch));
             dirty_.insert(cc);
-            ++made;
+        }
+        // 2) Submit more gen jobs, keeping a bounded number in flight (nearest-first).
+        constexpr std::size_t kMaxInFlight = 32;
+        while (!gen_queue_.empty() && gen_inflight_.size() < kMaxInFlight) {
+            ChunkCoord cc = gen_queue_.back(); gen_queue_.pop_back();
+            if (store_.is_resident(cc) || gen_inflight_.count(cc)) continue;
+            gen_inflight_.insert(cc);
+            sched_->submit(&World::gen_trampoline, new GenTask{this, cc}, JobQoS::Utility);
         }
     }
 
@@ -1835,6 +1890,18 @@ private:
     float         mine_progress_{0.0f};
     bool          has_target_{false};
     IVec3         target_{}, place_{};
+
+    // ---- async chunk generation (#25) ------------------------------------
+    // Worker threads generate chunks (pure fn of seed+coord); the main thread
+    // collects finished chunks and inserts them. gen_done_ is the only shared
+    // state (guarded by gen_mtx_); gen_inflight_ is main-thread-only. sched_ is
+    // declared LAST so it is destroyed FIRST — its dtor joins workers before the
+    // members those jobs touch (gen_done_/gen_mtx_) are destroyed.
+    bool                                                            sync_stream_{false};  // tests: inline gen
+    std::mutex                                                       gen_mtx_;
+    std::vector<std::pair<ChunkCoord, std::unique_ptr<PaletteChunk>>> gen_done_;
+    std::unordered_set<ChunkCoord, ChunkCoordHash>                   gen_inflight_;
+    std::unique_ptr<JobScheduler>                                    sched_;
 };
 
 } // namespace bf

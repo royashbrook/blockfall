@@ -23,6 +23,7 @@ int main() {
     if (!content.load("/Users/roy/gh/blockfall/content")) { std::printf("FAIL: content load\n"); return 1; }
 
     bf::GreedyMesher mesher; bf::TerrainGen gen; bf::World world(mesher, &gen);
+    world.debug_set_sync_streaming(true);   // deterministic inline gen for the test
     bf_gpu_allocator alloc{}; alloc.alloc = alloc_fn; alloc.free_ = free_fn;
     world.set_allocator(alloc);
     world.set_mode(BF_MODE_SURVIVAL);
@@ -60,6 +61,7 @@ int main() {
 
     // --- creatures: population builds up near the player over time, calm one ---
     bf::GreedyMesher m2; bf::TerrainGen g2; bf::World cw(m2, &g2);
+    cw.debug_set_sync_streaming(true);
     cw.set_allocator(alloc); cw.set_content(&content); cw.init_world(5);
     // Maintain spawns gradually (one per ~0.35 s up to the cap); pump enough.
     for (int i = 0; i < 200 && cw.debug_creature_count() < 8; ++i) cw.update(zero, 0.05);

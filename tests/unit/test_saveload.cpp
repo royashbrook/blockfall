@@ -27,6 +27,7 @@ int main() {
     // --- session 1: generate, edit at known spots, save ---
     {
         bf::GreedyMesher mesher; bf::TerrainGen gen; bf::World world(mesher, &gen);
+        world.debug_set_sync_streaming(true);
         world.set_allocator(alloc);
         world.init_world(424242);
         world.debug_edit(3, 70, 3, bf::GLOW);       // high up: air -> GLOW
@@ -38,6 +39,7 @@ int main() {
     // --- session 2: load into fresh world, verify ---
     {
         bf::GreedyMesher mesher; bf::TerrainGen gen; bf::World world(mesher, &gen);
+        world.debug_set_sync_streaming(true);
         world.set_allocator(alloc);
         CHECK(world.load(dir), "load succeeded");
         CHECK(world.debug_block_at(3, 70, 3) == bf::GLOW,  "edited GLOW persisted");
@@ -48,6 +50,7 @@ int main() {
         // The world is deterministic: regenerate the same seed in a 3rd world and
         // confirm a sampled procedural column matches (edits aside).
         bf::GreedyMesher m3; bf::TerrainGen g3; bf::World w3(m3, &g3);
+        w3.debug_set_sync_streaming(true);
         w3.set_allocator(alloc); w3.init_world(424242);
         bf_frame_input zero{};
         // Pump enough frames for both worlds to fully stream the compared band.
