@@ -306,6 +306,7 @@ final class EntityRenderer {
                     // exists — set externalHurt01 and skip this derivation.)
                     if h.lastScale > 0.0001,
                        e.scale < h.lastScale * 0.88,
+                       t - h.lastSeen < 0.5,   // only a fresh, continuous entity — not a (re)spawn
                        (h.hitAt < 0 || t - h.hitAt > hitDuration) {
                         h.hitAt = t
                     }

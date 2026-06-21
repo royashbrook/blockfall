@@ -56,6 +56,7 @@ struct Creature {
     bool  is_boss{false};
     bool  friendly{false};
     bool  hostile{false};   // night monster: chases + hurts the player (kind 5)
+    bool  skittish{false};  // flees the player (rabbits/foxes)
     float atk_cd{0};        // cooldown between hits on the player
     float hit_flash{0};     // brief white flash when the player hits it
     float wander{0};
@@ -878,13 +879,18 @@ private:
                 c.color = color_for(boss ? "boss" : d->disposition, d->id);
                 c.speed = boss ? d->move_speed * 0.7f : d->move_speed;
                 c.shape = int(d->id) % 8;            // model variant from the def (8 species)
+                c.skittish = (d->disposition == "skittish");
+                c.hp = (d->max_health > 0) ? int(d->max_health) : (boss ? 10 : 5);
+            } else {
+                c.hp = boss ? 10 : 5;
             }
         } else {
             c.color = color_for(boss ? "boss" : "passive", std::uint16_t(creatures_.size() + 1));
             c.speed = boss ? 1.2f : 1.6f; c.name = boss ? "guardian" : "critter";
             c.shape = int(creatures_.size()) % 8;
+            c.hp = boss ? 10 : 5;
         }
-        c.scale = boss ? 2.0f : 0.8f; c.hp = boss ? 10 : 5;   // multiple hits to defeat
+        c.scale = boss ? 2.0f : 0.8f;                          // hp set above (from content)
         creatures_.push_back(c);
         return true;
     }
@@ -1164,7 +1170,7 @@ private:
         // Fill the area quickly at first (small timer), then top up slowly.
         creature_timer_ = ((monstersActive ? hostiles : ambient) < 4) ? 0.08f : 0.5f;
         if (monstersActive) {
-            if (hostiles < 7) spawn_hostile(8.0f, 24.0f);
+            if (hostiles < 5) spawn_hostile(8.0f, 24.0f);   // a real but survivable night threat
         } else if (ambient < 9) {
             spawn_ring_creature(false, 8.0f, 26.0f);
         } else if (bosses < 2) {
@@ -1180,14 +1186,21 @@ private:
             // In Creative the monsters leave you alone (no chase, no damage).
             if (c.hostile && mode_ == BF_MODE_SURVIVAL) {
                 // Night monster: relentlessly chases the player and bites on contact.
-                float d = std::sqrt(dot(toPlayer, toPlayer));
-                if (d > 0.01f) c.yaw = std::atan2(toPlayer.x, toPlayer.z);
+                if (dot(toPlayer, toPlayer) > 0.0001f) c.yaw = std::atan2(toPlayer.x, toPlayer.z);
                 if (c.atk_cd > 0) c.atk_cd -= dt;
-                if (d < 1.5f && c.atk_cd <= 0.0f) { hurt_player(3.0f); c.atk_cd = 1.0f; }
+                // Bite test in XZ (+ a vertical guard): pos_ is the EYE (~1.6 above
+                // the feet) and c.pos is the creature's feet, so a 3D distance never
+                // got close enough — that's why monsters never actually hurt you.
+                float xzd = std::sqrt(toPlayer.x*toPlayer.x + toPlayer.z*toPlayer.z);
+                float yd  = std::fabs((c.pos.y + c.scale * 0.5f) - (pos_.y - 1.6f));
+                if (xzd < 1.3f && yd < 1.6f && c.atk_cd <= 0.0f) { hurt_player(2.5f); c.atk_cd = 1.1f; }
             } else if (c.friendly) {
                 // follow the player when not too close
                 float d = std::sqrt(dot(toPlayer, toPlayer));
                 if (d > 2.5f) c.yaw = std::atan2(toPlayer.x, toPlayer.z);
+            } else if (c.skittish && dot(toPlayer, toPlayer) < 36.0f) {
+                // Rabbits/foxes bolt away when you get within ~6 blocks.
+                c.yaw = std::atan2(-toPlayer.x, -toPlayer.z); c.wander = 0.8f;
             } else if (c.wander <= 0.0f) {
                 c.yaw = rand01() * 6.2831853f;
                 c.wander = 1.5f + rand01() * 2.5f;
