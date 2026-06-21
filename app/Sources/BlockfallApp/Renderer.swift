@@ -1209,8 +1209,8 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     static float faceShade(uint n) {
         if (n == 2u) return 1.0;    // top
-        if (n == 3u) return 0.45;   // bottom
-        return 0.72;                // sides
+        if (n == 3u) return 0.40;   // bottom
+        return 0.62;                // sides (wider top/side spread = more depth)
     }
 
     static float3 hashColor(uint m) {
@@ -1226,7 +1226,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             case  1u: return float3(0.35, 0.75, 0.28);
             case  2u: return float3(0.54, 0.38, 0.24);
             case  3u: return float3(0.55, 0.55, 0.58);
-            case  6u: return float3(0.90, 0.83, 0.58);
+            case  6u: return float3(0.80, 0.72, 0.50);   // sand — pulled down so deserts don't bleach
             case  9u: return float3(0.14, 0.42, 0.82);
             case 10u: return float3(0.44, 0.44, 0.46);
             case 11u: return float3(0.50, 0.47, 0.42);
@@ -1872,7 +1872,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         float skyC   = (float(p.sky)   / 15.0) * dayB;
         float blockC = float(p.block)  / 15.0;
         float lightLevel = max(max(skyC, blockC), 0.08);
-        float facing = 0.62 + 0.38 * faceShade(n);
+        float facing = 0.52 + 0.48 * faceShade(n);   // stronger directional contrast (depth w/o cast shadows)
         float shade  = clamp(lightLevel * facing, 0.0, 1.0);
 
         VOut o;
@@ -2048,7 +2048,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 alpha = bladeMask;
                 plantCol = clamp(grassBase + hue, 0.0, 1.0);
                 // Apply gentle lighting: mostly ambient (bright) with a little shade
-                float lightMix = mix(0.75, 1.0, in.shade);
+                float lightMix = mix(0.55, 1.0, in.shade);
                 plantCol *= lightMix;
 
             } else if (mat == 36u || mat == 37u) {
@@ -2341,7 +2341,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         float sunsetT = dawnT + duskT;
 
         float3 zenithDay    = float3(0.16, 0.42, 0.88);
-        float3 horizDay     = float3(0.48, 0.70, 0.96);
+        float3 horizDay     = float3(0.58, 0.76, 0.92);   // warmer horizon (less cold-grey)
         float3 zenithSunset = float3(0.22, 0.14, 0.45);
         float3 horizSunset  = float3(1.00, 0.52, 0.18);
         float3 zenithNight  = float3(0.03, 0.04, 0.12);
