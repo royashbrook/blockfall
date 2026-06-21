@@ -585,8 +585,19 @@ public:
         remesh_dirty();
         draws.clear();
         std::vector<bf_region_dim> regions; // built lazily below
+        // View-cone cull: skip chunks well outside the camera's forward cone so
+        // draw cost scales with what's visible, not with render distance (#5).
+        // Generous half-cone (~72°, ~2x the real FOV) + always-draw the immediate
+        // neighbourhood so turning never pops chunks in.
+        V3 camFwd = forward_dir(); V3 camPos = pos_;
+        constexpr float kCullCos = 0.30f;
+        const float kNearKeep = float(kChunkDim) * 1.5f;
         for (auto& [cc, rec] : meshes_) {
             if (!rec.has_buffers || rec.index_count == 0) continue;
+            V3 ctr{(float(cc.x) + 0.5f) * kChunkDim, (float(cc.y) + 0.5f) * kChunkDim, (float(cc.z) + 0.5f) * kChunkDim};
+            V3 toC{ctr.x - camPos.x, ctr.y - camPos.y, ctr.z - camPos.z};
+            float dist = std::sqrt(dot(toC, toC));
+            if (dist > kNearKeep && dot(toC, camFwd) / dist < kCullCos) continue;  // behind/outside view
             bf_draw_item d{};
             d.vertex_buffer = rec.vbuf.handle;
             d.index_buffer  = rec.ibuf.handle;

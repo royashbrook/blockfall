@@ -495,7 +495,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         cfg.abi_version = BF_ABI_VERSION
         cfg.role = BF_ROLE_SINGLEPLAYER
         cfg.start_mode = BF_MODE_SURVIVAL
-        cfg.render_distance_chunks = 16
+        cfg.render_distance_chunks = 22   // bigger view; view-cone culling keeps draw cost in check (#5)
         cfg.memory_budget_bytes = 10 * 1024 * 1024 * 1024
         // Content is bundled at Resources/content (build.sh copies it there).
         // The registry loads <dir>/blocks, <dir>/items, … so point at that folder,
