@@ -2227,14 +2227,14 @@ final class Renderer: NSObject, MTKViewDelegate {
             // Exponential fog: fogFactor = exp(-k * dist). k = 0.010 gives:
             //   20 blocks → ~82% scene, 80 blocks → ~45%, 180 blocks → ~16%.
             // The horizon sky colour approximates a mid-morning blue-grey haze.
+            // Only the FAR EDGE hazes (hides pop-in); the visible field stays clear
+            // so open/flat biomes like desert don't wash to white. Capped at 0.5
+            // so it can never fully white out, ever.
             float3 camPos3 = UW_CAM_POS(wu);
             float dist = length(in.worldPos - camPos3);
-            float fogK = 0.010;   // tune: bigger k = denser fog, smaller = more distant
-            float fogFactor = clamp(exp(-fogK * dist), 0.0, 1.0);
-            // Sky/horizon colour at current time of day — a blue-grey that blends
-            // naturally with the horizon band in skyFmain.
-            float3 horizFogColor = float3(0.48, 0.62, 0.82);   // daytime blue haze
-            col = mix(horizFogColor, col, fogFactor);
+            float fog = smoothstep(150.0, 270.0, dist) * 0.5;
+            float3 horizFogColor = float3(0.42, 0.55, 0.72);   // muted blue haze
+            col = mix(col, horizFogColor, fog);
         }
 
         return float4(col, 1.0);
