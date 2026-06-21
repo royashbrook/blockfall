@@ -888,7 +888,9 @@ private:
     bool spawn_hostile(float rmin, float rmax) {
         float ang = rand01() * 6.2831853f, r = rmin + rand01() * (rmax - rmin);
         float cx = pos_.x + std::cos(ang) * r, cz = pos_.z + std::sin(ang) * r;
-        int gy = floor_below(ifloor(cx), int(pos_.y) + 30, ifloor(cz));
+        // Spawn near the player's own level so cave monsters appear in the cave
+        // (not on the surface far above) — scan down from just above the player.
+        int gy = floor_below(ifloor(cx), int(pos_.y) + 3, ifloor(cz));
         if (gy == kNoFloor) return false;
         Creature c;
         c.pos = V3{cx, float(gy), cz}; c.yaw = rand01() * 6.2831853f;
@@ -905,7 +907,17 @@ private:
     void attack_creature(int idx) {
         Creature& cr = creatures_[std::size_t(idx)];
         IVec3 cv{ifloor(cr.pos.x), ifloor(cr.pos.y), ifloor(cr.pos.z)};
-        cr.hp -= 2;
+        // Damage by held weapon: a SWORD hits much harder than a tool or a fist.
+        int dmg = 2;
+        if (inv_ && items_) {
+            const ItemDef* it = items_->by_id(inv_->get(selected_).item);
+            if (it) {
+                if (it->tool_kind == 4) dmg = 4 + int(it->tool_tier) * 2;  // sword: 6/8/10
+                else if (it->tool_kind == 2) dmg = 3;                       // axe
+            }
+        }
+        cr.hp -= dmg;
+        damage_held_tool();                              // weapons/tools wear when used
         cr.hit_flash = 0.22f;                            // visible white flash
         // Knockback away from the player so hits read as impacts.
         float ax = cr.pos.x - pos_.x, az = cr.pos.z - pos_.z;
@@ -1128,18 +1140,25 @@ private:
                 float dx = c.pos.x - pos_.x, dz = c.pos.z - pos_.z;
                 return (dx*dx + dz*dz) > kDespawn2;
             }), creatures_.end());
+        // Monster rules (Survival only): they come out at NIGHT, or any time when
+        // you're somewhere DARK (a cave / underground where sky light is low).
         float t = day_time(world_clock_);
-        bool night = (t < 0.20f || t > 0.80f) && mode_ == BF_MODE_SURVIVAL;  // monsters only menace in Survival
-        // At daybreak the monsters flee the light.
-        if (!night)
+        bool surv = mode_ == BF_MODE_SURVIVAL;
+        bool night = surv && (t < 0.20f || t > 0.80f);
+        // Underground = well below the surface (depth-based; reliable regardless
+        // of the sky-light data). Monsters lurk in caves any time of day.
+        int surfY = surface_top(ifloor(pos_.x), ifloor(pos_.z));
+        bool darkCave = surv && surfY != kNoFloor && (surfY - ifloor(pos_.y)) > 6;
+        bool monstersActive = night || darkCave;
+        // Monsters flee only when it's both daytime AND lit (safe).
+        if (!monstersActive)
             creatures_.erase(std::remove_if(creatures_.begin(), creatures_.end(),
                 [](const Creature& c){ return c.hostile; }), creatures_.end());
         int ambient = 0, bosses = 0, hostiles = 0;
         for (auto& c : creatures_) { if (c.hostile) ++hostiles; else if (c.is_boss) ++bosses; else ++ambient; }
         // Fill the area quickly at first (small timer), then top up slowly.
-        creature_timer_ = ((night ? hostiles : ambient) < 4) ? 0.08f : 0.5f;
-        // Night: scary monsters. Day: friendly animals + the occasional boss.
-        if (night) {
+        creature_timer_ = ((monstersActive ? hostiles : ambient) < 4) ? 0.08f : 0.5f;
+        if (monstersActive) {
             if (hostiles < 7) spawn_hostile(8.0f, 24.0f);
         } else if (ambient < 9) {
             spawn_ring_creature(false, 8.0f, 26.0f);

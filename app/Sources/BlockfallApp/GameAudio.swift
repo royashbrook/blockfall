@@ -209,16 +209,21 @@ final class GameAudio {
     //
     // During playback one bank is "active" (volume 1) and the other is silent.
     // On a transition both banks play simultaneously while the outgoing bank
-    // fades from 1→0 and the incoming bank fades from 0→1 over kCrossfadeDur.
+    // outgoing bank fades from 1→0, then silence, then incoming bank fades from 0→1.
     private var musicBankNodes:  [AVAudioPlayerNode] = []   // 8 nodes (4 per bank)
     private var musicBankMixers: [AVAudioMixerNode]  = []   // 2 per-bank sub-mixers
     private var musicMixer:      AVAudioMixerNode?
     private var activeBank:      Int = 0                    // 0 or 1
 
-    // Crossfade duration in seconds.
-    // A 4-second window gives the dip curve enough room to taper cleanly to near-zero
-    // before the new track swells in — shorter durations can make the dip feel abrupt.
-    private let kCrossfadeDur: Double = 4.0
+    // Silence-gap transition timing (seconds):
+    //   kFadeOutDur  — outgoing track ramps 1→0
+    //   kSilenceDur  — gap of actual silence between tracks
+    //   kFadeInDur   — incoming track ramps 0→1
+    // Total ≈ 6.75 s.  No two tracks ever play simultaneously.
+    private let kFadeOutDur:  Double = 2.5
+    private let kSilenceDur:  Double = 1.75
+    private let kFadeInDur:   Double = 2.5
+
     // How long before the next rotation fires.
     // Tracks are now 72–90 s; we rotate every 90 s so the listener hears the full
     // arrangement once before the next track begins.
@@ -231,7 +236,7 @@ final class GameAudio {
     private var crossfadeTimer: Timer?   // running crossfade step timer
 
     // Pre-rendered track buffers: [trackID][voiceIndex]
-    // Tracks 0,1 = day; Tracks 2,3 = evening
+    // Tracks 0,1,4,5,8,9  = day;  Tracks 2,3,6,7,10,11 = evening
     private var allTrackBuffers: [[AVAudioPCMBuffer]] = []   // [trackIdx] = array-of-4-voices
 
     // -- Ambience --
@@ -344,32 +349,50 @@ final class GameAudio {
     }
 
     // -----------------------------------------------------------------------
-    // MARK: Music — eight fun, upbeat, kid-friendly tracks
+    // MARK: Music — twelve tracks: cheerful kid-friendly + cooler grown-up
     // -----------------------------------------------------------------------
     //
-    // Track 0: "Sunshine Sprint"  — C major, 120 BPM, 16 s loop  [DAY]
+    // Track 0: "Sunshine Sprint"  — C major, 120 BPM  [DAY]
     //   Bouncy melody over walking bass + sparkling arpeggios.
     //
-    // Track 1: "Pixel Bounce"     — G major, 132 BPM, ~14.5 s loop [DAY]
+    // Track 1: "Pixel Bounce"     — G major, 132 BPM  [DAY]
     //   Skippy pentatonic melody, bright triangle arpeggios, punchy bass.
     //
-    // Track 2: "Cozy Campfire"    — F major, 108 BPM, ~17.8 s loop [EVENING]
-    //   Warm and cheerful — still all-major, a touch softer and dreamier.
+    // Track 2: "Cozy Campfire"    — F major, 108 BPM  [EVENING]
+    //   Warm and cheerful — all-major, a touch softer and dreamier.
     //
-    // Track 3: "Starlight Waltz"  — D major, 120 BPM, 12 s loop  [EVENING]
-    //   Lilting 3/4 feel, gentle melody, happy but calm.
+    // Track 3: "Starlight Waltz"  — D major, 120 BPM, 3/4 feel  [EVENING]
+    //   Lilting waltz, gentle melody, happy but calm.
     //
-    // Track 4: "Adventure March"  — A major, 126 BPM, ~15.2 s loop [DAY]
+    // Track 4: "Adventure March"  — A major, 126 BPM  [DAY]
     //   Bold dotted-rhythm march feel, bright and energetic.
     //
-    // Track 5: "Rainbow Road"     — Bb major, 116 BPM, ~16.5 s loop [DAY]
+    // Track 5: "Rainbow Road"     — Bb major, 116 BPM  [DAY]
     //   Joyful chromatic-flavored melody with a skip-hop groove.
     //
-    // Track 6: "Firefly Lullaby"  — G major, 96 BPM, ~20 s loop [EVENING]
+    // Track 6: "Firefly Lullaby"  — G major, 96 BPM  [EVENING]
     //   Gentle pentatonic melody, soft and dreamy but still happy.
     //
-    // Track 7: "Moon Garden"      — E major, 104 BPM, ~18.5 s loop [EVENING]
-    //   Flowing waltz-like 6/8 feel, warm and lush.
+    // Track 7: "Moon Garden"      — E major, 104 BPM, 6/8 feel  [EVENING]
+    //   Flowing lush 6/8 feel, warm and lush.
+    //
+    // -- Cooler, more grown-up tracks (still upbeat / fun) --
+    //
+    // Track 8:  "Copper Run"      — D minor→F major, 118 BPM  [DAY]
+    //   Driving minor-to-major chiptune platformer progression.
+    //   Verse in Dm (D F A), chorus lifts to F major (F A C).
+    //
+    // Track 9:  "Voltage"         — E minor, 128 BPM  [DAY]
+    //   Punchy laid-back groove with a walking minor-pentatonic bassline.
+    //   Feels like a cooler side-scroller; bridge opens to G major.
+    //
+    // Track 10: "Lost Ruins"      — A minor, 100 BPM  [EVENING]
+    //   Epic-but-gentle exploration theme in Am. Melodic arch spans Am→C→G.
+    //   Bridge modulates to F major for contrast before return.
+    //
+    // Track 11: "Dusk Drift"      — C minor→Eb major, 92 BPM  [EVENING]
+    //   Cool laid-back groove, half-time feel. Verse in Cm; chorus brightens
+    //   to Eb major. Synth-pad texture, sparse bass hits.
     //
     // Each track is synthesized as 4 independent looping voice buffers:
     //   Voice 0 = melody   (sine + slight harmonic blend, medium vol)
@@ -377,8 +400,9 @@ final class GameAudio {
     //   Voice 2 = arpeggio (sine, fast ascending broken chord, light vol)
     //   Voice 3 = pad      (sine, sustained chord, very soft backing)
     //
-    // Tracks 0,1,4,5 belong to .day group; Tracks 2,3,6,7 to .evening group.
-    // Rotation: tracks cycle within their group every 75 s via crossFadeToTrack.
+    // Day group:     Tracks 0,1,4,5,8,9
+    // Evening group: Tracks 2,3,6,7,10,11
+    // Rotation: tracks cycle within their group every 90 s via crossFadeToTrack.
 
     private func startMusic() {
         if allTrackBuffers.isEmpty { buildAllTrackBuffers() }
@@ -401,11 +425,11 @@ final class GameAudio {
         scheduleTrackRotation()
     }
 
-    // Indices for each group: day → 0,1,4,5   evening → 2,3,6,7
+    // Indices for each group: day → 0,1,4,5,8,9   evening → 2,3,6,7,10,11
     private func trackIndices(for group: TrackGroup) -> [Int] {
         switch group {
-        case .day:     return [0, 1, 4, 5]
-        case .evening: return [2, 3, 6, 7]
+        case .day:     return [0, 1, 4, 5, 8, 9]
+        case .evening: return [2, 3, 6, 7, 10, 11]
         }
     }
 
@@ -445,24 +469,22 @@ final class GameAudio {
         }
     }
 
-    /// Dip-crossfade: the outgoing track fades toward near-silence and the incoming
-    /// track then swells in, creating a clear "one ends, the next begins" feel rather
-    /// than two tracks playing together at full volume.
+    /// Silence-gap transition: out → silence → in.
     ///
-    /// Curve (angle sweeps 0 → π/2 over kCrossfadeDur):
-    ///   outBank gain = cos(angle)^kDipExp   — starts at 1, reaches ~0.05 near midpoint
-    ///   inBank  gain = sin(angle)^kDipExp   — starts at 0, lags behind outgoing fade
-    ///
-    /// With kDipExp = 2.5 the midpoint gains are sin(π/4)^2.5 ≈ 0.21 and
-    /// cos(π/4)^2.5 ≈ 0.21, so total loudness dips to ~0.42 of normal — clearly
-    /// audible as a taper-then-swell rather than a constant-power blend.
+    /// Phase 1 (kFadeOutDur  ≈ 2.5 s): outgoing bank ramps 1 → 0.
+    /// Phase 2 (kSilenceDur  ≈ 1.75 s): both banks held at 0 (actual silence).
+    /// Phase 3 (kFadeInDur   ≈ 2.5 s): incoming bank ramps 0 → 1.
+    /// Total ≈ 6.75 s.
     ///
     /// Safety guarantees:
     ///   • Cancels any in-flight crossfadeTimer before starting a new one —
     ///     bank volumes can never fight between two concurrent faders.
-    ///   • Clamps both volumes to exact 0.0 / 1.0 at the final step.
-    ///   • Stops the outgoing bank's nodes after the fade to free scheduling resources.
-    private let kDipExp: Float = 2.5
+    ///   • No two tracks ever play simultaneously (incoming bank nodes start only
+    ///     at the end of Phase 2, just before Phase 3 begins).
+    ///   • Volume is clamped to exact 0.0 / 1.0 at phase boundaries — no float drift.
+    ///   • Outgoing bank nodes are stopped immediately when their volume reaches 0,
+    ///     freeing scheduling resources during the silence gap.
+    ///   • Power-curve fade (exponent 2.0) prevents audible clicks at ramp edges.
 
     private func crossFadeToTrack(_ idx: Int) {
         crossfadeTimer?.invalidate()
@@ -472,38 +494,70 @@ final class GameAudio {
         let inBank  = 1 - activeBank
         activeBank  = inBank
 
-        // Always start from a clean 1 / 0 split; an interrupted prior fade may have
-        // left the outgoing bank somewhere below 1.
+        // Snap both banks to a known state before we start timing.
         musicBankMixers[outBank].outputVolume = 1.0
         musicBankMixers[inBank].outputVolume  = 0.0
+        // Silence the incoming bank's nodes until Phase 3.
+        let inOffset = inBank * 4
+        for i in 0 ..< 4 { musicBankNodes[inOffset + i].stop() }
 
-        // Prime the incoming bank silently so it is ready to fade in.
-        playTrackOnBank(idx, bank: inBank)
+        // ---- Phase constants ------------------------------------------------
+        // 50 ms per step → smooth ~20 Hz volume updates across all phases.
+        let stepDur  = 0.050                                                    // 50 ms
+        let stepsOut  = Int((kFadeOutDur / stepDur).rounded())                  // ≈ 50
+        let stepsDead = Int((kSilenceDur  / stepDur).rounded())                 // ≈ 35
+        let stepsIn   = Int((kFadeInDur   / stepDur).rounded())                 // ≈ 50
 
-        let steps   = 80                               // 80 steps over 4 s → 50 ms each
-        let stepDur = kCrossfadeDur / Double(steps)
-        var step    = 0
+        // Total step budget: fade-out + silence + fade-in.
+        let totalSteps = stepsOut + stepsDead + stepsIn
+        var step = 0
 
         crossfadeTimer = Timer.scheduledTimer(withTimeInterval: stepDur, repeats: true) {
             [weak self] timer in
             guard let self else { timer.invalidate(); return }
             step += 1
-            if step >= steps {
+
+            if step <= stepsOut {
+                // --- Phase 1: fade out ---
+                let progress = Float(step) / Float(stepsOut)
+                // Power-2 ease-in: starts fast then slows to zero — smooth tail.
+                let gain = pow(1.0 - progress, 2.0)
+                self.musicBankMixers[outBank].outputVolume = max(0, gain)
+
+                if step == stepsOut {
+                    // Outgoing bank is now silent — stop its nodes to free resources.
+                    self.musicBankMixers[outBank].outputVolume = 0.0
+                    let offset = outBank * 4
+                    for i in 0 ..< 4 { self.musicBankNodes[offset + i].stop() }
+                    // Prime the incoming bank at zero volume so it is ready for Phase 3.
+                    self.musicBankMixers[inBank].outputVolume = 0.0
+                    self.playTrackOnBank(idx, bank: inBank)
+                }
+
+            } else if step <= stepsOut + stepsDead {
+                // --- Phase 2: silence — both banks already at 0, nothing to do.
+                //     Return early from this timer tick; wait for Phase 3.
+                return
+
+            } else if step <= totalSteps {
+                // --- Phase 3: fade in ---
+                let progress = Float(step - stepsOut - stepsDead) / Float(stepsIn)
+                // Power-2 ease-out: starts slow, accelerates — avoids abrupt jump.
+                let gain = pow(progress, 2.0)
+                self.musicBankMixers[inBank].outputVolume = min(1, gain)
+
+                if step >= totalSteps {
+                    timer.invalidate()
+                    self.crossfadeTimer = nil
+                    self.musicBankMixers[inBank].outputVolume  = 1.0
+                    self.musicBankMixers[outBank].outputVolume = 0.0
+                }
+            } else {
+                // Guard: should not reach here, but clamp and stop if we do.
                 timer.invalidate()
                 self.crossfadeTimer = nil
                 self.musicBankMixers[inBank].outputVolume  = 1.0
                 self.musicBankMixers[outBank].outputVolume = 0.0
-                let offset = outBank * 4
-                for i in 0 ..< 4 { self.musicBankNodes[offset + i].stop() }
-            } else {
-                // Dip curve: both channels use a power > 1 so they both pull toward
-                // zero near the midpoint.  sin^exp lags behind cos^exp so the taper
-                // finishes before the swell reaches full — reads as "end / start".
-                let angle   = Float(step) / Float(steps) * (.pi / 2)
-                let inGain  = pow(sin(angle), self.kDipExp)
-                let outGain = pow(cos(angle), self.kDipExp)
-                self.musicBankMixers[inBank].outputVolume  = inGain
-                self.musicBankMixers[outBank].outputVolume = outGain
             }
         }
     }
@@ -534,6 +588,10 @@ final class GameAudio {
         allTrackBuffers.append(buildTrack5_RainbowRoad())      // Day 5
         allTrackBuffers.append(buildTrack6_FireflyLullaby())   // Evening 6
         allTrackBuffers.append(buildTrack7_MoonGarden())       // Evening 7
+        allTrackBuffers.append(buildTrack8_CopperRun())        // Day 8
+        allTrackBuffers.append(buildTrack9_Voltage())          // Day 9
+        allTrackBuffers.append(buildTrack10_LostRuins())       // Evening 10
+        allTrackBuffers.append(buildTrack11_DuskDrift())       // Evening 11
     }
 
     // -----------------------------------------------------------------------
@@ -2147,6 +2205,734 @@ final class GameAudio {
         if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.17) { voices.append(v) }
         if let v = buildSectionedVoice(sections: arpSections,   shape: .sine,     baseVol: 0.10) { voices.append(v) }
         if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.09) { voices.append(v) }
+        return voices
+    }
+
+    // -----------------------------------------------------------------------
+    // MARK: Track 8 — "Copper Run" (D minor → F major, 118 BPM) [DAY]
+    // -----------------------------------------------------------------------
+    // Driving chiptune-platformer feel. Verse in D minor (D F A C),
+    // chorus lifts to F major (F A C) for a satisfying minor→major payoff.
+    // Form: Intro(8q) → Verse A(16q) → Chorus(16q) → Verse B(16q) →
+    //       Chorus(16q) → Bridge(12q, Bb major colour) → Chorus-out(16q) → Outro(8q)
+    // Total ≈ 108 q ≈ 55 s at 118 BPM.
+    //
+    // Sound: triangle bass gives a chiptune edge; melody uses osc(.sine)
+    // with a tighter rhythmic staccato feel (shorter dur, more gap).
+
+    private func buildTrack8_CopperRun() -> [AVAudioPCMBuffer] {
+        let q: Float = 60.0 / 118.0; let e: Float = q / 2; let h: Float = q * 2
+
+        // D minor scale notes
+        let D3: Float = 146.832; let F3: Float = 174.614; let A3: Float = 220.000; let C3: Float = 130.813
+        let D4: Float = 293.665; let F4: Float = 349.228; let A4: Float = 440.000; let C4: Float = 261.626
+        let D5: Float = 587.330; let F5: Float = 698.456; let A5: Float = 880.000; let C5: Float = 523.251
+        let G4: Float = 391.995; let G5: Float = 783.991; let Bb4: Float = 466.164; let Bb3: Float = 233.082
+        let G3: Float = 195.998
+
+        // ---- Melody ---------------------------------------------------------
+        let melIntro: [MusicalNote] = [
+            .init(hz: D5, dur: q*0.75, gap: q*0.25), .init(hz: F5,  dur: q*0.75, gap: q*0.25),
+            .init(hz: A5, dur: h*0.75, gap: h*0.25), .init(hz: F5,  dur: q*0.75, gap: q*0.25),
+            .init(hz: D5, dur: h*0.72, gap: h*0.28),
+        ]
+        // Verse: minor-flavoured driving run (staccato feel)
+        let melVerseA: [MusicalNote] = [
+            .init(hz: D5,  dur: q*0.70, gap: q*0.30), .init(hz: F5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: A5,  dur: q*0.70, gap: q*0.30), .init(hz: C5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: A5,  dur: q*0.70, gap: q*0.30), .init(hz: F5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: D5,  dur: h*0.68, gap: h*0.32),
+            .init(hz: F5,  dur: q*0.70, gap: q*0.30), .init(hz: G5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: A5,  dur: q*0.70, gap: q*0.30), .init(hz: G5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: F5,  dur: q*0.70, gap: q*0.30), .init(hz: D5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: C5,  dur: h*0.68, gap: h*0.32),
+        ]
+        // Chorus: lifts to F major — F A C feel, brighter peak
+        let melChorus: [MusicalNote] = [
+            .init(hz: F5,  dur: q*0.72, gap: q*0.28), .init(hz: A5,  dur: q*0.72, gap: q*0.28),
+            .init(hz: C5,  dur: q*0.72, gap: q*0.28), .init(hz: A5,  dur: q*0.72, gap: q*0.28),
+            .init(hz: F5,  dur: h*0.70, gap: h*0.30),
+            .init(hz: G5,  dur: q*0.72, gap: q*0.28), .init(hz: A5,  dur: q*0.72, gap: q*0.28),
+            .init(hz: Bb4, dur: q*0.72, gap: q*0.28), .init(hz: A5,  dur: q*0.72, gap: q*0.28),
+            .init(hz: G5,  dur: q*0.70, gap: q*0.30), .init(hz: F5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: A5,  dur: h*0.68, gap: h*0.32),
+        ]
+        let melVerseB: [MusicalNote] = [
+            .init(hz: A5,  dur: q*0.70, gap: q*0.30), .init(hz: G5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: F5,  dur: q*0.70, gap: q*0.30), .init(hz: D5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: C5,  dur: h*0.68, gap: h*0.32),
+            .init(hz: D5,  dur: q*0.70, gap: q*0.30), .init(hz: F5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: G5,  dur: q*0.70, gap: q*0.30), .init(hz: A5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: F5,  dur: q*0.70, gap: q*0.30), .init(hz: D5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: A4,  dur: h*0.68, gap: h*0.32),
+        ]
+        // Bridge: Bb major colour — Bb4 C5 D5 F5
+        let melBridge: [MusicalNote] = [
+            .init(hz: Bb4, dur: q*0.75, gap: q*0.25), .init(hz: C5,  dur: q*0.75, gap: q*0.25),
+            .init(hz: D5,  dur: h*0.72, gap: h*0.28),
+            .init(hz: F5,  dur: q*0.75, gap: q*0.25), .init(hz: D5,  dur: q*0.75, gap: q*0.25),
+            .init(hz: C5,  dur: h*0.72, gap: h*0.28),
+            .init(hz: Bb4, dur: q*0.72, gap: q*0.28), .init(hz: C5,  dur: q*0.72, gap: q*0.28),
+            .init(hz: D5,  dur: h*0.70, gap: h*0.30),
+        ]
+        let melOutro: [MusicalNote] = [
+            .init(hz: A5, dur: q*0.72, gap: q*0.28), .init(hz: F5, dur: q*0.72, gap: q*0.28),
+            .init(hz: D5, dur: h*0.70, gap: h*0.30), .init(hz: F5, dur: q*0.72, gap: q*0.28),
+            .init(hz: D5, dur: h*0.68, gap: h*0.32),
+        ]
+
+        let melSections: [SectionSpec] = [
+            .init(notes: melIntro,  volScale: 0.52),
+            .init(notes: melVerseA, volScale: 0.80),
+            .init(notes: melChorus, volScale: 1.00),
+            .init(notes: melVerseB, volScale: 0.82),
+            .init(notes: melChorus, volScale: 1.00),
+            .init(notes: melBridge, volScale: 0.88),
+            .init(notes: melChorus, volScale: 1.00),
+            .init(notes: melOutro,  volScale: 0.48),
+        ]
+
+        // ---- Bass (staccato, driving) ----------------------------------------
+        let bassIntro: [MusicalNote] = [
+            .init(hz: D3, dur: q*0.55, gap: q*0.45), .init(hz: A3, dur: q*0.55, gap: q*0.45),
+        ]
+        let bassVerse: [MusicalNote] = [
+            .init(hz: D3,  dur: q*0.58, gap: q*0.42), .init(hz: D3,  dur: q*0.58, gap: q*0.42),
+            .init(hz: F3,  dur: q*0.58, gap: q*0.42), .init(hz: A3,  dur: q*0.58, gap: q*0.42),
+            .init(hz: C3,  dur: q*0.58, gap: q*0.42), .init(hz: D3,  dur: q*0.58, gap: q*0.42),
+            .init(hz: A3,  dur: h*0.55, gap: h*0.45),
+            .init(hz: Bb3, dur: q*0.58, gap: q*0.42), .init(hz: F3,  dur: q*0.58, gap: q*0.42),
+            .init(hz: C3,  dur: q*0.58, gap: q*0.42), .init(hz: D3,  dur: q*0.58, gap: q*0.42),
+            .init(hz: A3,  dur: q*0.58, gap: q*0.42), .init(hz: F3,  dur: q*0.58, gap: q*0.42),
+            .init(hz: D3,  dur: h*0.55, gap: h*0.45),
+        ]
+        let bassChorus: [MusicalNote] = [
+            .init(hz: F3,  dur: q*0.55, gap: q*0.45), .init(hz: F3,  dur: q*0.55, gap: q*0.45),
+            .init(hz: A3,  dur: q*0.55, gap: q*0.45), .init(hz: C4,  dur: q*0.55, gap: q*0.45),
+            .init(hz: F3,  dur: h*0.52, gap: h*0.48),
+            .init(hz: G3,  dur: q*0.55, gap: q*0.45), .init(hz: Bb3, dur: q*0.55, gap: q*0.45),
+            .init(hz: F3,  dur: q*0.55, gap: q*0.45), .init(hz: A3,  dur: q*0.55, gap: q*0.45),
+            .init(hz: C4,  dur: q*0.55, gap: q*0.45), .init(hz: F3,  dur: q*0.55, gap: q*0.45),
+            .init(hz: A3,  dur: h*0.52, gap: h*0.48),
+        ]
+        let bassBridge: [MusicalNote] = [
+            .init(hz: Bb3, dur: h*0.60, gap: h*0.40), .init(hz: F3,  dur: h*0.60, gap: h*0.40),
+            .init(hz: C4,  dur: h*0.60, gap: h*0.40), .init(hz: G3,  dur: h*0.60, gap: h*0.40),
+            .init(hz: F3,  dur: h*0.60, gap: h*0.40), .init(hz: A3,  dur: h*0.60, gap: h*0.40),
+        ]
+
+        let bassSections: [SectionSpec] = [
+            .init(notes: bassIntro,  volScale: 0.48),
+            .init(notes: bassVerse,  volScale: 0.82),
+            .init(notes: bassChorus, volScale: 1.00),
+            .init(notes: bassVerse,  volScale: 0.82),
+            .init(notes: bassChorus, volScale: 1.00),
+            .init(notes: bassBridge, volScale: 0.88),
+            .init(notes: bassChorus, volScale: 1.00),
+            .init(notes: bassIntro,  volScale: 0.42),
+        ]
+
+        // ---- Arpeggio -------------------------------------------------------
+        let arpOff: [MusicalNote] = (0..<8).map { _ in .init(hz: 0, dur: q*0.5, gap: q*0.5) }
+        let arpVerse: [MusicalNote] = [
+            .init(hz: D4, dur: e*0.68, gap: e*0.32), .init(hz: F4,  dur: e*0.68, gap: e*0.32),
+            .init(hz: A4, dur: e*0.68, gap: e*0.32), .init(hz: C5,  dur: e*0.68, gap: e*0.32),
+        ]
+        let arpChorus: [MusicalNote] = [
+            .init(hz: F4, dur: e*0.65, gap: e*0.35), .init(hz: A4,  dur: e*0.65, gap: e*0.35),
+            .init(hz: C5, dur: e*0.65, gap: e*0.35), .init(hz: F5,  dur: e*0.65, gap: e*0.35),
+        ]
+        let arpBridge: [MusicalNote] = [
+            .init(hz: Bb3, dur: e*0.68, gap: e*0.32), .init(hz: D4, dur: e*0.68, gap: e*0.32),
+            .init(hz: F4,  dur: e*0.68, gap: e*0.32), .init(hz: Bb4, dur: e*0.68, gap: e*0.32),
+        ]
+
+        let arpSections: [SectionSpec] = [
+            .init(notes: arpOff,    volScale: 0.0),
+            .init(notes: arpVerse,  volScale: 0.62),
+            .init(notes: arpChorus, volScale: 1.00),
+            .init(notes: arpVerse,  volScale: 0.65),
+            .init(notes: arpChorus, volScale: 1.00),
+            .init(notes: arpBridge, volScale: 0.80),
+            .init(notes: arpChorus, volScale: 1.00),
+            .init(notes: arpOff,    volScale: 0.0),
+        ]
+
+        // ---- Pad ------------------------------------------------------------
+        let padIntro: [MusicalNote] = [
+            .init(hz: D4, dur: h*0.91, gap: h*0.09), .init(hz: A4, dur: h*0.91, gap: h*0.09),
+        ]
+        let padVerse: [MusicalNote] = [
+            .init(hz: D4, dur: h*0.91, gap: h*0.09), .init(hz: F4, dur: h*0.91, gap: h*0.09),
+            .init(hz: A4, dur: h*0.91, gap: h*0.09), .init(hz: C5, dur: h*0.91, gap: h*0.09),
+        ]
+        let padChorus: [MusicalNote] = [
+            .init(hz: F4, dur: h*0.91, gap: h*0.09), .init(hz: A4, dur: h*0.91, gap: h*0.09),
+            .init(hz: C5, dur: h*0.91, gap: h*0.09), .init(hz: F5, dur: h*0.91, gap: h*0.09),
+        ]
+        let padBridge: [MusicalNote] = [
+            .init(hz: Bb3, dur: h*0.91, gap: h*0.09), .init(hz: D4, dur: h*0.91, gap: h*0.09),
+            .init(hz: F4,  dur: h*0.91, gap: h*0.09), .init(hz: C5, dur: h*0.91, gap: h*0.09),
+            .init(hz: G4,  dur: h*0.91, gap: h*0.09), .init(hz: D4, dur: h*0.91, gap: h*0.09),
+        ]
+
+        let padSections: [SectionSpec] = [
+            .init(notes: padIntro,  volScale: 0.38),
+            .init(notes: padVerse,  volScale: 0.72),
+            .init(notes: padChorus, volScale: 1.00),
+            .init(notes: padVerse,  volScale: 0.72),
+            .init(notes: padChorus, volScale: 1.00),
+            .init(notes: padBridge, volScale: 0.85),
+            .init(notes: padChorus, volScale: 1.00),
+            .init(notes: padIntro,  volScale: 0.32),
+        ]
+
+        var voices: [AVAudioPCMBuffer] = []
+        if let v = buildSectionedVoice(sections: melSections,  shape: .sine,     baseVol: 0.28) { voices.append(v) }
+        if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.23) { voices.append(v) }
+        if let v = buildSectionedVoice(sections: arpSections,   shape: .triangle, baseVol: 0.13) { voices.append(v) }
+        if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.09) { voices.append(v) }
+        return voices
+    }
+
+    // -----------------------------------------------------------------------
+    // MARK: Track 9 — "Voltage" (E minor, 128 BPM) [DAY]
+    // -----------------------------------------------------------------------
+    // Punchy laid-back groove with a walking minor-pentatonic bass line.
+    // Feels like a cooler side-scroller; bridge opens briefly to G major.
+    // Form: Intro(8q) → Verse A(16q) → Chorus(16q) → Verse B(16q) →
+    //       Chorus(16q) → Bridge(12q, G major colour) → Chorus-out(16q) → Outro(8q)
+    // Total ≈ 108 q ≈ 50.6 s at 128 BPM.
+
+    private func buildTrack9_Voltage() -> [AVAudioPCMBuffer] {
+        let q: Float = 60.0 / 128.0; let e: Float = q / 2; let h: Float = q * 2
+
+        let E2: Float = 82.407;  let B2: Float = 123.471; let G2: Float = 97.999
+        let D3: Float = 146.832; let E3: Float = 164.814; let G3: Float = 195.998; let B3: Float = 246.942; let A3: Float = 220.000
+        let E4: Float = 329.628; let G4: Float = 391.995; let B4: Float = 493.883; let A4: Float = 440.000
+        let D5: Float = 587.330
+        let E5: Float = 659.255; let G5: Float = 783.991; let B5: Float = 987.767; let A5: Float = 880.000
+
+        // ---- Melody ---------------------------------------------------------
+        let melIntro: [MusicalNote] = [
+            .init(hz: E5, dur: q*0.72, gap: q*0.28), .init(hz: G5, dur: q*0.72, gap: q*0.28),
+            .init(hz: B5, dur: h*0.70, gap: h*0.30), .init(hz: G5, dur: q*0.72, gap: q*0.28),
+            .init(hz: E5, dur: h*0.68, gap: h*0.32),
+        ]
+        // Verse: Em pentatonic (E G A B D) driving run
+        let melVerseA: [MusicalNote] = [
+            .init(hz: E5,  dur: q*0.68, gap: q*0.32), .init(hz: G5,  dur: q*0.68, gap: q*0.32),
+            .init(hz: A5,  dur: q*0.68, gap: q*0.32), .init(hz: B5,  dur: q*0.68, gap: q*0.32),
+            .init(hz: A5,  dur: q*0.68, gap: q*0.32), .init(hz: G5,  dur: q*0.68, gap: q*0.32),
+            .init(hz: E5,  dur: h*0.65, gap: h*0.35),
+            .init(hz: D5,  dur: q*0.68, gap: q*0.32), .init(hz: E5,  dur: q*0.68, gap: q*0.32),
+            .init(hz: G5,  dur: q*0.68, gap: q*0.32), .init(hz: B5,  dur: q*0.68, gap: q*0.32),
+            .init(hz: A5,  dur: q*0.65, gap: q*0.35), .init(hz: G5,  dur: q*0.65, gap: q*0.35),
+            .init(hz: E5,  dur: h*0.65, gap: h*0.35),
+        ]
+        // Chorus: syncopated Em → G lift, peak at B5
+        let melChorus: [MusicalNote] = [
+            .init(hz: B5,  dur: q*0.70, gap: q*0.30), .init(hz: A5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: G5,  dur: h*0.68, gap: h*0.32),
+            .init(hz: E5,  dur: q*0.70, gap: q*0.30), .init(hz: D5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: E5,  dur: h*0.68, gap: h*0.32),
+            .init(hz: G5,  dur: q*0.70, gap: q*0.30), .init(hz: A5,  dur: q*0.70, gap: q*0.30),
+            .init(hz: B5,  dur: q*0.68, gap: q*0.32), .init(hz: G5,  dur: q*0.68, gap: q*0.32),
+            .init(hz: E5,  dur: h*0.65, gap: h*0.35),
+        ]
+        let melVerseB: [MusicalNote] = [
+            .init(hz: G5,  dur: q*0.68, gap: q*0.32), .init(hz: A5,  dur: q*0.68, gap: q*0.32),
+            .init(hz: B5,  dur: q*0.68, gap: q*0.32), .init(hz: A5,  dur: q*0.68, gap: q*0.32),
+            .init(hz: G5,  dur: h*0.65, gap: h*0.35),
+            .init(hz: E5,  dur: q*0.68, gap: q*0.32), .init(hz: G5,  dur: q*0.68, gap: q*0.32),
+            .init(hz: A5,  dur: q*0.68, gap: q*0.32), .init(hz: G5,  dur: q*0.68, gap: q*0.32),
+            .init(hz: D5,  dur: q*0.65, gap: q*0.35), .init(hz: E5,  dur: q*0.65, gap: q*0.35),
+            .init(hz: B4,  dur: h*0.65, gap: h*0.35),
+        ]
+        // Bridge: opens to G major (G B D) — brighter contrast
+        let melBridge: [MusicalNote] = [
+            .init(hz: G5,  dur: q*0.75, gap: q*0.25), .init(hz: B5,  dur: q*0.75, gap: q*0.25),
+            .init(hz: D5,  dur: h*0.72, gap: h*0.28),
+            .init(hz: A5,  dur: q*0.72, gap: q*0.28), .init(hz: G5,  dur: q*0.72, gap: q*0.28),
+            .init(hz: B4,  dur: h*0.70, gap: h*0.30),
+            .init(hz: A4,  dur: q*0.72, gap: q*0.28), .init(hz: B4,  dur: q*0.72, gap: q*0.28),
+            .init(hz: E5,  dur: h*0.70, gap: h*0.30),
+        ]
+        let melOutro: [MusicalNote] = [
+            .init(hz: B5, dur: q*0.70, gap: q*0.30), .init(hz: G5, dur: q*0.70, gap: q*0.30),
+            .init(hz: E5, dur: h*0.68, gap: h*0.32), .init(hz: G5, dur: q*0.70, gap: q*0.30),
+            .init(hz: E5, dur: h*0.65, gap: h*0.35),
+        ]
+
+        let melSections: [SectionSpec] = [
+            .init(notes: melIntro,  volScale: 0.52),
+            .init(notes: melVerseA, volScale: 0.80),
+            .init(notes: melChorus, volScale: 1.00),
+            .init(notes: melVerseB, volScale: 0.82),
+            .init(notes: melChorus, volScale: 1.00),
+            .init(notes: melBridge, volScale: 0.88),
+            .init(notes: melChorus, volScale: 1.00),
+            .init(notes: melOutro,  volScale: 0.48),
+        ]
+
+        // ---- Bass (walking minor-pentatonic, punchy) -------------------------
+        let bassIntro: [MusicalNote] = [
+            .init(hz: E2, dur: q*0.52, gap: q*0.48), .init(hz: B2, dur: q*0.52, gap: q*0.48),
+        ]
+        let bassVerse: [MusicalNote] = [
+            .init(hz: E3, dur: q*0.55, gap: q*0.45), .init(hz: G3, dur: q*0.55, gap: q*0.45),
+            .init(hz: A3, dur: q*0.55, gap: q*0.45), .init(hz: B3, dur: q*0.55, gap: q*0.45),
+            .init(hz: E3, dur: q*0.55, gap: q*0.45), .init(hz: D3, dur: q*0.55, gap: q*0.45),
+            .init(hz: E3, dur: h*0.52, gap: h*0.48),
+            .init(hz: G3, dur: q*0.55, gap: q*0.45), .init(hz: A3, dur: q*0.55, gap: q*0.45),
+            .init(hz: B3, dur: q*0.55, gap: q*0.45), .init(hz: A3, dur: q*0.55, gap: q*0.45),
+            .init(hz: G3, dur: q*0.55, gap: q*0.45), .init(hz: E3, dur: q*0.55, gap: q*0.45),
+            .init(hz: B2, dur: h*0.52, gap: h*0.48),
+        ]
+        let bassChorus: [MusicalNote] = [
+            .init(hz: E3, dur: q*0.52, gap: q*0.48), .init(hz: E3, dur: q*0.52, gap: q*0.48),
+            .init(hz: B3, dur: q*0.52, gap: q*0.48), .init(hz: A3, dur: q*0.52, gap: q*0.48),
+            .init(hz: G3, dur: q*0.52, gap: q*0.48), .init(hz: E3, dur: q*0.52, gap: q*0.48),
+            .init(hz: D3, dur: q*0.52, gap: q*0.48), .init(hz: E3, dur: q*0.52, gap: q*0.48),
+            .init(hz: G3, dur: q*0.52, gap: q*0.48), .init(hz: B3, dur: q*0.52, gap: q*0.48),
+            .init(hz: E3, dur: h*0.50, gap: h*0.50),
+        ]
+        let bassBridge: [MusicalNote] = [
+            .init(hz: G2, dur: h*0.58, gap: h*0.42), .init(hz: B2, dur: h*0.58, gap: h*0.42),
+            .init(hz: G3, dur: h*0.58, gap: h*0.42), .init(hz: D3, dur: h*0.58, gap: h*0.42),
+            .init(hz: A3, dur: h*0.58, gap: h*0.42), .init(hz: E3, dur: h*0.58, gap: h*0.42),
+        ]
+
+        let bassSections: [SectionSpec] = [
+            .init(notes: bassIntro,  volScale: 0.48),
+            .init(notes: bassVerse,  volScale: 0.82),
+            .init(notes: bassChorus, volScale: 1.00),
+            .init(notes: bassVerse,  volScale: 0.82),
+            .init(notes: bassChorus, volScale: 1.00),
+            .init(notes: bassBridge, volScale: 0.88),
+            .init(notes: bassChorus, volScale: 1.00),
+            .init(notes: bassIntro,  volScale: 0.42),
+        ]
+
+        // ---- Arpeggio -------------------------------------------------------
+        let arpOff: [MusicalNote] = (0..<8).map { _ in .init(hz: 0, dur: q*0.5, gap: q*0.5) }
+        let arpVerse: [MusicalNote] = [
+            .init(hz: E4, dur: e*0.65, gap: e*0.35), .init(hz: G4, dur: e*0.65, gap: e*0.35),
+            .init(hz: B4, dur: e*0.65, gap: e*0.35), .init(hz: E5, dur: e*0.65, gap: e*0.35),
+        ]
+        let arpChorus: [MusicalNote] = [
+            .init(hz: G4, dur: e*0.62, gap: e*0.38), .init(hz: B4, dur: e*0.62, gap: e*0.38),
+            .init(hz: E5, dur: e*0.62, gap: e*0.38), .init(hz: G5, dur: e*0.62, gap: e*0.38),
+        ]
+        let arpBridge: [MusicalNote] = [
+            .init(hz: G4, dur: e*0.65, gap: e*0.35), .init(hz: B4, dur: e*0.65, gap: e*0.35),
+            .init(hz: D5, dur: e*0.65, gap: e*0.35), .init(hz: G5, dur: e*0.65, gap: e*0.35),
+        ]
+
+        let arpSections: [SectionSpec] = [
+            .init(notes: arpOff,    volScale: 0.0),
+            .init(notes: arpVerse,  volScale: 0.62),
+            .init(notes: arpChorus, volScale: 1.00),
+            .init(notes: arpVerse,  volScale: 0.65),
+            .init(notes: arpChorus, volScale: 1.00),
+            .init(notes: arpBridge, volScale: 0.80),
+            .init(notes: arpChorus, volScale: 1.00),
+            .init(notes: arpOff,    volScale: 0.0),
+        ]
+
+        // ---- Pad ------------------------------------------------------------
+        let padIntro: [MusicalNote] = [
+            .init(hz: E4, dur: h*0.92, gap: h*0.08), .init(hz: B4, dur: h*0.92, gap: h*0.08),
+        ]
+        let padVerse: [MusicalNote] = [
+            .init(hz: E4, dur: h*0.92, gap: h*0.08), .init(hz: G4, dur: h*0.92, gap: h*0.08),
+            .init(hz: B4, dur: h*0.92, gap: h*0.08), .init(hz: D5, dur: h*0.92, gap: h*0.08),
+        ]
+        let padChorus: [MusicalNote] = [
+            .init(hz: G4, dur: h*0.92, gap: h*0.08), .init(hz: B4, dur: h*0.92, gap: h*0.08),
+            .init(hz: E5, dur: h*0.92, gap: h*0.08), .init(hz: G5, dur: h*0.92, gap: h*0.08),
+        ]
+        let padBridge: [MusicalNote] = [
+            .init(hz: G4, dur: h*0.92, gap: h*0.08), .init(hz: B4, dur: h*0.92, gap: h*0.08),
+            .init(hz: D5, dur: h*0.92, gap: h*0.08), .init(hz: A4, dur: h*0.92, gap: h*0.08),
+            .init(hz: E5, dur: h*0.92, gap: h*0.08), .init(hz: B4, dur: h*0.92, gap: h*0.08),
+        ]
+
+        let padSections: [SectionSpec] = [
+            .init(notes: padIntro,  volScale: 0.38),
+            .init(notes: padVerse,  volScale: 0.72),
+            .init(notes: padChorus, volScale: 1.00),
+            .init(notes: padVerse,  volScale: 0.75),
+            .init(notes: padChorus, volScale: 1.00),
+            .init(notes: padBridge, volScale: 0.85),
+            .init(notes: padChorus, volScale: 1.00),
+            .init(notes: padIntro,  volScale: 0.32),
+        ]
+
+        var voices: [AVAudioPCMBuffer] = []
+        if let v = buildSectionedVoice(sections: melSections,  shape: .sine,     baseVol: 0.27) { voices.append(v) }
+        if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.23) { voices.append(v) }
+        if let v = buildSectionedVoice(sections: arpSections,   shape: .triangle, baseVol: 0.12) { voices.append(v) }
+        if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.09) { voices.append(v) }
+        return voices
+    }
+
+    // -----------------------------------------------------------------------
+    // MARK: Track 10 — "Lost Ruins" (A minor, 100 BPM) [EVENING]
+    // -----------------------------------------------------------------------
+    // Epic-but-gentle exploration theme. Melodic arch: Am → C → G → F → Am.
+    // Bridge modulates briefly to F major for contrast before returning to Am.
+    // Form: Intro(8q) → Verse A(16q) → Chorus(16q) → Verse B(16q) →
+    //       Chorus(16q) → Bridge(12q, F major colour) → Chorus-out(16q) → Outro(8q)
+    // Total ≈ 108 q ≈ 64.8 s at 100 BPM.
+    //
+    // Sound: slower, more legato melody (longer gate dur, smaller gap).
+    // Bass uses gentle half-note pulse. Arpeggio is softer and more atmospheric.
+
+    private func buildTrack10_LostRuins() -> [AVAudioPCMBuffer] {
+        let q: Float = 60.0 / 100.0; let e: Float = q / 2; let h: Float = q * 2
+
+        let A2: Float = 110.000; let C3: Float = 130.813; let E3: Float = 164.814
+        let A3: Float = 220.000; let C4: Float = 261.626; let E4: Float = 329.628; let G3: Float = 195.998
+        let A4: Float = 440.000; let C5: Float = 523.251; let E5: Float = 659.255; let G4: Float = 391.995
+        let F4: Float = 349.228; let F5: Float = 698.456; let F3: Float = 174.614; let B4: Float = 493.883
+        let D5: Float = 587.330; let G5: Float = 783.991; let A5: Float = 880.000
+
+        // ---- Melody (legato, expressive) ------------------------------------
+        let melIntro: [MusicalNote] = [
+            .init(hz: A4, dur: q*0.90, gap: q*0.10), .init(hz: C5,  dur: q*0.90, gap: q*0.10),
+            .init(hz: E5, dur: h*0.88, gap: h*0.12), .init(hz: C5,  dur: q*0.90, gap: q*0.10),
+            .init(hz: A4, dur: h*0.85, gap: h*0.15),
+        ]
+        // Verse A: Am → C → G arc
+        let melVerseA: [MusicalNote] = [
+            .init(hz: A5,  dur: q*0.90, gap: q*0.10), .init(hz: G5,  dur: q*0.90, gap: q*0.10),
+            .init(hz: E5,  dur: h*0.88, gap: h*0.12),
+            .init(hz: C5,  dur: q*0.90, gap: q*0.10), .init(hz: D5,  dur: q*0.90, gap: q*0.10),
+            .init(hz: E5,  dur: h*0.88, gap: h*0.12),
+            .init(hz: G5,  dur: q*0.88, gap: q*0.12), .init(hz: E5,  dur: q*0.88, gap: q*0.12),
+            .init(hz: C5,  dur: q*0.88, gap: q*0.12), .init(hz: A4,  dur: q*0.88, gap: q*0.12),
+            .init(hz: B4,  dur: q*0.88, gap: q*0.12), .init(hz: C5,  dur: q*0.88, gap: q*0.12),
+            .init(hz: A4,  dur: h*0.85, gap: h*0.15),
+        ]
+        // Chorus: sweeps up to G5, fuller and more epic
+        let melChorus: [MusicalNote] = [
+            .init(hz: E5,  dur: q*0.88, gap: q*0.12), .init(hz: G5,  dur: q*0.88, gap: q*0.12),
+            .init(hz: A5,  dur: h*0.88, gap: h*0.12),
+            .init(hz: G5,  dur: q*0.88, gap: q*0.12), .init(hz: E5,  dur: q*0.88, gap: q*0.12),
+            .init(hz: C5,  dur: h*0.88, gap: h*0.12),
+            .init(hz: D5,  dur: q*0.88, gap: q*0.12), .init(hz: E5,  dur: q*0.88, gap: q*0.12),
+            .init(hz: G5,  dur: q*0.88, gap: q*0.12), .init(hz: A5,  dur: q*0.88, gap: q*0.12),
+            .init(hz: E5,  dur: h*0.85, gap: h*0.15),
+        ]
+        // Verse B: starts on C5, different shape
+        let melVerseB: [MusicalNote] = [
+            .init(hz: C5,  dur: q*0.90, gap: q*0.10), .init(hz: E5,  dur: q*0.90, gap: q*0.10),
+            .init(hz: G5,  dur: h*0.88, gap: h*0.12),
+            .init(hz: A5,  dur: q*0.88, gap: q*0.12), .init(hz: G5,  dur: q*0.88, gap: q*0.12),
+            .init(hz: E5,  dur: h*0.88, gap: h*0.12),
+            .init(hz: F5,  dur: q*0.88, gap: q*0.12), .init(hz: E5,  dur: q*0.88, gap: q*0.12),
+            .init(hz: C5,  dur: q*0.88, gap: q*0.12), .init(hz: A4,  dur: q*0.88, gap: q*0.12),
+            .init(hz: C5,  dur: q*0.88, gap: q*0.12), .init(hz: E5,  dur: q*0.88, gap: q*0.12),
+            .init(hz: A4,  dur: h*0.85, gap: h*0.15),
+        ]
+        // Bridge: F major colour (F A C) — lighter contrast
+        let melBridge: [MusicalNote] = [
+            .init(hz: F5,  dur: q*0.90, gap: q*0.10), .init(hz: A5,  dur: q*0.90, gap: q*0.10),
+            .init(hz: C5,  dur: h*0.88, gap: h*0.12),
+            .init(hz: A5,  dur: q*0.88, gap: q*0.12), .init(hz: G5,  dur: q*0.88, gap: q*0.12),
+            .init(hz: F5,  dur: h*0.88, gap: h*0.12),
+            .init(hz: E5,  dur: q*0.88, gap: q*0.12), .init(hz: C5,  dur: q*0.88, gap: q*0.12),
+            .init(hz: A4,  dur: h*0.85, gap: h*0.15),
+        ]
+        let melOutro: [MusicalNote] = [
+            .init(hz: G5,  dur: q*0.90, gap: q*0.10), .init(hz: E5,  dur: q*0.90, gap: q*0.10),
+            .init(hz: A4,  dur: h*0.88, gap: h*0.12), .init(hz: C5,  dur: q*0.90, gap: q*0.10),
+            .init(hz: A4,  dur: h*0.85, gap: h*0.15),
+        ]
+
+        let melSections: [SectionSpec] = [
+            .init(notes: melIntro,  volScale: 0.50),
+            .init(notes: melVerseA, volScale: 0.78),
+            .init(notes: melChorus, volScale: 1.00),
+            .init(notes: melVerseB, volScale: 0.80),
+            .init(notes: melChorus, volScale: 1.00),
+            .init(notes: melBridge, volScale: 0.85),
+            .init(notes: melChorus, volScale: 1.00),
+            .init(notes: melOutro,  volScale: 0.45),
+        ]
+
+        // ---- Bass (legato half-note pulse) ----------------------------------
+        let bassIntro: [MusicalNote] = [
+            .init(hz: A2, dur: h*0.80, gap: h*0.20), .init(hz: E3, dur: h*0.80, gap: h*0.20),
+        ]
+        let bassVerse: [MusicalNote] = [
+            .init(hz: A3, dur: h*0.80, gap: h*0.20), .init(hz: C4, dur: h*0.80, gap: h*0.20),
+            .init(hz: G3, dur: h*0.80, gap: h*0.20), .init(hz: E4, dur: h*0.80, gap: h*0.20),
+            .init(hz: A3, dur: h*0.80, gap: h*0.20), .init(hz: C4, dur: h*0.80, gap: h*0.20),
+            .init(hz: E3, dur: h*0.80, gap: h*0.20), .init(hz: A3, dur: h*0.80, gap: h*0.20),
+        ]
+        let bassChorus: [MusicalNote] = [
+            .init(hz: A3, dur: q*0.75, gap: q*0.25), .init(hz: E4, dur: q*0.75, gap: q*0.25),
+            .init(hz: C4, dur: q*0.75, gap: q*0.25), .init(hz: G3, dur: q*0.75, gap: q*0.25),
+            .init(hz: A3, dur: q*0.75, gap: q*0.25), .init(hz: C4, dur: q*0.75, gap: q*0.25),
+            .init(hz: G3, dur: q*0.75, gap: q*0.25), .init(hz: E4, dur: q*0.75, gap: q*0.25),
+            .init(hz: A3, dur: q*0.75, gap: q*0.25), .init(hz: E3, dur: q*0.75, gap: q*0.25),
+            .init(hz: A3, dur: h*0.72, gap: h*0.28),
+        ]
+        let bassBridge: [MusicalNote] = [
+            .init(hz: F3, dur: h*0.80, gap: h*0.20), .init(hz: C4, dur: h*0.80, gap: h*0.20),
+            .init(hz: G3, dur: h*0.80, gap: h*0.20), .init(hz: C3, dur: h*0.80, gap: h*0.20),
+            .init(hz: F3, dur: h*0.80, gap: h*0.20), .init(hz: A3, dur: h*0.80, gap: h*0.20),
+        ]
+
+        let bassSections: [SectionSpec] = [
+            .init(notes: bassIntro,  volScale: 0.45),
+            .init(notes: bassVerse,  volScale: 0.78),
+            .init(notes: bassChorus, volScale: 1.00),
+            .init(notes: bassVerse,  volScale: 0.80),
+            .init(notes: bassChorus, volScale: 1.00),
+            .init(notes: bassBridge, volScale: 0.85),
+            .init(notes: bassChorus, volScale: 1.00),
+            .init(notes: bassIntro,  volScale: 0.40),
+        ]
+
+        // ---- Arpeggio (atmospheric, softer) ---------------------------------
+        let arpOff: [MusicalNote] = (0..<8).map { _ in .init(hz: 0, dur: q*0.5, gap: q*0.5) }
+        let arpVerse: [MusicalNote] = [
+            .init(hz: A4, dur: e*0.72, gap: e*0.28), .init(hz: C5, dur: e*0.72, gap: e*0.28),
+            .init(hz: E5, dur: e*0.72, gap: e*0.28), .init(hz: A5, dur: e*0.72, gap: e*0.28),
+        ]
+        let arpChorus: [MusicalNote] = [
+            .init(hz: C5, dur: e*0.70, gap: e*0.30), .init(hz: E5, dur: e*0.70, gap: e*0.30),
+            .init(hz: G5, dur: e*0.70, gap: e*0.30), .init(hz: C5, dur: e*0.70, gap: e*0.30),
+        ]
+        let arpBridge: [MusicalNote] = [
+            .init(hz: F4, dur: e*0.72, gap: e*0.28), .init(hz: A4, dur: e*0.72, gap: e*0.28),
+            .init(hz: C5, dur: e*0.72, gap: e*0.28), .init(hz: F5, dur: e*0.72, gap: e*0.28),
+        ]
+
+        let arpSections: [SectionSpec] = [
+            .init(notes: arpOff,    volScale: 0.0),
+            .init(notes: arpVerse,  volScale: 0.55),
+            .init(notes: arpChorus, volScale: 0.90),
+            .init(notes: arpVerse,  volScale: 0.58),
+            .init(notes: arpChorus, volScale: 0.90),
+            .init(notes: arpBridge, volScale: 0.75),
+            .init(notes: arpChorus, volScale: 0.90),
+            .init(notes: arpOff,    volScale: 0.0),
+        ]
+
+        // ---- Pad (sustained, atmospheric) -----------------------------------
+        let padIntro: [MusicalNote] = [
+            .init(hz: A4, dur: h*0.95, gap: h*0.05), .init(hz: E4, dur: h*0.95, gap: h*0.05),
+        ]
+        let padVerse: [MusicalNote] = [
+            .init(hz: A4, dur: h*0.95, gap: h*0.05), .init(hz: C5, dur: h*0.95, gap: h*0.05),
+            .init(hz: G4, dur: h*0.95, gap: h*0.05), .init(hz: E5, dur: h*0.95, gap: h*0.05),
+        ]
+        let padChorus: [MusicalNote] = [
+            .init(hz: A4, dur: h*0.95, gap: h*0.05), .init(hz: E5, dur: h*0.95, gap: h*0.05),
+            .init(hz: C5, dur: h*0.95, gap: h*0.05), .init(hz: G5, dur: h*0.95, gap: h*0.05),
+        ]
+        let padBridge: [MusicalNote] = [
+            .init(hz: F4, dur: h*0.95, gap: h*0.05), .init(hz: C5, dur: h*0.95, gap: h*0.05),
+            .init(hz: A4, dur: h*0.95, gap: h*0.05), .init(hz: E5, dur: h*0.95, gap: h*0.05),
+            .init(hz: G4, dur: h*0.95, gap: h*0.05), .init(hz: C5, dur: h*0.95, gap: h*0.05),
+        ]
+
+        let padSections: [SectionSpec] = [
+            .init(notes: padIntro,  volScale: 0.40),
+            .init(notes: padVerse,  volScale: 0.75),
+            .init(notes: padChorus, volScale: 1.00),
+            .init(notes: padVerse,  volScale: 0.75),
+            .init(notes: padChorus, volScale: 1.00),
+            .init(notes: padBridge, volScale: 0.85),
+            .init(notes: padChorus, volScale: 1.00),
+            .init(notes: padIntro,  volScale: 0.35),
+        ]
+
+        var voices: [AVAudioPCMBuffer] = []
+        if let v = buildSectionedVoice(sections: melSections,  shape: .sine,     baseVol: 0.26) { voices.append(v) }
+        if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.20) { voices.append(v) }
+        if let v = buildSectionedVoice(sections: arpSections,   shape: .sine,     baseVol: 0.10) { voices.append(v) }
+        if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.11) { voices.append(v) }
+        return voices
+    }
+
+    // -----------------------------------------------------------------------
+    // MARK: Track 11 — "Dusk Drift" (C minor → Eb major, 92 BPM) [EVENING]
+    // -----------------------------------------------------------------------
+    // Cool laid-back groove, half-time feel. Verse in C minor; chorus brightens
+    // to Eb major. Synth-pad texture, sparse punchy bass hits (quarter-note pulse).
+    // Form: Intro(8q) → Verse A(16q) → Chorus(16q) → Verse B(16q) →
+    //       Chorus(16q) → Bridge(12q, Ab major colour) → Chorus-out(16q) → Outro(8q)
+    // Total ≈ 108 q ≈ 70.4 s at 92 BPM.
+
+    private func buildTrack11_DuskDrift() -> [AVAudioPCMBuffer] {
+        let q: Float = 60.0 / 92.0; let e: Float = q / 2; let h: Float = q * 2
+
+        let C3: Float = 130.813; let Eb3: Float = 155.563; let G3: Float = 195.998; let Ab2: Float = 103.826
+        let C4: Float = 261.626; let Eb4: Float = 311.127; let G4: Float = 391.995; let Ab3: Float = 207.652
+        let C5: Float = 523.251; let Eb5: Float = 622.254; let G5: Float = 783.991; let Ab4: Float = 415.305
+        let Bb3: Float = 233.082; let Bb4: Float = 466.164; let F4: Float = 349.228; let F3: Float = 174.614
+
+        // ---- Melody (slower, more legato — laid-back groove feel) -----------
+        let melIntro: [MusicalNote] = [
+            .init(hz: C5,  dur: q*0.88, gap: q*0.12), .init(hz: Eb5, dur: q*0.88, gap: q*0.12),
+            .init(hz: G5,  dur: h*0.85, gap: h*0.15), .init(hz: Eb5, dur: q*0.88, gap: q*0.12),
+            .init(hz: C5,  dur: h*0.83, gap: h*0.17),
+        ]
+        // Verse A: Cm groove — C Eb G Bb
+        let melVerseA: [MusicalNote] = [
+            .init(hz: C5,  dur: q*0.85, gap: q*0.15), .init(hz: Eb5, dur: q*0.85, gap: q*0.15),
+            .init(hz: G5,  dur: h*0.83, gap: h*0.17),
+            .init(hz: Bb4, dur: q*0.85, gap: q*0.15), .init(hz: G5,  dur: q*0.85, gap: q*0.15),
+            .init(hz: Eb5, dur: h*0.83, gap: h*0.17),
+            .init(hz: C5,  dur: q*0.83, gap: q*0.17), .init(hz: Bb4, dur: q*0.83, gap: q*0.17),
+            .init(hz: G4,  dur: q*0.83, gap: q*0.17), .init(hz: Ab4, dur: q*0.83, gap: q*0.17),
+            .init(hz: Bb4, dur: q*0.83, gap: q*0.17), .init(hz: C5,  dur: q*0.83, gap: q*0.17),
+            .init(hz: G4,  dur: h*0.80, gap: h*0.20),
+        ]
+        // Chorus: lifts to Eb major — Eb G Bb, brighter and warmer
+        let melChorus: [MusicalNote] = [
+            .init(hz: Eb5, dur: q*0.85, gap: q*0.15), .init(hz: G5,  dur: q*0.85, gap: q*0.15),
+            .init(hz: Bb4, dur: h*0.83, gap: h*0.17),
+            .init(hz: G5,  dur: q*0.85, gap: q*0.15), .init(hz: Eb5, dur: q*0.85, gap: q*0.15),
+            .init(hz: C5,  dur: h*0.83, gap: h*0.17),
+            .init(hz: Bb4, dur: q*0.83, gap: q*0.17), .init(hz: C5,  dur: q*0.83, gap: q*0.17),
+            .init(hz: Eb5, dur: q*0.83, gap: q*0.17), .init(hz: G5,  dur: q*0.83, gap: q*0.17),
+            .init(hz: Eb5, dur: h*0.80, gap: h*0.20),
+        ]
+        let melVerseB: [MusicalNote] = [
+            .init(hz: G5,  dur: q*0.85, gap: q*0.15), .init(hz: Eb5, dur: q*0.85, gap: q*0.15),
+            .init(hz: C5,  dur: h*0.83, gap: h*0.17),
+            .init(hz: Bb4, dur: q*0.85, gap: q*0.15), .init(hz: C5,  dur: q*0.85, gap: q*0.15),
+            .init(hz: Eb5, dur: h*0.83, gap: h*0.17),
+            .init(hz: G5,  dur: q*0.83, gap: q*0.17), .init(hz: Bb4, dur: q*0.83, gap: q*0.17),
+            .init(hz: Ab4, dur: q*0.83, gap: q*0.17), .init(hz: G4,  dur: q*0.83, gap: q*0.17),
+            .init(hz: Ab4, dur: q*0.83, gap: q*0.17), .init(hz: Bb4, dur: q*0.83, gap: q*0.17),
+            .init(hz: C5,  dur: h*0.80, gap: h*0.20),
+        ]
+        // Bridge: Ab major colour (Ab C Eb) — dream-like contrast
+        let melBridge: [MusicalNote] = [
+            .init(hz: Ab4, dur: q*0.88, gap: q*0.12), .init(hz: C5,  dur: q*0.88, gap: q*0.12),
+            .init(hz: Eb5, dur: h*0.85, gap: h*0.15),
+            .init(hz: G5,  dur: q*0.85, gap: q*0.15), .init(hz: Eb5, dur: q*0.85, gap: q*0.15),
+            .init(hz: C5,  dur: h*0.83, gap: h*0.17),
+            .init(hz: Bb4, dur: q*0.83, gap: q*0.17), .init(hz: G4,  dur: q*0.83, gap: q*0.17),
+            .init(hz: Ab4, dur: h*0.80, gap: h*0.20),
+        ]
+        let melOutro: [MusicalNote] = [
+            .init(hz: G5,  dur: q*0.88, gap: q*0.12), .init(hz: Eb5, dur: q*0.88, gap: q*0.12),
+            .init(hz: C5,  dur: h*0.85, gap: h*0.15), .init(hz: Eb5, dur: q*0.88, gap: q*0.12),
+            .init(hz: C5,  dur: h*0.83, gap: h*0.17),
+        ]
+
+        let melSections: [SectionSpec] = [
+            .init(notes: melIntro,  volScale: 0.50),
+            .init(notes: melVerseA, volScale: 0.78),
+            .init(notes: melChorus, volScale: 1.00),
+            .init(notes: melVerseB, volScale: 0.80),
+            .init(notes: melChorus, volScale: 1.00),
+            .init(notes: melBridge, volScale: 0.85),
+            .init(notes: melChorus, volScale: 1.00),
+            .init(notes: melOutro,  volScale: 0.45),
+        ]
+
+        // ---- Bass (sparse half-note hits, laid-back) -------------------------
+        let bassIntro: [MusicalNote] = [
+            .init(hz: C3,  dur: h*0.65, gap: h*0.35), .init(hz: G3,  dur: h*0.65, gap: h*0.35),
+        ]
+        let bassVerse: [MusicalNote] = [
+            .init(hz: C3,  dur: h*0.68, gap: h*0.32), .init(hz: Eb3, dur: h*0.68, gap: h*0.32),
+            .init(hz: G3,  dur: h*0.68, gap: h*0.32), .init(hz: Bb3, dur: h*0.68, gap: h*0.32),
+            .init(hz: C3,  dur: h*0.68, gap: h*0.32), .init(hz: G3,  dur: h*0.68, gap: h*0.32),
+            .init(hz: Ab2, dur: h*0.68, gap: h*0.32), .init(hz: Eb3, dur: h*0.68, gap: h*0.32),
+        ]
+        let bassChorus: [MusicalNote] = [
+            .init(hz: Eb3, dur: h*0.68, gap: h*0.32), .init(hz: G3,  dur: h*0.68, gap: h*0.32),
+            .init(hz: Bb3, dur: h*0.68, gap: h*0.32), .init(hz: G3,  dur: h*0.68, gap: h*0.32),
+            .init(hz: Eb3, dur: h*0.68, gap: h*0.32), .init(hz: C4,  dur: h*0.68, gap: h*0.32),
+            .init(hz: Bb3, dur: h*0.68, gap: h*0.32), .init(hz: Eb3, dur: h*0.68, gap: h*0.32),
+        ]
+        let bassBridge: [MusicalNote] = [
+            .init(hz: Ab2, dur: h*0.70, gap: h*0.30), .init(hz: C3,  dur: h*0.70, gap: h*0.30),
+            .init(hz: Eb3, dur: h*0.70, gap: h*0.30), .init(hz: Ab3, dur: h*0.70, gap: h*0.30),
+            .init(hz: F3,  dur: h*0.70, gap: h*0.30), .init(hz: C3,  dur: h*0.70, gap: h*0.30),
+        ]
+
+        let bassSections: [SectionSpec] = [
+            .init(notes: bassIntro,  volScale: 0.45),
+            .init(notes: bassVerse,  volScale: 0.78),
+            .init(notes: bassChorus, volScale: 1.00),
+            .init(notes: bassVerse,  volScale: 0.80),
+            .init(notes: bassChorus, volScale: 1.00),
+            .init(notes: bassBridge, volScale: 0.85),
+            .init(notes: bassChorus, volScale: 1.00),
+            .init(notes: bassIntro,  volScale: 0.40),
+        ]
+
+        // ---- Arpeggio (sparse, floating) ------------------------------------
+        let arpOff: [MusicalNote] = (0..<8).map { _ in .init(hz: 0, dur: q*0.5, gap: q*0.5) }
+        let arpVerse: [MusicalNote] = [
+            .init(hz: C4,  dur: e*0.72, gap: e*0.28), .init(hz: Eb4, dur: e*0.72, gap: e*0.28),
+            .init(hz: G4,  dur: e*0.72, gap: e*0.28), .init(hz: C5,  dur: e*0.72, gap: e*0.28),
+        ]
+        let arpChorus: [MusicalNote] = [
+            .init(hz: Eb4, dur: e*0.70, gap: e*0.30), .init(hz: G4,  dur: e*0.70, gap: e*0.30),
+            .init(hz: Bb4, dur: e*0.70, gap: e*0.30), .init(hz: Eb5, dur: e*0.70, gap: e*0.30),
+        ]
+        let arpBridge: [MusicalNote] = [
+            .init(hz: Ab3, dur: e*0.72, gap: e*0.28), .init(hz: C4,  dur: e*0.72, gap: e*0.28),
+            .init(hz: Eb4, dur: e*0.72, gap: e*0.28), .init(hz: Ab4, dur: e*0.72, gap: e*0.28),
+        ]
+
+        let arpSections: [SectionSpec] = [
+            .init(notes: arpOff,    volScale: 0.0),
+            .init(notes: arpVerse,  volScale: 0.55),
+            .init(notes: arpChorus, volScale: 0.95),
+            .init(notes: arpVerse,  volScale: 0.58),
+            .init(notes: arpChorus, volScale: 0.95),
+            .init(notes: arpBridge, volScale: 0.75),
+            .init(notes: arpChorus, volScale: 0.95),
+            .init(notes: arpOff,    volScale: 0.0),
+        ]
+
+        // ---- Pad (warm, sustained — the dominant texture) -------------------
+        let padIntro: [MusicalNote] = [
+            .init(hz: C4,  dur: h*0.96, gap: h*0.04), .init(hz: G4,  dur: h*0.96, gap: h*0.04),
+        ]
+        let padVerse: [MusicalNote] = [
+            .init(hz: C4,  dur: h*0.96, gap: h*0.04), .init(hz: Eb4, dur: h*0.96, gap: h*0.04),
+            .init(hz: G4,  dur: h*0.96, gap: h*0.04), .init(hz: Bb4, dur: h*0.96, gap: h*0.04),
+        ]
+        let padChorus: [MusicalNote] = [
+            .init(hz: Eb4, dur: h*0.96, gap: h*0.04), .init(hz: G4,  dur: h*0.96, gap: h*0.04),
+            .init(hz: Bb4, dur: h*0.96, gap: h*0.04), .init(hz: Eb5, dur: h*0.96, gap: h*0.04),
+        ]
+        let padBridge: [MusicalNote] = [
+            .init(hz: Ab3, dur: h*0.96, gap: h*0.04), .init(hz: C4,  dur: h*0.96, gap: h*0.04),
+            .init(hz: Eb4, dur: h*0.96, gap: h*0.04), .init(hz: Ab4, dur: h*0.96, gap: h*0.04),
+            .init(hz: F4,  dur: h*0.96, gap: h*0.04), .init(hz: C4,  dur: h*0.96, gap: h*0.04),
+        ]
+
+        let padSections: [SectionSpec] = [
+            .init(notes: padIntro,  volScale: 0.42),
+            .init(notes: padVerse,  volScale: 0.78),
+            .init(notes: padChorus, volScale: 1.00),
+            .init(notes: padVerse,  volScale: 0.80),
+            .init(notes: padChorus, volScale: 1.00),
+            .init(notes: padBridge, volScale: 0.85),
+            .init(notes: padChorus, volScale: 1.00),
+            .init(notes: padIntro,  volScale: 0.36),
+        ]
+
+        var voices: [AVAudioPCMBuffer] = []
+        if let v = buildSectionedVoice(sections: melSections,  shape: .sine,     baseVol: 0.25) { voices.append(v) }
+        if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.19) { voices.append(v) }
+        if let v = buildSectionedVoice(sections: arpSections,   shape: .sine,     baseVol: 0.10) { voices.append(v) }
+        if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.12) { voices.append(v) }
         return voices
     }
 

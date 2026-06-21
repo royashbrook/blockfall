@@ -31,10 +31,13 @@
 //           PALETTE: deep base / dark shadowed flanks / bright crown/mane accent
 //           silhouette: massive layered figure with spire crown.
 //
-// kind 5 — NIGHT MONSTER:   dark hunched body (tilted forward), 6 sharp limbs
-//           (4 legs + 2 clawed arms), jagged back spikes, GLOWING HDR RED eyes
+// kind 5 — NIGHT MONSTER:   deep maroon-purple hunched body (tilted forward), 6 limbs
+//           (4 legs + 2 clawed arms), bony-ivory back spikes, GLOWING HDR RED eyes
 //           (luminance > 1 → bloom), gaping mouth slit, skittering lurching gait.
-//           silhouette: hunched pointed mass with splayed limbs and glowing eyes.
+//           PALETTE: dark maroon-purple back / lighter bruise-purple belly+head /
+//                    mid-purple limbs / bony ivory spike accent / sickly yellow-green claws
+//           Faint emissive purple rim on flanks for night visibility.
+//           silhouette: hunched pointed mass with splayed multi-tone limbs and glowing eyes.
 //
 // kind 6 — FALLING BLOCK:   single 0.9³ cube centered on entity position.
 //           uses entity color directly (block colour from engine — no creature
@@ -73,10 +76,11 @@
 //            bloom) like the beast but different color, a dark horizontal brow
 //            bar angled inward (menacing scowl), a wide jagged grin with uneven
 //            teeth — creepy but goofy, not gory.
-//            PALETTE: near-black body tinted from entity color / slightly lighter
-//            torso / accent on hands, feet, and face region — multi-color so
-//            adjacent parts are distinct. Entity tint provides variety so a crowd
-//            of kind-11s aren't identical.
+//            PALETTE: dark bruise-blue body (limbs, head back) / noticeably lighter
+//            dark-teal chest plate and forearms/lower-legs / sickly green hands+feet+
+//            face-trim accent / faint emissive teal rim on torso sides for night
+//            visibility. Entity tint provides variety so a crowd of kind-11s aren't
+//            identical. Distinct from kind-5 (maroon-purple) — this is blue-teal.
 //            ANIMATION: walk cycle (legs alternate, arms opposite), idle breathe
 //            Y-bob, whole-body sway (lurking menace), blink, hit-reaction squash
 //            all folded through the existing squashRig so every part recoils.
@@ -106,7 +110,7 @@
 //   earPhase    = phase * 0.71  + phaseHash * 6.3         — ear twitch cadence
 //   tailPhase   = phase * 1.60  + phaseHash * 2.2         — wag always running
 //
-// MULTICOLOR PALETTE convention (applies to all kinds 0-10 except kind 6):
+// MULTICOLOR PALETTE convention (applies to all kinds except kind 6):
 //   Each kind derives its own small palette from the entity's base rgb:
 //   backCol   = base tinted darker (top/back of body)
 //   bellyCol  = base brightened + mixed lighter (underside)
@@ -1587,12 +1591,31 @@ final class EntityRenderer {
         let sat = e.sat
         let Ryaw = EntityRenderer.rotY(e.yaw)
 
-        // Force entity color very dark — monsters are black/near-black with
-        // a tiny tint from entity color so siblings differ slightly.
+        // PALETTE: night beast (kind 5) — deep purple/maroon body, clearly colored
+        // but dark enough to stay creepy.  Entity tint provides per-instance variation
+        // so a pack is not identical.
         let tint = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
-        let bodyCol  = tint * 0.10 + SIMD3<Float>(0.04, 0.02, 0.06)   // near black, hint of purple
-        let spikeCol = tint * 0.08 + SIMD3<Float>(0.08, 0.04, 0.10)   // slightly lighter spikes
-        let clawCol  = tint * 0.06 + SIMD3<Float>(0.12, 0.06, 0.14)   // claws lightest dark part
+        // phaseHash already computed above; use it as a small per-creature offset.
+        let tvar = (hash + 1.0) * 0.5   // 0..1 range from phaseHash
+        // Back/top of body: deep maroon-purple — dark but unmistakably colored.
+        let bodyCol  = tint * 0.14 + SIMD3<Float>(
+            0.22 + tvar * 0.06,   // r: maroon base, varies warm
+            0.04 + tvar * 0.02,   // g: nearly absent
+            0.18 + tvar * 0.04)   // b: purple cast
+        // Belly/front of body: a shade lighter and slightly warmer (deep bruise-purple)
+        let bellyCol5 = tint * 0.16 + SIMD3<Float>(
+            0.34 + tvar * 0.05,
+            0.07 + tvar * 0.02,
+            0.26 + tvar * 0.03)
+        // Limbs (legs, upper arms): mid dark — between body and claws so depth reads
+        let limbCol  = tint * 0.18 + SIMD3<Float>(
+            0.28 + tvar * 0.04,
+            0.05 + tvar * 0.02,
+            0.22 + tvar * 0.03)
+        // Spikes on back: bony pale — clearly lighter, almost tinted bone-ivory
+        let spikeCol = tint * 0.12 + SIMD3<Float>(0.58, 0.46, 0.28)
+        // Claws/forearms: bright sickly yellow-green accent — pop against the dark
+        let clawCol  = tint * 0.10 + SIMD3<Float>(0.52, 0.62, 0.18)
         let mouthCol = SIMD3<Float>(0.55, 0.02, 0.02)                  // dark blood-red mouth slit
         // GLOWING RED HDR eyes — luminance > 1 → bloom red glow
         let eyeGlowCol = SIMD3<Float>(3.5, 0.05, 0.05)
@@ -1646,16 +1669,25 @@ final class EntityRenderer {
                 * EntityRenderer.scaleM(SIMD3(legW, legH, legD))
         }
 
-        // Body — hunched (via bodyHunch in pw)
+        // Body — hunched (via bodyHunch in pw), dark maroon-purple top
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bD)), rgb: bodyCol, sat: sat)
-        // Chest — a slightly lighter wedge pushed forward (gives hunched mass feel)
+        // Belly / chest wedge — lighter bruise-purple so the underside reads separately
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, -bH * 0.10, bD * 0.32),
                            SIMD3(bW * 0.78, bH * 0.60, bD * 0.30)),
-                 rgb: spikeCol, sat: sat)
+                 rgb: bellyCol5, sat: sat)
+        // Faint emissive rim on body sides (very low HDR, just enough to read at night).
+        // Two thin slabs on left/right flanks with sat = -1 so they bypass shading.
+        let rimCol5 = bodyCol + SIMD3<Float>(0.28, 0.04, 0.22)  // adds a dim purple glow rim
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(-bW * 0.50, 0, 0), SIMD3(s * 0.03, bH * 0.85, bD * 0.80)),
+                 rgb: rimCol5, sat: -1.0)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3( bW * 0.50, 0, 0), SIMD3(s * 0.03, bH * 0.85, bD * 0.80)),
+                 rgb: rimCol5, sat: -1.0)
 
-        // Back spikes — jagged uneven row
+        // Back spikes — bony pale ivory, jagged uneven row
         for idx in 0..<5 {
             let spkH = spikeHeights[idx]
             let spkZ = spikeZOffsets[idx]
@@ -1666,11 +1698,12 @@ final class EntityRenderer {
         }
 
         // Head — wide flat, sits low on body (menacing forward thrust)
+        // Use bellyCol5 (lighter) so the head reads distinct from the dark back body.
         let headY: Float = bH * 0.22
         let headZ: Float = bD * 0.46 + hD * 0.42
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, headY, headZ), SIMD3(hW, hH, hD)),
-                 rgb: bodyCol, sat: sat)
+                 rgb: bellyCol5, sat: sat)
 
         // FACE — NIGHT MONSTER: glowing red eyes (kept), plus ANGRY angled
         // brows pressing down over them and a JAGGED fanged mouth. The face is
@@ -1704,9 +1737,10 @@ final class EntityRenderer {
                  model: pw(SIMD3( hW * 0.26, headY + hH * 0.12, mnFaceZ),
                            SIMD3(eyeW, eyeH, eyeD)),
                  rgb: eyeGlowCol, sat: -1.0)  // emissive red
-        // ANGRY BROWS — dark angled bars pressing inward-down over the eyes
+        // ANGRY BROWS — bone-ivory (match spike color) angled bars pressing inward-down
         // (inner ends low, outer ends high → classic angry "V" scowl).
-        let mnBrowCol = spikeCol * 1.4
+        // Using spikeCol (bony pale) here so brows contrast against the purple head.
+        let mnBrowCol = spikeCol
         let mbL = EntityRenderer.trans(wc) * R * bodyHunch
             * EntityRenderer.trans(SIMD3(-hW * 0.26, headY + hH * 0.30, mnFaceZ))
             * EntityRenderer.rotZ(-0.40)
@@ -1718,52 +1752,84 @@ final class EntityRenderer {
         drawCube(enc: enc, viewProj: viewProj, model: mbL, rgb: mnBrowCol, sat: sat)
         drawCube(enc: enc, viewProj: viewProj, model: mbR, rgb: mnBrowCol, sat: sat)
 
-        // 4 angled legs — placed slightly splayed for menacing stance
+        // 4 angled legs — placed slightly splayed for menacing stance.
+        // Use limbCol (mid-dark, between body and claw) for upper leg; clawCol at tip.
         // Legs use world-space (no bodyHunch) so they plant on the ground correctly
         let hipY = -(bH * 0.5 + lurchY)   // offset for body lurch to keep feet near ground
         let legSplayAngleL = EntityRenderer.rotZ(-0.18)   // splay left legs outward
         let legSplayAngleR = EntityRenderer.rotZ( 0.18)
+        // Upper leg height (half of total leg, used to place the claw tip)
+        let upperLegH = legH * 0.55
         do {
-            // Front-left
+            // Front-left (upper limb segment)
             let hipFL = SIMD3<Float>(-bW * 0.44, bH * 0.5 + hipY, bD * 0.30)
-            let flModel = EntityRenderer.trans(wc) * R
+            let flUpper = EntityRenderer.trans(wc) * R
                 * EntityRenderer.trans(hipFL)
                 * legSplayAngleL
                 * EntityRenderer.rotX(legSwingFast)
-                * EntityRenderer.trans(SIMD3(0, -legH * 0.5, 0))
-                * EntityRenderer.scaleM(SIMD3(legW, legH, legD))
-            drawCube(enc: enc, viewProj: viewProj, model: flModel, rgb: clawCol, sat: sat)
+                * EntityRenderer.trans(SIMD3(0, -upperLegH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(legW, upperLegH, legD))
+            // Front-left (claw tip segment)
+            let flClaw = EntityRenderer.trans(wc) * R
+                * EntityRenderer.trans(hipFL)
+                * legSplayAngleL
+                * EntityRenderer.rotX(legSwingFast)
+                * EntityRenderer.trans(SIMD3(0, -upperLegH - (legH - upperLegH) * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(legW * 0.80, legH - upperLegH, legD * 0.80))
+            drawCube(enc: enc, viewProj: viewProj, model: flUpper, rgb: limbCol,  sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: flClaw,  rgb: clawCol, sat: sat)
             // Front-right
             let hipFR = SIMD3<Float>( bW * 0.44, bH * 0.5 + hipY, bD * 0.30)
-            let frModel = EntityRenderer.trans(wc) * R
+            let frUpper = EntityRenderer.trans(wc) * R
                 * EntityRenderer.trans(hipFR)
                 * legSplayAngleR
                 * EntityRenderer.rotX(-legSwingFast)
-                * EntityRenderer.trans(SIMD3(0, -legH * 0.5, 0))
-                * EntityRenderer.scaleM(SIMD3(legW, legH, legD))
-            drawCube(enc: enc, viewProj: viewProj, model: frModel, rgb: clawCol, sat: sat)
+                * EntityRenderer.trans(SIMD3(0, -upperLegH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(legW, upperLegH, legD))
+            let frClaw = EntityRenderer.trans(wc) * R
+                * EntityRenderer.trans(hipFR)
+                * legSplayAngleR
+                * EntityRenderer.rotX(-legSwingFast)
+                * EntityRenderer.trans(SIMD3(0, -upperLegH - (legH - upperLegH) * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(legW * 0.80, legH - upperLegH, legD * 0.80))
+            drawCube(enc: enc, viewProj: viewProj, model: frUpper, rgb: limbCol,  sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: frClaw,  rgb: clawCol, sat: sat)
             // Back-left
             let hipBL = SIMD3<Float>(-bW * 0.44, bH * 0.5 + hipY, -bD * 0.28)
-            let blModel = EntityRenderer.trans(wc) * R
+            let blUpper = EntityRenderer.trans(wc) * R
                 * EntityRenderer.trans(hipBL)
                 * legSplayAngleL
                 * EntityRenderer.rotX(-legSwingFast)
-                * EntityRenderer.trans(SIMD3(0, -legH * 0.5, 0))
-                * EntityRenderer.scaleM(SIMD3(legW, legH, legD))
-            drawCube(enc: enc, viewProj: viewProj, model: blModel, rgb: clawCol, sat: sat)
+                * EntityRenderer.trans(SIMD3(0, -upperLegH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(legW, upperLegH, legD))
+            let blClaw = EntityRenderer.trans(wc) * R
+                * EntityRenderer.trans(hipBL)
+                * legSplayAngleL
+                * EntityRenderer.rotX(-legSwingFast)
+                * EntityRenderer.trans(SIMD3(0, -upperLegH - (legH - upperLegH) * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(legW * 0.80, legH - upperLegH, legD * 0.80))
+            drawCube(enc: enc, viewProj: viewProj, model: blUpper, rgb: limbCol,  sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: blClaw,  rgb: clawCol, sat: sat)
             // Back-right
             let hipBR = SIMD3<Float>( bW * 0.44, bH * 0.5 + hipY, -bD * 0.28)
-            let brModel = EntityRenderer.trans(wc) * R
+            let brUpper = EntityRenderer.trans(wc) * R
                 * EntityRenderer.trans(hipBR)
                 * legSplayAngleR
                 * EntityRenderer.rotX(legSwingFast)
-                * EntityRenderer.trans(SIMD3(0, -legH * 0.5, 0))
-                * EntityRenderer.scaleM(SIMD3(legW, legH, legD))
-            drawCube(enc: enc, viewProj: viewProj, model: brModel, rgb: clawCol, sat: sat)
+                * EntityRenderer.trans(SIMD3(0, -upperLegH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(legW, upperLegH, legD))
+            let brClaw = EntityRenderer.trans(wc) * R
+                * EntityRenderer.trans(hipBR)
+                * legSplayAngleR
+                * EntityRenderer.rotX(legSwingFast)
+                * EntityRenderer.trans(SIMD3(0, -upperLegH - (legH - upperLegH) * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(legW * 0.80, legH - upperLegH, legD * 0.80))
+            drawCube(enc: enc, viewProj: viewProj, model: brUpper, rgb: limbCol,  sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: brClaw,  rgb: clawCol, sat: sat)
         }
 
-        // 2 CLAWED ARMS — jut from upper sides of body, claw forward/back
-        // Each arm: 2 segments (upper arm + lower forearm/claw)
+        // 2 CLAWED ARMS — jut from upper sides of body, claw forward/back.
+        // Upper arm segment uses limbCol; forearm claw tip uses clawCol (bright accent).
         do {
             // Left arm
             let armShoulderL = SIMD3<Float>(-bW * 0.48, bH * 0.28, bD * 0.20)
@@ -1774,8 +1840,8 @@ final class EntityRenderer {
                 * EntityRenderer.rotX(armSwingF)
                 * EntityRenderer.trans(SIMD3(0, -arm1H * 0.5, 0))
                 * EntityRenderer.scaleM(SIMD3(arm1W, arm1H, arm1D))
-            drawCube(enc: enc, viewProj: viewProj, model: upperArmLModel, rgb: spikeCol, sat: sat)
-            // Forearm claw — hangs from upper arm tip, extra forward claw angle
+            drawCube(enc: enc, viewProj: viewProj, model: upperArmLModel, rgb: limbCol, sat: sat)
+            // Forearm claw — hangs from upper arm tip, extra forward claw angle; bright accent
             let foreArmLModel = EntityRenderer.trans(wc) * R * bodyHunch
                 * EntityRenderer.trans(armShoulderL)
                 * EntityRenderer.rotZ(-0.55)
@@ -1794,7 +1860,7 @@ final class EntityRenderer {
                 * EntityRenderer.rotX(armSwingF)
                 * EntityRenderer.trans(SIMD3(0, -arm1H * 0.5, 0))
                 * EntityRenderer.scaleM(SIMD3(arm1W, arm1H, arm1D))
-            drawCube(enc: enc, viewProj: viewProj, model: upperArmRModel, rgb: spikeCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: upperArmRModel, rgb: limbCol, sat: sat)
             let foreArmRModel = EntityRenderer.trans(wc) * R * bodyHunch
                 * EntityRenderer.trans(armShoulderR)
                 * EntityRenderer.rotZ( 0.55)
@@ -2610,17 +2676,18 @@ final class EntityRenderer {
     // Face: scowl brow (dark bars angled inward-down), jagged grin (dark slash
     //       with irregular white teeth notches).
     //
-    // PALETTE (from entity base tint, forced dark):
-    //   bodyCol   = near-black with purple-grey tint (body + limbs)
-    //   torsoCol  = slightly lighter than bodyCol (the layered torso plate)
-    //   accentCol = deep muted teal (hands, feet, face region patch) — a menacing
-    //               accent that differs from kind-5's entirely purple-black palette
-    //   mouthCol  = dark cavity red
-    //   eyeGlow   = (0.8, 3.0, 0.1) HDR yellow-green → bloom
+    // PALETTE (from entity base tint, forced dark but COLORED):
+    //   bodyCol      = dark bruise-blue (upper legs, upper arms, head back, torso sides)
+    //   torsoCol     = lighter dark-teal (chest plate, brow bars)
+    //   faceShadeCol = mid blue-grey (lower legs, forearms, neck, face overlay slab)
+    //   accentCol    = sickly vivid green (hands, feet, face-trim bars) — night-readable
+    //   rimCol11     = faint emissive teal on torso flanks for night silhouette
+    //   mouthCol     = dark cavity red
+    //   eyeGlow      = (0.8, 3.0, 0.1) HDR yellow-green → bloom
     //
     // Parts: legs-upper(2) legs-lower(2) feet(2) arms-upper(2) arms-lower(2)
-    //        hands(2) torso(1) torso-plate(1) neck(1) head(1) brow(2)
-    //        eye-glow(2) mouth(1) teeth(3) = 22 parts
+    //        hands(2) torso(1) torso-rim(2) torso-plate(1) neck(1) head(1)
+    //        face-overlay(1) face-trim(2) brow(2) eye-glow(2) mouth(1) teeth(3) = 27 parts
     // =========================================================================
     private func drawKind11(enc: MTLRenderCommandEncoder,
                             viewProj: simd_float4x4,
@@ -2633,17 +2700,28 @@ final class EntityRenderer {
         let sat = e.sat
         let Ryaw = EntityRenderer.rotY(e.yaw)
 
-        // Force the color dark — humanoids are near-black with a teal-purple tint.
-        // Entity color provides individual variation so a pack doesn't all look identical.
+        // PALETTE: humanoid lurker (kind 11) — dark teal/bruise-blue body, clearly
+        // distinct from kind-5's maroon-purple. Multi-tone so adjacent parts read as
+        // separate in low light. Entity tint provides per-instance variation.
         let tint     = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
-        // bodyCol: very dark blue-grey with a hint of the entity tint
-        let bodyCol  = tint * 0.08 + SIMD3<Float>(0.05, 0.06, 0.09)
-        // torsoCol: a shade lighter — makes the chest plate read as a separate layer
-        let torsoCol = tint * 0.12 + SIMD3<Float>(0.09, 0.10, 0.14)
-        // accentCol: muted teal on hands, feet, face patch — cooler than body
-        let accentCol = tint * 0.06 + SIMD3<Float>(0.04, 0.14, 0.12)
+        let tvar11   = (hash + 1.0) * 0.5   // 0..1 per-creature range
+        // bodyCol: dark bruise-blue (limbs, head back, upper body) — clearly blue-teal
+        let bodyCol  = tint * 0.14 + SIMD3<Float>(
+            0.06 + tvar11 * 0.03,
+            0.14 + tvar11 * 0.05,
+            0.28 + tvar11 * 0.06)
+        // torsoCol: noticeably lighter dark-teal chest plate — reads as separate layer
+        let torsoCol = tint * 0.18 + SIMD3<Float>(
+            0.10 + tvar11 * 0.04,
+            0.26 + tvar11 * 0.06,
+            0.40 + tvar11 * 0.04)
+        // accentCol: vivid sickly green on hands, feet, face patch — the lurker's signature
+        // darker/more muted than the eye glow, but clearly a different hue from the body
+        let accentCol = tint * 0.12 + SIMD3<Float>(0.12, 0.44, 0.18)
         // Mouth: deep dark red cavity
         let mouthCol  = SIMD3<Float>(0.42, 0.02, 0.04)
+        // Neck/lower face: slightly lighter warm-grey so head depth reads on the neck
+        let faceShadeCol = tint * 0.16 + SIMD3<Float>(0.12, 0.22, 0.30)
         // HDR yellow-green glowing eyes — luminance >> 1, blooms into eerie glow.
         // Distinct from beast's (3.5, 0.05, 0.05) red: this is a sickly yellow-green.
         let eyeGlowCol = SIMD3<Float>(0.8, 3.0, 0.1)
@@ -2735,22 +2813,31 @@ final class EntityRenderer {
         let hipL = SIMD3<Float>(-tW * 0.22, hipY, 0)
         let hipR = SIMD3<Float>( tW * 0.22, hipY, 0)
 
-        // Draw legs (upper, lower, foot for each side)
-        drawCube(enc: enc, viewProj: viewProj, model: ulwH(hipL, legSwingL), rgb: bodyCol,   sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: ulwH(hipR, legSwingR), rgb: bodyCol,   sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: llwH(hipL, legSwingL), rgb: bodyCol,   sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: llwH(hipR, legSwingR), rgb: bodyCol,   sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: footW_(hipL, legSwingL), rgb: accentCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: footW_(hipR, legSwingR), rgb: accentCol, sat: sat)
+        // Draw legs: upper in bodyCol (dark teal), lower in slightly lighter faceShadeCol,
+        // feet in accentCol (vivid sickly green) for strong ankle contrast.
+        drawCube(enc: enc, viewProj: viewProj, model: ulwH(hipL, legSwingL), rgb: bodyCol,      sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: ulwH(hipR, legSwingR), rgb: bodyCol,      sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: llwH(hipL, legSwingL), rgb: faceShadeCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: llwH(hipR, legSwingR), rgb: faceShadeCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: footW_(hipL, legSwingL), rgb: accentCol,  sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: footW_(hipR, legSwingR), rgb: accentCol,  sat: sat)
 
         // ---- TORSO ----
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, 0, 0), SIMD3(tW, tH, tD)), rgb: bodyCol, sat: sat)
-        // Chest plate — slightly lighter slab on front of torso; makes the figure
-        // look "armored" and breaks the flat silhouette.
+        // Chest plate — noticeably lighter teal slab on front; reads as armored layer.
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, tH * 0.06, tD * 0.50), SIMD3(tpW, tpH, tpD)),
                  rgb: torsoCol, sat: sat)
+        // Faint emissive rim on torso sides — dim teal sheen so the silhouette is
+        // visible at night without a light source (sat = -1.0 bypasses shading).
+        let rimCol11 = bodyCol + SIMD3<Float>(0.04, 0.20, 0.30)   // adds dim teal rim glow
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(-tW * 0.50, 0, 0), SIMD3(s * 0.025, tH * 0.90, tD * 0.80)),
+                 rgb: rimCol11, sat: -1.0)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3( tW * 0.50, 0, 0), SIMD3(s * 0.025, tH * 0.90, tD * 0.80)),
+                 rgb: rimCol11, sat: -1.0)
 
         // ---- ARMS ----
         // Shoulders sit at upper sides of torso
@@ -2783,22 +2870,26 @@ final class EntityRenderer {
                 * EntityRenderer.scaleM(SIMD3(handW, handH, handD))
         }
 
-        drawCube(enc: enc, viewProj: viewProj, model: uaFunc(shoulderXL, armSwingL), rgb: bodyCol,   sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: uaFunc(shoulderXR, armSwingR), rgb: bodyCol,   sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: faFunc(shoulderXL, armSwingL), rgb: bodyCol,   sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: faFunc(shoulderXR, armSwingR), rgb: bodyCol,   sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: handFunc(shoulderXL, armSwingL), rgb: accentCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: handFunc(shoulderXR, armSwingR), rgb: accentCol, sat: sat)
+        // Upper arm: bodyCol (dark teal); forearm: faceShadeCol (a touch lighter); hand: accentCol
+        drawCube(enc: enc, viewProj: viewProj, model: uaFunc(shoulderXL, armSwingL), rgb: bodyCol,      sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: uaFunc(shoulderXR, armSwingR), rgb: bodyCol,      sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: faFunc(shoulderXL, armSwingL), rgb: faceShadeCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: faFunc(shoulderXR, armSwingR), rgb: faceShadeCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: handFunc(shoulderXL, armSwingL), rgb: accentCol,  sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: handFunc(shoulderXR, armSwingR), rgb: accentCol,  sat: sat)
 
         // ---- NECK + HEAD ----
+        // Neck uses faceShadeCol (lighter) so it reads against the darker torso.
         let neckY = tH * 0.50 + nkH * 0.5
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(0, neckY, 0), SIMD3(nkW, nkH, nkD)), rgb: bodyCol, sat: sat)
+                 model: pw(SIMD3(0, neckY, 0), SIMD3(nkW, nkH, nkD)), rgb: faceShadeCol, sat: sat)
 
         let headY: Float = tH * 0.50 + nkH + hH * 0.50
         // Head local Z: face is on the +Z side (forward) so eyes/mouth always
         // face the creature's heading direction.
         let headZ: Float = 0
+        // Head back uses bodyCol; face front uses faceShadeCol so the face reads as a
+        // lighter plane (the "mask look"). We draw the head body then overlay the face.
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, headY, headZ), SIMD3(hW, hH, hD)),
                  rgb: bodyCol, sat: sat)
@@ -2808,11 +2899,21 @@ final class EntityRenderer {
         // headZ is 0 (head centre is 0 local-Z), so hFaceZ = hD*0.5 + thin offset.
         let hFaceZ: Float = headZ + hD * 0.50 + s * 0.01   // front face of head
 
-        // Accent face patch: a slightly teal-tinted slab covering the face area.
-        // Gives the head a "masked" look and sets the eyes apart from the black head.
+        // Face overlay: faceShadeCol slab — lighter blue-grey "mask" that makes the
+        // front of the head clearly lighter than the dark sides (self-edge).
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, headY + hH * 0.06, hFaceZ - s*0.01),
                            SIMD3(hW * 0.80, hH * 0.62, s * 0.04)),
+                 rgb: faceShadeCol, sat: sat)
+        // Accent trim: a thin sickly-green frame around the face patch (above/below eyes)
+        // makes the face look like a glowing-framed mask at night.
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, headY + hH * 0.42, hFaceZ - s*0.01),
+                           SIMD3(hW * 0.76, s * 0.04, s * 0.03)),
+                 rgb: accentCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, headY - hH * 0.28, hFaceZ - s*0.01),
+                           SIMD3(hW * 0.76, s * 0.04, s * 0.03)),
                  rgb: accentCol, sat: sat)
 
         // GLOWING HDR YELLOW-GREEN EYES — emissive, no shading multiply (sat: -1.0)

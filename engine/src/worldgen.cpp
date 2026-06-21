@@ -159,7 +159,8 @@ static constexpr int SEA_LEVEL = 6;
 static constexpr int SNOW_LINE = 24;
 
 // Cave noise threshold: cells whose 3D noise > this become AIR.
-static constexpr float CAVE_THRESH = 0.68f;
+// Lowered from 0.68 to 0.65 to increase overall cave density (#11).
+static constexpr float CAVE_THRESH = 0.65f;
 
 // Surface margin for cave carving: caves must be this many blocks below surface.
 // FIX: raised from 2 to 6 to eliminate surface holes/AIR pockets visible from above.
@@ -309,6 +310,144 @@ static float fbm3(float wx, float wy, float wz, std::uint64_t seed, int octaves,
         freq    *= lacunarity;
     }
     return val / max_val;
+}
+
+// ---------------------------------------------------------------------------
+// Cave entrance system (#11 — surface-connected cave openings)
+// ---------------------------------------------------------------------------
+// A sparse grid (ENTRANCE_CELL_SIZE blocks per cell) places deliberate cave
+// mouth shafts where a vertical tunnel is carved from the surface down to a
+// depth where normal caves exist.  Each cell has one candidate entrance;
+// ~15% of cells spawn one.  The shaft is 1 block wide and 10-14 blocks deep,
+// centred at a chosen world (wx, wz) derived deterministically from the cell.
+//
+// Seam safety: the entrance position is derived purely from cell integer coords
+// × cell size, so any chunk that overlaps the shaft generates it identically.
+//
+// The no-surface-holes test must exempt entrance columns because by design the
+// surface block IS the top of the shaft opening and the blocks below are AIR.
+// We expose is_cave_entrance() via the header as worldgen_is_cave_entrance()
+// so the test can identify and skip those columns.
+// ---------------------------------------------------------------------------
+static constexpr int  ENTRANCE_CELL_SIZE  = 48;    // one candidate per 48×48 region
+static constexpr std::uint64_t ENTRANCE_SEED_MIX = 0xCA4E5EE7E57A4CE5ull;
+
+// Probability threshold: ~15% of cells spawn an entrance (out of 256).
+static constexpr std::uint64_t ENTRANCE_PROB_THRESH = 38u;  // 38/256 ≈ 14.8%
+
+// Depth of the carved shaft: how many blocks below the surface are turned to AIR.
+// Chosen so the shaft always reaches the depth where normal cave noise kicks in.
+static constexpr int ENTRANCE_SHAFT_DEPTH_MIN = 10;
+static constexpr int ENTRANCE_SHAFT_DEPTH_MAX = 14;
+
+struct EntranceDesc {
+    std::int32_t wx;   // world X of shaft centre
+    std::int32_t wz;   // world Z of shaft centre
+    int          shaft_depth;  // how many blocks below surface are carved
+    bool         present;
+};
+
+// Floor-division for negative coords.
+static std::int32_t entrance_floordiv(std::int32_t a, int b) noexcept {
+    return a / b - (a % b != 0 && (a ^ b) < 0 ? 1 : 0);
+}
+
+static EntranceDesc entrance_for_cell(std::int32_t ecx, std::int32_t ecz,
+                                       std::uint64_t seed) noexcept {
+    std::uint64_t eseed = fmix64(seed ^ ENTRANCE_SEED_MIX);
+    std::uint64_t h     = hash2(ecx, ecz, eseed);
+
+    // Probability gate.
+    if ((h & 0xFFu) >= ENTRANCE_PROB_THRESH) {
+        return EntranceDesc{0, 0, 0, false};
+    }
+
+    std::uint64_t h2 = fmix64(h ^ 0xE57A4CE5CA4EF00Dull);
+
+    // Offset within cell: keep away from cell edges so shaft stays inside.
+    std::int32_t off_x = 4 + static_cast<std::int32_t>(
+        (h2 >> 0u)  % static_cast<std::uint64_t>(ENTRANCE_CELL_SIZE - 8));
+    std::int32_t off_z = 4 + static_cast<std::int32_t>(
+        (h2 >> 16u) % static_cast<std::uint64_t>(ENTRANCE_CELL_SIZE - 8));
+
+    // Shaft depth.
+    int depth = ENTRANCE_SHAFT_DEPTH_MIN
+              + static_cast<int>((h2 >> 32u) % static_cast<std::uint64_t>(
+                    ENTRANCE_SHAFT_DEPTH_MAX - ENTRANCE_SHAFT_DEPTH_MIN + 1));
+
+    return EntranceDesc{
+        ecx * ENTRANCE_CELL_SIZE + off_x,
+        ecz * ENTRANCE_CELL_SIZE + off_z,
+        depth,
+        true
+    };
+}
+
+// Returns true if the world column (wx, wz) is the 1-block shaft of a cave entrance.
+// Used by terrain fill (to carve the shaft) and the public wrapper (for tests).
+static bool is_cave_entrance(std::int32_t wx, std::int32_t wz, std::uint64_t seed) noexcept {
+    std::int32_t ecx = entrance_floordiv(wx, ENTRANCE_CELL_SIZE);
+    std::int32_t ecz = entrance_floordiv(wz, ENTRANCE_CELL_SIZE);
+
+    // Check the owning cell and immediate neighbours (shaft is 1 block wide;
+    // at most 1 cell is relevant, but we scan a 3×3 neighbourhood for safety).
+    for (std::int32_t dce = -1; dce <= 1; ++dce) {
+        for (std::int32_t dcf = -1; dcf <= 1; ++dcf) {
+            EntranceDesc ed = entrance_for_cell(ecx + dce, ecz + dcf, seed);
+            if (!ed.present) continue;
+            if (ed.wx == wx && ed.wz == wz) return true;
+        }
+    }
+    return false;
+}
+
+// Get the shaft depth for a cave entrance column (0 if not an entrance).
+static int cave_entrance_depth(std::int32_t wx, std::int32_t wz, std::uint64_t seed) noexcept {
+    std::int32_t ecx = entrance_floordiv(wx, ENTRANCE_CELL_SIZE);
+    std::int32_t ecz = entrance_floordiv(wz, ENTRANCE_CELL_SIZE);
+    for (std::int32_t dce = -1; dce <= 1; ++dce) {
+        for (std::int32_t dcf = -1; dcf <= 1; ++dcf) {
+            EntranceDesc ed = entrance_for_cell(ecx + dce, ecz + dcf, seed);
+            if (!ed.present) continue;
+            if (ed.wx == wx && ed.wz == wz) return ed.shaft_depth;
+        }
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Ocean depth (#12 — deeper water bodies)
+// ---------------------------------------------------------------------------
+// For columns that are submerged (surface height H < SEA_LEVEL), we carve a
+// basin by lowering the effective solid floor.  The basin depth is a smooth
+// noise function of (wx, wz) so the ocean floor varies naturally and is seam-safe.
+//
+// Basin only applies when H is clearly below sea level (H <= SEA_LEVEL - 2)
+// to distinguish open-ocean columns from beach/shoreline transitions.  We add
+// OCEAN_BASIN_MIN..OCEAN_BASIN_MAX extra blocks of depth below H, so water
+// fills from the deeper floor up to SEA_LEVEL, giving 4-12 blocks of depth.
+// ---------------------------------------------------------------------------
+static constexpr int   OCEAN_BASIN_MIN   = 3;   // min extra blocks carved below H
+static constexpr int   OCEAN_BASIN_MAX   = 8;   // max extra blocks carved below H
+static constexpr float OCEAN_BASIN_FREQ  = 1.0f / 64.0f;
+static constexpr std::uint64_t OCEAN_BASIN_SEED_MIX = 0x0CE4B0CA5E1D0C5Aull;
+
+// Returns the extra depth below H to carve for a submerged ocean column.
+// Returns 0 for dry-land or shore columns (H > SEA_LEVEL - 2).
+static int ocean_basin_extra(std::int32_t wx, std::int32_t wz,
+                              int H, std::uint64_t seed) noexcept {
+    if (H > SEA_LEVEL - 2) return 0;  // shoreline or dry land: no basin carving
+
+    std::uint64_t bseed = fmix64(seed ^ OCEAN_BASIN_SEED_MIX);
+    // 2-octave noise in [0,1] for varied ocean floor undulation.
+    float n = fbm2(static_cast<float>(wx), static_cast<float>(wz),
+                   bseed, 2, OCEAN_BASIN_FREQ, 2.0f, 0.5f);
+    // Map [0,1] -> [OCEAN_BASIN_MIN, OCEAN_BASIN_MAX].
+    int extra = OCEAN_BASIN_MIN
+              + static_cast<int>(n * static_cast<float>(OCEAN_BASIN_MAX - OCEAN_BASIN_MIN + 1));
+    if (extra < OCEAN_BASIN_MIN) extra = OCEAN_BASIN_MIN;
+    if (extra > OCEAN_BASIN_MAX) extra = OCEAN_BASIN_MAX;
+    return extra;
 }
 
 // ---------------------------------------------------------------------------
@@ -1977,6 +2116,14 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed) {
 }
 
 // ---------------------------------------------------------------------------
+// Public helper: is_cave_entrance wrapper
+// ---------------------------------------------------------------------------
+bool worldgen_is_cave_entrance(std::int32_t wx, std::int32_t wz,
+                                std::uint64_t seed) noexcept {
+    return is_cave_entrance(wx, wz, seed);
+}
+
+// ---------------------------------------------------------------------------
 // Terrain fill — per-column block placement
 // ---------------------------------------------------------------------------
 void TerrainGen::seed(std::uint64_t s) {
@@ -2005,6 +2152,27 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
                 int slope = slope_at(wx, wz, seed_, H);
                 is_steep = (slope >= 3);
             }
+
+            // -----------------------------------------------------------------
+            // Ocean basin (#12): deepen water-biome columns so oceans are
+            // actually swimmable rather than 1-2 blocks deep.
+            // H_floor is the effective solid-terrain bottom for this column.
+            // For submerged ocean columns we lower it by basin_extra blocks;
+            // for all other columns H_floor == H (unchanged).
+            // -----------------------------------------------------------------
+            int basin_extra = 0;
+            if (H < SEA_LEVEL) {
+                basin_extra = ocean_basin_extra(wx, wz, H, seed_);
+            }
+            int H_floor = H - basin_extra;  // actual bottom of ocean basin
+
+            // -----------------------------------------------------------------
+            // Cave entrance shaft (#11): if this column is the deliberate shaft
+            // of a cave entrance, we will carve AIR from the surface down to
+            // H - shaft_depth (reaching into normal cave territory).
+            // -----------------------------------------------------------------
+            int shaft_depth = cave_entrance_depth(wx, wz, seed_);
+            bool is_entrance_col = (shaft_depth > 0 && H > SEA_LEVEL);  // only above water
 
             // Choose surface and fill blocks based on dominant biome + height.
             BlockId surface_block;
@@ -2068,23 +2236,27 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
                     } else {
                         b = AIR;
                     }
-                } else if (wy == H) {
-                    // Surface voxel.
+                } else if (wy > H_floor && wy <= H) {
+                    // Ocean basin region: below original surface but above basin floor.
+                    // These blocks are carved away and filled with water.
+                    // (When basin_extra==0 this range is empty and we fall through.)
+                    b = WATER;
+                } else if (wy == H_floor) {
+                    // Effective surface voxel (original H, or basin floor).
                     if (wy <= SEA_LEVEL && dom != Biome::Desert) {
-                        // Submerged surface: sand beach transition.
+                        // Submerged surface: sand at basin floor.
                         b = SAND;
                     } else {
                         b = surface_block;
                     }
-                } else if (wy >= H - 3) {
-                    // Sub-surface fill layer (3 blocks deep).
-                    if (dom == Biome::Mountains && H >= SNOW_LINE && wy == H - 1) {
+                } else if (wy >= H_floor - 3) {
+                    // Sub-surface fill layer (3 blocks below effective floor).
+                    if (dom == Biome::Mountains && H >= SNOW_LINE && wy == H_floor - 1) {
                         // Just below peak: gravel for variety.
                         b = GRAVEL;
                     } else if (dom == Biome::Desert) {
-                        // Desert: sand fill with a thin stone (sandstone-like) layer
-                        // at H-3 for visual variety when digging.
-                        if (wy == H - 3) {
+                        // Desert: sand fill with a thin stone (sandstone-like) layer.
+                        if (wy == H_floor - 3) {
                             b = STONE;
                         } else {
                             b = SAND;
@@ -2097,13 +2269,35 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
                 }
 
                 // -----------------------------------------------------------------
+                // Cave entrance shaft carving (#11).
+                // For entrance columns only: carve AIR from the surface top
+                // (H) down to H - shaft_depth, creating a deliberate opening.
+                // The shaft connects the surface to the depth where normal
+                // cave noise is active (> CAVE_SURFACE_MARGIN below H).
+                // This is additive carving that overrides terrain; we only
+                // carve within the shaft depth range and only for solid blocks.
+                // -----------------------------------------------------------------
+                if (is_entrance_col && b != WATER) {
+                    if (wy <= H && wy > H - shaft_depth) {
+                        b = AIR;
+                    }
+                }
+
+                // -----------------------------------------------------------------
                 // Cave carving.
                 // FIX: surface margin raised from 2 to CAVE_SURFACE_MARGIN (6).
                 // This prevents AIR pockets within the top 5 blocks under the
                 // surface, eliminating the "holes in hilltops" feedback.
                 // Caves still exist well underground.
+                // Entrance columns bypass the margin for the shaft blocks (handled
+                // above), so normal cave carving still applies below the shaft.
+                //
+                // For ocean basin columns the effective surface is H_floor (the
+                // carved basin bottom), so we apply the margin relative to H_floor
+                // to prevent cave pockets directly under the ocean floor.
                 // -----------------------------------------------------------------
-                if (b != AIR && b != WATER && wy < H - CAVE_SURFACE_MARGIN
+                std::int32_t cave_surface_ref = H_floor;  // use basin floor for ocean cols
+                if (b != AIR && b != WATER && wy < cave_surface_ref - CAVE_SURFACE_MARGIN
                              && wy > kColumnMinY + 4) {
                     float fwx = static_cast<float>(wx);
                     float fwy = static_cast<float>(wy);

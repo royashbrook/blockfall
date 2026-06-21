@@ -106,5 +106,41 @@
       "durability": 1800,
       "mine_speed": 6.0
     }
+  },
+  {
+    "id": 79,
+    "name": "wood_sword",
+    "display_name": "Wooden Sword",
+    "max_stack": 1,
+    "tool": {
+      "kind": "sword",
+      "tier": 1,
+      "durability": 250,
+      "mine_speed": 1.0
+    }
+  },
+  {
+    "id": 80,
+    "name": "stone_sword",
+    "display_name": "Stone Sword",
+    "max_stack": 1,
+    "tool": {
+      "kind": "sword",
+      "tier": 2,
+      "durability": 600,
+      "mine_speed": 1.0
+    }
+  },
+  {
+    "id": 81,
+    "name": "iron_sword",
+    "display_name": "Iron Sword",
+    "max_stack": 1,
+    "tool": {
+      "kind": "sword",
+      "tier": 3,
+      "durability": 1500,
+      "mine_speed": 1.0
+    }
   }
 ]

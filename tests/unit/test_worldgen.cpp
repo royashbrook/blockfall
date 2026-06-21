@@ -774,6 +774,14 @@ static void test_no_surface_holes() {
 
                     ++total_columns;
 
+                    // Exempt deliberate cave-entrance columns (#11): these are
+                    // intentionally open from the surface downward, so the
+                    // sub-surface AIR is expected.  We use the public helper
+                    // to identify them with the same seed used by TerrainGen.
+                    std::int32_t col_wx = static_cast<std::int32_t>(cx) * kChunkDim + lx;
+                    std::int32_t col_wz = static_cast<std::int32_t>(cz) * kChunkDim + lz;
+                    if (worldgen_is_cave_entrance(col_wx, col_wz, SEED)) continue;
+
                     // Check the 5 blocks directly below the surface.
                     // They must all be non-AIR (solid or water — no cave pockets).
                     bool has_hole = false;
@@ -1388,6 +1396,177 @@ static void test_new_tree_variety() {
 }
 
 // ---------------------------------------------------------------------------
+// 20. CAVE ENTRANCES (#11)
+//     Verify that at least one surface-connected cave entrance exists in a
+//     scanned region.  A cave entrance is a column where:
+//       a) The worldgen_is_cave_entrance() helper returns true (i.e., the
+//          worldgen placed a shaft there), AND
+//       b) There are AIR blocks in the first several blocks below the top
+//          solid block (confirming the shaft was actually carved).
+//     We also verify that entrance density is not excessive (< 5% of columns).
+// ---------------------------------------------------------------------------
+static void test_cave_entrances() {
+    constexpr std::uint64_t SEED = 0xCA4EF00D5EED9A11ull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    auto is_decoration = [](BlockId b) -> bool {
+        return b == 5 || b == 21 || b == 22 || b == 27
+            || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+    };
+
+    constexpr int SCAN_R = 16;
+    constexpr int CY_MIN = -2;
+    constexpr int CY_MAX =  4;
+    constexpr int NUM_CY = CY_MAX - CY_MIN + 1;
+
+    int entrance_cols_found = 0;
+    int entrance_with_air   = 0;
+    int total_columns_scanned = 0;
+
+    for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
+        for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
+            std::unique_ptr<PaletteChunk> slices[NUM_CY];
+            for (int ci = 0; ci < NUM_CY; ++ci) {
+                int cy = CY_MIN + ci;
+                slices[ci] = std::make_unique<PaletteChunk>(
+                    ChunkCoord{cx, cy, cz}, BlockId(0));
+                g.generate({cx, cy, cz}, *slices[ci]);
+            }
+
+            auto block_at_wy = [&](int lx2, int lz2, std::int32_t wy) -> BlockId {
+                for (int ci = NUM_CY - 1; ci >= 0; --ci) {
+                    std::int32_t base = (CY_MIN + ci) * kChunkDim;
+                    if (wy >= base && wy < base + kChunkDim) {
+                        return slices[ci]->get(lx2, static_cast<int>(wy - base), lz2);
+                    }
+                }
+                return 0;
+            };
+
+            for (int lz = 0; lz < kChunkDim; ++lz) {
+                for (int lx = 0; lx < kChunkDim; ++lx) {
+                    ++total_columns_scanned;
+
+                    std::int32_t col_wx = static_cast<std::int32_t>(cx) * kChunkDim + lx;
+                    std::int32_t col_wz = static_cast<std::int32_t>(cz) * kChunkDim + lz;
+
+                    if (!worldgen_is_cave_entrance(col_wx, col_wz, SEED)) continue;
+                    ++entrance_cols_found;
+
+                    // Find top solid block (non-air, non-water, non-decoration).
+                    std::int32_t top_wy = std::int32_t(CY_MIN) * kChunkDim - 1;
+                    bool found_surf = false;
+                    for (int ci = NUM_CY - 1; ci >= 0 && !found_surf; --ci) {
+                        std::int32_t base = (CY_MIN + ci) * kChunkDim;
+                        for (int ly = kChunkDim - 1; ly >= 0 && !found_surf; --ly) {
+                            BlockId b = slices[ci]->get(lx, ly, lz);
+                            if (b != 0 && b != 9u && !is_decoration(b)) {
+                                top_wy = base + ly;
+                                found_surf = true;
+                            }
+                        }
+                    }
+                    if (!found_surf) continue;
+
+                    // Check for AIR in blocks below the top solid (the shaft).
+                    bool has_shaft_air = false;
+                    for (int depth = 1; depth <= 8; ++depth) {
+                        if (block_at_wy(lx, lz, top_wy - depth) == 0) {
+                            has_shaft_air = true;
+                            break;
+                        }
+                    }
+                    if (has_shaft_air) ++entrance_with_air;
+                }
+            }
+        }
+    }
+
+    // At least one entrance must be found (density ~15% of 48×48 cells).
+    CHECK(entrance_cols_found > 0,
+          "cave entrances: at least one cave entrance column found in scan");
+    // The carved shafts must actually have AIR below the surface.
+    CHECK(entrance_with_air > 0,
+          "cave entrances: entrance column(s) have AIR below the surface (shaft carved)");
+    // Entrances should be sparse — less than 1% of all scanned columns.
+    // (1 entrance per ~48×48 cell = 2304 blocks, far less than 1%.)
+    int pct_times_1000 = (total_columns_scanned > 0)
+        ? (entrance_cols_found * 1000) / total_columns_scanned : 0;
+    CHECK(pct_times_1000 < 10,  // < 1% of columns
+          "cave entrances: entrance columns are sparse (< 1% of all columns)");
+}
+
+// ---------------------------------------------------------------------------
+// 21. OCEAN DEPTH (#12)
+//     Verify that water bodies reach a proper depth (>= 4 blocks) somewhere
+//     in a scanned region.  We find water columns and measure how many
+//     consecutive WATER blocks appear from the top down to the ocean floor.
+//     At least one water column must have >= 4 blocks of continuous water depth.
+// ---------------------------------------------------------------------------
+static void test_ocean_depth() {
+    constexpr std::uint64_t OCEAN_SEED = 0x0CE4B0CA5E1D07BBull;
+    TerrainGen g;
+    g.seed(OCEAN_SEED);
+
+    constexpr int SCAN_R = 20;
+    constexpr int CY_MIN = -2;
+    constexpr int CY_MAX =  2;
+    constexpr int NUM_CY = CY_MAX - CY_MIN + 1;
+
+    int max_water_depth = 0;
+    int columns_with_deep_water = 0;  // depth >= 4
+
+    for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
+        for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
+            std::unique_ptr<PaletteChunk> slices[NUM_CY];
+            for (int ci = 0; ci < NUM_CY; ++ci) {
+                int cy = CY_MIN + ci;
+                slices[ci] = std::make_unique<PaletteChunk>(
+                    ChunkCoord{cx, cy, cz}, BlockId(0));
+                g.generate({cx, cy, cz}, *slices[ci]);
+            }
+
+            auto block_at_wy = [&](int lx2, int lz2, std::int32_t wy) -> BlockId {
+                for (int ci = NUM_CY - 1; ci >= 0; --ci) {
+                    std::int32_t base = (CY_MIN + ci) * kChunkDim;
+                    if (wy >= base && wy < base + kChunkDim) {
+                        return slices[ci]->get(lx2, static_cast<int>(wy - base), lz2);
+                    }
+                }
+                return 0;  // out of range = AIR
+            };
+
+            for (int lz = 0; lz < kChunkDim; ++lz) {
+                for (int lx = 0; lx < kChunkDim; ++lx) {
+                    // SEA_LEVEL is 6.  Check if the block at y=SEA_LEVEL is WATER.
+                    constexpr std::int32_t SEA_LVL = 6;
+                    if (block_at_wy(lx, lz, SEA_LVL) != 9u) continue;  // not water surface
+
+                    // Count consecutive WATER blocks downward from SEA_LEVEL.
+                    int depth = 0;
+                    for (std::int32_t wy = SEA_LVL; wy >= SEA_LVL - 15; --wy) {
+                        if (block_at_wy(lx, lz, wy) == 9u) {
+                            ++depth;
+                        } else {
+                            break;  // hit solid floor
+                        }
+                    }
+
+                    if (depth > max_water_depth) max_water_depth = depth;
+                    if (depth >= 4) ++columns_with_deep_water;
+                }
+            }
+        }
+    }
+
+    CHECK(columns_with_deep_water > 0,
+          "ocean depth: at least one water column reaches >= 4 blocks deep");
+    CHECK(max_water_depth >= 4,
+          "ocean depth: maximum water depth found is >= 4 blocks");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -1411,6 +1590,8 @@ int main() {
     test_extended_tree_variety();
     test_structures_exist();
     test_new_tree_variety();
+    test_cave_entrances();
+    test_ocean_depth();
 
     if (fails == 0) {
         std::printf("OK: worldgen tests\n");

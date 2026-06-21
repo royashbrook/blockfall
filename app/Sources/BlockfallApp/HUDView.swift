@@ -90,6 +90,11 @@ final class HUDView: NSView {
     private var heldCount: UInt16 = 0
     // Last 36 slot rects we drew (index == inventory index). Empty when closed.
     private var slotRects: [NSRect] = []
+    // Craftable recipe slot rects we drew, parallel to hud.craftable (index ==
+    // recipe index, 0-based; the on-screen number key is index+1). Empty when
+    // closed or when there are no craftable recipes. Tracked exactly like
+    // slotRects so hover hit-testing stays in sync with what we draw.
+    private var craftRects: [NSRect] = []
     // Current mouse position in view coords (for tooltip + held-stack ghost).
     private var mousePos: NSPoint = .zero
     private var mouseInside = false
@@ -386,8 +391,10 @@ final class HUDView: NSView {
             }
         }
 
-        drawText("Inventory", at: NSPoint(x: originX, y: b.midY + 175), size: 20, color: .white, bold: true)
-        drawText("Crafting", at: NSPoint(x: originX + gridW - 220, y: b.midY + 175), size: 14, color: .white, bold: false)
+        // Title sits just above the top inventory row (rects[9] is the top-left
+        // main slot). Keeps the header anchored to the grid at any window size.
+        let invTop = rects[9].maxY
+        drawText("Inventory", at: NSPoint(x: originX, y: invTop + 14), size: 20, color: .white, bold: true)
 
         withUnsafeBytes(of: hud.inventory) { raw in
             let inv = raw.bindMemory(to: bf_hud_slot.self)
@@ -402,38 +409,83 @@ final class HUDView: NSView {
             }
         }
 
-        // --- Craftable recipes (press the number to craft) ---
-        let cy = b.midY - 70
-        drawText("Craft  (press the number)", at: NSPoint(x: originX, y: cy + slot + 8), size: 14, color: .systemYellow, bold: true)
+        // --- Craftable recipes: a clearly separated band BELOW the hotbar row.
+        // The hotbar row is the lowest inventory rect (rects[0..8]); start the
+        // craft band a generous gap under it so the two never overlap, and draw
+        // a backing panel so the band reads as its own region (not floating over
+        // the hotbar). Layout is derived from the grid geometry, so it stays
+        // non-overlapping at any window size. ---
         let n = Int(hud.craftable_count)
+        let hotbarBottom = rects[0].minY
+        let bandGap: CGFloat = 26          // clear space between hotbar and band
+        let titleH: CGFloat = 22           // room for the band title above slots
+        let cy = hotbarBottom - bandGap - slot          // craft slot row origin-y
+        let craftTitleY = cy + slot + 4                 // title baseline above row
+
+        // Backing panel for the whole craft band (title + slots), inset to the
+        // grid width so it doesn't run off-screen.
+        let panel = NSRect(x: originX - 10,
+                           y: cy - 8,
+                           width: gridW + 20,
+                           height: slot + titleH + 12)
+        NSColor.black.withAlphaComponent(0.35).setFill()
+        let panelPath = NSBezierPath(roundedRect: panel, xRadius: 8, yRadius: 8)
+        panelPath.fill()
+        NSColor.systemYellow.withAlphaComponent(0.35).setStroke()
+        panelPath.lineWidth = 1; panelPath.stroke()
+
+        drawText("Craft  (press the number key shown)",
+                 at: NSPoint(x: originX, y: craftTitleY), size: 14, color: .systemYellow, bold: true)
         if n == 0 {
-            drawText("Gather wood and stone, then come back!", at: NSPoint(x: originX, y: cy + slot - 14),
+            drawText("Gather wood and stone, then come back!",
+                     at: NSPoint(x: originX, y: cy + (slot - 16) / 2),
                      size: 12, color: NSColor.white.withAlphaComponent(0.7), bold: false)
         }
+
+        // Rebuild the parallel craftable rect array each frame (mirrors the
+        // slotRects pattern) so hover hit-testing matches exactly what we draw.
+        var crafts = [NSRect]()
         withUnsafeBytes(of: hud.craftable) { raw in
             let cr = raw.bindMemory(to: bf_hud_slot.self)
             var cx = originX
             for i in 0..<min(n, 8) {
                 let rect = NSRect(x: cx, y: cy, width: slot, height: slot)
+                crafts.append(rect)
+                let hovered = mouseInside && heldSlot == nil && rect.contains(mousePos)
                 NSColor.black.withAlphaComponent(0.5).setFill()
                 let rr = NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5); rr.fill()
-                NSColor.systemYellow.withAlphaComponent(0.7).setStroke(); rr.lineWidth = 1.5; rr.stroke()
+                NSColor.systemYellow.withAlphaComponent(hovered ? 1.0 : 0.7).setStroke()
+                rr.lineWidth = hovered ? 2.5 : 1.5; rr.stroke()
                 if cr[i].item != 0 {
                     drawCenteredItem(id: cr[i].item, count: cr[i].count, in: rect, selected: false)
                     // (name shown via hover tooltip — inline labels overlapped)
                 }
-                drawText("\(i+1)", at: NSPoint(x: cx + 3, y: cy + slot - 16), size: 12, color: .systemYellow, bold: true)
+                // Number-key hint, top-left corner, away from the count badge
+                // (which sits bottom-right). Small dark chip keeps it readable
+                // over any item icon.
+                let badge = NSRect(x: cx + 2, y: cy + slot - 16, width: 14, height: 14)
+                NSColor.black.withAlphaComponent(0.6).setFill()
+                NSBezierPath(roundedRect: badge, xRadius: 3, yRadius: 3).fill()
+                drawText("\(i+1)", at: NSPoint(x: cx + 4, y: cy + slot - 16), size: 12, color: .systemYellow, bold: true)
                 cx += slot + gap
             }
         }
+        craftRects = crafts
 
         drawText("Esc / E to close   •   click a stack to pick it up, click a slot to place it",
-                 at: NSPoint(x: originX, y: b.midY - 130), size: 12, color: .white, bold: false)
+                 at: NSPoint(x: originX, y: panel.minY - 22), size: 12, color: .white, bold: false)
 
-        // --- Hover tooltip: item name + count under the cursor (only when not
-        //     carrying a stack, so the tooltip doesn't fight the ghost). ---
+        // --- Hover tooltips (only when not carrying a stack, so the tooltip
+        //     doesn't fight the ghost). A craftable slot under the cursor takes
+        //     priority and shows what the recipe makes + its number key. ---
         if mouseInside && heldSlot == nil {
-            if let i = slotIndex(at: mousePos) {
+            if let c = craftIndex(at: mousePos) {
+                let s = craftableSlot(c)
+                if s.item != 0 {
+                    drawTooltip(name: itemName(s.item), count: s.count,
+                                hint: "press \(c + 1)", near: mousePos)
+                }
+            } else if let i = slotIndex(at: mousePos) {
                 let s = inventorySlot(i)
                 if s.item != 0 { drawTooltip(name: itemName(s.item), count: s.count, near: mousePos) }
             }
@@ -458,8 +510,31 @@ final class HUDView: NSView {
         return nil
     }
 
-    private func drawTooltip(name: String, count: UInt16, near p: NSPoint) {
-        let label = count > 1 ? "\(name)  ×\(count)" : name
+    // Read a craftable recipe's result slot (item + count). Bounds-checked
+    // against the live craftable_count so a stale rect can never read past the
+    // valid recipes.
+    private func craftableSlot(_ i: Int) -> bf_hud_slot {
+        guard i >= 0 && i < Int(hud.craftable_count) && i < 8 else { return bf_hud_slot() }
+        return withUnsafeBytes(of: hud.craftable) { raw in
+            raw.bindMemory(to: bf_hud_slot.self)[i]
+        }
+    }
+
+    // Craftable recipe index under a point, hit-tested against craftRects (which
+    // is rebuilt every draw to mirror exactly what we painted).
+    private func craftIndex(at p: NSPoint) -> Int? {
+        for (i, r) in craftRects.enumerated() where r.contains(p) { return i }
+        return nil
+    }
+
+    private func drawTooltip(name: String, count: UInt16, hint: String? = nil, near p: NSPoint) {
+        // e.g. "Wooden Pickaxe ×1  (press 3)". Count is always shown for
+        // craftable recipes (via hint) but only when >1 for inventory items.
+        var label = count > 1 ? "\(name)  ×\(count)" : name
+        if let h = hint {
+            // Recipes: always surface the result count + the number key.
+            label = "\(name) ×\(count)  (\(h))"
+        }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.boldSystemFont(ofSize: 13), .foregroundColor: NSColor.white,
         ]
