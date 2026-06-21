@@ -49,6 +49,17 @@ public:
     // Recompute light for chunk `cc` (must be resident). Returns true if any
     // boundary light value changed vs the chunk's previous light (so the World
     // knows to re-dirty neighbours for cross-chunk propagation).
+    //
+    // KNOWN LIMITATION (light *removal* latency): this is an increase-only
+    // flood-fill — it re-seeds a chunk from its own sources plus neighbours'
+    // CURRENT stored light. When a light source is removed (or sky is newly
+    // blocked) right at a chunk seam, the neighbour's still-stale boundary value
+    // gets re-injected, so the pair converges to the correct (darker) result over
+    // ~8 dirty cycles (~130 ms at 60fps) rather than instantly. It always reaches
+    // the correct value and is purely cosmetic. A one-pass fix needs a store-level
+    // removal BFS (Minecraft's two-queue add/remove) that crosses chunk
+    // boundaries — deliberately deferred as a careful, separately-tested change
+    // rather than a risky rewrite of the core propagation here.
     static bool light_chunk(ChunkCoord cc, IChunkStore& store) {
         IChunk* chunk = store.get(cc);
         if (!chunk) return false;
