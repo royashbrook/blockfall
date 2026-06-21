@@ -5,9 +5,6 @@
 // 44 100 Hz stereo. Safe to call from main thread; all methods become no-ops if
 // the engine failed to initialize (headless / no-audio environment).
 //
-// NOTE FOR LEAD: add `.linkedFramework("AVFoundation")` to the BlockfallApp
-// target in Package.swift — it is not yet listed there.
-//
 // PUBLIC API ADDITIONS vs original:
 //   Sfx: + splash, pickup, openInventory, placeFail
 //   func setAmbienceEnabled(_ on: Bool)
@@ -42,6 +39,7 @@ final class GameAudio {
         case pickup         // item collected — bright sparkle ding
         case openInventory  // soft wooden drawer slide
         case placeFail      // dull thud — can't place here
+        case hurt           // sharp descending impact — player took damage
     }
 
     // -----------------------------------------------------------------------
@@ -153,7 +151,7 @@ final class GameAudio {
     // -----------------------------------------------------------------------
 
     func play(_ sfx: Sfx) {
-        guard sfxEnabled, let engine, engine.isRunning else { return }
+        guard sfxEnabled, isReady, let engine, engine.isRunning else { return }
 
         // Route breakBlock through the per-material path so legacy callers
         // automatically get the punchier generic sound + variant cycling.
@@ -194,6 +192,8 @@ final class GameAudio {
 
     private var engine:    AVAudioEngine?
     private let format   = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+
+    private var isReady = false
 
     private var musicEnabled    = true
     private var sfxEnabled      = true
@@ -338,14 +338,29 @@ final class GameAudio {
             sfxPool.append(node)
         }
 
-        // Pre-generate all buffers synchronously at startup.
-        buildAllTrackBuffers()
-        buildAllSfxBuffers()
-        buildSfxVariants()
-        buildAmbienceBuffers()
-
-        eng.prepare()
+        // Store engine reference now so the graph exists; not yet started.
         self.engine = eng
+
+        // Synthesize all buffers on a background thread to avoid blocking the main thread.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            self.buildAllTrackBuffers()
+            self.buildAllSfxBuffers()
+            self.buildSfxVariants()
+            self.buildAmbienceBuffers()
+
+            // Return to main queue to prepare engine and signal readiness.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                eng.prepare()
+                self.isReady = true
+                // If start() was called before we were ready, kick off music/ambience now.
+                if eng.isRunning {
+                    if self.musicEnabled    { self.startMusic() }
+                    if self.ambienceEnabled { self.startAmbience() }
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -405,6 +420,7 @@ final class GameAudio {
     // Rotation: tracks cycle within their group every 90 s via crossFadeToTrack.
 
     private func startMusic() {
+        guard isReady else { return }
         if allTrackBuffers.isEmpty { buildAllTrackBuffers() }
 
         // Cancel any in-progress crossfade and stop all nodes cleanly.
@@ -683,6 +699,7 @@ final class GameAudio {
 
         // Final loop-point fade (whole-buffer edge).
         applyFadeIO(outL, outR, samples: totalSamples, fadeLen: min(2048, totalSamples / 16))
+        normalizePeak(outL, outR, samples: totalSamples)
         return outBuf
     }
 
@@ -956,7 +973,7 @@ final class GameAudio {
         if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.22) { voices.append(v) }
         if let v = buildSectionedVoice(sections: arpSections,   shape: .sine,     baseVol: 0.13) { voices.append(v) }
         if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.10) { voices.append(v) }
-        return voices
+        return alignVoiceLengths(voices)
     }
 
     // -----------------------------------------------------------------------
@@ -1130,7 +1147,7 @@ final class GameAudio {
         if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.21) { voices.append(v) }
         if let v = buildSectionedVoice(sections: arpSections,   shape: .triangle, baseVol: 0.12) { voices.append(v) }
         if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.09) { voices.append(v) }
-        return voices
+        return alignVoiceLengths(voices)
     }
 
     // -----------------------------------------------------------------------
@@ -1312,7 +1329,7 @@ final class GameAudio {
         if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.19) { voices.append(v) }
         if let v = buildSectionedVoice(sections: arpSections,   shape: .sine,     baseVol: 0.11) { voices.append(v) }
         if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.09) { voices.append(v) }
-        return voices
+        return alignVoiceLengths(voices)
     }
 
     // -----------------------------------------------------------------------
@@ -1491,7 +1508,7 @@ final class GameAudio {
         if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.18) { voices.append(v) }
         if let v = buildSectionedVoice(sections: arpSections,   shape: .sine,     baseVol: 0.11) { voices.append(v) }
         if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.08) { voices.append(v) }
-        return voices
+        return alignVoiceLengths(voices)
     }
 
     // -----------------------------------------------------------------------
@@ -1665,7 +1682,7 @@ final class GameAudio {
         if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.22) { voices.append(v) }
         if let v = buildSectionedVoice(sections: arpSections,   shape: .sine,     baseVol: 0.13) { voices.append(v) }
         if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.09) { voices.append(v) }
-        return voices
+        return alignVoiceLengths(voices)
     }
 
     // -----------------------------------------------------------------------
@@ -1841,7 +1858,7 @@ final class GameAudio {
         if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.21) { voices.append(v) }
         if let v = buildSectionedVoice(sections: arpSections,   shape: .sine,     baseVol: 0.12) { voices.append(v) }
         if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.09) { voices.append(v) }
-        return voices
+        return alignVoiceLengths(voices)
     }
 
     // -----------------------------------------------------------------------
@@ -2026,7 +2043,7 @@ final class GameAudio {
         if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.17) { voices.append(v) }
         if let v = buildSectionedVoice(sections: arpSections,   shape: .sine,     baseVol: 0.10) { voices.append(v) }
         if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.10) { voices.append(v) }
-        return voices
+        return alignVoiceLengths(voices)
     }
 
     // -----------------------------------------------------------------------
@@ -2205,7 +2222,7 @@ final class GameAudio {
         if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.17) { voices.append(v) }
         if let v = buildSectionedVoice(sections: arpSections,   shape: .sine,     baseVol: 0.10) { voices.append(v) }
         if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.09) { voices.append(v) }
-        return voices
+        return alignVoiceLengths(voices)
     }
 
     // -----------------------------------------------------------------------
@@ -2392,7 +2409,7 @@ final class GameAudio {
         if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.23) { voices.append(v) }
         if let v = buildSectionedVoice(sections: arpSections,   shape: .triangle, baseVol: 0.13) { voices.append(v) }
         if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.09) { voices.append(v) }
-        return voices
+        return alignVoiceLengths(voices)
     }
 
     // -----------------------------------------------------------------------
@@ -2574,7 +2591,7 @@ final class GameAudio {
         if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.23) { voices.append(v) }
         if let v = buildSectionedVoice(sections: arpSections,   shape: .triangle, baseVol: 0.12) { voices.append(v) }
         if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.09) { voices.append(v) }
-        return voices
+        return alignVoiceLengths(voices)
     }
 
     // -----------------------------------------------------------------------
@@ -2757,7 +2774,7 @@ final class GameAudio {
         if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.20) { voices.append(v) }
         if let v = buildSectionedVoice(sections: arpSections,   shape: .sine,     baseVol: 0.10) { voices.append(v) }
         if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.11) { voices.append(v) }
-        return voices
+        return alignVoiceLengths(voices)
     }
 
     // -----------------------------------------------------------------------
@@ -2933,7 +2950,7 @@ final class GameAudio {
         if let v = buildSectionedVoice(sections: bassSections,  shape: .triangle, baseVol: 0.19) { voices.append(v) }
         if let v = buildSectionedVoice(sections: arpSections,   shape: .sine,     baseVol: 0.10) { voices.append(v) }
         if let v = buildSectionedVoice(sections: padSections,   shape: .sine,     baseVol: 0.12) { voices.append(v) }
-        return voices
+        return alignVoiceLengths(voices)
     }
 
     /// Smooth pad envelope: retained for any future callers.
@@ -2943,6 +2960,30 @@ final class GameAudio {
         let tail = total - release
         if t > tail  { return max(0, (total - t) / release) }
         return 1.0
+    }
+
+    /// Pad all voice buffers to the same frame length (the longest one) by appending silence.
+    /// This ensures all 4 voices of a track loop in lock-step with no drift.
+    private func alignVoiceLengths(_ voices: [AVAudioPCMBuffer]) -> [AVAudioPCMBuffer] {
+        guard voices.count > 1 else { return voices }
+        let maxLen = voices.map { Int($0.frameLength) }.max() ?? 0
+        return voices.map { buf in
+            let n = Int(buf.frameLength)
+            guard n < maxLen else { return buf }
+            // Create a new buffer with the padded length.
+            guard let padded = AVAudioPCMBuffer(pcmFormat: buf.format,
+                                               frameCapacity: AVAudioFrameCount(maxLen)) else { return buf }
+            padded.frameLength = AVAudioFrameCount(maxLen)
+            guard let srcL = buf.floatChannelData?[0],
+                  let srcR = buf.floatChannelData?[1],
+                  let dstL = padded.floatChannelData?[0],
+                  let dstR = padded.floatChannelData?[1] else { return buf }
+            // Copy existing samples
+            for i in 0 ..< n { dstL[i] = srcL[i]; dstR[i] = srcR[i] }
+            // Pad with silence (already zeroed by AVAudioPCMBuffer allocation, but be explicit)
+            for i in n ..< maxLen { dstL[i] = 0; dstR[i] = 0 }
+            return padded
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2961,6 +3002,7 @@ final class GameAudio {
     }
 
     private func startAmbience() {
+        guard isReady else { return }
         startWind()
         scheduleBirdChirp()
     }
@@ -3027,6 +3069,7 @@ final class GameAudio {
         }
 
         applyFadeIO(L, R, samples: n, fadeLen: min(8820, n / 4))   // 200 ms fade
+        normalizePeak(L, R, samples: n)
         return buf
     }
 
@@ -3143,7 +3186,7 @@ final class GameAudio {
     /// Call from the renderer when a block of a given material class breaks.
     /// materialClass out of range falls back to 0.
     func playBreak(materialClass: Int) {
-        guard sfxEnabled, let engine, engine.isRunning else { return }
+        guard sfxEnabled, isReady, let engine, engine.isRunning else { return }
         let cls = (materialClass >= 0 && materialClass < breakMaterialBuffers.count)
                   ? materialClass : 0
         guard !breakMaterialBuffers[cls].isEmpty else { return }
@@ -3388,6 +3431,7 @@ final class GameAudio {
         sfxBuffers[.pickup]        = makePickupBuffer()
         sfxBuffers[.openInventory] = makeOpenInventoryBuffer()
         sfxBuffers[.placeFail]     = makePlaceFailBuffer()
+        sfxBuffers[.hurt]          = makeHurtBuffer()
         // Build per-material break buffers
         buildBreakMaterialBuffers()
     }
@@ -3626,6 +3670,26 @@ final class GameAudio {
         }
     }
 
+    /// hurt — sharp impact when player takes damage: descending sine sweep 440→200 Hz
+    /// with a short noise transient, ~180 ms. Clearly distinct from placeFail/mine.
+    private func makeHurtBuffer() -> AVAudioPCMBuffer? {
+        let dur: Float = 0.18
+        var phase: Float = 0
+        return synthesize(duration: dur) { i, sr in
+            let t   = Float(i) / sr
+            // Sharp attack, moderate release — punchy impact feel
+            let env = self.envelope(t, a: 0.003, d: 0.05, s: 0.25, sLen: 0.04, r: 0.09, total: dur)
+            // Pitch descends from 440 Hz to 200 Hz over the duration
+            let hz  = 440.0 + (200.0 - 440.0) * (t / dur)
+            phase  += hz / sr
+            let tone = 0.60 * sin(2 * .pi * phase)
+            // Short noise transient concentrated in the first 30 ms
+            let noiseFade = max(0, 1.0 - t / 0.03)
+            let noise = 0.40 * self.whitenoise() * noiseFade
+            return env * (tone + noise)
+        }
+    }
+
     // -----------------------------------------------------------------------
     // MARK: Synthesis helpers
     // -----------------------------------------------------------------------
@@ -3684,6 +3748,7 @@ final class GameAudio {
         }
 
         applyFadeIO(L, R, samples: n, fadeLen: min(64, n / 8))
+        normalizePeak(L, R, samples: n)
         return buf
     }
 
@@ -3700,6 +3765,28 @@ final class GameAudio {
             let idx = samples - 1 - i
             let g   = Float(i) / Float(fadeLen)
             L[idx] *= g; R[idx] *= g
+        }
+    }
+
+    /// Peak-normalize a stereo buffer to targetPeak if the current peak exceeds it.
+    /// Scans max(abs(sample)) over both channels; if > targetPeak, rescales uniformly.
+    /// No DC offset is introduced because we multiply every sample by the same positive scalar.
+    private func normalizePeak(_ L: UnsafeMutablePointer<Float>,
+                               _ R: UnsafeMutablePointer<Float>,
+                               samples: Int,
+                               targetPeak: Float = 0.90) {
+        guard samples > 0 else { return }
+        var peak: Float = 0
+        for i in 0 ..< samples {
+            let al = abs(L[i]); let ar = abs(R[i])
+            if al > peak { peak = al }
+            if ar > peak { peak = ar }
+        }
+        guard peak > targetPeak else { return }
+        let gain = targetPeak / peak
+        for i in 0 ..< samples {
+            L[i] *= gain
+            R[i] *= gain
         }
     }
 

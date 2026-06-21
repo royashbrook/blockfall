@@ -554,7 +554,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         case 6: audio?.play(.questComplete)
         case 7: audio?.play(.pickup)
         case 8: audio?.play(.mine)         // melee hit on a creature
-        case 9: audio?.play(.placeFail)    // player took damage
+        case 9: audio?.play(.hurt)         // player took damage
         default: break
         }
     }
