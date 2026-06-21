@@ -401,7 +401,12 @@ public:
         if (hurt_cd_  > 0) hurt_cd_  -= float(dt);
         if (regen_cd_ > 0) regen_cd_ -= float(dt);
         if (ach_toast_timer_ > 0) ach_toast_timer_ -= float(dt);
-        else if (health_ < 20.0f) health_ = std::min(20.0f, health_ + 1.2f * float(dt));
+        // Heal only after a few damage-free seconds (regen_cd_) — NOT gated on the
+        // achievement toast. Previously regen was an else-branch of the toast check
+        // and ignored regen_cd_ entirely, so you healed instantly after every hit
+        // and a single monster could never actually kill you.
+        if (regen_cd_ <= 0.0f && health_ < 20.0f)
+            health_ = std::min(20.0f, health_ + 1.2f * float(dt));
         // Oxygen / drowning: a submerged head drains air over ~16 s; once it's
         // empty you take steady drowning damage until you surface.
         bool head_under = block_at(player_voxel()) == WATER;
