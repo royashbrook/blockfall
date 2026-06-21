@@ -56,7 +56,9 @@ int worldgen_surface_height(std::int32_t wx, std::int32_t wz,
 // cairns) are present in the square block region [wx0, wx0+span) × [wz0, wz0+span)
 // for the given seed.  Pure function of its inputs — exposed so tests/benchmarks
 // can assert structure density without scanning generated voxels.  Used to verify
-// issue #17 (structures made ~2.6× more common).
+// issue #17 (structure spawn gate raised again to ~50% of 64×64 cells after a
+// second playtest found none — a couple are now findable within ~120 blocks of
+// any spawn).
 int worldgen_count_structures(std::int32_t wx0, std::int32_t wz0,
                               std::int32_t span, std::uint64_t seed) noexcept;
 

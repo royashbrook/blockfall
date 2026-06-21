@@ -66,6 +66,15 @@ public:
     std::uint32_t palette_size() const { return std::uint32_t(palette_.size()); }
     std::uint8_t  bits_per_index() const { return bits_; }
 
+    // Deep copy (for async meshing snapshots — a worker meshes from isolated
+    // copies of a chunk + its neighbours so it never races the live store).
+    std::unique_ptr<PaletteChunk> clone() const {
+        auto c = std::make_unique<PaletteChunk>(coord_);
+        c->palette_ = palette_; c->data_ = data_; c->light_ = light_;
+        c->bits_ = bits_; c->revision_ = revision_;
+        return c;
+    }
+
     // ---- Serialization (lossless round-trip; BFCK-style blob) --------------
     // Layout: magic 'BFCK', u16 ver=1, u16 flags(bit0 uniform), i32 cx,cy,cz,
     // u32 revision, u16 palette_count, u8 bits, u8 pad, palette[u16*count],

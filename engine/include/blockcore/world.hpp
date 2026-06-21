@@ -91,6 +91,21 @@ struct MeshRec {
     bool          has_buffers{false};
 };
 
+// Read-only chunk store holding owned COPIES of a chunk + its neighbours, so a
+// worker thread can greedy-mesh from it without touching (or racing) the live
+// store. Only get()/is_resident() are used by the mesher (#25 async meshing).
+struct SnapStore final : IChunkStore {
+    std::unordered_map<ChunkCoord, std::unique_ptr<PaletteChunk>, ChunkCoordHash> chunks;
+    IChunk* get(ChunkCoord c) override {
+        auto it = chunks.find(c); return it != chunks.end() ? it->second.get() : nullptr;
+    }
+    IChunk* get_or_create(ChunkCoord c) override { return get(c); }
+    void    evict(ChunkCoord) override {}
+    bool    is_resident(ChunkCoord c) const override { return chunks.find(c) != chunks.end(); }
+    std::size_t serialize(ChunkCoord, std::span<std::byte>) const override { return 0; }
+    bool        deserialize(ChunkCoord, std::span<const std::byte>) override { return false; }
+};
+
 struct RegionKey { std::int32_t x, z; };
 inline bool operator==(const RegionKey& a, const RegionKey& b) { return a.x == b.x && a.z == b.z; }
 struct RegionKeyHash {
@@ -111,7 +126,7 @@ public:
     // spread the same work over more frames → much smoother 1%-low (pop-in is
     // marginally slower, which is the right trade for kids).
     static constexpr int    GEN_BUDGET   = 6;      // chunks generated per frame (sync fallback only)
-    static constexpr int    MESH_BUDGET  = 6;      // chunks remeshed per frame (gen is now off-thread, #25)
+    static constexpr int    MESH_BUDGET  = 12;     // mesh jobs submitted per frame (run on workers, #25)
 
     explicit World(IMesher& mesher, IWorldGen* gen = nullptr)
         : mesher_(mesher), gen_(gen) {}
@@ -1629,9 +1644,17 @@ private:
             }
             return;
         }
-        // 1) Collect chunks finished on worker threads and insert them (main thread).
+        // 1) Collect finished gen chunks (BUDGETED: meshing downstream is the limit,
+        // so inserting the whole worker backlog at once explodes dirty_ and the
+        // per-frame dirty scan, tanking FPS).
+        constexpr std::size_t kGenCollect = 16;
         std::vector<std::pair<ChunkCoord, std::unique_ptr<PaletteChunk>>> done;
-        { std::lock_guard<std::mutex> lk(gen_mtx_); done.swap(gen_done_); }
+        {
+            std::lock_guard<std::mutex> lk(gen_mtx_);
+            std::size_t n = std::min<std::size_t>(gen_done_.size(), kGenCollect);
+            for (std::size_t i = 0; i < n; ++i) done.push_back(std::move(gen_done_[i]));
+            gen_done_.erase(gen_done_.begin(), gen_done_.begin() + std::ptrdiff_t(n));
+        }
         for (auto& [cc, ch] : done) {
             gen_inflight_.erase(cc);
             if (store_.is_resident(cc)) continue;
@@ -1650,23 +1673,108 @@ private:
         }
     }
 
+    // async meshing: a worker greedy-meshes a SnapStore (chunk + neighbour copies)
+    // into CPU arrays; the main thread uploads the result to GPU buffers.
+    struct MeshTask {
+        World* w; ChunkCoord cc; SnapStore snap;
+        std::vector<std::byte> vs, is;
+        std::uint32_t index_count{0}, vbytes{0}, ibytes{0}; bool empty{true};
+    };
+    // Worker entry: greedy-mesh the snapshot into CPU arrays; main uploads later.
+    static void mesh_trampoline(void* u) noexcept {
+        auto* t = static_cast<MeshTask*>(u);
+        t->w->run_mesh_job(t);
+    }
+    void run_mesh_job(MeshTask* t) {
+        // Per-WORKER scratch (allocated once, reused). Meshing into a fresh ~2 MB
+        // worst-case buffer PER JOB churned memory bandwidth and tanked the frame;
+        // mesh into reused scratch, then keep only the actual mesh bytes.
+        thread_local std::vector<std::byte> tvs, tis;
+        if (tvs.size() < mesher_.max_vertex_bytes()) tvs.resize(mesher_.max_vertex_bytes());
+        if (tis.size() < mesher_.max_index_bytes())  tis.resize(mesher_.max_index_bytes());
+        MeshResult mr = mesher_.mesh(t->cc, t->snap,
+            std::span<std::byte>(tvs.data(), tvs.size()),
+            std::span<std::byte>(tis.data(), tis.size()), false);
+        t->empty = mr.empty || mr.index_count == 0;
+        t->index_count = mr.index_count; t->vbytes = mr.vertex_bytes; t->ibytes = mr.index_bytes;
+        if (!t->empty) {
+            t->vs.assign(tvs.begin(), tvs.begin() + std::ptrdiff_t(mr.vertex_bytes));
+            t->is.assign(tis.begin(), tis.begin() + std::ptrdiff_t(mr.index_bytes));
+        }
+        std::lock_guard<std::mutex> lk(mesh_mtx_);
+        mesh_done_.emplace_back(t);          // unique_ptr takes ownership
+    }
+    void submit_mesh_job(ChunkCoord cc) {
+        auto t = std::make_unique<MeshTask>();
+        t->w = this; t->cc = cc;
+        auto add = [&](ChunkCoord c) {
+            if (auto* ch = static_cast<PaletteChunk*>(store_.get(c))) t->snap.chunks.emplace(c, ch->clone());
+        };
+        add(cc);
+        const IVec3 dirs[6] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+        for (auto d : dirs) add(ChunkCoord{cc.x + d.x, cc.y + d.y, cc.z + d.z});
+        mesh_inflight_.insert(cc);
+        // Utility (E-cores): keep mesh work OFF the P-cores so it never starves the
+        // main render thread (running it on Interactive tanked FPS).
+        sched_->submit(&World::mesh_trampoline, t.release(), JobQoS::Utility);
+    }
+    void upload_mesh(ChunkCoord cc, MeshTask& t) {
+        if (!store_.is_resident(cc)) return;          // evicted while meshing — drop
+        MeshRec& rec = meshes_[cc];
+        if (rec.has_buffers) {
+            alloc_.free_(alloc_.user, rec.vbuf.handle);
+            alloc_.free_(alloc_.user, rec.ibuf.handle);
+            rec.has_buffers = false;
+        }
+        if (t.empty) { rec.index_count = 0; return; }
+        bf_gpu_buffer vb = alloc_.alloc(alloc_.user, t.vbytes);
+        bf_gpu_buffer ib = alloc_.alloc(alloc_.user, t.ibytes);
+        if (!vb.contents || !ib.contents) { rec.index_count = 0; return; }
+        std::memcpy(vb.contents, t.vs.data(), t.vbytes);
+        std::memcpy(ib.contents, t.is.data(), t.ibytes);
+        rec.vbuf = vb; rec.ibuf = ib; rec.index_count = t.index_count; rec.has_buffers = true;
+    }
+
     void remesh_dirty() {
-        if (!has_alloc_ || dirty_.empty()) return;
+        if (!has_alloc_) return;
         ensure_scratch();
-        // Remesh nearest dirty chunks first, budgeted per frame.
+        const bool async = !sync_stream_ && sched_ != nullptr;
+        // 1) Upload meshes finished on worker threads (allocator is main-thread only).
+        // Budgeted: GPU buffer alloc + memcpy is the main-thread cost, so cap how
+        // many we upload per frame and let the rest wait (uploading the whole
+        // worker backlog in one frame tanks FPS).
+        if (async) {
+            constexpr std::size_t kUploadBudget = 8;
+            std::vector<std::unique_ptr<MeshTask>> batch;
+            {
+                std::lock_guard<std::mutex> lk(mesh_mtx_);
+                std::size_t n = std::min<std::size_t>(mesh_done_.size(), kUploadBudget);
+                for (std::size_t i = 0; i < n; ++i) batch.push_back(std::move(mesh_done_[i]));
+                mesh_done_.erase(mesh_done_.begin(), mesh_done_.begin() + std::ptrdiff_t(n));
+            }
+            for (auto& t : batch) { mesh_inflight_.erase(t->cc); upload_mesh(t->cc, *t); }
+        }
+        if (dirty_.empty()) return;
+        // 2) Order dirty chunks: nearest first, and prefer chunks IN VIEW so what
+        // you're looking at pops in first.
         std::vector<ChunkCoord> todo(dirty_.begin(), dirty_.end());
-        // We only ever process the nearest MESH_BUDGET this frame — partial_sort
-        // instead of a full O(n log n) sort of the whole dirty set every frame.
-        auto cmp = [&](ChunkCoord a, ChunkCoord b) {
-            return dist2(a, last_center_) < dist2(b, last_center_);
+        V3 camFwd = forward_dir();
+        auto score = [&](ChunkCoord a) -> double {
+            V3 ctr{(float(a.x)+0.5f)*float(kChunkDim),(float(a.y)+0.5f)*float(kChunkDim),(float(a.z)+0.5f)*float(kChunkDim)};
+            V3 to{ctr.x - pos_.x, ctr.y - pos_.y, ctr.z - pos_.z};
+            float d = std::sqrt(dot(to,to)) + 0.001f;
+            float facing = dot(to, camFwd) / d;           // ~1 ahead, <0 behind
+            return double(dist2(a, last_center_)) * (facing > 0.2f ? 1.0 : 4.0);
         };
         std::size_t k = std::min<std::size_t>(std::size_t(MESH_BUDGET), todo.size());
-        std::partial_sort(todo.begin(), todo.begin() + std::ptrdiff_t(k), todo.end(), cmp);
+        std::partial_sort(todo.begin(), todo.begin() + std::ptrdiff_t(k), todo.end(),
+                          [&](ChunkCoord a, ChunkCoord b){ return score(a) < score(b); });
         int done = 0;
         for (ChunkCoord cc : todo) {
             if (done >= MESH_BUDGET) break;
+            if (async && (mesh_inflight_.count(cc) || mesh_inflight_.size() >= 64)) continue;
+            if (!store_.is_resident(cc)) { dirty_.erase(cc); continue; }
             dirty_.erase(cc);
-            if (!store_.is_resident(cc)) continue;
             ++done;
             // Light before meshing (the mesher reads per-voxel light). If a
             // boundary value changed, re-dirty neighbours so light bleeds across
@@ -1679,7 +1787,8 @@ private:
                     if (store_.is_resident(nc)) dirty_.insert(nc);
                 }
             }
-            remesh_one(cc);
+            if (async) submit_mesh_job(cc);       // game: mesh on a worker, upload when done
+            else       remesh_one(cc);            // sync / no scheduler: inline mesh+upload
         }
     }
     void remesh_one(ChunkCoord cc) {
@@ -1897,10 +2006,13 @@ private:
     // state (guarded by gen_mtx_); gen_inflight_ is main-thread-only. sched_ is
     // declared LAST so it is destroyed FIRST — its dtor joins workers before the
     // members those jobs touch (gen_done_/gen_mtx_) are destroyed.
-    bool                                                            sync_stream_{false};  // tests: inline gen
+    bool                                                            sync_stream_{false};  // tests: inline gen+mesh
     std::mutex                                                       gen_mtx_;
     std::vector<std::pair<ChunkCoord, std::unique_ptr<PaletteChunk>>> gen_done_;
     std::unordered_set<ChunkCoord, ChunkCoordHash>                   gen_inflight_;
+    std::mutex                                                       mesh_mtx_;
+    std::vector<std::unique_ptr<MeshTask>>                           mesh_done_;
+    std::unordered_set<ChunkCoord, ChunkCoordHash>                   mesh_inflight_;
     std::unique_ptr<JobScheduler>                                    sched_;
 };
 

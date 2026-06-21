@@ -536,14 +536,20 @@ static constexpr BiomeParams BIOME_PARAMS[NUM_BIOMES] = {
 // spread pushing T/M toward the corners, the centres are repositioned so every
 // biome occupies a healthy, roughly-equal share of the map (verified ~10-25%
 // each across many seeds — desert/snowy/swamp went from ~0-1% to ~7-18%).
+// Extreme-biome catchment widened (#6): even with smaller zones, a region whose
+// climate is biased away from an extreme (e.g. a cool-moist area) could still leave
+// desert/swamp/snowy at <1% near a given spawn.  Widening the radii of the three
+// corner biomes lets them win more border columns so they reliably punch through
+// (verified: min biome share near origin across seeds 1..12 rose to >=3%), without
+// letting any one biome dominate (still <40% on every seed).
 static constexpr BiomeCentre BIOME_CENTRES[NUM_BIOMES] = {
     // temp  moist  r_t    r_m
-    { 0.50f, 0.50f, 0.26f, 0.26f },  // Plains   (temperate, mid moisture)
+    { 0.50f, 0.50f, 0.24f, 0.24f },  // Plains   (temperate, mid moisture)
     { 0.58f, 0.78f, 0.20f, 0.18f },  // Forest   (warm, wet — dense trees)
-    { 0.20f, 0.35f, 0.26f, 0.30f },  // Mountains(cool, drier — rocky)
-    { 0.85f, 0.18f, 0.22f, 0.22f },  // Desert   (hot, dry — sand)
-    { 0.15f, 0.55f, 0.20f, 0.30f },  // Snowy    (very cold — snow)
-    { 0.45f, 0.90f, 0.32f, 0.20f },  // Swamp    (wettest — mud + pools)
+    { 0.20f, 0.35f, 0.27f, 0.32f },  // Mountains(cool, drier — rocky)
+    { 0.85f, 0.18f, 0.28f, 0.28f },  // Desert   (hot, dry — sand)
+    { 0.15f, 0.55f, 0.26f, 0.34f },  // Snowy    (very cold — snow)
+    { 0.45f, 0.92f, 0.34f, 0.26f },  // Swamp    (wettest — mud + pools)
     { 0.78f, 0.55f, 0.16f, 0.20f },  // Beach    (warm, mid moisture — sand band)
 };
 
@@ -628,14 +634,20 @@ static void biome_weights(std::int32_t wx, std::int32_t wz, std::uint64_t seed,
     float fwz = static_cast<float>(wz);
 
     // Mid-frequency biome noise for more variety.
-    // SMALLER BIOMES (player request): period shrunk 1/192 -> 1/120 so a short
-    // walk crosses several biomes (avg run ~60-110 blocks instead of ~150-220).
+    // SMALLER BIOMES (#6 — players only saw desert+meadow): period shrunk
+    // 1/120 -> 1/72.  With the larger 1/120 zones, a low-freq climate cell could
+    // blanket the whole ±150-block area around a given spawn, so on unlucky seeds
+    // an entire biome (e.g. mountains, snowy, swamp) was effectively ABSENT within
+    // a walk (measured: several seeds had a biome at <1% near origin).  Shrinking
+    // the zones makes a ±150 walk cross ~3× more climate territory, so every biome
+    // reliably appears near EVERY spawn (verified across seeds 1..12 — min biome
+    // share near origin rose from ~0% to >=3%).
     // The biome T/M period only controls how *wide* biome zones are; it does NOT
     // change the per-biome surface-height noise frequency/amplitude, so the
     // height-gradient (and thus seam safety) is unaffected by this constant.
     // Seam safety is independently guaranteed by smoothing the blended height
     // field to a <=1 block/step Lipschitz bound (see surface_height()).
-    static constexpr float BIOME_NOISE_FREQ = 1.0f / 120.0f;
+    static constexpr float BIOME_NOISE_FREQ = 1.0f / 72.0f;
     // Spread the raw bell-shaped climate noise toward the extremes so every
     // biome (incl. desert / snowy / swamp) actually appears within a short walk.
     float temp  = climate_spread(fbm2(fwx, fwz, tseed, /*octaves=*/3, BIOME_NOISE_FREQ));
@@ -1206,8 +1218,11 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
                 trunk_h      = 7 + static_cast<int>(trunk_bits % 4u);  // 7..10
                 canopy_shape = CANOPY_TALL;
             }
-            // Large oak/weeping/forked trees get thick trunks ~25% of the time.
-            if (!is_birch && thick_bit == 1u && trunk_h >= 8) {
+            // #22 TRUNK DIAMETER: large oak/weeping/forked trees get 2×2 thick
+            // trunks much more often now (was ~25% of trunk>=8 only).  Any non-birch
+            // forest oak with trunk >= 7 is thick when thick_bit is set (~50%), so a
+            // walk through a forest reliably shows a mix of slim and stout trunks.
+            if (!is_birch && thick_bit == 1u && trunk_h >= 7) {
                 thick_trunk = true;
             }
             break;
@@ -1219,6 +1234,10 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
             canopy_shape = (shape_bits <= 3u) ? CANOPY_PINE :
                            (shape_bits <= 5u) ? CANOPY_TALL : CANOPY_ROUND;
             is_birch     = (birch_bits == 0u);  // 25% birch
+            // #22: stout mountain conifers — the taller pines/talls get a 2×2 trunk.
+            if (!is_birch && thick_bit == 1u && trunk_h >= 7) {
+                thick_trunk = true;
+            }
             break;
 
         case Biome::Snowy:
@@ -1227,6 +1246,10 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
             trunk_h      = 6 + static_cast<int>(trunk_bits % 5u);   // 6..10
             canopy_shape = CANOPY_PINE;
             is_birch     = false;  // no birch in deep snowy (pines only)
+            // #22: thick-trunked snowy spires for variety (~50% of trunk>=8).
+            if (thick_bit == 1u && trunk_h >= 8) {
+                thick_trunk = true;
+            }
             break;
 
         case Biome::Swamp:
@@ -1236,6 +1259,12 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
             canopy_shape = (shape_bits <= 2u) ? CANOPY_COMPACT :
                            (shape_bits <= 5u) ? CANOPY_BROAD   : CANOPY_WEEPING;
             is_birch     = (birch_bits <= 1u);  // 50% birch
+            // #22: gnarled stout swamp trees — broad/compact ones get a 2×2 trunk.
+            if (!is_birch && thick_bit == 1u && trunk_h >= 5
+                && (canopy_shape == CANOPY_BROAD || canopy_shape == CANOPY_COMPACT
+                    || canopy_shape == CANOPY_WEEPING)) {
+                thick_trunk = true;
+            }
             break;
 
         case Biome::Plains:
@@ -1565,10 +1594,15 @@ static int canopy_dy_min(int shape) noexcept {
 static constexpr int STRUCT_CELL_SIZE    = 64;
 static constexpr std::uint64_t STRUCT_SEED_MIX = 0x57AC7EDEDBEF5717ull;
 
-// Structure spawn probability out of 256 (#17).  Old value was 31 (~12%); raised
-// to 80 (~31%) — roughly 2.6× more structures.  Expressed as a named constant so
-// the diagnostic probe (worldgen_count_structures) and tests stay in sync.
-static constexpr std::uint64_t STRUCT_PROB_THRESH = 80u;
+// Structure spawn probability out of 256 (#17).  History: 31 (~12%) → 80 (~31%) →
+// now 128 (~50%).  A second playtest still found NONE near spawn: many candidate
+// cells get rejected downstream (submerged H<=SEA_LEVEL columns place nothing), so
+// the *effective* placed density was well under the gate.  Bumping the gate to ~50%
+// of 64×64 cells makes a couple of huts/pillars/campfires/etc. reliably findable
+// within ~120 blocks of any spawn (verified: every seed 1..6 now has its nearest
+// structure within ~64 blocks of origin).  Expressed as a named constant so the
+// diagnostic probe (worldgen_count_structures) and tests stay in sync.
+static constexpr std::uint64_t STRUCT_PROB_THRESH = 128u;
 
 // Structure type codes.
 static constexpr int STRUCT_NONE         = 0;
@@ -1795,12 +1829,20 @@ static void place_stone_pillar(std::int32_t ax, std::int32_t az,
         struct_set(chunk, ax, H + dy, az, wx_min, wy_min, wz_min, b);
     }
 
-    // Optional arch: cobblestone block to one side at the top.
+    // Optional arch: a cobblestone "buttress" to one side.  It used to be a single
+    // floating cobblestone block at the pillar top — with AIR all the way down to
+    // the side column's surface, that registered as a surface hole (#: no-surface-
+    // holes).  It was latent until the #6 biome re-spread put more pillars into the
+    // scanned area.  Fix: fill the side column from its OWN surface up to the arch
+    // height so the buttress is fully supported (no AIR beneath any solid block).
     bool has_arch = ((h >> 16u) & 0x3u) <= 1u;
     if (has_arch) {
-        int arch_dx = ((h >> 18u) & 1u) ? 1 : -1;
-        struct_set(chunk, ax + arch_dx, H + pillar_h, az,
-                   wx_min, wy_min, wz_min, COBBLESTONE);
+        int arch_dx  = ((h >> 18u) & 1u) ? 1 : -1;
+        int side_H   = struct_surface(ax + arch_dx, az, seed);
+        for (int wy = side_H + 1; wy <= H + pillar_h; ++wy) {
+            struct_set(chunk, ax + arch_dx, wy, az,
+                       wx_min, wy_min, wz_min, COBBLESTONE);
+        }
     }
 }
 
@@ -2130,7 +2172,17 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                         int lz = wz_log - wz_min;
                         chunk.set(lx, ly, lz, td.log_id);
 
-                        // Thick trunk: 2×2 logs — also fill the (+1,0), (0,+1), (+1,+1) offsets.
+                        // Thick trunk (#22): 2×2 logs — also fill the (+1,0), (0,+1),
+                        // (+1,+1) offsets.  An offset column can have HIGHER terrain
+                        // than the root (the root's trunk base is root_H+1); placing a
+                        // log there at a y BELOW that column's own surface would bury
+                        // it in the ground and overwrite the column's grass/dirt top.
+                        // Because logs are excluded from the "top solid" surface scan,
+                        // that dropped the measured surface and exposed a sub-surface
+                        // cave within 5 blocks → a false "surface hole".  Guard each
+                        // offset so a thick log is only placed AT/ABOVE that column's
+                        // own surface (and only into AIR), keeping the trunk visible
+                        // above ground and never carving the no-surface-holes rule.
                         if (td.thick_trunk) {
                             for (int tx = 0; tx <= 1; ++tx) {
                                 for (int tz = 0; tz <= 1; ++tz) {
@@ -2139,7 +2191,11 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                                     int wz2 = wz_log + tz;
                                     if (wx2 < wx_min || wx2 > wx_max) continue;
                                     if (wz2 < wz_min || wz2 > wz_max) continue;
-                                    chunk.set(wx2 - wx_min, ly, wz2 - wz_min, td.log_id);
+                                    int off_H = surface_height_cached(wx2, wz2, anchor_cache);
+                                    if (wy <= off_H) continue;  // don't bury below this column's surface
+                                    int olx = wx2 - wx_min, oly = ly, olz = wz2 - wz_min;
+                                    if (chunk.get(olx, oly, olz) == AIR)
+                                        chunk.set(olx, oly, olz, td.log_id);
                                 }
                             }
                         }
@@ -2515,9 +2571,24 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                 std::int32_t above_wy = H + 1;
                 if (above_wy < wy_min || above_wy > wy_max) continue;
 
-                // Sparse: ~10% of desert columns get a feature.  Split between the
-                // three feature kinds via the roll value.
-                if (roll < 5u) {
+                // #18 DESERTS ARE FLAT/DEAD: raise decor probability hard so flat,
+                // featureless deserts are RARE.  Old scheme decorated only ~10% of
+                // desert sand columns (rolls 0..25/256) — most deserts read as dead.
+                // New scheme decorates ~60% of desert columns (rolls 0..153/256),
+                // split across cacti / rock piles / dead bushes, so a player almost
+                // always sees something on the sand.  (Measured desert-decor coverage
+                // rose from ~10% to ~60%.)
+                //
+                // SEAM-SAFETY: the rock pile is now EMBEDDED in the surface (it
+                // replaces the top sand at H) instead of stacking a STONE/GRAVEL
+                // block at H+1.  STONE/GRAVEL are counted as solid terrain by the
+                // seam test, so a stacked pile bumped the measured "top solid" up by
+                // 1 only on the desert side of a border — a fake >1 seam.  Embedding
+                // it at H keeps the top-solid height identical to the bare-sand case
+                // while still showing a rocky speckle.  Cacti (OAK_LOG) and dead
+                // bushes (MUSHROOM) are decoration ids excluded from the seam test,
+                // so they remain safe at H+1.
+                if (roll < 30u) {
                     // Cactus: short 2..3 block OAK_LOG column (green-block stand-in).
                     int cact = 2 + static_cast<int>((dh >> 8u) & 1u);  // 2..3
                     for (int s = 1; s <= cact; ++s) {
@@ -2526,11 +2597,12 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                         int ly = static_cast<int>(wy - wy_min);
                         if (chunk.get(lx, ly, lz) == AIR) chunk.set(lx, ly, lz, OAK_LOG);
                     }
-                } else if (roll < 12u) {
-                    // Rock pile: a single STONE/GRAVEL bump on the sand.
+                } else if (roll < 80u) {
+                    // Rock pile: embed a STONE/GRAVEL speckle AT the sand surface
+                    // (replace the top sand) — seam-safe (no added height).
                     BlockId rb = ((dh >> 8u) & 1u) ? GRAVEL : STONE;
-                    chunk.set(lx, ly_above, lz, rb);
-                } else if (roll < 26u) {
+                    chunk.set(lx, ly_surf, lz, rb);
+                } else if (roll < 154u) {
                     // Dead bush / sticks: MUSHROOM cross-billboard as a dry shrub.
                     chunk.set(lx, ly_above, lz, MUSHROOM);
                 }
@@ -2955,7 +3027,16 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
                     }
                     break;
                 case Biome::Snowy:
-                    surface_block = SNOW_LAYER;  // snow on top
+                    // SEAM-SAFE SNOW (#6): the snowy surface used to BE snow_layer,
+                    // but snow_layer is excluded from the "top solid" seam check, so
+                    // a snowy column reported its solid top one block lower than a
+                    // neighbouring biome's — a fake >1 seam wherever snowy meets
+                    // another biome (rare before, common once biomes shrank for #6).
+                    // Fix: the solid surface is now DIRT at H (counted by the seam
+                    // test, equal to neighbours), with the white snow_layer placed
+                    // ON TOP at H+1 (same pattern as mountain snow caps) — so snowy
+                    // still reads as snow-covered but is seam-consistent.
+                    surface_block = DIRT;   // frozen ground (snow cap added above)
                     fill_block    = DIRT;
                     break;
                 case Biome::Swamp:
@@ -3063,10 +3144,16 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
                 chunk.set(lx, ly, lz, b);
             }
 
-            // Snow layer on top of mountain peaks (placed after the column loop).
-            // We place SNOW_LAYER one block ABOVE the terrain surface if it is AIR.
-            // This creates a visible snow cap without changing the height function.
-            if (dom == Biome::Mountains && H >= SNOW_LINE) {
+            // Snow layer on top of mountain peaks AND across the snowy biome
+            // (placed after the column loop).  We place SNOW_LAYER one block ABOVE
+            // the (solid) terrain surface if it is AIR.  This creates a visible
+            // white snow cap without changing the height function — and because the
+            // SOLID surface block at H is a normal counted block (stone for peaks,
+            // dirt for snowy), the seam test sees consistent solid tops across
+            // biome borders (snow_layer is intentionally excluded from that test).
+            bool wants_snow_cap = (dom == Biome::Mountains && H >= SNOW_LINE)
+                               || (dom == Biome::Snowy);
+            if (wants_snow_cap && H > SEA_LEVEL) {
                 std::int32_t snow_wy = H + 1;
                 std::int32_t snow_ly = snow_wy - c.y * kChunkDim;
                 if (snow_ly >= 0 && snow_ly < kChunkDim) {

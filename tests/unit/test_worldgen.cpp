@@ -1317,6 +1317,7 @@ static void test_new_tree_variety() {
     constexpr BlockId BIRCH_LEAVES_ID = 27;
 
     bool found_thick_trunk  = false;  // two adjacent logs at same y level
+    int  thick_trunk_count  = 0;      // #22: count thick-trunk signatures
     bool found_leaning_tree = false;  // L-bend: upper trunk offset from lower
     bool found_drooping_leaves = false;  // leaves ≥2 below a trunk top (weeping)
 
@@ -1373,6 +1374,7 @@ static void test_new_tree_variety() {
                                 for (int wy = log_start_b; wy < 48 && is_log(get_block(lx+1, wy, lz)); ++wy) ++count_b;
                                 if (count_a >= 3 && count_b >= 3) {
                                     found_thick_trunk = true;
+                                    ++thick_trunk_count;
                                 }
                             }
                         }
@@ -1448,6 +1450,12 @@ static void test_new_tree_variety() {
 
     CHECK(found_thick_trunk,
           "new tree variety: thick (2x2) trunks found in world scan");
+    // #22 TRUNK DIAMETER: thick trunks must be COMMON, not a one-off — the player
+    // reported "all trunks 1-block diameter".  Broadened thick-trunk rules (forest
+    // oaks trunk>=7, stout mountain/snowy conifers, gnarled swamp trees) should
+    // yield many thick-trunk signatures across a ±15-chunk scan.
+    CHECK(thick_trunk_count >= 50,
+          "new tree variety: thick (2x2) trunks are common (>=50 in scan) — #22");
     CHECK(found_leaning_tree,
           "new tree variety: leaning (L-bend) trees found in world scan");
     CHECK(found_drooping_leaves,
@@ -1665,6 +1673,36 @@ static void test_biome_coverage() {
 }
 
 // ---------------------------------------------------------------------------
+// 22b. BIOMES APPEAR NEAR EVERY SPAWN (#6 — players only saw desert+meadow)
+//      The original single-seed coverage test masked the real bug: on UNLUCKY
+//      seeds an entire biome was effectively absent within a walk of origin
+//      (measured <1% near spawn for some seeds).  This probe-backed test scans a
+//      realistic ±150-block area around the ORIGIN spawn across MANY seeds and
+//      asserts that EVERY biome appears near EVERY spawn — the actual #6 fix
+//      (smaller biome zones + wider extreme-biome catchment).
+// ---------------------------------------------------------------------------
+static void test_biomes_near_every_spawn() {
+    constexpr int R = 150;
+    int worst_present  = 7;        // fewest distinct biomes seen on any seed
+    for (std::uint64_t s = 1; s <= 12; ++s) {
+        long c[7] = {0,0,0,0,0,0,0};
+        for (int z = -R; z <= R; z += 2) {
+            for (int x = -R; x <= R; x += 2) {
+                int b = worldgen_dominant_biome(x, z, s);
+                if (b >= 0 && b < 7) ++c[b];
+            }
+        }
+        int present = 0;
+        for (int i = 0; i < 7; ++i) if (c[i] > 0) ++present;
+        if (present < worst_present) worst_present = present;
+    }
+    // On every one of seeds 1..12, all 7 biomes must appear within ±150 blocks of
+    // origin — no more "only desert and meadow near spawn".
+    CHECK(worst_present == 7,
+          "biomes near spawn: all 7 biomes appear within +-150 blocks of origin on every seed (#6)");
+}
+
+// ---------------------------------------------------------------------------
 // 23. ROCKY MOUNTAINS (#6) — mountains read as rock, not grassy hills.
 //     Scan a large area and confirm that stone/gravel surfaces appear on
 //     mountain ground BELOW the snow line (the new ROCK_LINE behaviour), so
@@ -1725,9 +1763,11 @@ static void test_rocky_mountains() {
 
 // ---------------------------------------------------------------------------
 // 24. DESERT DECORATION (#18 DESERTS ARE FLAT/DEAD)
-//     Confirm deserts now carry scatter: dead bushes (mushroom billboard),
-//     small rock piles (stone/gravel bump on sand), or cacti (short log column).
-//     We look for these features sitting directly on dry desert sand.
+//     Confirm deserts now carry DENSE scatter: dead bushes (mushroom billboard),
+//     small rock piles (stone/gravel EMBEDDED in the sand surface — seam-safe, no
+//     added height), or cacti (short log column).  We classify each dry desert
+//     column as decorated/flat and assert that flat deserts are now RARE: a clear
+//     majority (>=40%) of desert sand columns carry a feature, up from ~10%.
 // ---------------------------------------------------------------------------
 static void test_desert_decoration() {
     constexpr std::uint64_t SEED = 0xB10BE5EED1234567ull;
@@ -1736,9 +1776,10 @@ static void test_desert_decoration() {
 
     constexpr int SCAN_R = 16;
 
-    int dead_bush = 0;   // mushroom on sand
-    int rock_pile = 0;   // stone/gravel bump on sand
-    int cactus    = 0;   // oak_log column on sand
+    long desert_cols = 0;
+    long dead_bush = 0;   // mushroom on sand (H+1)
+    long rock_pile = 0;   // stone/gravel embedded AT surface (H)
+    long cactus    = 0;   // oak_log column on sand (H+1)
 
     for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
         for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
@@ -1757,22 +1798,34 @@ static void test_desert_decoration() {
                     if (worldgen_dominant_biome(wx, wz, SEED) != 3) continue;  // desert
                     int H = worldgen_surface_height(wx, wz, SEED);
                     if (H <= 6) continue;
-                    // surface should be sand
-                    if (at(lx, H, lz) != 6u) continue;
+                    BlockId surf  = at(lx, H, lz);
                     BlockId above = at(lx, H + 1, lz);
-                    if (above == 39u)                  ++dead_bush;
-                    else if (above == 3u || above == 11u) ++rock_pile;
-                    else if (above == 21u)             ++cactus;
+                    if (surf == 6u) {                 // bare sand surface
+                        ++desert_cols;
+                        if      (above == 39u) ++dead_bush;
+                        else if (above == 21u) ++cactus;
+                    } else if (surf == 3u || surf == 11u) {
+                        // Embedded rock pile replaced the top sand (still a desert
+                        // sand column for coverage purposes).
+                        ++desert_cols;
+                        ++rock_pile;
+                    } else {
+                        continue;                      // not a desert sand column
+                    }
                 }
             }
         }
     }
 
-    CHECK(dead_bush + rock_pile + cactus > 0,
+    long decorated = dead_bush + rock_pile + cactus;
+    CHECK(decorated > 0,
           "desert decoration: deserts carry scattered decoration (was flat/dead)");
     CHECK(dead_bush > 0, "desert decoration: dead bushes (mushroom billboard) present");
-    CHECK(rock_pile > 0, "desert decoration: small rock piles present");
+    CHECK(rock_pile > 0, "desert decoration: small rock piles present (embedded)");
     CHECK(cactus    > 0, "desert decoration: cacti (log stand-in) present");
+    // #18: flat deserts must be RARE — most desert columns now carry a feature.
+    CHECK(desert_cols > 0 && decorated * 100 >= desert_cols * 40,
+          "desert decoration: >=40% of desert columns decorated (flat deserts rare) — #18");
 }
 
 // ---------------------------------------------------------------------------
@@ -1835,17 +1888,30 @@ static void test_underwater_vegetation() {
 static void test_structure_density() {
     // Several seeds so we don't rely on one lucky layout.
     const std::uint64_t seeds[] = {
-        0x5704C705EED2024ull, 0xB10BE5EED1234567ull, 0xDEADBEEFCAFEBABEull
+        0x5704C705EED2024ull, 0xB10BE5EED1234567ull, 0xDEADBEEFCAFEBABEull,
+        1ull, 2ull, 3ull, 4ull, 5ull, 6ull
     };
     int worst = 1 << 30;
+    int worst_nearest = 0;   // farthest "nearest structure" over all seeds
     for (std::uint64_t s : seeds) {
         int n = worldgen_count_structures(-256, -256, 512, s);
         if (n < worst) worst = n;
+
+        // Nearest structure to origin: expand a square ring until one appears.
+        int nearest = 1 << 30;
+        for (int rad = 8; rad <= 200; rad += 8) {
+            if (worldgen_count_structures(-rad, -rad, 2 * rad, s) > 0) { nearest = rad; break; }
+        }
+        if (nearest > worst_nearest) worst_nearest = nearest;
     }
-    // Old (12%) scheme gave ~5-6 structures here; the new (~31%) scheme should
-    // comfortably exceed 10 even on the sparsest of these seeds.
-    CHECK(worst >= 10,
-          "structure density: >=10 structures per 512x512 region (was ~5-6) — #17");
+    // #17 STRUCTURES (second playtest found NONE): the spawn gate was raised again
+    // (now ~50% of 64×64 cells).  Old (~12%) gave ~5-6 here; expect comfortably
+    // more than 15 even on the sparsest seed.
+    CHECK(worst >= 15,
+          "structure density: >=15 structures per 512x512 region (was ~5-6) — #17");
+    // A couple of structures must be findable within ~120 blocks of EVERY spawn.
+    CHECK(worst_nearest <= 120,
+          "structure density: nearest structure within ~120 blocks of origin on every seed — #17");
 }
 
 // ---------------------------------------------------------------------------
@@ -1925,6 +1991,7 @@ int main() {
     test_cave_entrances();
     test_ocean_depth();
     test_biome_coverage();
+    test_biomes_near_every_spawn();
     test_rocky_mountains();
     test_desert_decoration();
     test_underwater_vegetation();
