@@ -152,5 +152,44 @@
     "spawn_light_max": 15,
     "befriend_item": "berry_cluster",
     "calm_reward": "marsh_necker_drops"
+  },
+  {
+    "id": 20,
+    "name": "brown_bear",
+    "display_name": "Brown Bear",
+    "disposition": "skittish",
+    "max_health": 18,
+    "move_speed": 2.0,
+    "spawn_biomes": ["pine_forest", "rolling_hills"],
+    "biome": "forest",
+    "spawn_light_max": 15,
+    "befriend_item": "berry_cluster",
+    "model": 12
+  },
+  {
+    "id": 21,
+    "name": "penguin",
+    "display_name": "Penguin",
+    "disposition": "passive",
+    "max_health": 8,
+    "move_speed": 1.8,
+    "spawn_biomes": ["frost_tundra"],
+    "biome": "snowy",
+    "spawn_light_max": 15,
+    "befriend_item": "berry_cluster",
+    "model": 13
+  },
+  {
+    "id": 22,
+    "name": "frog",
+    "display_name": "Frog",
+    "disposition": "passive",
+    "max_health": 5,
+    "move_speed": 2.2,
+    "spawn_biomes": ["river_delta"],
+    "biome": "swamp",
+    "spawn_light_max": 15,
+    "befriend_item": "berry_cluster",
+    "model": 14
   }
 ]

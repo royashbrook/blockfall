@@ -27,6 +27,7 @@ struct CreatureDefX {
     float         move_speed{2.0f};
     std::string   boss_pattern;    // none|stomp|shieldwall|summon_helpers
     std::string   biome;           // plains|forest|mountains|desert|snowy|swamp|beach|any
+    int           model{-1};       // renderer kind override (-1 = legacy shape mapping)
 };
 
 struct QuestObjX { std::string trigger, target, text; std::uint32_t count{1}; };
@@ -87,6 +88,7 @@ private:
             c.move_speed = float(dnum(v, "move_speed", 2.0));
             c.boss_pattern = str(v, "boss_pattern");
             c.biome = str(v, "biome");
+            c.model = int(num(v, "model", -1));
             if (c.id != 0) creatures_.push_back(std::move(c));
         }
     }

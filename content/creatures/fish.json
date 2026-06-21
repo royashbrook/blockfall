@@ -1,0 +1,24 @@
+[
+  {
+    "id": 26,
+    "name": "fish",
+    "display_name": "Fish",
+    "disposition": "aquatic",
+    "max_health": 3,
+    "move_speed": 2.0,
+    "spawn_biomes": ["river_delta"],
+    "biome": "beach",
+    "model": 18
+  },
+  {
+    "id": 27,
+    "name": "pufferfish",
+    "display_name": "Pufferfish",
+    "disposition": "aquatic",
+    "max_health": 4,
+    "move_speed": 1.6,
+    "spawn_biomes": ["river_delta"],
+    "biome": "any",
+    "model": 19
+  }
+]

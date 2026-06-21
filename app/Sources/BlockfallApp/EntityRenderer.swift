@@ -339,6 +339,14 @@ final class EntityRenderer {
             case 9:  drawKind9(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             case 10: drawKind10(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             case 11: drawKind11(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 12: drawKind12(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 13: drawKind13(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 14: drawKind14(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 15: drawKind15(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 16: drawKind16(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 17: drawKind17(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 18: drawKind18(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 19: drawKind19(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             default: drawKind0(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             }
             // Clear so kind 6 (and the next iter before it sets) never inherit.
@@ -2969,6 +2977,895 @@ final class EntityRenderer {
                      model: pw(SIMD3(grinW * tx, ty, hFaceZ + s * 0.01), SIMD3(s * 0.04, th, s * 0.03)),
                      rgb: toothCol, sat: sat)
         }
+    }
+
+    // =========================================================================
+    // KIND 12 — BEAR (big chunky quadruped)
+    //
+    // Silhouette: bulky. A wide, deep, rounded barrel body sitting low on four
+    // short stubby legs. Broad round head pushed forward with a short blunt
+    // snout and two small round ears on top. Reads as heavy and cuddly.
+    // Slow lumbering plod; body sways gently; ears twitch; blinks.
+    //
+    // Parts: body(1) belly(1) rump(1) head(1) snout(1) nose(1) ears(2)
+    //        eyes(2) legs(4) paws(4) = 18
+    // =========================================================================
+    private func drawKind12(enc: MTLRenderCommandEncoder,
+                            viewProj: simd_float4x4,
+                            e: bf_entity_draw,
+                            pos: SIMD3<Float>,
+                            phase: Float,
+                            hash: Float,
+                            squash: SIMD3<Float>) {
+        let s   = e.scale * 1.15   // bear is chunky/bigger than a normal animal
+        let sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let base = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+
+        // ---- PALETTE: bear ----
+        let baseCol  = base
+        let bellyCol = SIMD3<Float>(min(1, base.x*0.74+0.20),
+                                    min(1, base.y*0.72+0.18),
+                                    min(1, base.z*0.70+0.16))
+        let darkCol  = base * 0.60                       // legs, paws, ear backs
+        let snoutCol = SIMD3<Float>(min(1, base.x*0.66+0.22),
+                                    min(1, base.y*0.62+0.18),
+                                    min(1, base.z*0.58+0.14))
+        let noseCol  = SIMD3<Float>(0.08, 0.06, 0.07)
+        let eyeCol   = SIMD3<Float>(0.05, 0.04, 0.05)
+
+        let blinkPhase  = phase + hash * 4.3
+        let breathPhase = phase * 0.38 + hash * 2.0
+        let earPhase    = phase + hash * 6.1
+
+        let plodSpeed: Float = 1.5
+        let legSwing  = sin(phase * plodSpeed) * 0.20
+        let bodyBob   = abs(sin(phase * plodSpeed)) * s * 0.012
+        let bodySway  = sin(phase * plodSpeed * 0.5) * 0.05   // gentle Z roll
+
+        let breatheY   = breatheYOffset(breathPhase, scale: s)
+        let eyeBlinkSY = blinkScale(blinkPhase)
+        let earTwitchL = earTwitchAngle(earPhase, side: -1)
+        let earTwitchR = earTwitchAngle(earPhase, side:  1)
+
+        // ---- PROPORTIONS (bulky) ----
+        let bW = s * 0.92;  let bH = s * 0.74;  let bD = s * 1.16   // deep barrel
+        let hS = s * 0.66                                            // big round head
+        let snW = s * 0.38; let snH = s * 0.28; let snD = s * 0.26   // short blunt snout
+        let earW = s * 0.20; let earH = s * 0.20; let earD = s * 0.12 // small round ears
+        let legW = s * 0.28; let legH = s * 0.30; let legD = s * 0.30 // short stubby legs
+        let pawW = s * 0.30; let pawH = s * 0.10; let pawD = s * 0.34
+
+        let groundY = pos.y
+        let bodyY   = groundY + legH + pawH + bH * 0.5 + bodyBob + breatheY
+        let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
+        let roll    = EntityRenderer.rotZ(bodySway)
+
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * roll * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+        func lw(_ hip: SIMD3<Float>, _ ang: Float) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * roll * EntityRenderer.trans(hip)
+                * EntityRenderer.rotX(ang)
+                * EntityRenderer.trans(SIMD3(0, -legH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(legW, legH, legD))
+        }
+        func paw(_ hip: SIMD3<Float>, _ ang: Float) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * roll * EntityRenderer.trans(hip)
+                * EntityRenderer.rotX(ang)
+                * EntityRenderer.trans(SIMD3(0, -legH - pawH * 0.5, pawD * 0.10))
+                * EntityRenderer.scaleM(SIMD3(pawW, pawH, pawD))
+        }
+
+        // Body — big deep barrel
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bD)), rgb: baseCol, sat: sat)
+        // Rounded rump bump at the rear (adds chunky read)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, bH * 0.16, -bD * 0.42), SIMD3(bW * 0.92, bH * 0.78, bD * 0.30)),
+                 rgb: baseCol, sat: sat)
+        // Pale belly underside
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, -bH * 0.26, bD * 0.04), SIMD3(bW * 0.82, bH * 0.46, bD * 0.80)),
+                 rgb: bellyCol, sat: sat)
+
+        // Head — broad and round, pushed forward and slightly down
+        let headY: Float = bH * 0.30
+        let headZ: Float = bD * 0.50 + hS * 0.42
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, headY, headZ), SIMD3(hS, hS * 0.92, hS * 0.86)),
+                 rgb: baseCol, sat: sat)
+        // Short blunt snout
+        let snoutY = headY - hS * 0.16
+        let snoutZ = headZ + hS * 0.42 + snD * 0.5
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, snoutY, snoutZ), SIMD3(snW, snH, snD)),
+                 rgb: snoutCol, sat: sat)
+        // Nose — dark block on the snout tip
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, snoutY + snH * 0.10, snoutZ + snD * 0.50), SIMD3(s * 0.14, s * 0.10, s * 0.06)),
+                 rgb: noseCol, sat: sat)
+
+        // FACE — small friendly dark eyes high on the head
+        let faceZ = headZ + hS * 0.44
+        let eyeW = s * 0.10; let eyeH = s * 0.11 * eyeBlinkSY; let eyeD = s * 0.05
+        let eyeY = headY + hS * 0.14
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3(-hS * 0.26, eyeY, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
+                sat: sat, scleraCol: eyeCol, pupilCol: eyeCol)
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3( hS * 0.26, eyeY, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
+                sat: sat, scleraCol: eyeCol, pupilCol: eyeCol)
+
+        // Small round ears on top of head, each twitches
+        let earBaseY = headY + hS * 0.48
+        do {
+            let earLModel = EntityRenderer.trans(wc) * R * roll
+                * EntityRenderer.trans(SIMD3(-hS * 0.30, earBaseY, headZ - hS * 0.04))
+                * EntityRenderer.rotX(earTwitchL)
+                * EntityRenderer.trans(SIMD3(0, earH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(earW, earH, earD))
+            let earRModel = EntityRenderer.trans(wc) * R * roll
+                * EntityRenderer.trans(SIMD3( hS * 0.30, earBaseY, headZ - hS * 0.04))
+                * EntityRenderer.rotX(earTwitchR)
+                * EntityRenderer.trans(SIMD3(0, earH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(earW, earH, earD))
+            drawCube(enc: enc, viewProj: viewProj, model: earLModel, rgb: darkCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: earRModel, rgb: darkCol, sat: sat)
+        }
+
+        // 4 short stubby legs + paws
+        let hipY = -bH * 0.5
+        let hipFL = SIMD3<Float>(-bW * 0.34, hipY,  bD * 0.34)
+        let hipFR = SIMD3<Float>( bW * 0.34, hipY,  bD * 0.34)
+        let hipBL = SIMD3<Float>(-bW * 0.34, hipY, -bD * 0.34)
+        let hipBR = SIMD3<Float>( bW * 0.34, hipY, -bD * 0.34)
+        drawCube(enc: enc, viewProj: viewProj, model: lw(hipFL,  legSwing), rgb: darkCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: lw(hipFR, -legSwing), rgb: darkCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: lw(hipBL, -legSwing), rgb: darkCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: lw(hipBR,  legSwing), rgb: darkCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: paw(hipFL,  legSwing), rgb: noseCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: paw(hipFR, -legSwing), rgb: noseCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: paw(hipBL, -legSwing), rgb: noseCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: paw(hipBR,  legSwing), rgb: noseCol, sat: sat)
+    }
+
+    // =========================================================================
+    // KIND 13 — PENGUIN (small upright biped)
+    //
+    // Silhouette: rounded upright teardrop. Dark back/head, big white belly oval
+    // on the front, two little flippers on the sides, orange beak and two orange
+    // feet poking out the bottom. Waddles side to side; flippers flap a little.
+    //
+    // Parts: body(1) belly(1) head(1) beak(1) eyes(2) flippers(2) feet(2) = 10
+    // =========================================================================
+    private func drawKind13(enc: MTLRenderCommandEncoder,
+                            viewProj: simd_float4x4,
+                            e: bf_entity_draw,
+                            pos: SIMD3<Float>,
+                            phase: Float,
+                            hash: Float,
+                            squash: SIMD3<Float>) {
+        let s   = e.scale * 0.92   // penguins are little
+        let sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let base = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+
+        // ---- PALETTE: penguin ----
+        // backCol: dark (entity color darkened toward classic tuxedo back)
+        let backCol  = base * 0.42
+        let bellyCol = SIMD3<Float>(0.96, 0.96, 0.97)   // white belly
+        let orange   = SIMD3<Float>(0.95, 0.55, 0.12)   // beak + feet
+        let eyeCol   = SIMD3<Float>(0.04, 0.04, 0.05)
+
+        let blinkPhase  = phase + hash * 4.0
+        let breathPhase = phase * 0.40 + hash * 1.6
+
+        let waddleSpeed: Float = 3.4
+        let waddle  = sin(phase * waddleSpeed) * 0.14    // whole-body Z rock
+        let bob     = abs(sin(phase * waddleSpeed)) * s * 0.018
+        let flap    = sin(phase * waddleSpeed * 1.2) * 0.32  // flipper flap
+
+        let breatheY   = breatheYOffset(breathPhase, scale: s)
+        let eyeBlinkSY = blinkScale(blinkPhase)
+
+        // ---- PROPORTIONS (upright teardrop) ----
+        let bW = s * 0.50;  let bH = s * 0.72;  let bD = s * 0.42   // tall round body
+        let hS = s * 0.40                                            // round head
+        let flW = s * 0.10; let flH = s * 0.46; let flD = s * 0.20   // flippers
+        let ftW = s * 0.18; let ftH = s * 0.08; let ftD = s * 0.26   // feet
+        let legH: Float = s * 0.04                                   // body sits just above feet
+
+        let groundY = pos.y
+        let bodyY   = groundY + ftH + legH + bH * 0.5 + bob + breatheY
+        let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
+        let rock    = EntityRenderer.rotZ(waddle)
+
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * rock * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+        // Foot: parked at ground; rocks with the body so it reads as a waddle
+        func footM(_ lo: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * rock
+                * EntityRenderer.trans(SIMD3(lo.x, -bH * 0.5 - legH - ftH * 0.5, lo.z))
+                * EntityRenderer.scaleM(SIMD3(ftW, ftH, ftD))
+        }
+
+        // Body — dark rounded back
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bD)), rgb: backCol, sat: sat)
+        // White belly oval on the front
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, -bH * 0.06, bD * 0.40), SIMD3(bW * 0.70, bH * 0.78, bD * 0.30)),
+                 rgb: bellyCol, sat: sat)
+
+        // Head — round, dark, sits on top
+        let headY = bH * 0.50 + hS * 0.40
+        let headZ = bD * 0.04
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, headY, headZ), SIMD3(hS, hS * 0.92, hS * 0.88)),
+                 rgb: backCol, sat: sat)
+        // Beak — small orange wedge at front of head
+        let faceZ = headZ + hS * 0.44
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, headY - hS * 0.10, faceZ + s * 0.04), SIMD3(s * 0.12, s * 0.09, s * 0.14)),
+                 rgb: orange, sat: sat)
+        // Eyes — small dark dots
+        let eyeW = s * 0.08; let eyeH = s * 0.09 * eyeBlinkSY; let eyeD = s * 0.04
+        let eyeY = headY + hS * 0.10
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3(-hS * 0.26, eyeY, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
+                sat: sat, scleraCol: eyeCol, pupilCol: eyeCol)
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3( hS * 0.26, eyeY, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
+                sat: sat, scleraCol: eyeCol, pupilCol: eyeCol)
+
+        // Flippers — thin dark paddles on the sides, flap from the shoulder
+        do {
+            let shY = bH * 0.22
+            let flapL = EntityRenderer.trans(wc) * R * rock
+                * EntityRenderer.trans(SIMD3(-bW * 0.50, shY, 0))
+                * EntityRenderer.rotX(flap)
+                * EntityRenderer.trans(SIMD3(0, -flH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(flW, flH, flD))
+            let flapR = EntityRenderer.trans(wc) * R * rock
+                * EntityRenderer.trans(SIMD3( bW * 0.50, shY, 0))
+                * EntityRenderer.rotX(-flap)
+                * EntityRenderer.trans(SIMD3(0, -flH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(flW, flH, flD))
+            drawCube(enc: enc, viewProj: viewProj, model: flapL, rgb: backCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: flapR, rgb: backCol, sat: sat)
+        }
+
+        // Feet — two orange blocks poking out the bottom
+        drawCube(enc: enc, viewProj: viewProj, model: footM(SIMD3(-bW * 0.24, 0, bD * 0.18)), rgb: orange, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: footM(SIMD3( bW * 0.24, 0, bD * 0.18)), rgb: orange, sat: sat)
+    }
+
+    // =========================================================================
+    // KIND 14 — FROG (low wide squat amphibian)
+    //
+    // Silhouette: wide squat blob close to the ground. Two big bulging eyes on
+    // TOP of the head. Long folded back legs splayed to the rear, small front
+    // legs propping up the front. A wide grin slit. Animation: a little hop —
+    // crouch then spring up and forward — plus a throat-pouch puff.
+    //
+    // Parts: body(1) belly(1) eyes(2 dome+pupil = 4) grin(1) back-legs(2)
+    //        front-legs(2) throat(1) = ~12
+    // =========================================================================
+    private func drawKind14(enc: MTLRenderCommandEncoder,
+                            viewProj: simd_float4x4,
+                            e: bf_entity_draw,
+                            pos: SIMD3<Float>,
+                            phase: Float,
+                            hash: Float,
+                            squash: SIMD3<Float>) {
+        let s   = e.scale * 0.95
+        let sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let base = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+
+        // ---- PALETTE: frog ----
+        // push toward green
+        let baseCol  = SIMD3<Float>(min(1, base.x*0.50+0.04),
+                                    min(1, base.y*0.72+0.16),
+                                    min(1, base.z*0.42+0.04))
+        let bellyCol = SIMD3<Float>(min(1, baseCol.x*0.60+0.34),
+                                    min(1, baseCol.y*0.64+0.30),
+                                    min(1, baseCol.z*0.46+0.22))
+        let legCol   = baseCol * 0.80
+        let throatCol = SIMD3<Float>(min(1, baseCol.x*0.70+0.22),
+                                     min(1, baseCol.y*0.60+0.18),
+                                     min(1, baseCol.z*0.50+0.14))
+        let eyeWhite = SIMD3<Float>(0.95, 0.92, 0.45)   // yellowish frog eye
+        let eyeCol   = SIMD3<Float>(0.03, 0.03, 0.03)
+
+        // Hop cycle: crouch (squash low) then quick rise + forward, then land.
+        let hopSpeed: Float = 2.6
+        let hopRaw  = sin(phase * hopSpeed)
+        let hopUp   = pow(max(0, hopRaw), 1.6) * s * 0.26     // vertical leap
+        // crouch: when not airborne, squash the body flatter
+        let crouch  = (hopRaw < 0 ? -hopRaw : Float(0)) * 0.18
+        // throat puff: gentle pulse
+        let throatPuff = (sin(phase * 1.4 + hash) * 0.5 + 0.5) * 0.5 + 0.6
+
+        let blinkPhase  = phase + hash * 5.0
+        let eyeBlinkSY = blinkScale(blinkPhase)
+
+        // ---- PROPORTIONS (wide squat) ----
+        let bW = s * 0.78;  let bH = s * 0.40;  let bD = s * 0.70
+        let eyeS = s * 0.18                                  // big bulging eyes
+        let flW = s * 0.12; let flH = s * 0.22; let flD = s * 0.12   // front legs
+        // folded back legs: a thigh block angled to the rear-side
+        let blW = s * 0.16; let blH = s * 0.14; let blD = s * 0.40
+
+        let groundY = pos.y
+        // crouch squashes the standing height; hopUp lifts the whole frog
+        let standH  = (bH * 0.5 + flH) * (1.0 - crouch)
+        let bodyY   = groundY + standH + hopUp
+        let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
+        // crouch squash applied to the whole body locally (flat & wide when crouched)
+        let crouchSquash = EntityRenderer.scaleM(SIMD3<Float>(1 + crouch * 0.5, 1 - crouch, 1 + crouch * 0.3))
+
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * crouchSquash * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+
+        // Body — wide low dome
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bD)), rgb: baseCol, sat: sat)
+        // Pale belly underside
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, -bH * 0.30, bD * 0.10), SIMD3(bW * 0.80, bH * 0.40, bD * 0.74)),
+                 rgb: bellyCol, sat: sat)
+        // Throat pouch — small puffing bump at the front-bottom
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, -bH * 0.22, bD * 0.46), SIMD3(bW * 0.40 * throatPuff, bH * 0.40 * throatPuff, s * 0.14)),
+                 rgb: throatCol, sat: sat)
+
+        // BIG bulging eyes on TOP of the head (frog signature)
+        let eyeBaseY = bH * 0.46
+        let eyeZ     = bD * 0.30
+        for sx in [-1.0, 1.0] as [Float] {
+            let cx = sx * bW * 0.28
+            // eye dome (slightly squashed by blink)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(cx, eyeBaseY, eyeZ), SIMD3(eyeS, eyeS * eyeBlinkSY, eyeS)),
+                     rgb: eyeWhite, sat: sat)
+            // pupil — dark dot facing up-forward
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(cx, eyeBaseY + eyeS * 0.20, eyeZ + eyeS * 0.30),
+                               SIMD3(eyeS * 0.45, eyeS * 0.45 * eyeBlinkSY, eyeS * 0.4)),
+                     rgb: eyeCol, sat: sat)
+        }
+
+        // Wide grin slit across the front
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, -bH * 0.04, bD * 0.50), SIMD3(bW * 0.74, s * 0.05, s * 0.04)),
+                 rgb: SIMD3<Float>(0.10, 0.18, 0.08), sat: sat)
+
+        // Front legs — small props under the front
+        for sx in [-1.0, 1.0] as [Float] {
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(sx * bW * 0.34, -bH * 0.5 - flH * 0.5 + 0.0, bD * 0.34), SIMD3(flW, flH, flD)),
+                     rgb: legCol, sat: sat)
+        }
+        // Folded back legs — angled thighs splayed to the rear sides
+        for sx in [-1.0, 1.0] as [Float] {
+            let blModel = EntityRenderer.trans(wc) * R * crouchSquash
+                * EntityRenderer.trans(SIMD3(sx * bW * 0.40, -bH * 0.28, -bD * 0.30))
+                * EntityRenderer.rotY(sx * 0.5)
+                * EntityRenderer.rotX(-0.35)
+                * EntityRenderer.trans(SIMD3(0, 0, -blD * 0.4))
+                * EntityRenderer.scaleM(SIMD3(blW, blH, blD))
+            drawCube(enc: enc, viewProj: viewProj, model: blModel, rgb: legCol, sat: sat)
+        }
+    }
+
+    // =========================================================================
+    // KIND 15 — SLIME (monster: wobbling translucent-looking blob)
+    //
+    // Silhouette: a rounded cube/blob that SQUASHES & STRETCHES as it bounces —
+    // flat & wide on the "ground" beat, tall & narrow on the "up" beat. Uses the
+    // entity color directly so it reads as a colored gel. A lighter inner core
+    // gives a translucent gooey feel, a glossy highlight on top, and two simple
+    // dark eyes near the front. Hops in place with a gummy bounce.
+    //
+    // Parts: body(1) inner-core(1) highlight(1) eyes(2) mouth(1) = 6
+    // =========================================================================
+    private func drawKind15(enc: MTLRenderCommandEncoder,
+                            viewProj: simd_float4x4,
+                            e: bf_entity_draw,
+                            pos: SIMD3<Float>,
+                            phase: Float,
+                            hash: Float,
+                            squash: SIMD3<Float>) {
+        let s   = e.scale
+        let sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let base = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+
+        // ---- PALETTE: slime (use entity color as the gel) ----
+        let gelCol   = base
+        // inner core: brighter, lighter version (gooey translucent feel)
+        let coreCol  = SIMD3<Float>(min(1, base.x*0.6+0.40),
+                                    min(1, base.y*0.6+0.40),
+                                    min(1, base.z*0.6+0.40))
+        let highCol  = SIMD3<Float>(min(1, base.x*0.4+0.55),
+                                    min(1, base.y*0.4+0.55),
+                                    min(1, base.z*0.4+0.55))
+        let eyeCol   = SIMD3<Float>(0.05, 0.05, 0.06)
+
+        // Bounce: hop up, and squash/stretch out of phase with height.
+        let bounceSpeed: Float = 3.0
+        let bRaw   = sin(phase * bounceSpeed)
+        let hopUp  = pow(max(0, bRaw), 1.4) * s * 0.22
+        // squash factor: at the bottom of the bounce (bRaw < 0) it splats wide;
+        // mid-rise it stretches tall. Drive from the bounce derivative-ish term.
+        let stretch = bRaw                         // +1 rising/up, -1 landing
+        let sx = 1.0 - stretch * 0.22              // wide on land, narrow up
+        let sy = 1.0 + stretch * 0.30              // tall up, flat on land
+        let sz = 1.0 - stretch * 0.22
+
+        let blinkPhase  = phase + hash * 4.6
+        let eyeBlinkSY  = blinkScale(blinkPhase)
+
+        // ---- PROPORTIONS ----
+        let bS = s * 0.66                           // base blob size
+
+        let groundY = pos.y
+        // anchor the blob to the ground: its bottom stays near groundY (squash
+        // pivots about the foot), then hopUp lifts it.
+        let bodyY   = groundY + bS * 0.5 * sy + hopUp
+        let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
+        // gooey squash/stretch applied to the whole blob, pivoting about its base
+        let footLocal = groundY - wc.y
+        let wobble = EntityRenderer.trans(SIMD3<Float>(0, footLocal, 0))
+            * EntityRenderer.scaleM(SIMD3<Float>(sx, sy, sz))
+            * EntityRenderer.trans(SIMD3<Float>(0, -footLocal, 0))
+
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * wobble * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+
+        // Outer gel body
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, 0, 0), SIMD3(bS, bS, bS)), rgb: gelCol, sat: sat)
+        // Inner brighter core (translucent goo read)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, -bS * 0.10, 0), SIMD3(bS * 0.50, bS * 0.50, bS * 0.50)),
+                 rgb: coreCol, sat: sat)
+        // Glossy highlight on the upper-front
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(-bS * 0.18, bS * 0.26, bS * 0.30), SIMD3(bS * 0.20, bS * 0.16, bS * 0.06)),
+                 rgb: highCol, sat: sat)
+
+        // Two simple eyes near the front
+        let faceZ = bS * 0.50
+        let eyeW = s * 0.09; let eyeH = s * 0.11 * eyeBlinkSY; let eyeD = s * 0.04
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3(-bS * 0.20, bS * 0.06, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
+                sat: sat, scleraCol: SIMD3<Float>(0.96, 0.96, 0.98), pupilCol: eyeCol)
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3( bS * 0.20, bS * 0.06, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
+                sat: sat, scleraCol: SIMD3<Float>(0.96, 0.96, 0.98), pupilCol: eyeCol)
+        // Little mouth slit
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, -bS * 0.12, faceZ), SIMD3(s * 0.14, s * 0.04, s * 0.03)),
+                 rgb: SIMD3<Float>(0.12, 0.10, 0.12), sat: sat)
+    }
+
+    // =========================================================================
+    // KIND 16 — SPIDER (monster: low round body + EIGHT legs)
+    //
+    // Silhouette: a low round abdomen with a smaller head in front, and EIGHT
+    // legs splayed out wide — each leg is a two-segment angled spike (thigh out,
+    // shin down). Four legs per side. A few tiny glinting eyes on the head.
+    // Creepy-but-cartoonish. Legs scuttle: each side ripples opposite.
+    //
+    // Parts: abdomen(1) head(1) eyes(4) legs(8 × 2 segs = 16) = 22
+    // =========================================================================
+    private func drawKind16(enc: MTLRenderCommandEncoder,
+                            viewProj: simd_float4x4,
+                            e: bf_entity_draw,
+                            pos: SIMD3<Float>,
+                            phase: Float,
+                            hash: Float,
+                            squash: SIMD3<Float>) {
+        let s   = e.scale
+        let sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let base = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+
+        // ---- PALETTE: spider (dark, with entity tint) ----
+        let bodyCol  = base * 0.40 + SIMD3<Float>(0.06, 0.04, 0.07)
+        let headCol  = base * 0.34 + SIMD3<Float>(0.05, 0.03, 0.06)
+        let legCol   = base * 0.30 + SIMD3<Float>(0.04, 0.03, 0.05)
+        // small red glinting eyes (slightly HDR so they catch a little glow)
+        let eyeCol   = SIMD3<Float>(0.95, 0.10, 0.10)
+
+        let scuttleSpeed: Float = 6.0
+        let blinkPhase  = phase + hash * 4.2
+        let eyeBlinkSY  = blinkScale(blinkPhase)
+        let bodyBob     = abs(sin(phase * scuttleSpeed * 0.5)) * s * 0.02
+
+        // ---- PROPORTIONS (low and wide) ----
+        let abW = s * 0.62; let abH = s * 0.42; let abD = s * 0.66   // round abdomen
+        let hdW = s * 0.34; let hdH = s * 0.28; let hdD = s * 0.32   // smaller head in front
+        let thW = s * 0.09; let thH = s * 0.09; let thD = s * 0.34   // leg thigh (outward)
+        let shW = s * 0.07; let shH = s * 0.30; let shD = s * 0.07   // leg shin (down)
+
+        let groundY = pos.y
+        let bodyY   = groundY + shH * 0.7 + abH * 0.5 + bodyBob
+        let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
+
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+
+        // Abdomen — round low body
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, 0, -abD * 0.10), SIMD3(abW, abH, abD)), rgb: bodyCol, sat: sat)
+        // Head — smaller, in front
+        let headZ = abD * 0.50 + hdD * 0.40
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, -abH * 0.04, headZ), SIMD3(hdW, hdH, hdD)), rgb: headCol, sat: sat)
+
+        // EIGHT legs — 4 per side, each a thigh (out) + shin (down) two-segment.
+        // Z positions stagger from front to back; each leg flexes on a phase so
+        // the side ripples (alternating legs lead).
+        let legZ: [Float] = [abD * 0.34, abD * 0.10, -abD * 0.12, -abD * 0.34]
+        for side in [-1.0, 1.0] as [Float] {
+            for i in 0..<4 {
+                let lz = legZ[i]
+                // per-leg scuttle phase: opposite legs (by index parity and side) lead
+                let legPhase = phase * scuttleSpeed + Float(i) * 1.3 + (side > 0 ? 1.57 : 0)
+                let flex = sin(legPhase) * 0.22
+                // hip on the side of the abdomen
+                let hip = SIMD3<Float>(side * abW * 0.46, abH * 0.06, lz)
+                let splay = EntityRenderer.rotZ(side * (0.65 + flex))   // thigh angles outward
+                // Thigh — points out to the side, fans front/back a bit by index
+                let yaw = EntityRenderer.rotY(side * Float(i - 1) * 0.30)
+                let thighBase = EntityRenderer.trans(wc) * R
+                    * EntityRenderer.trans(hip) * yaw * splay
+                let thighModel = thighBase
+                    * EntityRenderer.trans(SIMD3(side * thD * 0.5, 0, 0))
+                    * EntityRenderer.scaleM(SIMD3(thD, thH, thW))   // long along X (outward)
+                drawCube(enc: enc, viewProj: viewProj, model: thighModel, rgb: legCol, sat: sat)
+                // Shin — drops down from the end of the thigh
+                let shinModel = thighBase
+                    * EntityRenderer.trans(SIMD3(side * thD, 0, 0))
+                    * EntityRenderer.rotZ(side * -1.1)              // bend downward
+                    * EntityRenderer.trans(SIMD3(0, -shH * 0.5, 0))
+                    * EntityRenderer.scaleM(SIMD3(shW, shH, shD))
+                drawCube(enc: enc, viewProj: viewProj, model: shinModel, rgb: legCol, sat: sat)
+            }
+        }
+
+        // A few tiny glinting eyes clustered on the head front
+        let faceZ = headZ + hdD * 0.42
+        let eyeY  = -abH * 0.02
+        let er = s * 0.05
+        let erH = er * eyeBlinkSY
+        for (ex, ey) in [(-0.16, 0.10), (0.16, 0.10), (-0.08, 0.0), (0.08, 0.0)] as [(Float, Float)] {
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(hdW * ex, eyeY + hdH * ey, faceZ), SIMD3(er, erH, er * 0.8)),
+                     rgb: eyeCol, sat: sat)
+        }
+    }
+
+    // =========================================================================
+    // KIND 17 — GHOST (monster: floating wispy body, no legs)
+    //
+    // Silhouette: a rounded head/body that tapers to a WAVY tattered bottom (a
+    // row of little hanging tails of varying length) instead of legs. Hollow
+    // dark eyes and a small "oooh" mouth. The whole thing bobs up and down and
+    // drifts gently side to side. Body uses an HDR-ish bright tint so it glows
+    // faintly in the bloom pass (like the other monsters' emissive accents).
+    //
+    // Parts: body(1) head-dome(1) tails(5) eyes(2) mouth(1) = 10
+    // =========================================================================
+    private func drawKind17(enc: MTLRenderCommandEncoder,
+                            viewProj: simd_float4x4,
+                            e: bf_entity_draw,
+                            pos: SIMD3<Float>,
+                            phase: Float,
+                            hash: Float,
+                            squash: SIMD3<Float>) {
+        let s   = e.scale
+        let sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let base = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+
+        // ---- PALETTE: ghost (pale, faintly glowing) ----
+        // bright wispy body: lighten the entity color a lot toward white
+        let bodyCol  = SIMD3<Float>(min(1, base.x*0.35+0.62),
+                                    min(1, base.y*0.35+0.62),
+                                    min(1, base.z*0.35+0.66))
+        // tails slightly more saturated/dim than the body for a tapering read
+        let tailCol  = SIMD3<Float>(min(1, base.x*0.45+0.42),
+                                    min(1, base.y*0.45+0.42),
+                                    min(1, base.z*0.45+0.48))
+        let eyeCol   = SIMD3<Float>(0.04, 0.04, 0.08)   // hollow dark eyes
+
+        // Float bob + drift
+        let bob     = sin(phase * 1.6 + hash) * s * 0.10
+        let drift   = sin(phase * 0.9 + hash * 1.7) * s * 0.06    // side-to-side
+        let waveT   = phase * 2.4                                 // tail wave
+        let blinkPhase = phase + hash * 4.0
+        let eyeBlinkSY = blinkScale(blinkPhase)
+
+        // ---- PROPORTIONS ----
+        let bW = s * 0.58; let bH = s * 0.66; let bD = s * 0.50
+
+        let groundY = pos.y
+        // floats above the ground
+        let bodyY   = groundY + s * 0.55 + bH * 0.5 + bob
+        let wc      = SIMD3<Float>(pos.x + drift, bodyY, pos.z)
+        // ghost has no feet; keep squash pivot at body center (footLocal 0 is fine,
+        // but use ground for consistency with hit recoil)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: -(bH * 0.5))
+
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+
+        // Body — rounded column
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bD)), rgb: bodyCol, sat: sat)
+        // Rounded top dome (head)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, bH * 0.46, 0), SIMD3(bW * 0.86, bH * 0.34, bD * 0.86)),
+                 rgb: bodyCol, sat: sat)
+
+        // Wavy tattered bottom — 5 hanging tails of varying length that sway,
+        // standing in for legs (the floaty wisp signature)
+        let tails = 5
+        for i in 0..<tails {
+            let fx = (Float(i) / Float(tails - 1)) - 0.5      // -0.5 .. +0.5
+            let baseLen: Float = (i % 2 == 0) ? 0.30 : 0.20    // alternate long/short
+            let wave = sin(waveT + Float(i) * 1.1) * s * 0.04
+            let tH = s * baseLen
+            let tailModel = EntityRenderer.trans(wc) * R
+                * EntityRenderer.trans(SIMD3(fx * bW * 0.88 + wave, -bH * 0.5 - tH * 0.4, 0))
+                * EntityRenderer.scaleM(SIMD3(bW * 0.20, tH, bD * 0.70))
+            drawCube(enc: enc, viewProj: viewProj, model: tailModel, rgb: tailCol, sat: sat)
+        }
+
+        // Hollow dark eyes
+        let faceZ = bD * 0.50
+        let eyeW = s * 0.11; let eyeH = s * 0.15 * eyeBlinkSY; let eyeD = s * 0.04
+        let eyeY = bH * 0.40
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(-bW * 0.22, eyeY, faceZ), SIMD3(eyeW, eyeH, eyeD)),
+                 rgb: eyeCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3( bW * 0.22, eyeY, faceZ), SIMD3(eyeW, eyeH, eyeD)),
+                 rgb: eyeCol, sat: sat)
+        // Small round "oooh" mouth
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, bH * 0.14, faceZ), SIMD3(s * 0.10, s * 0.12, s * 0.04)),
+                 rgb: eyeCol, sat: sat)
+    }
+
+    // =========================================================================
+    // KIND 18 — FISH (small horizontal swimmer)
+    //
+    // Silhouette: a small horizontal oval body oriented along the creature's
+    // facing (yaw), a triangular tail fin at the back that WIGGLES, a top dorsal
+    // fin, and a small side fin. Eye near the front. Whole body undulates with a
+    // gentle swim wiggle.
+    //
+    // Parts: body(1) tail-fin(2 taper) dorsal-fin(1) side-fins(2) eyes(2) = 8
+    // =========================================================================
+    private func drawKind18(enc: MTLRenderCommandEncoder,
+                            viewProj: simd_float4x4,
+                            e: bf_entity_draw,
+                            pos: SIMD3<Float>,
+                            phase: Float,
+                            hash: Float,
+                            squash: SIMD3<Float>) {
+        let s   = e.scale
+        let sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let base = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+
+        // ---- PALETTE: fish ----
+        let baseCol  = base
+        let bellyCol = SIMD3<Float>(min(1, base.x*0.6+0.34),
+                                    min(1, base.y*0.6+0.34),
+                                    min(1, base.z*0.6+0.36))
+        let finCol   = SIMD3<Float>(min(1, base.x*0.7+0.16),
+                                    min(1, base.y*0.7+0.16),
+                                    min(1, base.z*0.7+0.20))
+        let eyeCol   = SIMD3<Float>(0.04, 0.04, 0.05)
+
+        let swimSpeed: Float = 3.6
+        let bodyWiggle = sin(phase * swimSpeed) * 0.10       // whole-body yaw waver
+        let tailWag    = sin(phase * swimSpeed + 1.0) * 0.6  // tail swings more
+        let bob        = sin(phase * 1.8 + hash) * s * 0.04
+        let blinkPhase = phase + hash * 4.0
+        let eyeBlinkSY = blinkScale(blinkPhase)
+
+        // ---- PROPORTIONS (long along +Z = facing) ----
+        let bW = s * 0.34; let bH = s * 0.42; let bD = s * 0.70   // body (tall-ish, oval)
+        let t1W = s * 0.06; let t1H = s * 0.36; let t1D = s * 0.18 // tail base
+        let t2W = s * 0.04; let t2H = s * 0.50; let t2D = s * 0.20 // tail flare
+        let dorW = s * 0.05; let dorH = s * 0.26; let dorD = s * 0.34
+
+        let groundY = pos.y
+        let bodyY   = groundY + s * 0.45 + bob          // swims a bit above ground
+        let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: -(bH * 0.5))
+        let wig     = EntityRenderer.rotY(bodyWiggle)
+
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * wig * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+
+        // Body — oval, tapering toward the tail (drawn slightly narrower at back)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, 0, bD * 0.05), SIMD3(bW, bH, bD)), rgb: baseCol, sat: sat)
+        // Pale belly
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, -bH * 0.28, bD * 0.05), SIMD3(bW * 0.84, bH * 0.42, bD * 0.84)),
+                 rgb: bellyCol, sat: sat)
+
+        // Tail fin — two stacked blocks at the back that wag together
+        do {
+            let tailPivot = SIMD3<Float>(0, 0, -bD * 0.48)
+            let base1 = EntityRenderer.trans(wc) * R * wig
+                * EntityRenderer.trans(tailPivot)
+                * EntityRenderer.rotY(tailWag)
+            let t1Model = base1
+                * EntityRenderer.trans(SIMD3(0, 0, -t1D * 0.5))
+                * EntityRenderer.scaleM(SIMD3(t1W, t1H, t1D))
+            let t2Model = base1
+                * EntityRenderer.trans(SIMD3(0, 0, -t1D - t2D * 0.5))
+                * EntityRenderer.scaleM(SIMD3(t2W, t2H, t2D))
+            drawCube(enc: enc, viewProj: viewProj, model: t1Model, rgb: finCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: t2Model, rgb: finCol, sat: sat)
+        }
+
+        // Dorsal fin — thin sail on top
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, bH * 0.50 + dorH * 0.4, 0), SIMD3(dorW, dorH, dorD)),
+                 rgb: finCol, sat: sat)
+        // Side fins — little paddles low on each flank
+        for sx in [-1.0, 1.0] as [Float] {
+            let fin = EntityRenderer.trans(wc) * R * wig
+                * EntityRenderer.trans(SIMD3(sx * bW * 0.50, -bH * 0.10, bD * 0.10))
+                * EntityRenderer.rotZ(sx * 0.5)
+                * EntityRenderer.scaleM(SIMD3(s * 0.18, s * 0.04, s * 0.14))
+            drawCube(enc: enc, viewProj: viewProj, model: fin, rgb: finCol, sat: sat)
+        }
+
+        // Eyes — near the front, one per side
+        let faceZ = bD * 0.45
+        let eyeW = s * 0.07; let eyeH = s * 0.09 * eyeBlinkSY; let eyeD = s * 0.05
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3(-bW * 0.42, bH * 0.10, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
+                sat: sat, scleraCol: SIMD3<Float>(0.96, 0.96, 0.98), pupilCol: eyeCol)
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3( bW * 0.42, bH * 0.10, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
+                sat: sat, scleraCol: SIMD3<Float>(0.96, 0.96, 0.98), pupilCol: eyeCol)
+    }
+
+    // =========================================================================
+    // KIND 19 — PUFFERFISH (round spiky ball fish)
+    //
+    // Silhouette: a round ball body covered in short SPIKES poking out in all
+    // directions, with two small side fins, a tiny tail, and big cute eyes on
+    // the front. Spikes gently "breathe" in and out. Bobs in place.
+    //
+    // Parts: body(1) spikes(~14) side-fins(2) tail(1) eyes(2) mouth(1) = ~21
+    // =========================================================================
+    private func drawKind19(enc: MTLRenderCommandEncoder,
+                            viewProj: simd_float4x4,
+                            e: bf_entity_draw,
+                            pos: SIMD3<Float>,
+                            phase: Float,
+                            hash: Float,
+                            squash: SIMD3<Float>) {
+        let s   = e.scale
+        let sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let base = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+
+        // ---- PALETTE: pufferfish ----
+        let baseCol  = base
+        let bellyCol = SIMD3<Float>(min(1, base.x*0.6+0.34),
+                                    min(1, base.y*0.6+0.34),
+                                    min(1, base.z*0.6+0.32))
+        let spikeCol = base * 0.62
+        let finCol   = SIMD3<Float>(min(1, base.x*0.7+0.18),
+                                    min(1, base.y*0.7+0.18),
+                                    min(1, base.z*0.7+0.20))
+        let eyeCol   = SIMD3<Float>(0.04, 0.04, 0.05)
+
+        let bob        = sin(phase * 1.7 + hash) * s * 0.05
+        // spike puff: spikes ease out and in (the puffer "inflates")
+        let puff       = (sin(phase * 1.2 + hash) * 0.5 + 0.5)   // 0..1
+        let spikeLen   = s * (0.10 + puff * 0.10)
+        let finFlap    = sin(phase * 3.0) * 0.4
+        let blinkPhase = phase + hash * 4.0
+        let eyeBlinkSY = blinkScale(blinkPhase)
+
+        // ---- PROPORTIONS ----
+        let bS = s * 0.56                          // round ball body
+
+        let groundY = pos.y
+        let bodyY   = groundY + s * 0.45 + bob
+        let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: -(bS * 0.5))
+
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+
+        // Round ball body
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, 0, 0), SIMD3(bS, bS * 0.94, bS)), rgb: baseCol, sat: sat)
+        // Pale belly underside
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, -bS * 0.26, bS * 0.10), SIMD3(bS * 0.74, bS * 0.40, bS * 0.74)),
+                 rgb: bellyCol, sat: sat)
+
+        // SPIKES — short blocks poking out on top, sides, and back (not the front
+        // face, so they don't cover the eyes). Each sits just outside the body.
+        let r = bS * 0.5
+        let spikeDirs: [SIMD3<Float>] = [
+            SIMD3( 0,  1,  0), SIMD3( 0.6, 0.7, 0), SIMD3(-0.6, 0.7, 0),   // top
+            SIMD3( 1,  0.2, 0), SIMD3(-1, 0.2, 0),                          // sides
+            SIMD3( 0.7, 0.0, -0.7), SIMD3(-0.7, 0.0, -0.7),                 // back-sides
+            SIMD3( 0,  0.2, -1),                                            // back
+            SIMD3( 0.6, -0.6, 0), SIMD3(-0.6, -0.6, 0),                     // lower sides
+            SIMD3( 0,  -0.8, -0.4),                                          // lower back
+            SIMD3( 0.5, 0.3, 0.6), SIMD3(-0.5, 0.3, 0.6),                   // upper front-side
+            SIMD3( 0,  0.9, -0.4),                                           // top-back
+        ]
+        for d in spikeDirs {
+            let dir = simd_normalize(d)
+            let cx = dir.x * (r + spikeLen * 0.4)
+            let cy = dir.y * (r + spikeLen * 0.4)
+            let cz = dir.z * (r + spikeLen * 0.4)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(cx, cy, cz), SIMD3(s * 0.07, s * 0.07, s * 0.07 + spikeLen)),
+                     rgb: spikeCol, sat: sat)
+        }
+
+        // Side fins — flap a little
+        for sx in [-1.0, 1.0] as [Float] {
+            let fin = EntityRenderer.trans(wc) * R
+                * EntityRenderer.trans(SIMD3(sx * bS * 0.50, -bS * 0.04, bS * 0.10))
+                * EntityRenderer.rotZ(sx * (0.4 + finFlap * 0.2))
+                * EntityRenderer.scaleM(SIMD3(s * 0.16, s * 0.04, s * 0.14))
+            drawCube(enc: enc, viewProj: viewProj, model: fin, rgb: finCol, sat: sat)
+        }
+        // Tiny tail at the back
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, 0, -bS * 0.54), SIMD3(s * 0.06, s * 0.20, s * 0.14)),
+                 rgb: finCol, sat: sat)
+
+        // Big cute eyes on the front
+        let faceZ = bS * 0.50
+        let eyeW = s * 0.12; let eyeH = s * 0.14 * eyeBlinkSY; let eyeD = s * 0.05
+        let eyeY = bS * 0.10
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3(-bS * 0.24, eyeY, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
+                sat: sat, scleraCol: SIMD3<Float>(0.97, 0.97, 0.99), pupilCol: eyeCol)
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3( bS * 0.24, eyeY, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
+                sat: sat, scleraCol: SIMD3<Float>(0.97, 0.97, 0.99), pupilCol: eyeCol)
+        // Small pursed mouth
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, -bS * 0.14, faceZ), SIMD3(s * 0.08, s * 0.06, s * 0.04)),
+                 rgb: SIMD3<Float>(0.12, 0.08, 0.10), sat: sat)
     }
 
     // =========================================================================

@@ -1,0 +1,38 @@
+[
+  {
+    "id": 23,
+    "name": "slime",
+    "display_name": "Slime",
+    "disposition": "hostile",
+    "max_health": 6,
+    "move_speed": 2.0,
+    "spawn_biomes": ["dim_barrens"],
+    "biome": "any",
+    "spawn_light_max": 4,
+    "model": 15
+  },
+  {
+    "id": 24,
+    "name": "spider",
+    "display_name": "Spider",
+    "disposition": "hostile",
+    "max_health": 8,
+    "move_speed": 3.0,
+    "spawn_biomes": ["dim_barrens"],
+    "biome": "any",
+    "spawn_light_max": 4,
+    "model": 16
+  },
+  {
+    "id": 25,
+    "name": "ghost",
+    "display_name": "Ghost",
+    "disposition": "hostile",
+    "max_health": 10,
+    "move_speed": 2.5,
+    "spawn_biomes": ["dim_barrens"],
+    "biome": "any",
+    "spawn_light_max": 3,
+    "model": 17
+  }
+]

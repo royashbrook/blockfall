@@ -62,6 +62,7 @@ struct Creature {
     float hit_flash{0};     // brief white flash when the player hits it
     float wander{0};
     int   shape{0};         // renderer model variant (0..3 animals)
+    int   model{-1};        // explicit renderer kind from content (-1 = legacy mapping)
     std::string name;       // content creature name (quest befriend target)
 };
 
@@ -657,7 +658,8 @@ public:
             e.scale = cr.scale;
             // Map 8 animal shapes to renderer kinds (4=boss, 5=monster, 6=falling).
             static const std::uint32_t kAnimalKind[8] = {0u, 1u, 2u, 3u, 7u, 8u, 9u, 10u};
-            e.kind = cr.hostile ? (cr.shape == 1 ? 11u : 5u)
+            e.kind = (cr.model >= 0) ? std::uint32_t(cr.model)            // explicit content model
+                   : cr.hostile ? (cr.shape == 1 ? 11u : 5u)
                                 : (cr.is_boss ? 4u : kAnimalKind[std::size_t(cr.shape & 7)]);
             e.sat = region_sat(to_chunk(IVec3{ifloor(cr.pos.x), ifloor(cr.pos.y), ifloor(cr.pos.z)}));
             entities_.push_back(e);
@@ -999,6 +1001,10 @@ private:
         float h = std::fmod(float(id) * 0.6180339f, 1.0f);
         if (disp == "night_gentle") h = 0.55f + 0.18f * h;     // cool blues/purples
         else if (disp == "boss")    h = 0.05f + 0.08f * h;     // warm, non-scary
+        else if (disp == "hostile") {                          // dark, menacing (but cartoonish)
+            V3 base = hue_rgb(0.72f + 0.15f * h);              // purples/greens
+            return V3{base.x * 0.45f, base.y * 0.45f, base.z * 0.55f};
+        }
         return hue_rgb(h);
     }
     // Spawn one creature on real ground in a ring around the player; returns
@@ -1016,19 +1022,26 @@ private:
             const char* bk = biome_key();
             for (auto& d : extra_->creatures()) {
                 if ((d.disposition == "boss") != boss) continue;
-                // Day animals are biome-gated; bosses spawn anywhere.
-                if (!boss && !(d.biome.empty() || d.biome == "any" || d.biome == bk)) continue;
+                if (!boss) {
+                    // Day-animal ring: peaceful land animals only — hostiles and fish
+                    // have their own spawn paths; biome-gate the rest.
+                    if (d.disposition == "hostile" || d.disposition == "aquatic") continue;
+                    if (!(d.biome.empty() || d.biome == "any" || d.biome == bk)) continue;
+                }
                 pool.push_back(&d);
             }
-            // Never fail to spawn: if the biome filter emptied the pool, use all.
+            // Never fail to spawn: if the biome filter emptied the pool, use all peaceful.
             if (pool.empty() && !boss)
-                for (auto& d : extra_->creatures()) if (d.disposition != "boss") pool.push_back(&d);
+                for (auto& d : extra_->creatures())
+                    if (d.disposition != "boss" && d.disposition != "hostile" && d.disposition != "aquatic")
+                        pool.push_back(&d);
             if (!pool.empty()) {
                 const CreatureDefX* d = pool[std::size_t(rand01() * float(pool.size())) % pool.size()];
                 c.name = std::string(d->name);
                 c.color = color_for(boss ? "boss" : d->disposition, d->id);
                 c.speed = boss ? d->move_speed * 0.7f : d->move_speed;
-                c.shape = int(d->id) % 8;            // model variant from the def (8 species)
+                c.shape = int(d->id) % 8;            // legacy model variant
+                c.model = d->model;                  // explicit content model (-1 = use shape)
                 c.skittish = (d->disposition == "skittish");
                 c.hp = (d->max_health > 0) ? int(d->max_health) : (boss ? 10 : 5);
             } else {
@@ -1055,11 +1068,49 @@ private:
         if (gy == kNoFloor) return false;
         Creature c;
         c.pos = V3{cx, float(gy), cz}; c.yaw = rand01() * 6.2831853f;
-        c.hostile = true; c.speed = 2.6f; c.hp = 6; c.scale = 1.0f;
-        // shape 1 = humanoid (kind 11), shape 0 = beast (kind 5).
-        c.shape = (rand01() < 0.5f) ? 1 : 0;
-        c.color = (c.shape == 1) ? V3{0.16f, 0.13f, 0.20f} : V3{0.12f, 0.10f, 0.16f};
-        c.name = (c.shape == 1) ? "lurker" : "monster";
+        c.hostile = true; c.scale = 1.0f;
+        // Prefer a content "hostile" monster (slime/spider/ghost + the legacy two);
+        // fall back to the built-in beast/lurker if none are defined.
+        std::vector<const CreatureDefX*> pool;
+        if (extra_)
+            for (auto& d : extra_->creatures()) if (d.disposition == "hostile") pool.push_back(&d);
+        if (!pool.empty()) {
+            const CreatureDefX* d = pool[std::size_t(rand01() * float(pool.size())) % pool.size()];
+            c.name = std::string(d->name);
+            c.model = d->model;
+            c.speed = (d->move_speed > 0) ? d->move_speed : 2.6f;
+            c.hp = (d->max_health > 0) ? int(d->max_health) : 6;
+            c.color = color_for("hostile", d->id);
+        } else {
+            c.speed = 2.6f; c.hp = 6;
+            c.shape = (rand01() < 0.5f) ? 1 : 0;   // 1=humanoid(kind11), 0=beast(kind5)
+            c.color = (c.shape == 1) ? V3{0.16f, 0.13f, 0.20f} : V3{0.12f, 0.10f, 0.16f};
+            c.name = (c.shape == 1) ? "lurker" : "monster";
+        }
+        creatures_.push_back(c);
+        return true;
+    }
+
+    // A fish that swims in nearby water (renders as its content model). (#20)
+    bool spawn_fish(float rmin, float rmax) {
+        if (!extra_) return false;
+        std::vector<const CreatureDefX*> pool;
+        for (auto& d : extra_->creatures()) if (d.disposition == "aquatic") pool.push_back(&d);
+        if (pool.empty()) return false;
+        float ang = rand01() * 6.2831853f, r = rmin + rand01() * (rmax - rmin);
+        int wx = ifloor(pos_.x + std::cos(ang) * r), wz = ifloor(pos_.z + std::sin(ang) * r);
+        int wy = kNoFloor;                                   // find a water cell in the column
+        for (int y = ifloor(pos_.y) + 4; y > ifloor(pos_.y) - 20; --y)
+            if (block_at(IVec3{wx, y, wz}) == WATER) { wy = y; break; }
+        if (wy == kNoFloor) return false;
+        const CreatureDefX* d = pool[std::size_t(rand01() * float(pool.size())) % pool.size()];
+        Creature c;
+        c.pos = V3{float(wx) + 0.5f, float(wy), float(wz) + 0.5f};
+        c.yaw = rand01() * 6.2831853f; c.aquatic = true; c.model = d->model;
+        c.name = std::string(d->name);
+        c.speed = (d->move_speed > 0) ? d->move_speed : 2.0f;
+        c.hp = (d->max_health > 0) ? int(d->max_health) : 3;
+        c.scale = 0.55f; c.color = color_for("aquatic", d->id);
         creatures_.push_back(c);
         return true;
     }
@@ -1358,6 +1409,9 @@ private:
             creature_timer_ = 1.0f;
             spawn_ring_creature(true, 18.0f, 40.0f);
         }
+        // Fish swim in nearby water, independent of the land-spawn chain (#20).
+        int fish = 0; for (auto& c : creatures_) if (c.aquatic) ++fish;
+        if (fish < 4 && rand01() < 0.5f) spawn_fish(6.0f, 22.0f);
     }
 
     void update_creatures(float dt) {
@@ -1365,6 +1419,22 @@ private:
             c.wander -= dt;
             if (c.hit_flash > 0) c.hit_flash -= dt;
             V3 toPlayer = pos_ - c.pos;
+            // Fish: swim within water, gently bob, turn back at the water's edge —
+            // no land gravity/floor logic. (#20)
+            if (c.aquatic) {
+                if (c.wander <= 0.0f) { c.yaw = rand01() * 6.2831853f; c.wander = 1.0f + rand01() * 2.0f; }
+                V3 d2{std::sin(c.yaw), 0, std::cos(c.yaw)};
+                V3 nx = c.pos + d2 * (c.speed * dt);
+                if (block_at(IVec3{ifloor(nx.x), ifloor(nx.y), ifloor(nx.z)}) == WATER) {
+                    c.pos.x = nx.x; c.pos.z = nx.z;
+                } else { c.yaw += 2.2f; c.wander = 0.3f; }     // edge of water — turn back
+                c.pos.y += std::sin(float(world_clock_) * 2.0f + c.pos.x) * 0.4f * dt;   // bob
+                // stay submerged: sink toward water if we drifted above it
+                if (block_at(IVec3{ifloor(c.pos.x), ifloor(c.pos.y), ifloor(c.pos.z)}) != WATER &&
+                    block_at(IVec3{ifloor(c.pos.x), ifloor(c.pos.y) - 1, ifloor(c.pos.z)}) == WATER)
+                    c.pos.y -= 0.5f * dt * 4.0f;
+                continue;
+            }
             // In Creative the monsters leave you alone (no chase, no damage).
             if (c.hostile && mode_ == BF_MODE_SURVIVAL) {
                 if (c.atk_cd > 0) c.atk_cd -= dt;
