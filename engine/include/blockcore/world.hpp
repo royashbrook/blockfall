@@ -1074,8 +1074,14 @@ private:
         if (!it || it->tool_durability == 0) return;     // not a breakable tool
         std::uint16_t dur = (sel.durability == 0xFFFF) ? it->tool_durability : sel.durability;
         if (dur > 0) --dur;
-        if (dur == 0) { inv_->set(std::size_t(selected_), ItemStack{}); fx(0, target_, 0); } // snap!
-        else { sel.durability = dur; inv_->set(std::size_t(selected_), sel); }
+        if (dur == 0) {
+            // Consume ONE tool from the slot (don't wipe the whole stack — matters
+            // if a tool ever has max_stack > 1). The next one starts fresh.
+            sel.count = std::uint16_t(sel.count > 0 ? sel.count - 1 : 0);
+            inv_->set(std::size_t(selected_), sel.count == 0 ? ItemStack{}
+                                                            : ItemStack{sel.item, sel.count, 0xFFFF});
+            fx(0, target_, 0);   // snap!
+        } else { sel.durability = dur; inv_->set(std::size_t(selected_), sel); }
     }
     void hurt_player(float dmg) {
         if (hurt_cd_ > 0.0f) return;
