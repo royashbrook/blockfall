@@ -16,6 +16,9 @@
 import MetalKit
 import simd
 import CBlockcore
+#if canImport(MetalFX)
+import MetalFX
+#endif
 
 // MARK: - GPU buffer registry (Swift owns MTLBuffers; engine refs by handle)
 
@@ -184,8 +187,21 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Capped internal render size (the long edge is limited to kRenderLongEdge).
     // The final composite upscales to the full drawable; only the HDR/scene/bloom
     // textures are at this reduced size — saves ~4× fragment cost on Retina.
-    private let kRenderLongEdge: CGFloat = 1600
+    // Lowered to 1280 now that MetalFX spatial upscaling recovers quality.
+    private let kRenderLongEdge: CGFloat = 1280
     private var sceneSize: CGSize = .zero   // actual HDR texture size (≤ drawable)
+
+    // ---- MetalFX spatial upscaler (optional — macOS 13+, Apple GPU) ---------
+    // compositeLowRes: ACES composite writes here at sceneSize (LDR bgra8Unorm).
+    // spatialScaler:   upscales compositeLowRes → full drawable texture.
+    // If MetalFX is unavailable the composite writes straight to the drawable (bilinear fallback).
+    private var compositeLowRes: MTLTexture?
+#if canImport(MetalFX)
+    @available(macOS 13.0, *)
+    private var _spatialScaler: MTLFXSpatialScaler?
+#endif
+    // True when the scaler was successfully created and can be used this frame.
+    private var metalFXEnabled: Bool = false
 
     // ---- Shadow map (fixed 1536×1536) ----------------------------------------
     private let kShadowRes = 1536
@@ -207,6 +223,18 @@ final class Renderer: NSObject, MTKViewDelegate {
         self.audio = audio
         super.init()
         view.depthStencilPixelFormat = .depth32Float
+#if canImport(MetalFX)
+        if #available(macOS 13.0, *) {
+            // MTLFXSpatialScaler writes to the drawable via a compute kernel that
+            // requires MTLTextureUsageShaderWrite. MTKView's default framebufferOnly=true
+            // restricts drawable textures to renderTarget-only usage, blocking the
+            // compute write. Clearing framebufferOnly allows both. On Apple Silicon
+            // UMA there is no meaningful performance cost for doing this.
+            if MTLFXSpatialScalerDescriptor.supportsDevice(device) {
+                view.framebufferOnly = false
+            }
+        }
+#endif
         buildPipeline(colorFormat: view.colorPixelFormat)
         buildShadowMap()
         entityRenderer = EntityRenderer(device: device, colorFormat: .rgba16Float)
@@ -381,9 +409,10 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // ---- Resize: rebuild HDR + bloom textures when drawable size changes -----
     // The HDR scene is rendered at a capped internal resolution so the long edge
-    // never exceeds kRenderLongEdge pixels (e.g. 1600 on a 5K Retina display).
-    // The final composite pass upscales from hdrColor to the full drawable, so
-    // UI edges remain crisp while fragment cost is cut by ~4× on Retina.
+    // never exceeds kRenderLongEdge pixels (e.g. 1280 on a 5K Retina display).
+    // The ACES composite writes to compositeLowRes (bgra8Unorm at sceneSize), then
+    // an MTLFXSpatialScaler upscales it to the full drawable with much higher quality
+    // than bilinear. Falls back to bilinear if MetalFX is unavailable.
     private func rebuildHDRTextures(size: CGSize) {
         guard size.width > 0 && size.height > 0 else { return }
 
@@ -395,6 +424,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         sceneSize = CGSize(width: SW, height: SH)
 
         let HW = max(1, SW / 2), HH = max(1, SH / 2)
+        let DW = max(1, Int(size.width.rounded()))
+        let DH = max(1, Int(size.height.rounded()))
 
         func make2D(_ fmt: MTLPixelFormat, _ w: Int, _ h: Int, usage: MTLTextureUsage) -> MTLTexture {
             let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: fmt, width: w, height: h, mipmapped: false)
@@ -408,6 +439,45 @@ final class Renderer: NSObject, MTKViewDelegate {
         bloomBlurA  = make2D(.rgba16Float, HW,  HH, usage: [.renderTarget, .shaderRead])
         bloomBlurB  = make2D(.rgba16Float, HW,  HH, usage: [.renderTarget, .shaderRead])
         currentDrawableSize = size
+
+        // ---- MetalFX spatial upscaler setup ---------------------------------
+        // compositeLowRes is the ACES composite output at sceneSize (LDR bgra8Unorm).
+        // MetalFX requires its input texture to have .shaderRead + .renderTarget usage.
+        // The scaler then writes to the full-resolution drawable texture.
+        metalFXEnabled = false
+        compositeLowRes = nil
+#if canImport(MetalFX)
+        if #available(macOS 13.0, *) {
+            // Only build the scaler when the scene is actually smaller than the drawable
+            // (if already 1:1 the spatial scaler would be a no-op but still costs memory).
+            let needsUpscale = SW < DW || SH < DH
+            if needsUpscale && MTLFXSpatialScalerDescriptor.supportsDevice(device) {
+                let scalerDesc = MTLFXSpatialScalerDescriptor()
+                scalerDesc.inputWidth           = SW
+                scalerDesc.inputHeight          = SH
+                scalerDesc.outputWidth          = DW
+                scalerDesc.outputHeight         = DH
+                // bgra8Unorm: the ACES composite already produces a tone-mapped LDR image,
+                // so we use .perceptual colour processing (designed for LDR gamma-correct input).
+                scalerDesc.colorTextureFormat   = .bgra8Unorm
+                scalerDesc.outputTextureFormat  = .bgra8Unorm
+                scalerDesc.colorProcessingMode  = .perceptual
+
+                if let scaler = scalerDesc.makeSpatialScaler(device: device) {
+                    _spatialScaler = scaler
+                    // compositeLowRes: MetalFX input — needs .shaderRead for the scaler to read it.
+                    let td = MTLTextureDescriptor.texture2DDescriptor(
+                        pixelFormat: .bgra8Unorm, width: SW, height: SH, mipmapped: false)
+                    td.usage        = [.renderTarget, .shaderRead]
+                    td.storageMode  = .private
+                    compositeLowRes = device.makeTexture(descriptor: td)
+                    if compositeLowRes != nil {
+                        metalFXEnabled = true
+                    }
+                }
+            }
+        }
+#endif
     }
 
     // MARK: Engine create
@@ -773,31 +843,72 @@ final class Renderer: NSObject, MTKViewDelegate {
             break  // one iteration = 2 passes H+V (loop kept for easy tuning)
         }
 
+        // Precipitation driven entirely by engine weather field (0=clear, 1=rain, 2=snow).
+        // Pack: >0 = rain (strength), <0 = snow (abs = strength), 0 = clear.
+        let precipPacked: Float
+        switch engineWeather {
+        case 1:  precipPacked =  1.0   // rain
+        case 2:  precipPacked = -1.0   // snow
+        default: precipPacked =  0.0   // clear
+        }
+        var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.38,
+                              rainStrength: precipPacked, wallClockSecs: wallClock)
+
         // =====================================================================
-        // PASS 4: Composite → drawable (ACES + colour grade + vignette)
+        // PASS 4a: Composite (ACES + colour grade + vignette)
+        //   MetalFX path:  composite → compositeLowRes (bgra8Unorm at sceneSize)
+        //   Fallback path: composite → drawable directly (bilinear upscale via sampler)
         // =====================================================================
-        if let passDesc = view.currentRenderPassDescriptor {
-            passDesc.colorAttachments[0].loadAction = .clear
-            passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-            if let enc = cmd.makeRenderCommandEncoder(descriptor: passDesc) {
+#if canImport(MetalFX)
+        let useMetalFX: Bool
+        if #available(macOS 13.0, *) {
+            useMetalFX = metalFXEnabled && _spatialScaler != nil && compositeLowRes != nil
+        } else {
+            useMetalFX = false
+        }
+#else
+        let useMetalFX = false
+#endif
+
+        if useMetalFX, let lowResTarget = compositeLowRes {
+            // --- Composite to the low-res intermediate ---
+            let lowResRP = MTLRenderPassDescriptor()
+            lowResRP.colorAttachments[0].texture    = lowResTarget
+            lowResRP.colorAttachments[0].loadAction  = .dontCare
+            lowResRP.colorAttachments[0].storeAction = .store
+            if let enc = cmd.makeRenderCommandEncoder(descriptor: lowResRP) {
                 enc.setRenderPipelineState(compositePipeline)
                 enc.setDepthStencilState(noDepthState)
                 enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor,    index: 0)
                 enc.setFragmentTexture(bloomBright, index: 1)
-                // Precipitation driven entirely by engine weather field (0=clear, 1=rain, 2=snow).
-                // Pack: >0 = rain (strength), <0 = snow (abs = strength), 0 = clear.
-                let precipPacked: Float
-                switch engineWeather {
-                case 1:  precipPacked =  1.0   // rain
-                case 2:  precipPacked = -1.0   // snow
-                default: precipPacked =  0.0   // clear
-                }
-                var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.38,
-                                      rainStrength: precipPacked, wallClockSecs: wallClock)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 enc.endEncoding()
+            }
+#if canImport(MetalFX)
+            // --- PASS 4b: MetalFX spatial upscale → drawable ---
+            if #available(macOS 13.0, *), let scaler = _spatialScaler {
+                scaler.colorTexture  = lowResTarget
+                scaler.outputTexture = drawable.texture
+                scaler.encode(commandBuffer: cmd)
+            }
+#endif
+        } else {
+            // --- Fallback: composite straight to drawable (bilinear, original behaviour) ---
+            if let passDesc = view.currentRenderPassDescriptor {
+                passDesc.colorAttachments[0].loadAction  = .clear
+                passDesc.colorAttachments[0].clearColor  = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+                if let enc = cmd.makeRenderCommandEncoder(descriptor: passDesc) {
+                    enc.setRenderPipelineState(compositePipeline)
+                    enc.setDepthStencilState(noDepthState)
+                    enc.setCullMode(.none)
+                    enc.setFragmentTexture(hdrColor,    index: 0)
+                    enc.setFragmentTexture(bloomBright, index: 1)
+                    enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+                    enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+                    enc.endEncoding()
+                }
             }
         }
 
@@ -805,6 +916,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // (hotbar, hearts, inventory) composites ON TOP of the Metal layer. With
         // the default async present the metal content draws over the overlay and
         // the HUD is invisible. Requires view.presentsWithTransaction = true.
+        // This path is unchanged regardless of whether MetalFX is active.
         if view.presentsWithTransaction {
             cmd.commit()
             cmd.waitUntilScheduled()
