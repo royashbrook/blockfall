@@ -74,6 +74,9 @@ final class GameView: MTKView {
         actionQueue.append(a)
     }
 
+    // Craft a specific craftable index, clicked in the HUD's crafting list.
+    func enqueueCraft(_ index: Int) { queue(BF_ACT_CRAFT, Int32(index)) }
+
     // Inventory move from the HUD (BF_ACT_INV_MOVE: from, to, count).
     func enqueueMove(from: Int, to: Int, count: Int) {
         var a = bf_action(); a.kind = BF_ACT_INV_MOVE

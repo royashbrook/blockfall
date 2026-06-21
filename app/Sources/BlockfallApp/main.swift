@@ -87,6 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         h.onMove = { [weak mtkView] from, to, count in
             mtkView?.enqueueMove(from: from, to: to, count: count)
         }
+        h.onCraft = { [weak mtkView] index in
+            mtkView?.enqueueCraft(index)
+        }
         r.hud = h
 
         let container = NSView(frame: frame)

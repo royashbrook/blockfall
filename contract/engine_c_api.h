@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 7u   /* v7: HUD biome name (ADR 0010) */
+#define BF_ABI_VERSION 8u   /* v8: craftable list widened 8->24 (scrollable craft UI) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -263,8 +263,8 @@ typedef struct bf_hud_state {
     bf_ivec3     target_block;
     float        mine_progress;     /* 0..1 of current break                 */
     /* Recipes craftable right now (result item+count); shown in inventory,
-     * craft with number keys -> BF_ACT_CRAFT arg_i (ABI v3, ADR 0006).      */
-    bf_hud_slot  craftable[8];
+     * craft with number keys (first 9) or click -> BF_ACT_CRAFT arg_i.       */
+    bf_hud_slot  craftable[24];
     uint8_t      craftable_count;
     /* v4 additions */
     float        oxygen;            /* 0..1 air remaining underwater (1 = full) */

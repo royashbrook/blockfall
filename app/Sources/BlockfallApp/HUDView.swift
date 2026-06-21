@@ -69,6 +69,9 @@ private let kItemTable: [UInt16: ItemInfo] = [
     76: .init(name: "Iron Pickaxe",  color: itemColor(0.82, 0.82, 0.85)),
     77: .init(name: "Iron Axe",      color: itemColor(0.82, 0.82, 0.85)),
     78: .init(name: "Iron Shovel",   color: itemColor(0.82, 0.82, 0.85)),
+    79: .init(name: "Wooden Sword",  color: itemColor(0.62, 0.46, 0.28)),
+    80: .init(name: "Stone Sword",   color: itemColor(0.58, 0.58, 0.60)),
+    81: .init(name: "Iron Sword",    color: itemColor(0.86, 0.87, 0.90)),
     90: .init(name: "Berries",       color: itemColor(0.80, 0.20, 0.35)),
     91: .init(name: "Mushroom Stew", color: itemColor(0.70, 0.50, 0.34)),
     92: .init(name: "Honey Cake",    color: itemColor(0.92, 0.70, 0.28)),
@@ -77,6 +80,81 @@ private let kItemTable: [UInt16: ItemInfo] = [
 private func itemName(_ id: UInt16) -> String { kItemTable[id]?.name ?? "Item \(id)" }
 private func itemChipColor(_ id: UInt16) -> NSColor { kItemTable[id]?.color ?? NSColor(hue: CGFloat(id % 12)/12, saturation: 0.6, brightness: 0.9, alpha: 1) }
 
+// Kid-friendly descriptions for every item a player is likely to encounter.
+// Falls back to a generic hint so tooltip text is never blank.
+private func itemDescription(id: UInt16) -> String {
+    switch id {
+    // Blocks – terrain
+    case 1:  return "Soft ground block. Easy to dig and great for building simple stuff."
+    case 2:  return "Grass-covered earth. Plants grow on top of it!"
+    case 3:  return "Hard underground rock. Mine it for cobblestone."
+    case 4:  return "Crumbly stone that drops from mining. Good for building walls."
+    case 5:  return "Loose sand found near beaches and deserts. Watch out — it falls!"
+    case 6:  return "Gritty gravel. Also falls when there's nothing under it."
+    case 7:  return "Fluffy snow block from cold biomes. Perfect for a snowball fight... if only."
+    case 8:  return "Slippery frozen water. Makes you slide around!"
+    case 9:  return "Soft clay from riverbeds. Useful for making bricks."
+    case 10: return "Dark, drained stone from the Dim Barrens. Restore colour to bring it back."
+    case 11: return "Dim, grey dirt from drained areas. Light a beacon to restore it!"
+    // Blocks – wood & crafted
+    case 12: return "Oak tree trunk. Chop it down to get logs for planks and sticks."
+    case 13: return "Flat oak planks made from logs. A building basic!"
+    case 14: return "Pale birch trunk. Same uses as oak — just a different look."
+    case 15: return "Light-coloured birch planks. Good for bright, airy builds."
+    case 16: return "Polished stone bricks. Great for sturdy walls and castles."
+    case 17: return "Warm clay bricks. Fired from clay lumps. Looks cosy!"
+    case 18: return "See-through glass panel. Let the light in!"
+    case 19: return "Tinted glass with a coloured glow. Fancy!"
+    case 20: return "Soft wool block. Colourful and bouncy-looking."
+    case 21: return "Old stone covered in moss. Found deep underground or in ruins."
+    case 22: return "A workbench! Place it to unlock 3×3 crafting for tools and swords."
+    case 23: return "A storage chest. Open it to keep your stuff safe."
+    case 24: return "Place it to light up dark caves and keep monsters away at night."
+    case 25: return "A wooden door. Walk through it — it opens when you push it."
+    case 26: return "A powerful beacon block. Placing it restores colour to drained regions!"
+    case 27: return "A glowing block that lights up an area. Great for brightening the Dim Barrens."
+    case 28: return "A sparkling crystal lamp. Beautiful and bright!"
+    case 29: return "A cheerful red flower. Use it to decorate your builds."
+    case 30: return "A sunny yellow flower. Makes any spot look prettier."
+    case 31: return "A shiny colour crystal block. Craft it into other things or just show it off."
+    // Materials
+    case 50: return "Basic crafting ingredient. Make sticks from planks to craft tools."
+    case 51: return "Black fuel found underground. Used in torches and as a crafting fuel."
+    case 52: return "Rough copper ore chunk. Smelt it into ingots to use in crafts."
+    case 53: return "Rough iron ore chunk. Smelt it into iron ingots for better tools."
+    case 54: return "A raw sparkling crystal. Rare and magical!"
+    case 55: return "Smelted copper bar. Used in crafting various items."
+    case 56: return "Smelted iron bar. Makes the best tools and swords!"
+    case 57: return "A glittering crystal chip. Used in fancy crafts and glowing items."
+    case 58: return "A lump of clay dug from rivers. Craft or smelt it into bricks."
+    case 59: return "Thin string fiber. Useful for crafting bows and other items."
+    case 60: return "A light feather from a bird. Useful for crafting arrows."
+    case 61: return "Colourful powder. Used to dye blocks and craft coloured things."
+    case 62: return "Glowing dust that shimmers in the dark. For crafting glow items."
+    case 63: return "An empty book. Write your adventures in it… someday."
+    // Tools – pickaxes
+    case 70: return "Wood Pickaxe — mines stone and ores. Slowest tier, but it's a start!"
+    case 71: return "Wood Axe — chops logs and wood blocks much faster than your fists."
+    case 72: return "Wood Shovel — digs dirt, sand and gravel quickly. Tier 1."
+    case 73: return "Stone Pickaxe — faster than wood, mines tougher ores. Tier 2!"
+    case 74: return "Stone Axe — chops wood quickly. Better than the wooden one."
+    case 75: return "Stone Shovel — scoops up earth and sand fast. Tier 2."
+    case 76: return "Iron Pickaxe — the best pickaxe! Mines anything really fast."
+    case 77: return "Iron Axe — chops through any wood in a flash. Tier 3."
+    case 78: return "Iron Shovel — digs dirt and sand at top speed. Tier 3."
+    // Swords
+    case 79: return "Wooden Sword — a weapon! Hit monsters harder than with your fists. Weakest tier."
+    case 80: return "Stone Sword — stronger than wood. Does more damage to monsters!"
+    case 81: return "Iron Sword — the most powerful sword. Monsters won't stand a chance!"
+    // Food
+    case 90: return "Sweet berries! Eat them to restore a little health."
+    case 91: return "Hearty mushroom stew. Fills you up and heals a good chunk of health."
+    case 92: return "Yummy honey cake. A tasty treat that restores lots of health."
+    case 93: return "A wild mushroom. Eat it or use it to cook a stew!"
+    default: return "A useful item. Try crafting with it or placing it in the world!"
+    }
+}
+
 final class HUDView: NSView {
     private var hud = bf_hud_state()
     private var crosshair = true
@@ -84,6 +162,8 @@ final class HUDView: NSView {
     // --- Interactive inventory state ---
     // Closure the lead wires to BF_ACT_INV_MOVE (arg_i=from, arg_j=to, arg_k=count).
     var onMove: ((_ from: Int, _ to: Int, _ count: Int) -> Void)?
+    // Called when the player clicks a craftable row. index = 0-based craftable slot.
+    var onCraft: ((Int) -> Void)?
     // Slot-index (0..35) of a "picked up" stack, or nil when nothing is held.
     private var heldSlot: Int? = nil
     private var heldItem: bf_item_id = 0
@@ -164,6 +244,14 @@ final class HUDView: NSView {
         guard hud.inventory_open != 0 else { return }   // gameplay: ignore
         let p = convert(event.locationInWindow, from: nil)
         mousePos = p
+
+        // Check craft rows first — clicking one crafts the recipe.
+        if heldSlot == nil, let ci = craftIndex(at: p) {
+            onCraft?(ci)
+            needsDisplay = true
+            return
+        }
+
         guard let idx = slotIndex(at: p) else {
             // Click on empty space cancels a pending pickup.
             if heldSlot != nil { clearHeld(); needsDisplay = true }
@@ -450,85 +538,145 @@ final class HUDView: NSView {
             }
         }
 
-        // --- Craftable recipes: a clearly separated band BELOW the hotbar row.
-        // The hotbar row is the lowest inventory rect (rects[0..8]); start the
-        // craft band a generous gap under it so the two never overlap, and draw
-        // a backing panel so the band reads as its own region (not floating over
-        // the hotbar). Layout is derived from the grid geometry, so it stays
-        // non-overlapping at any window size. ---
+        // --- Craftable recipes: vertical stacked rows BELOW the hotbar, two
+        // columns when there are more than fit in one. Each row is a clickable
+        // strip: icon + name + "×N". Number-key badge on the first 9 rows.
+        // Layout is pinned to the inventory grid width so it never overflows the
+        // window regardless of how many recipes are available (up to 24). ---
         let n = Int(hud.craftable_count)
         let hotbarBottom = rects[0].minY
-        let bandGap: CGFloat = 26          // clear space between hotbar and band
-        let titleH: CGFloat = 22           // room for the band title above slots
-        let cy = hotbarBottom - bandGap - slot          // craft slot row origin-y
-        let craftTitleY = cy + slot + 4                 // title baseline above row
+        let bandGap: CGFloat = 20           // gap between hotbar and craft band
+        let craftTitleH: CGFloat = 20       // title strip height
+        let rowH: CGFloat = 36              // height of each recipe row
+        let rowGap: CGFloat = 3             // vertical gap between rows
 
-        // Backing panel for the whole craft band (title + slots), inset to the
-        // grid width so it doesn't run off-screen.
-        let panel = NSRect(x: originX - 10,
-                           y: cy - 8,
-                           width: gridW + 20,
-                           height: slot + titleH + 12)
-        NSColor.black.withAlphaComponent(0.35).setFill()
+        // How many rows fit in the available vertical space above the bottom of
+        // the view. We reserve space from hotbarBottom downward, then check
+        // whether we need one or two columns.
+        let availH = hotbarBottom - bandGap - craftTitleH - 8   // space for rows
+        let maxRowsPerCol = max(1, Int(availH / (rowH + rowGap)))
+
+        // Decide column layout: one column if <= maxRowsPerCol recipes, else two.
+        let useDoubleCol = n > maxRowsPerCol
+        let col1Count = useDoubleCol ? Int(ceil(Double(n) / 2.0)) : n
+        let colW = useDoubleCol ? (gridW - 4) / 2 : gridW
+
+        // Panel background covers the title + all rows.
+        let rowsInTallestCol = max(col1Count, 1)
+        let panelH = craftTitleH + CGFloat(rowsInTallestCol) * (rowH + rowGap) - rowGap + 12
+        let panelY = hotbarBottom - bandGap - panelH
+        let panel = NSRect(x: originX - 10, y: panelY, width: gridW + 20, height: panelH)
+        NSColor.black.withAlphaComponent(0.38).setFill()
         let panelPath = NSBezierPath(roundedRect: panel, xRadius: 8, yRadius: 8)
         panelPath.fill()
         NSColor.systemYellow.withAlphaComponent(0.35).setStroke()
         panelPath.lineWidth = 1; panelPath.stroke()
 
-        drawText("Craft  (press the number key shown)",
-                 at: NSPoint(x: originX, y: craftTitleY), size: 14, color: .systemYellow, bold: true)
-        if n == 0 {
-            drawText("Gather wood and stone, then come back!",
-                     at: NSPoint(x: originX, y: cy + (slot - 16) / 2),
-                     size: 12, color: NSColor.white.withAlphaComponent(0.7), bold: false)
-        }
+        // Title strip.
+        let craftTitleY = hotbarBottom - bandGap - craftTitleH + 2
+        drawText(n == 0 ? "Nothing craftable yet — gather wood and stone!"
+                        : "Crafting  (click a row to craft  •  1–9 = number key)",
+                 at: NSPoint(x: originX, y: craftTitleY), size: 12, color: .systemYellow, bold: true)
 
-        // Rebuild the parallel craftable rect array each frame (mirrors the
-        // slotRects pattern) so hover hit-testing matches exactly what we draw.
+        // Draw recipe rows. Rebuild craftRects each frame so hit-testing matches.
         var crafts = [NSRect]()
         withUnsafeBytes(of: hud.craftable) { raw in
             let cr = raw.bindMemory(to: bf_hud_slot.self)
-            var cx = originX
-            for i in 0..<min(n, 8) {
-                let rect = NSRect(x: cx, y: cy, width: slot, height: slot)
-                crafts.append(rect)
-                let hovered = mouseInside && heldSlot == nil && rect.contains(mousePos)
-                NSColor.black.withAlphaComponent(0.5).setFill()
-                let rr = NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5); rr.fill()
-                NSColor.systemYellow.withAlphaComponent(hovered ? 1.0 : 0.7).setStroke()
-                rr.lineWidth = hovered ? 2.5 : 1.5; rr.stroke()
-                if cr[i].item != 0 {
-                    drawCenteredItem(id: cr[i].item, count: cr[i].count, in: rect, selected: false)
-                    // (name shown via hover tooltip — inline labels overlapped)
+            for i in 0..<n {
+                // Column assignment: first half in col 0, rest in col 1.
+                let col = (useDoubleCol && i >= col1Count) ? 1 : 0
+                let rowInCol = useDoubleCol ? (col == 0 ? i : i - col1Count) : i
+                let rx = originX + CGFloat(col) * (colW + 4)
+                let ry = craftTitleY - CGFloat(rowInCol + 1) * (rowH + rowGap) + rowGap
+                let rowRect = NSRect(x: rx, y: ry, width: colW, height: rowH)
+                crafts.append(rowRect)
+
+                let hovered = mouseInside && heldSlot == nil && rowRect.contains(mousePos)
+                // Row background.
+                (hovered ? NSColor.systemYellow.withAlphaComponent(0.22)
+                         : NSColor.black.withAlphaComponent(0.45)).setFill()
+                let rr = NSBezierPath(roundedRect: rowRect, xRadius: 5, yRadius: 5); rr.fill()
+                NSColor.systemYellow.withAlphaComponent(hovered ? 0.90 : 0.40).setStroke()
+                rr.lineWidth = hovered ? 2 : 1; rr.stroke()
+
+                // Icon on the left side of the row.
+                let iconSize: CGFloat = rowH - 6
+                let iconRect = NSRect(x: rx + 4, y: ry + (rowH - iconSize) / 2,
+                                      width: iconSize, height: iconSize)
+                let s = cr[i]
+                if s.item != 0 {
+                    drawCenteredItem(id: s.item, count: s.count, in: iconRect, selected: false)
                 }
-                // Number-key hint, top-left corner, away from the count badge
-                // (which sits bottom-right). Small dark chip keeps it readable
-                // over any item icon.
-                let badge = NSRect(x: cx + 2, y: cy + slot - 16, width: 14, height: 14)
-                NSColor.black.withAlphaComponent(0.6).setFill()
-                NSBezierPath(roundedRect: badge, xRadius: 3, yRadius: 3).fill()
-                drawText("\(i+1)", at: NSPoint(x: cx + 4, y: cy + slot - 16), size: 12, color: .systemYellow, bold: true)
-                cx += slot + gap
+
+                // Number-key badge (1–9) on first 9 rows, top-left of icon.
+                if i < 9 {
+                    let badge = NSRect(x: rx + 2, y: ry + rowH - 15, width: 14, height: 14)
+                    NSColor.black.withAlphaComponent(0.70).setFill()
+                    NSBezierPath(roundedRect: badge, xRadius: 3, yRadius: 3).fill()
+                    drawText("\(i + 1)", at: NSPoint(x: rx + 4, y: ry + rowH - 15),
+                             size: 11, color: .systemYellow, bold: true)
+                }
+
+                // Item name + count label to the right of the icon.
+                if s.item != 0 {
+                    let textX = rx + iconSize + 8
+                    let textW = colW - iconSize - 12   // remaining width
+                    let nameStr = itemName(s.item)
+                    let countStr = "×\(s.count)"
+                    // Name (truncated to available width to prevent overflow)
+                    let nameAttrs: [NSAttributedString.Key: Any] = [
+                        .font: NSFont.boldSystemFont(ofSize: 12),
+                        .foregroundColor: NSColor.white,
+                    ]
+                    let cntAttrs: [NSAttributedString.Key: Any] = [
+                        .font: NSFont.systemFont(ofSize: 11),
+                        .foregroundColor: NSColor.white.withAlphaComponent(0.75),
+                    ]
+                    let nameSz = (nameStr as NSString).size(withAttributes: nameAttrs)
+                    let cntSz  = (countStr as NSString).size(withAttributes: cntAttrs)
+                    // Vertically center both lines in the row.
+                    let totalTextH = nameSz.height + cntSz.height + 1
+                    let textY = ry + (rowH - totalTextH) / 2
+                    // Clip name if it's wider than textW.
+                    let displayName: String
+                    if nameSz.width > textW {
+                        var trunc = nameStr
+                        while !trunc.isEmpty &&
+                              ((trunc + "…") as NSString).size(withAttributes: nameAttrs).width > textW {
+                            trunc = String(trunc.dropLast())
+                        }
+                        displayName = trunc + "…"
+                    } else {
+                        displayName = nameStr
+                    }
+                    (displayName as NSString).draw(at: NSPoint(x: textX, y: textY + cntSz.height + 1),
+                                                   withAttributes: nameAttrs)
+                    (countStr as NSString).draw(at: NSPoint(x: textX, y: textY), withAttributes: cntAttrs)
+                }
             }
         }
         craftRects = crafts
 
+        // Bottom hint — sits just under the panel.
         drawText("Esc / E to close   •   click a stack to pick it up, click a slot to place it",
-                 at: NSPoint(x: originX, y: panel.minY - 22), size: 12, color: .white, bold: false)
+                 at: NSPoint(x: originX, y: panel.minY - 20), size: 12, color: .white, bold: false)
 
         // --- Hover tooltips (only when not carrying a stack, so the tooltip
-        //     doesn't fight the ghost). A craftable slot under the cursor takes
+        //     doesn't fight the ghost). A craftable row under the cursor takes
         //     priority and shows what the recipe makes + its number key. ---
         if mouseInside && heldSlot == nil {
             if let c = craftIndex(at: mousePos) {
                 let s = craftableSlot(c)
                 if s.item != 0 {
-                    drawTooltip(name: itemName(s.item), count: s.count,
-                                hint: "press \(c + 1)", near: mousePos)
+                    let keyHint = c < 9 ? "press \(c + 1)" : nil
+                    drawTooltip(name: itemName(s.item), count: s.count, itemId: s.item,
+                                hint: keyHint, near: mousePos)
                 }
             } else if let i = slotIndex(at: mousePos) {
                 let s = inventorySlot(i)
-                if s.item != 0 { drawTooltip(name: itemName(s.item), count: s.count, near: mousePos) }
+                if s.item != 0 {
+                    drawTooltip(name: itemName(s.item), count: s.count, itemId: s.item, near: mousePos)
+                }
             }
         }
 
@@ -553,9 +701,9 @@ final class HUDView: NSView {
 
     // Read a craftable recipe's result slot (item + count). Bounds-checked
     // against the live craftable_count so a stale rect can never read past the
-    // valid recipes.
+    // valid recipes. Array is now 24 entries (ABI v8).
     private func craftableSlot(_ i: Int) -> bf_hud_slot {
-        guard i >= 0 && i < Int(hud.craftable_count) && i < 8 else { return bf_hud_slot() }
+        guard i >= 0 && i < Int(hud.craftable_count) && i < 24 else { return bf_hud_slot() }
         return withUnsafeBytes(of: hud.craftable) { raw in
             raw.bindMemory(to: bf_hud_slot.self)[i]
         }
@@ -568,27 +716,76 @@ final class HUDView: NSView {
         return nil
     }
 
-    private func drawTooltip(name: String, count: UInt16, hint: String? = nil, near p: NSPoint) {
-        // e.g. "Wooden Pickaxe ×1  (press 3)". Count is always shown for
+    private func drawTooltip(name: String, count: UInt16, itemId: UInt16 = 0,
+                             hint: String? = nil, near p: NSPoint) {
+        // Title line: "Wooden Pickaxe ×1  (press 3)". Count always shown for
         // craftable recipes (via hint) but only when >1 for inventory items.
-        var label = count > 1 ? "\(name)  ×\(count)" : name
+        var titleLine = count > 1 ? "\(name)  ×\(count)" : name
         if let h = hint {
-            // Recipes: always surface the result count + the number key.
-            label = "\(name) ×\(count)  (\(h))"
+            titleLine = "\(name) ×\(count)  (\(h))"
         }
-        let attrs: [NSAttributedString.Key: Any] = [
+        // Description line — always shown; looks up the item-specific blurb.
+        let desc = itemId != 0 ? itemDescription(id: itemId) : ""
+
+        let titleAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.boldSystemFont(ofSize: 13), .foregroundColor: NSColor.white,
         ]
-        let sz = (label as NSString).size(withAttributes: attrs)
-        let pad: CGFloat = 6
-        var box = NSRect(x: p.x + 14, y: p.y + 14, width: sz.width + pad * 2, height: sz.height + pad)
+        let descAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.75),
+        ]
+
+        // Maximum tooltip width so long descriptions wrap neatly.
+        let maxW: CGFloat = 260
+        let pad: CGFloat = 7
+        let titleSz = (titleLine as NSString).size(withAttributes: titleAttrs)
+
+        // Wrap description: split into lines that fit maxW.
+        var descLines: [String] = []
+        if !desc.isEmpty {
+            // Simple word-wrap: build lines word by word.
+            var current = ""
+            for word in desc.split(separator: " ", omittingEmptySubsequences: false).map(String.init) {
+                let test = current.isEmpty ? word : current + " " + word
+                let w = (test as NSString).size(withAttributes: descAttrs).width
+                if w > maxW - pad * 2 && !current.isEmpty {
+                    descLines.append(current)
+                    current = word
+                } else {
+                    current = test
+                }
+            }
+            if !current.isEmpty { descLines.append(current) }
+        }
+
+        let lineH: CGFloat = 14
+        let totalH = titleSz.height + (descLines.isEmpty ? 0 : CGFloat(descLines.count) * lineH + 4) + pad
+        let boxW = min(maxW, max(titleSz.width + pad * 2,
+                                 descLines.map { ($0 as NSString).size(withAttributes: descAttrs).width }.max().map { $0 + pad * 2 } ?? 0))
+
+        var box = NSRect(x: p.x + 14, y: p.y + 14, width: boxW, height: totalH)
         // Keep the tooltip on-screen (view isn't flipped: +x right, +y up).
         if box.maxX > bounds.maxX { box.origin.x = p.x - box.width - 6 }
         if box.maxY > bounds.maxY { box.origin.y = p.y - box.height - 6 }
-        NSColor.black.withAlphaComponent(0.85).setFill()
-        let rr = NSBezierPath(roundedRect: box, xRadius: 4, yRadius: 4); rr.fill()
+        if box.minX < bounds.minX { box.origin.x = bounds.minX + 4 }
+        if box.minY < bounds.minY { box.origin.y = bounds.minY + 4 }
+
+        NSColor.black.withAlphaComponent(0.88).setFill()
+        let rr = NSBezierPath(roundedRect: box, xRadius: 5, yRadius: 5); rr.fill()
         NSColor.white.withAlphaComponent(0.25).setStroke(); rr.lineWidth = 1; rr.stroke()
-        (label as NSString).draw(at: NSPoint(x: box.minX + pad, y: box.minY + pad / 2), withAttributes: attrs)
+
+        // Title at the top of the box.
+        let titleY = box.maxY - titleSz.height - pad * 0.5
+        (titleLine as NSString).draw(at: NSPoint(x: box.minX + pad, y: titleY), withAttributes: titleAttrs)
+
+        // Description lines below the title.
+        if !descLines.isEmpty {
+            var dy = titleY - 4
+            for line in descLines {
+                dy -= lineH
+                (line as NSString).draw(at: NSPoint(x: box.minX + pad, y: dy), withAttributes: descAttrs)
+            }
+        }
     }
 
     private func shade(_ c: NSColor, _ f: CGFloat) -> NSColor {
@@ -905,10 +1102,10 @@ final class HUDView: NSView {
 
     private func toolTint(_ id: bf_item_id) -> NSColor {
         switch id {
-        case 70, 71, 72: return HUDView.kWoodTint
-        case 73, 74, 75: return HUDView.kStoneTint
-        case 76, 77, 78: return HUDView.kIronTint
-        default:         return HUDView.kStoneTint
+        case 70, 71, 72, 79: return HUDView.kWoodTint
+        case 73, 74, 75, 80: return HUDView.kStoneTint
+        case 76, 77, 78, 81: return HUDView.kIronTint
+        default:              return HUDView.kStoneTint
         }
     }
 
@@ -948,6 +1145,8 @@ final class HUDView: NSView {
         case 70, 73, 76: drawPickaxe(in: r, tint: toolTint(id))
         case 71, 74, 77: drawAxe(in: r, tint: toolTint(id))
         case 72, 75, 78: drawShovel(in: r, tint: toolTint(id))
+        // --- Swords ---
+        case 79, 80, 81: drawSword(in: r, tint: toolTint(id))
         // --- Materials ---
         case 50: drawStick(in: r)
         case 51: drawLumpCluster(in: r, color: base)            // coal
@@ -1037,6 +1236,41 @@ final class HUDView: NSView {
         scoop.close()
         tint.setFill(); scoop.fill()
         NSColor.black.withAlphaComponent(0.45).setStroke(); scoop.lineWidth = 1; scoop.stroke()
+    }
+
+    private func drawSword(in r: NSRect, tint: NSColor) {
+        // A classic sword icon: diagonal handle lower-left → upper-right, blade
+        // widens into a flat tip, with a crossguard at the grip/blade junction.
+        let handleA = NSPoint(x: r.minX + r.width * 0.18, y: r.minY + r.height * 0.14)
+        let handleB = NSPoint(x: r.midX - r.width * 0.04, y: r.midY - r.height * 0.06)
+        drawHandle(in: r, from: handleA, to: handleB, thickness: max(2, r.width * 0.12))
+
+        // Blade: runs from the crossguard area to the tip (upper-right).
+        let bladeBase = NSPoint(x: r.midX + r.width * 0.00, y: r.midY + r.height * 0.01)
+        let bladeTip  = NSPoint(x: r.maxX - r.width * 0.16, y: r.maxY - r.height * 0.18)
+        let bw = r.width * 0.07     // half-width of the blade at the base
+        let perp = NSPoint(x: -(bladeTip.y - bladeBase.y), y: bladeTip.x - bladeBase.x)
+        let perpLen = sqrt(perp.x * perp.x + perp.y * perp.y)
+        let pn = perpLen > 0 ? NSPoint(x: perp.x / perpLen, y: perp.y / perpLen) : NSPoint(x: 0, y: 1)
+        let bladeShape = [
+            NSPoint(x: bladeBase.x + pn.x * bw, y: bladeBase.y + pn.y * bw),
+            NSPoint(x: bladeBase.x - pn.x * bw, y: bladeBase.y - pn.y * bw),
+            bladeTip,
+        ]
+        strokePoly(bladeShape, tint, width: 1)
+        // Edge highlight along the upper face of the blade.
+        let edgePath = NSBezierPath()
+        edgePath.move(to: NSPoint(x: bladeBase.x + pn.x * bw, y: bladeBase.y + pn.y * bw))
+        edgePath.line(to: bladeTip)
+        lighten(tint, 0.50).setStroke(); edgePath.lineWidth = max(1, r.width * 0.05); edgePath.stroke()
+
+        // Crossguard: a short perpendicular bar at the blade/handle junction.
+        let cgCenter = NSPoint(x: (bladeBase.x + handleB.x) / 2, y: (bladeBase.y + handleB.y) / 2)
+        let cgLen = r.width * 0.24
+        let cgPath = NSBezierPath(); cgPath.lineCapStyle = .round
+        cgPath.move(to: NSPoint(x: cgCenter.x - pn.x * cgLen, y: cgCenter.y - pn.y * cgLen))
+        cgPath.line(to: NSPoint(x: cgCenter.x + pn.x * cgLen, y: cgCenter.y + pn.y * cgLen))
+        shade(tint, 0.75).setStroke(); cgPath.lineWidth = max(2, r.width * 0.10); cgPath.stroke()
     }
 
     // ----- Materials -------------------------------------------------------

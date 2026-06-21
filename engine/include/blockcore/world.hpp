@@ -421,6 +421,9 @@ public:
             drown_cd_ = 0.0f;
         }
         if (health_ <= 0.0f) { oxygen_ = 1.0f; respawn(); }
+        // Void guard: if you dig through the bottom of the world (or fall out a
+        // gap), you'd otherwise fall forever. Snap back to a safe surface.
+        if (pos_.y < -40.0f) { oxygen_ = 1.0f; vy_ = 0.0f; respawn(); }
 
         yaw_  += in.look_yaw_delta;
         pitch_ += in.look_pitch_delta;
@@ -742,7 +745,7 @@ private:
         // the early progression beat: log → planks → table → tools.
         bool hasTable = false;
         if (ItemId ct = item_id_by_name("crafting_table")) hasTable = inv_->count_item(ct) > 0;
-        for (std::uint32_t i = 0; i < content_->recipe_count() && out.size() < 8; ++i) {
+        for (std::uint32_t i = 0; i < content_->recipe_count() && out.size() < 24; ++i) {
             const RecipeEntry& r = content_->recipe(i);
             if (r.pattern.empty() || r.result_item == 0) continue;
             if (r.grid_size >= 3 && !hasTable) continue;   // needs a crafting table
@@ -771,7 +774,11 @@ private:
         const RecipeEntry& r = content_->recipe(cr[std::size_t(idx)]);
         if (craft_->commit(*inv_, std::span<const ItemId>(r.pattern.data(), r.pattern.size()), r.grid_size)) {
             fx(4, player_voxel());
-            notify_quest("craft_item", item_name(r.result_item));   // matches quest triggers
+            // Count each crafted ITEM toward the quest, not each craft action — one
+            // craft of the torch recipe yields 4 torches, so "craft 4 torches"
+            // completes in a single craft instead of needing four.
+            int made = (r.result_count > 0) ? int(r.result_count) : 1;
+            for (int k = 0; k < made; ++k) notify_quest("craft_item", item_name(r.result_item));
         }
     }
 
@@ -817,25 +824,26 @@ private:
     // ---- Achievements: small early-game goals that guide what to do next ----
     struct Achievement { const char* trig; const char* target; int count; const char* title; };
     static constexpr Achievement kAchievements[] = {
-        {"collect_item", "oak_log",  1,  "First Wood!"},
-        {"mine_block",   "oak_log",  3,  "Timber!"},
-        {"collect_item", "dirt",     16, "Dirt Collector"},
-        {"mine_block",   "stone",    1,  "Stone Age"},
-        {"craft_item",   "",         1,  "Crafty"},
-        {"mine_block",   "coal_ore", 1,  "Coal Miner"},
-        {"mine_block",   "iron_ore", 1,  "Iron Prospector"},
-        {"place_block",  "",         10, "Builder"},
-        {"collect_item", "mushroom", 1,  "Forager"},
-        {"place_block",  "crafting_table", 1, "Workbench Ready"},
+        {"collect_item", "oak_log",  1,  "Knock On Wood"},
+        {"mine_block",   "oak_log",  3,  "Timberrr!"},
+        {"collect_item", "dirt",     16, "Dirt Rich"},
+        {"mine_block",   "stone",    1,  "Between a Rock"},
+        {"craft_item",   "",         1,  "Arts & Crafts"},
+        {"mine_block",   "coal_ore", 1,  "Coal Digger"},
+        {"mine_block",   "iron_ore", 1,  "Pumping Iron"},
+        {"place_block",  "",         10, "Block Party"},
+        {"collect_item", "mushroom", 1,  "Fun Guy"},
+        {"place_block",  "crafting_table", 1, "Table Manners"},
         // Mid / late-game goals so there's always something to chase.
-        {"befriend_creature", "",   1,  "Animal Friend!"},
-        {"defeat_monster",    "",   1,  "Monster Hunter"},
-        {"mine_block",   "iron_ore", 5,  "Iron Miner"},
-        {"collect_item", "color_dust", 4, "Color Catcher"},
-        {"reach_location", "dim_barrens", 1, "Into the Dim"},
-        {"calm_boss",    "",         1,  "Colossus Tamer"},
-        {"light_beacon", "",         1,  "Beacon Builder"},
-        {"restore_region", "dim_barrens", 1, "Color Returns!"},
+        {"befriend_creature", "",   1,  "Best Friends Furever"},
+        {"defeat_animal",     "",   1,  "Circle of Life"},
+        {"defeat_monster",    "",   1,  "Who's Scared Now?"},
+        {"mine_block",   "iron_ore", 5,  "Iron Will"},
+        {"collect_item", "color_dust", 4, "Tickled Pink"},
+        {"reach_location", "dim_barrens", 1, "Into the Grey"},
+        {"calm_boss",    "",         1,  "Big Softie"},
+        {"light_beacon", "",         1,  "Guiding Light"},
+        {"restore_region", "dim_barrens", 1, "True Colors"},
     };
     static constexpr int kAchievementCount = int(sizeof(kAchievements) / sizeof(kAchievements[0]));
     void check_achievements(const std::string& trig, const std::string& target) {
@@ -906,6 +914,15 @@ private:
                 for (int y = top + 1; y <= top + 6; ++y)
                     if (is_log(block_at(IVec3{px + dx, y, pz + dz}))) { ++logs; break; }
         return logs >= 3 ? "Forest" : "Meadow";
+    }
+    // Player's biome mapped to the content vocabulary (for biome-specific spawns).
+    const char* biome_key() const {
+        const char* b = biome_label();
+        if (std::strcmp(b, "Snowy")  == 0) return "snowy";
+        if (std::strcmp(b, "Desert") == 0) return "desert";
+        if (std::strcmp(b, "Forest") == 0) return "forest";
+        if (std::strcmp(b, "Ocean")  == 0) return "beach";
+        return "plains";   // Meadow / default
     }
     // Top standable block at a world column, GENERATING the column if it isn't
     // resident (used by respawn so you never land in unloaded void or dirt).
@@ -982,7 +999,16 @@ private:
         c.wander = 1.0f + rand01() * 2.0f; c.is_boss = boss;
         if (extra_ && !extra_->creatures().empty()) {
             std::vector<const CreatureDefX*> pool;
-            for (auto& d : extra_->creatures()) if ((d.disposition == "boss") == boss) pool.push_back(&d);
+            const char* bk = biome_key();
+            for (auto& d : extra_->creatures()) {
+                if ((d.disposition == "boss") != boss) continue;
+                // Day animals are biome-gated; bosses spawn anywhere.
+                if (!boss && !(d.biome.empty() || d.biome == "any" || d.biome == bk)) continue;
+                pool.push_back(&d);
+            }
+            // Never fail to spawn: if the biome filter emptied the pool, use all.
+            if (pool.empty() && !boss)
+                for (auto& d : extra_->creatures()) if (d.disposition != "boss") pool.push_back(&d);
             if (!pool.empty()) {
                 const CreatureDefX* d = pool[std::size_t(rand01() * float(pool.size())) % pool.size()];
                 c.name = std::string(d->name);
@@ -1052,7 +1078,8 @@ private:
             creatures_.erase(creatures_.begin() + std::ptrdiff_t(idx));
             ++creatures_calmed_;
             fx(5, player_voxel());                       // poof
-            notify_quest(boss ? "calm_boss" : (hostile ? "defeat_monster" : "befriend_creature"), nm);
+            // Killing a peaceful animal is NOT befriending it (that's BF_ACT_INTERACT).
+            notify_quest(boss ? "calm_boss" : (hostile ? "defeat_monster" : "defeat_animal"), nm);
         }
     }
 
@@ -1549,8 +1576,9 @@ private:
                 h.inventory[i].item = s.item; h.inventory[i].count = s.count; h.inventory[i].durability = s.durability;
             }
             std::vector<std::uint32_t> cr; craftable_recipes(cr);
-            h.craftable_count = std::uint8_t(cr.size());
-            for (std::size_t i = 0; i < cr.size(); ++i) {
+            std::size_t ncr = std::min<std::size_t>(cr.size(), 24);
+            h.craftable_count = std::uint8_t(ncr);
+            for (std::size_t i = 0; i < ncr; ++i) {
                 const RecipeEntry& r = content_->recipe(cr[i]);
                 h.craftable[i].item = r.result_item;
                 h.craftable[i].count = r.result_count;

@@ -26,6 +26,7 @@ struct CreatureDefX {
     int           spawn_light_max{15};
     float         move_speed{2.0f};
     std::string   boss_pattern;    // none|stomp|shieldwall|summon_helpers
+    std::string   biome;           // plains|forest|mountains|desert|snowy|swamp|beach|any
 };
 
 struct QuestObjX { std::string trigger, target, text; std::uint32_t count{1}; };
@@ -85,6 +86,7 @@ private:
             c.spawn_light_max = int(num(v, "spawn_light_max", 15));
             c.move_speed = float(dnum(v, "move_speed", 2.0));
             c.boss_pattern = str(v, "boss_pattern");
+            c.biome = str(v, "biome");
             if (c.id != 0) creatures_.push_back(std::move(c));
         }
     }
