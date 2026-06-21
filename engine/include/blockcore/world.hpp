@@ -273,8 +273,11 @@ public:
             if (!ch) continue;
             std::size_t n = ch->serialize(buf);
             if (!n) continue;
-            char name[160];
-            std::snprintf(name, sizeof(name), "%s/c_%d_%d_%d.chunk", dir.c_str(), cc.x, cc.y, cc.z);
+            // Build the path with std::string (not a fixed char[160]) — a long
+            // save_dir (sandboxed app paths are easily >115 chars) would otherwise
+            // truncate, write chunks to the wrong place, and silently lose the world.
+            std::string name = dir + "/c_" + std::to_string(cc.x) + "_"
+                                   + std::to_string(cc.y) + "_" + std::to_string(cc.z) + ".chunk";
             std::ofstream f(name, std::ios::binary);
             f.write(reinterpret_cast<const char*>(buf.data()), std::streamsize(n));
         }
