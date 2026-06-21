@@ -26,6 +26,13 @@ final class GameView: MTKView {
     private var gamePaused = false
     func releaseMouse() { releasePointer() }
     func grabMouse() { capturePointer() }
+    // Clear all held input. Called when the app loses focus (Cmd-Tab / Cmd-H):
+    // keyUp/mouseUp never arrive for the other app, so without this a held key
+    // would walk you forever and a held mine would never stop.
+    func clearInput() {
+        pressed.removeAll(); shiftDown = false; lookDX = 0; lookDY = 0
+        queue(BF_ACT_MINE_STOP)
+    }
     func setPaused(_ b: Bool) { gamePaused = b; if b { releasePointer() } }
 
     // Accumulated mouse look since the last frame (consumed by Renderer).
@@ -77,6 +84,9 @@ final class GameView: MTKView {
     // ---- keyboard ----------------------------------------------------------
     override func keyDown(with e: NSEvent) {
         if e.keyCode == K.esc { if invOpen { toggleInventory() } else { onPause?() }; return }
+        // While paused, no game key should act — 'E' especially would re-capture the
+        // mouse and make the pause overlay buttons unclickable.
+        guard !gamePaused else { return }
         if e.keyCode == 14 { toggleInventory(); return }   // 'E' — inventory
         if e.keyCode == 8 { queue(BF_ACT_MODE_TOGGLE); return } // 'C' — creative/survival
         if e.keyCode == 12 { queue(BF_ACT_CRAFT); return }      // 'Q' — craft first available
@@ -134,6 +144,9 @@ final class GameView: MTKView {
         window?.makeFirstResponder(self)
     }
     private func releasePointer() {
+        // Releasing the pointer mid-mine (inventory open / pause) would otherwise
+        // never deliver mouseUp's MINE_STOP and the engine mines forever.
+        queue(BF_ACT_MINE_STOP)
         captured = false
         CGAssociateMouseAndMouseCursorPosition(1)
         if cursorHidden { NSCursor.unhide(); cursorHidden = false }

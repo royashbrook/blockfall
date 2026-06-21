@@ -158,6 +158,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentView = menu.rootView
     }
 
+    // Losing focus (Cmd-Tab/Cmd-H) means keyUp/mouseUp won't arrive — clear held
+    // input and release the mouse so the player doesn't return to a stuck-walking
+    // character or a hidden cursor.
+    func applicationWillResignActive(_: Notification) {
+        gameView?.clearInput()
+        if gameView?.isCaptured == true { gameView?.releaseMouse() }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_: Notification) {
