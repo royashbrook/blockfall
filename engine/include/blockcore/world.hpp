@@ -388,6 +388,11 @@ public:
     }
 
     void update(const bf_frame_input& in, double dt) {
+        // Clamp the frame step: a lag spike (background tab, GC pause) with a big
+        // dt would single-step the player tens of blocks and tunnel clean through
+        // the ground into the void (collision is tested only at the end position).
+        // Capping dt makes a spike merely slow the sim for a frame, never break it.
+        if (dt > 0.1) dt = 0.1;
         world_clock_ += dt;
         // Combat timers + slow health regeneration (kid-friendly: you bounce back).
         if (hurt_cd_  > 0) hurt_cd_  -= float(dt);
@@ -501,6 +506,12 @@ public:
                 const ItemDef* idef = items_ ? items_->by_id(sel.item) : nullptr;
                 BlockId pb = idef ? idef->places_block : 0;
                 if (pb == 0) break;                    // not a placeable item
+                // Don't let a solid block be placed inside the player (traps them).
+                // Pass-through blocks (water, plants) are fine to place at your feet.
+                {
+                    bool solid = !(pb == AIR || pb == WATER || (pb >= 36 && pb <= 39));
+                    if (mode_ == BF_MODE_SURVIVAL && solid && voxel_in_player_box(place_)) break;
+                }
                 if (mode_ == BF_MODE_SURVIVAL && !inv_->remove_item(sel.item, 1)) break;
                 set_block_internal(place_, pb);
                 fx(1, place_);                        // place sound
@@ -928,6 +939,16 @@ private:
         return false;
     }
 
+    // Does voxel v fall inside the player's AABB? Used to stop you from placing
+    // a solid block into yourself (which would trap you in place).
+    bool voxel_in_player_box(IVec3 v) const {
+        const float hw = 0.3f;
+        int x0 = ifloor(pos_.x - hw), x1 = ifloor(pos_.x + hw);
+        int z0 = ifloor(pos_.z - hw), z1 = ifloor(pos_.z + hw);
+        int y0 = ifloor(pos_.y - 1.6f), y1 = ifloor(pos_.y + 0.2f);
+        return v.x >= x0 && v.x <= x1 && v.y >= y0 && v.y <= y1 && v.z >= z0 && v.z <= z1;
+    }
+
     static V3 hue_rgb(float h) {
         auto cl = [](float x) { return x < 0 ? 0.f : (x > 1 ? 1.f : x); };
         float r = std::fabs(std::fmod(h * 6 + 0, 6.f) - 3) - 1;
@@ -1214,9 +1235,16 @@ private:
                 if (fb.as_item) {
                     if (inv_) { if (ItemId id = item_that_places(fb.block)) inv_->add(ItemStack{id, 1, 0xFFFF}); }
                     fx(7, land);                          // pickup chime
-                } else if (block_at(land) == AIR) {
-                    set_block_internal(land, fb.block);   // gravity block settles
-                    fx(0, land, (int(fb.block) << 4) | sound_class_for(fb.block));
+                } else {
+                    // Gravity block settles. If the landing cell is already taken
+                    // (another block from the same column settled this same frame),
+                    // stack upward to the first free cell instead of vanishing.
+                    IVec3 settle = land; int guard = 0;
+                    while (block_at(settle) != AIR && guard++ < 64) settle.y += 1;
+                    if (block_at(settle) == AIR) {
+                        set_block_internal(settle, fb.block);
+                        fx(0, settle, (int(fb.block) << 4) | sound_class_for(fb.block));
+                    }
                 }
                 fb.life = 0.0f;
             }
