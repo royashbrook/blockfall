@@ -315,6 +315,16 @@ final class HUDView: NSView {
         drawText(modeStr, at: NSPoint(x: b.maxX - 110, y: b.maxY - 32), size: 13,
                  color: (hud.mode == BF_MODE_CREATIVE) ? .systemTeal : .systemOrange, bold: true)
 
+        // Always-visible Guide hint (bottom-right) so kids discover the helper.
+        let guideHint = "❓ Stuck? Press G for the Guide"
+        let ghAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: 12),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.8),
+            .strokeColor: NSColor.black.withAlphaComponent(0.8), .strokeWidth: -3.0,
+        ]
+        let ghSz = (guideHint as NSString).size(withAttributes: ghAttrs)
+        (guideHint as NSString).draw(at: NSPoint(x: b.maxX - ghSz.width - 14, y: 14), withAttributes: ghAttrs)
+
         // Weather line (under the mode badge). Tells the player what the
         // on-screen precipitation overlay represents. 0=clear, 1=rain, 2=snow.
         switch hud.weather {

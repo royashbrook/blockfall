@@ -671,6 +671,15 @@ final class MenuController: NSObject {
         bottomRow.distribution = .fillEqually
         bottomRow.translatesAutoresizingMaskIntoConstraints = false
 
+        // ── Big one-click quick-start (kids shouldn't have to fill a form) ──
+        let playBtn = RoundButton(frame: .zero)
+        playBtn.normalColor = NSColor(red: 0.20, green: 0.62, blue: 0.30, alpha: 1)
+        playBtn.hoverColor  = NSColor(red: 0.28, green: 0.80, blue: 0.42, alpha: 1)
+        playBtn.title = "▶  Start Adventure!"
+        playBtn.target = self
+        playBtn.action = #selector(quickStartTapped)
+        playBtn.translatesAutoresizingMaskIntoConstraints = false
+
         // ── How-to-play overlay (hidden initially) ─────────────────────────
         howToPlayOverlay = HowToPlayOverlay()
         howToPlayOverlay.isHidden = true
@@ -686,6 +695,7 @@ final class MenuController: NSObject {
         // ── Compose ───────────────────────────────────────────────────────
         root.addSubview(titleLabel)
         root.addSubview(subtitleLabel)
+        root.addSubview(playBtn)
         root.addSubview(listPanel)
         root.addSubview(bottomRow)
         root.addSubview(newWorldPanel)
@@ -700,7 +710,12 @@ final class MenuController: NSObject {
             subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
             subtitleLabel.centerXAnchor.constraint(equalTo: root.centerXAnchor),
 
-            listPanel.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 28),
+            playBtn.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 18),
+            playBtn.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            playBtn.widthAnchor.constraint(equalToConstant: 340),
+            playBtn.heightAnchor.constraint(equalToConstant: 62),
+
+            listPanel.topAnchor.constraint(equalTo: playBtn.bottomAnchor, constant: 20),
             listPanel.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             listPanel.widthAnchor.constraint(equalTo: root.widthAnchor, multiplier: 0.72),
             listPanel.bottomAnchor.constraint(equalTo: bottomRow.topAnchor, constant: -24),
@@ -820,6 +835,33 @@ final class MenuController: NSObject {
     @objc private func newWorldTapped() {
         newWorldPanel.isHidden = false
         newWorldPanel.window?.makeFirstResponder(newWorldPanel)
+    }
+
+    /// One click → a fresh world with a random seed, no form. The fast path for kids.
+    @objc private func quickStartTapped() {
+        let fm = FileManager.default
+        var name = "My World"
+        var n = 2
+        while fm.fileExists(atPath: MenuController.worldsRoot.appendingPathComponent(name).path) {
+            name = "My World \(n)"; n += 1
+        }
+        let saveDir = MenuController.worldsRoot.appendingPathComponent(name).path
+        do {
+            try fm.createDirectory(atPath: saveDir, withIntermediateDirectories: true, attributes: nil)
+        } catch {
+            showError("Couldn't start a new world: \(error.localizedDescription)")
+            return
+        }
+        let seed = UInt64.random(in: 1...999_999)
+        onPlayWorld?(saveDir, name, true, seed)
+    }
+
+    private func showError(_ msg: String) {
+        let alert = NSAlert()
+        alert.messageText = "Oops!"
+        alert.informativeText = msg
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @objc private func showHowToPlay() {

@@ -166,6 +166,11 @@ public:
             // Survival: hotbar starts EMPTY so mined blocks visibly land in it.
             // Just a couple of logs to bootstrap the first crafts.
             if (ItemId log = item_id_by_name("oak_log")) inv_->set(0, ItemStack{log, 3, 0xFFFF});
+            // Coal + sticks in the backpack so the very first quest ("craft 4
+            // torches") is doable the moment you open crafting — first action
+            // succeeds instead of dead-ending on coal you don't know to mine.
+            if (ItemId coal  = item_id_by_name("coal"))  inv_->set(9,  ItemStack{coal,  2, 0xFFFF});
+            if (ItemId stick = item_id_by_name("stick")) inv_->set(10, ItemStack{stick, 2, 0xFFFF});
         }
     }
 
@@ -1190,7 +1195,9 @@ private:
         // of the sky-light data). Monsters lurk in caves any time of day.
         int surfY = surface_top(ifloor(pos_.x), ifloor(pos_.z));
         bool darkCave = surv && surfY != kNoFloor && (surfY - ifloor(pos_.y)) > 6;
-        bool monstersActive = night || darkCave;
+        // First-night grace: no monsters until the kid finishes their first quest,
+        // so a brand-new player gets a safe session to learn before the scary part.
+        bool monstersActive = (night || darkCave) && quests_completed_ > 0;
         // Monsters flee only when it's both daytime AND lit (safe).
         if (!monstersActive)
             creatures_.erase(std::remove_if(creatures_.begin(), creatures_.end(),
