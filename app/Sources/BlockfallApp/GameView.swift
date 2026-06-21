@@ -82,6 +82,9 @@ final class GameView: MTKView {
     // Creative item picker: grant an item id to the player.
     func enqueueGive(_ itemId: UInt16) { queue(BF_ACT_GIVE_ITEM, Int32(itemId)) }
 
+    // Trash an inventory slot.
+    func enqueueDestroy(_ slot: Int) { queue(BF_ACT_DROP_ITEM, Int32(slot)) }
+
     // Inventory move from the HUD (BF_ACT_INV_MOVE: from, to, count).
     func enqueueMove(from: Int, to: Int, count: Int) {
         var a = bf_action(); a.kind = BF_ACT_INV_MOVE

@@ -196,6 +196,21 @@ final class HUDView: NSView {
     private var playerZ: Float = 0
     private var playerFacing: Float = 0   // yaw radians
 
+    // --- #30: day/night indicator ---
+    // Renderer pushes the world time-of-day each frame via setTimeOfDay.
+    // 0 = midnight, 0.5 = noon (one full day = 0..1, wrapping). Stored and shown
+    // in the top-right status box as a sun/moon glyph + Day/Night/Dawn/Dusk label
+    // and a small progress bar marking position in the cycle.
+    private var timeOfDay: Float = 0.5    // default to noon so a fresh HUD reads "Day"
+
+    // --- #34: destroy/trash slot ---
+    // The lead wires this to the engine; it fires with the inventory slot index
+    // (0..35) that should be emptied. Triggered by dropping a picked-up stack on
+    // the trash slot while the inventory is open.
+    var onDestroy: ((Int) -> Void)?
+    // Rect of the trash slot we last drew (inventory open only). .zero = not shown.
+    private var trashRect: NSRect = .zero
+
     // --- #29: FPS counter ---
     // Derived purely from the time between draw(_:) calls (the renderer already
     // drives one redraw per frame), so no timer is added. We keep an exponential
@@ -280,6 +295,37 @@ final class HUDView: NSView {
         return names[idx]
     }
 
+    // #30: Renderer pushes the world time-of-day each frame (0=midnight,
+    // 0.5=noon, wrapping at 1). We normalize into [0,1) and only request a
+    // repaint when the displayed phase label or the integer clock hour changes,
+    // so the always-on indicator doesn't force a redraw 60×/s while time creeps.
+    func setTimeOfDay(_ t: Float) {
+        var nt = t.truncatingRemainder(dividingBy: 1)
+        if nt < 0 { nt += 1 }
+        if !nt.isFinite { nt = 0.5 }
+        let changed = timePhase(nt).0 != timePhase(timeOfDay).0
+            || clockHour(nt) != clockHour(timeOfDay)
+        timeOfDay = nt
+        if changed && hud.inventory_open == 0 { needsDisplay = true }
+    }
+
+    // Map time-of-day [0,1) to a (label, glyph). Day ≈ [0.25,0.75]; the ~0.05
+    // bands at each transition read as Dawn (sunrise ~0.25) / Dusk (sunset ~0.75).
+    private func timePhase(_ t: Float) -> (String, String) {
+        switch t {
+        case 0.23..<0.30: return ("Dawn", "🌅")
+        case 0.30..<0.70: return ("Day",  "☀️")
+        case 0.70..<0.77: return ("Dusk", "🌇")
+        default:          return ("Night", "🌙")
+        }
+    }
+
+    // Time-of-day as an integer 24h clock hour (0=midnight at t=0).
+    private func clockHour(_ t: Float) -> Int {
+        let h = Int((Double(t) * 24.0).rounded(.down)) % 24
+        return h < 0 ? h + 24 : h
+    }
+
     // ----- Mouse handling (active only while the inventory is open) -----
 
     override func updateTrackingAreas() {
@@ -315,6 +361,17 @@ final class HUDView: NSView {
         guard hud.inventory_open != 0 else { return }   // gameplay: ignore
         let p = convert(event.locationInWindow, from: nil)
         mousePos = p
+
+        // #34: Trash slot — if carrying a stack and clicking the trash, destroy
+        // the held stack's source slot. Checked first so the trash always wins
+        // over slot/craft/picker hit-testing while a stack is held. Clicking the
+        // trash with nothing held is a harmless no-op.
+        if let src = heldSlot, trashRect.contains(p) {
+            onDestroy?(src)
+            clearHeld()                                  // engine refreshes next frame
+            needsDisplay = true
+            return
+        }
 
         // #15: Creative item picker takes priority when shown — clicking an item
         // gives it to the player. Only active in creative mode (its rects are
@@ -608,6 +665,20 @@ final class HUDView: NSView {
                                 color: creative ? .systemTeal : .systemOrange,
                                 bold: true))
 
+        // Day/Night indicator (#30) — sun/moon glyph + phase label + 24h clock.
+        // Coloured warm for day, cool for night, so it reads at a glance.
+        let (phaseLabel, phaseGlyph) = timePhase(timeOfDay)
+        let hour = clockHour(timeOfDay)
+        let clockStr = String(format: "%02d:00", hour)
+        let isDay = (timeOfDay >= 0.25 && timeOfDay < 0.75)
+        let timeColor = isDay ? NSColor(srgbRed: 1.0, green: 0.86, blue: 0.40, alpha: 1)
+                              : NSColor(srgbRed: 0.66, green: 0.74, blue: 0.95, alpha: 1)
+        lines.append(StatusLine(text: "\(phaseGlyph) \(phaseLabel)  \(clockStr)",
+                                color: timeColor, bold: true))
+        // Index of the time line within `lines`, so we can underlay a progress
+        // bar at exactly its row after the box is laid out below.
+        let timeLineIdx = lines.count - 1
+
         // FPS (#29) — rounded smoothed value. Shows "—" until the first delta.
         let fpsText = smoothedFPS > 0 ? "\(Int(smoothedFPS.rounded())) FPS" : "— FPS"
         lines.append(StatusLine(text: fpsText,
@@ -681,9 +752,25 @@ final class HUDView: NSView {
 
         // Draw lines top-to-bottom inside the box.
         var ly = box.maxY - pad - lineH
-        for l in lines {
+        for (i, l) in lines.enumerated() {
             (l.text as NSString).draw(at: NSPoint(x: box.minX + pad, y: ly),
                                       withAttributes: attrs(l))
+            // #30: draw a thin day/night progress bar tucked under the time line,
+            // marking where we are in the 0..1 cycle (midnight → noon → midnight).
+            if i == timeLineIdx {
+                let barH: CGFloat = 3
+                let barY = ly - 2                          // just under the text baseline
+                let barRect = NSRect(x: box.minX + pad, y: barY,
+                                     width: maxW, height: barH)
+                NSColor.black.withAlphaComponent(0.45).setFill()
+                NSBezierPath(roundedRect: barRect, xRadius: 1.5, yRadius: 1.5).fill()
+                let frac = CGFloat(max(0, min(1, timeOfDay)))
+                NSColor.white.withAlphaComponent(0.85).setFill()
+                NSBezierPath(roundedRect: NSRect(x: barRect.minX, y: barRect.minY,
+                                                 width: max(2, barRect.width * frac),
+                                                 height: barH),
+                             xRadius: 1.5, yRadius: 1.5).fill()
+            }
             ly -= lineH + lineGap
         }
     }
@@ -765,6 +852,33 @@ final class HUDView: NSView {
                      picked: heldSlot == col)
             }
         }
+
+        // --- #34: Trash slot — drop a picked-up stack here to delete it. Sits
+        // just to the right of the hotbar row so it reads as part of the
+        // inventory area. Red box + 🗑 glyph; it lights up while a stack is held
+        // so kids see exactly where to drop. Record its rect for hit-testing.
+        let hotRow = rects[0]                            // hotbar's first slot
+        let trash = NSRect(x: rects[8].maxX + 18, y: hotRow.minY,
+                           width: hotRow.width, height: hotRow.height)
+        trashRect = trash
+        let holding = (heldSlot != nil)
+        let trashHover = mouseInside && holding && trash.contains(mousePos)
+        (trashHover ? NSColor.systemRed.withAlphaComponent(0.55)
+                    : NSColor.systemRed.withAlphaComponent(holding ? 0.32 : 0.18)).setFill()
+        let trr = NSBezierPath(roundedRect: trash, xRadius: 6, yRadius: 6); trr.fill()
+        NSColor.systemRed.withAlphaComponent(holding ? 0.95 : 0.55).setStroke()
+        trr.lineWidth = trashHover ? 3 : (holding ? 2 : 1.5); trr.stroke()
+        let trashGlyph = "🗑"
+        let tgAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 24),
+        ]
+        let tgSz = (trashGlyph as NSString).size(withAttributes: tgAttrs)
+        (trashGlyph as NSString).draw(at: NSPoint(x: trash.midX - tgSz.width / 2,
+                                                  y: trash.midY - tgSz.height / 2),
+                                      withAttributes: tgAttrs)
+        drawText("Trash", at: NSPoint(x: trash.minX, y: trash.minY - 15),
+                 size: 11, color: NSColor(srgbRed: 1.0, green: 0.55, blue: 0.55, alpha: 1),
+                 bold: true)
 
         // --- #16: Craftable recipes — a SINGLE-column scrollable list BELOW the
         // hotbar. Rows are clipped to a fixed viewport; the mouse wheel scrolls
@@ -885,6 +999,14 @@ final class HUDView: NSView {
                     drawTooltip(name: itemName(s.item), count: s.count, itemId: s.item, near: mousePos)
                 }
             }
+        }
+
+        // --- #34: Trash hint. Shown whenever the cursor is over the trash slot,
+        //     even while carrying a stack (that's exactly when it's actionable).
+        if mouseInside && trashRect.contains(mousePos) {
+            let hint = (heldSlot != nil) ? "🗑 Drop here to delete"
+                                         : "🗑 Pick up a stack, then drop it here to delete"
+            drawTooltip(name: hint, count: 1, near: mousePos)
         }
 
         // --- Picked-up stack ghost following the cursor. ---

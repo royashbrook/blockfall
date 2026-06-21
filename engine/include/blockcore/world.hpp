@@ -21,6 +21,7 @@
 #include "blockcore/inventory.hpp"
 #include "blockcore/crafting.hpp"
 #include "blockcore/jobs.hpp"
+#include "blockcore/worldgen.hpp"
 #include "blockcore_interfaces.hpp"
 
 #include <mutex>
@@ -118,7 +119,6 @@ struct RegionKeyHash {
 class World {
 public:
     static constexpr float  DIM_SAT      = 0.18f;  // unrestored regions: grey
-    static constexpr int    STREAM_R     = 6;      // horizontal radius (chunks)
     static constexpr int    CY_MIN       = -1;     // vertical chunk band (terrain)
     static constexpr int    CY_MAX       = 3;
     // Streaming work is synchronous on the frame thread, so a big per-frame
@@ -133,6 +133,8 @@ public:
 
     void set_allocator(const bf_gpu_allocator& a) { alloc_ = a; has_alloc_ = true; }
     void set_mode(bf_game_mode m) { mode_ = m; }
+    // Horizontal streaming radius in chunks (from the render-distance config).
+    void set_render_distance(int chunks) { stream_r_ = std::clamp(chunks, 4, 20); }
     void set_worldgen(IWorldGen* g) { gen_ = g; }
 
     // ---- co-op hooks (Track H) -------------------------------------------
@@ -593,8 +595,18 @@ public:
                 break;
             }
             case BF_ACT_GIVE_ITEM:           // creative item picker (#15)
-                if (mode_ == BF_MODE_CREATIVE && inv_ && a.arg_i > 0)
-                    inv_->add(ItemStack{ItemId(a.arg_i), 64, 0xFFFF});
+                if (mode_ == BF_MODE_CREATIVE && inv_ && a.arg_i > 0) {
+                    // Give a full stack, but only ONE of a non-stacking item (#35) —
+                    // a sword should hand you one sword, not 64.
+                    std::uint16_t qty = 64;
+                    if (items_) if (const ItemDef* d = items_->by_id(ItemId(a.arg_i)))
+                        qty = std::uint16_t(std::min<int>(64, d->max_stack > 0 ? d->max_stack : 64));
+                    inv_->add(ItemStack{ItemId(a.arg_i), qty, 0xFFFF});
+                }
+                break;
+            case BF_ACT_DROP_ITEM:           // trash a slot (#34)
+                if (inv_ && a.arg_i >= 0 && a.arg_i < BF_INVENTORY_SLOTS)
+                    inv_->set(std::size_t(a.arg_i), ItemStack{});
                 break;
             case BF_ACT_HOTBAR_SELECT:
                 if (a.arg_i >= 0 && a.arg_i < BF_HOTBAR_SLOTS) selected_ = std::uint8_t(a.arg_i);
@@ -1576,11 +1588,28 @@ private:
     void recompute_stream_set() {
         gen_queue_.clear();
         ChunkCoord c = last_center_;
-        for (int cy = CY_MIN; cy <= CY_MAX; ++cy)
-        for (int dx = -STREAM_R; dx <= STREAM_R; ++dx)
-        for (int dz = -STREAM_R; dz <= STREAM_R; ++dz) {
-            ChunkCoord cc{c.x + dx, cy, c.z + dz};
-            if (!store_.is_resident(cc)) gen_queue_.push_back(cc);
+        const bool creative = (mode_ == BF_MODE_CREATIVE);
+        const int  nearR    = 5;                          // full vertical band within this radius
+        const int  playerCy = floordiv(ifloor(pos_.y), kChunkDim);
+        for (int dx = -stream_r_; dx <= stream_r_; ++dx)
+        for (int dz = -stream_r_; dz <= stream_r_; ++dz) {
+            // Surface-priority (#36): near the player (or in creative) stream the
+            // full vertical band (so caves/digging load); FAR away only stream the
+            // chunks around the SURFACE — no deep underground you can't see. This
+            // is what makes a large horizontal render distance affordable.
+            const bool near = creative || (std::abs(dx) <= nearR && std::abs(dz) <= nearR);
+            int surfCy = playerCy;
+            if (!near) {
+                int sy = worldgen_surface_height((c.x + dx) * kChunkDim + kChunkDim/2,
+                                                 (c.z + dz) * kChunkDim + kChunkDim/2, seed_);
+                surfCy = floordiv(sy, kChunkDim);
+            }
+            for (int cy = CY_MIN; cy <= CY_MAX; ++cy) {
+                bool want = near || (cy >= surfCy - 1 && cy <= surfCy + 1) || cy == playerCy;
+                if (!want) continue;
+                ChunkCoord cc{c.x + dx, cy, c.z + dz};
+                if (!store_.is_resident(cc)) gen_queue_.push_back(cc);
+            }
         }
         // nearest-first so the world fills in around the player
         std::sort(gen_queue_.begin(), gen_queue_.end(), [&](ChunkCoord a, ChunkCoord b) {
@@ -1594,8 +1623,8 @@ private:
     void evict_far() {
         std::vector<ChunkCoord> drop;
         for (auto& [cc, rec] : meshes_) {
-            if (std::abs(cc.x - last_center_.x) > STREAM_R + 1 ||
-                std::abs(cc.z - last_center_.z) > STREAM_R + 1) drop.push_back(cc);
+            if (std::abs(cc.x - last_center_.x) > stream_r_ + 1 ||
+                std::abs(cc.z - last_center_.z) > stream_r_ + 1) drop.push_back(cc);
         }
         for (auto cc : drop) {
             auto& rec = meshes_[cc];
@@ -2006,6 +2035,7 @@ private:
     // state (guarded by gen_mtx_); gen_inflight_ is main-thread-only. sched_ is
     // declared LAST so it is destroyed FIRST — its dtor joins workers before the
     // members those jobs touch (gen_done_/gen_mtx_) are destroyed.
+    int                                                             stream_r_{6};         // horizontal radius (chunks)
     bool                                                            sync_stream_{false};  // tests: inline gen+mesh
     std::mutex                                                       gen_mtx_;
     std::vector<std::pair<ChunkCoord, std::unique_ptr<PaletteChunk>>> gen_done_;

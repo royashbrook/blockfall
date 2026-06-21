@@ -98,6 +98,7 @@ bf_result bf_world_new(bf_engine e, uint64_t seed) {
     if (!e) { set_err("null engine"); return BF_ERR_BAD_ARG; }
     uint64_t s = seed ? seed : (e->cfg.world_seed ? e->cfg.world_seed : 1337u);
     e->cfg.world_seed = s;
+    e->world.set_render_distance(int(e->cfg.render_distance_chunks));   // connect config -> streaming (#5/#36)
     e->world.init_world(s);           // procedural streaming world (Track C)
     e->world_ready = true;
     return BF_OK;
@@ -105,6 +106,7 @@ bf_result bf_world_new(bf_engine e, uint64_t seed) {
 bf_result bf_world_load(bf_engine e) {
     if (!e) { set_err("null engine"); return BF_ERR_BAD_ARG; }
     const char* dir = e->cfg.save_dir ? e->cfg.save_dir : "";
+    e->world.set_render_distance(int(e->cfg.render_distance_chunks));   // connect config -> streaming (#5/#36)
     if (!e->world.load(dir))                       // no save yet -> fresh world
         e->world.init_world(e->cfg.world_seed ? e->cfg.world_seed : 1337u);
     e->world_ready = true;

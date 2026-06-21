@@ -131,6 +131,17 @@ struct WindUniforms {
     var pad1:          Float = 0
 }
 
+/// Uniforms for the world-space precipitation pass (rain streaks / snow flakes).
+/// Swift layout: viewProj(64) + camPosW(16) + params(16) = 96 bytes. Must match MSL PrecipUniforms.
+struct PrecipUniforms {
+    var viewProj:  simd_float4x4 = .init(diagonal: .one)   // 64 bytes — camera VP
+    var camPosW:   SIMD4<Float>  = .zero                   // 16 bytes — xyz world cam pos, w unused
+    var wallClock: Float         = 0                       // 4 — animation time (seconds)
+    var mode:      Float         = 0                       // 4 — 0=clear, 1=rain, 2=snow
+    var boxSize:   Float         = 0                       // 4 — full edge length of spawn volume (world units)
+    var pad0:      Float         = 0                       // 4
+}
+
 /// Uniforms for the ambient-life sprite pass (birds / fireflies). 32 bytes.
 struct AmbientLifeUniforms {
     var viewProj:      simd_float4x4 = .init(diagonal: .one)   // 64 bytes — camera VP
@@ -166,6 +177,13 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var ambientLifeDepthState: MTLDepthStencilState!
     private var ambientLifeBuffer: MTLBuffer!   // AmbientSprite array (CPU-updated each frame)
     private let kMaxAmbientSprites = 80
+    // World-space precipitation (rain streaks / snow flakes) — renderer-owned,
+    // instanced billboards in a volume around the camera. Drives off frame.camera.weather.
+    private var precipPipeline: MTLRenderPipelineState!
+    private var precipDepthState: MTLDepthStencilState!
+    private var precipBuffer: MTLBuffer!           // PrecipParticlePod array (filled once at init)
+    private let kPrecipCount = 3000                // a few thousand instanced quads, recycled in-shader
+    private let kPrecipBox: Float = 48.0           // edge length of the spawn cube around the camera
     // Water translucency pass — re-draws chunks with alpha blend, water-only
     private var waterPipeline: MTLRenderPipelineState!
     private var waterDepthState: MTLDepthStencilState!
@@ -397,6 +415,52 @@ final class Renderer: NSObject, MTKViewDelegate {
         ambientLifeBuffer = device.makeBuffer(
             length: kMaxAmbientSprites * MemoryLayout<AmbientSpritePod>.stride,
             options: .storageModeShared)!
+
+        // ---- World-space precipitation pipeline (alpha-blended billboards) -----
+        // Rain = thin vertical streaks; snow = small soft flakes. Standard
+        // src-alpha / one-minus-src-alpha blend over the scene; depth-tested so
+        // particles behind terrain are hidden, but no depth write.
+        let ppd = MTLRenderPipelineDescriptor()
+        ppd.vertexFunction   = lib.makeFunction(name: "precipVert")
+        ppd.fragmentFunction = lib.makeFunction(name: "precipFrag")
+        ppd.colorAttachments[0].pixelFormat = .rgba16Float
+        ppd.colorAttachments[0].isBlendingEnabled             = true
+        ppd.colorAttachments[0].sourceRGBBlendFactor          = .sourceAlpha
+        ppd.colorAttachments[0].destinationRGBBlendFactor     = .oneMinusSourceAlpha
+        ppd.colorAttachments[0].sourceAlphaBlendFactor        = .one
+        ppd.colorAttachments[0].destinationAlphaBlendFactor   = .zero
+        ppd.depthAttachmentPixelFormat = .depth32Float
+        do { precipPipeline = try device.makeRenderPipelineState(descriptor: ppd) }
+        catch { fatalError("precip pipeline failed: \(error)") }
+
+        let ppdd = MTLDepthStencilDescriptor()
+        ppdd.depthCompareFunction = .lessEqual
+        ppdd.isDepthWriteEnabled  = false   // precipitation never writes depth
+        precipDepthState = device.makeDepthStencilState(descriptor: ppdd)
+
+        // Fill the precipitation particle buffer ONCE: each particle gets a stable
+        // pseudo-random offset within the unit box [-0.5..0.5]^3 plus a fall phase.
+        // The vertex shader animates the world position from these each frame, so no
+        // per-frame CPU work and the particles recycle (wrap) entirely on the GPU.
+        precipBuffer = device.makeBuffer(
+            length: kPrecipCount * MemoryLayout<PrecipParticlePod>.stride,
+            options: .storageModeShared)!
+        let pptr = precipBuffer.contents().bindMemory(to: PrecipParticlePod.self, capacity: kPrecipCount)
+        func h(_ n: UInt32) -> Float {   // cheap deterministic hash → [0,1)
+            var v = n &* 0x9E3779B1
+            v ^= v >> 16; v = v &* 0x85EBCA6B
+            v ^= v >> 13; v = v &* 0xC2B2AE35
+            v ^= v >> 16
+            return Float(v) / Float(UInt32.max)
+        }
+        for i in 0..<kPrecipCount {
+            let n = UInt32(i)
+            pptr[i] = PrecipParticlePod(seed: SIMD4<Float>(
+                h(n &* 3 &+ 1) - 0.5,         // x offset in [-0.5, 0.5]
+                h(n &* 7 &+ 13) - 0.5,        // y offset in [-0.5, 0.5]
+                h(n &* 11 &+ 101) - 0.5,      // z offset in [-0.5, 0.5]
+                h(n &* 17 &+ 271)))           // phase 0..1
+        }
     }
 
     private func buildShadowMap() {
@@ -495,7 +559,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         cfg.abi_version = BF_ABI_VERSION
         cfg.role = BF_ROLE_SINGLEPLAYER
         cfg.start_mode = BF_MODE_SURVIVAL
-        cfg.render_distance_chunks = 32   // async gen (#25) + view-cone culling keep this affordable (#5)
+        cfg.render_distance_chunks = 12   // streaming radius (chunks); surface-priority makes it affordable (#25) + view-cone culling keep this affordable (#5)
         cfg.memory_budget_bytes = 10 * 1024 * 1024 * 1024
         // Content is bundled at Resources/content (build.sh copies it there).
         // The registry loads <dir>/blocks, <dir>/items, … so point at that folder,
@@ -640,6 +704,10 @@ final class Renderer: NSObject, MTKViewDelegate {
                            y: frame.camera.position.y,
                            z: frame.camera.position.z,
                            facing: atan2(frame.camera.forward.x, frame.camera.forward.z))
+
+        // Feed the HUD the time of day for a day/night indicator (HUDView method
+        // added by another agent; guarded so it's a no-op until then).
+        hud?.setTimeOfDay(frame.camera.time_of_day)
 
         // Weather is now fully engine-owned: frame.camera.weather = 0=clear, 1=rain, 2=snow.
         // Map that to a rain strength for wind/wet-darkening (0 when clear or snow, 1 when rain).
@@ -834,6 +902,28 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
                                           indexType: .uint32, indexBuffer: ibuf,
                                           indexBufferOffset: Int(d.index_offset))
+            }
+
+            // --- World-space precipitation (rain / snow) ---
+            // Environmental falling particles in a volume around the camera. Driven
+            // by engine weather (0=clear, 1=rain, 2=snow). Drawn after terrain+water
+            // so it layers over the scene; depth-tested (lessEqual, no write) so
+            // particles behind solid terrain are correctly hidden. Skipped entirely
+            // when clear or when underwater (no rain underwater).
+            if engineWeather != 0 && isUnderwater <= 0.5 {
+                enc.setRenderPipelineState(precipPipeline)
+                enc.setDepthStencilState(precipDepthState)
+                enc.setCullMode(.none)
+                var prU = PrecipUniforms(
+                    viewProj:  viewProj,
+                    camPosW:   camPosW,
+                    wallClock: wallClock,
+                    mode:      Float(engineWeather),   // 1=rain, 2=snow
+                    boxSize:   kPrecipBox,
+                    pad0:      0)
+                enc.setVertexBuffer(precipBuffer, offset: 0, index: 0)
+                enc.setVertexBytes(&prU, length: MemoryLayout<PrecipUniforms>.stride, index: 1)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: kPrecipCount * 6)
             }
 
             // --- Underwater post-pass ---
@@ -1248,6 +1338,21 @@ final class Renderer: NSObject, MTKViewDelegate {
         float    wallClock;
         float    pad0;
         float    pad1;
+    };
+
+    // PrecipParticle: 16 bytes, matches Swift PrecipParticlePod.
+    struct PrecipParticle {
+        float4 seed;   // xyz = offset within box [-0.5..0.5]^3, w = phase 0..1
+    };
+
+    // PrecipUniforms: 96 bytes, matches Swift PrecipUniforms.
+    struct PrecipUniforms {
+        float4x4 viewProj;   // 64 bytes
+        float4   camPosW;    // 16 bytes — xyz world cam pos
+        float    wallClock;  // animation time (seconds)
+        float    mode;       // 1=rain, 2=snow
+        float    boxSize;    // full edge length of spawn volume (world units)
+        float    pad0;
     };
 
     // =========================================================
@@ -2443,10 +2548,22 @@ final class Renderer: NSObject, MTKViewDelegate {
         float sunDot = dot(ray, sunDir3);
         float sunDisc  = smoothstep(0.9975, 1.0000, sunDot);
         float sunInner = smoothstep(0.9992, 1.0000, sunDot);
-        float sunGlow1 = smoothstep(0.978,  1.0000, sunDot) * 0.09 * max(dayT, sunsetT * 0.5);
-        float sunGlow2 = smoothstep(0.992,  1.0000, sunDot) * 0.15 * max(dayT, sunsetT * 0.5);
+        // FIX (#33): The washout when turning was direction-dependent — it only
+        // happened when the view looked toward the sun's azimuth (E/W/diagonal,
+        // since the sun arcs East-West). Facing N/S kept the sun off-frame so the
+        // glow terms were ~0 and the scene looked fine. The culprits were the broad
+        // sun-glow cones: sunGlow1 started at sunDot=0.978 (~12° half-angle), which
+        // fills a large central patch of the screen when facing the sun. Even though
+        // the broad sky was capped to 1.1, a 1.1 blob covering most of the frame is
+        // bright enough that ACES + warm tint + saturation read it as a full-frame
+        // wash. The fix tightens BOTH glow cones to a much smaller angle around the
+        // disc, dims their intensity + the corona, and lowers the broad-sky cap from
+        // 1.1 to 0.92 so no view direction can blow out. The visible sun disc (tight
+        // sunInner/sunDisc) is preserved, so the sky still looks nice.
+        float sunGlow1 = smoothstep(0.992,  1.0000, sunDot) * 0.05 * max(dayT, sunsetT * 0.5);  // tighter (was 0.978/0.09)
+        float sunGlow2 = smoothstep(0.997,  1.0000, sunDot) * 0.08 * max(dayT, sunsetT * 0.5);  // tighter (was 0.992/0.15)
         float3 sunColor  = mix(float3(1.0, 0.72, 0.35), float3(1.0, 0.98, 0.85), dayT);
-        float3 sunCorona = sunColor * 1.15;
+        float3 sunCorona = sunColor;                                                            // dimmer (was *1.15)
         float sunVis = max(dayT, sunsetT * 0.6);
         skyCol += sunGlow1 * sunCorona;
         skyCol += sunGlow2 * sunCorona;
@@ -2458,12 +2575,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         // ~1.5 * sunVis; combined with the 1.0 base the disc reaches ~1.5–1.7 HDR,
         // which is near the bright-pass floor (1.6) — gives a tight local glow
         // without smearing bloom across the whole screen when you face the sun.
-        // The broad sky/glow is clamped to ≤1.1 so it stays well below threshold.
+        // discHDR is gated on the TIGHT sunInner disc only, so only the small sun
+        // disc itself feeds bloom — never the broad sky.
         float3 discHDR = sunColor * 0.5 * sunInner * sunVis;
         skyCol += discHDR;
 
-        // Cap everything except the inner disc to ≤1.1 (well below bloom threshold 1.6).
-        skyCol = clamp(skyCol - discHDR, 0.0, 1.1) + discHDR;
+        // FIX (#33): Cap everything except the tiny inner disc to ≤0.92 (was 1.1).
+        // This is the hard guarantee that no broad sky/haze/glow region — in ANY
+        // view direction, including straight at the sun's azimuth — can exceed 0.92
+        // HDR, so it stays well below the bloom threshold (1.6) AND can never reach
+        // the ACES white point, eliminating the full-frame wash when turning.
+        skyCol = clamp(skyCol - discHDR, 0.0, 0.92) + discHDR;
 
         float3 moonDir3 = -sunDir3;
         float moonDot  = dot(ray, moonDir3);
@@ -2683,61 +2805,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         return clamp((x*(a*x+b)) / (x*(c*x+d)+e), 0.0, 1.0);
     }
 
-    // ---- Precipitation helpers -----------------------------------------------
-    // Rain: returns 0..1 streak intensity at screen UV (uv in [0,1]).
-    // Each "cell" is a tall thin column; the streak falls through the column over time.
-    // FIX (#11): Increased streak length (0.32+), narrower X width for contrast,
-    // and higher base brightness so streaks are unmistakably visible.
-    static float rainStreak(float2 uv, float T, float cellScale) {
-        // Scale uv into rain-cell space: many narrow columns.
-        // uv.y=0 is TOP, uv.y=1 is BOTTOM. Subtracting T from cell.y means that
-        // as T increases, the same cell fragment is at a LARGER uv.y → streaks
-        // move downward (falling rain). Adding T would move them upward.
-        float2 cell = float2(uv.x * cellScale, uv.y * 3.0 - T * 4.5);
-        float2 cellI = floor(cell);
-        float2 cellF = fract(cell);
-        // Per-column hash: random X offset and brightness
-        float colH = uhash(uint(cellI.x) * 1664525u + 1013904223u);
-        float colH2 = uhash(uint(cellI.x) * 22695477u ^ 1664525u);
-        // Streak X position within column (slight jitter)
-        float streakX = 0.30 + colH * 0.40;
-        // Streak presence: each column has a random phase offset so they fall at different times
-        float phase = fmod(cell.y + colH2 * 10.0, 1.0);
-        // Narrow in X for high contrast; longer streak in Y (~32-45% of cell height)
-        float dx = abs(cellF.x - streakX);
-        float inX = smoothstep(0.028, 0.0, dx);   // narrower = sharper streak
-        // Longer streak so it's clearly visible (was 0.18)
-        float streakLen = 0.32 + colH * 0.13;
-        float inY = smoothstep(0.0, 0.03, phase) * smoothstep(streakLen, streakLen - 0.03, phase);
-        // Head-of-streak brightness gradient: brighter at leading edge for motion-blur look
-        float headGrad = 1.0 - (phase / max(streakLen, 0.01)) * 0.4;
-        return inX * inY * headGrad * (0.65 + colH * 0.35);  // higher base brightness
-    }
-
-    // Snow: returns 0..1 flake intensity. Flakes fall downward + gentle sideways drift.
-    // UV convention: fullscreenVert maps NDC y=+1 (top) → uv.y=0, NDC y=-1 (bottom) → uv.y=1.
-    // So "falling down" means uv.y INCREASES over time.
-    // We SUBTRACT T from the cell Y offset: as T grows, cell.y decreases, so for a fixed
-    // flake (fixed cellI+cellF) it maps to a LARGER uv.y → flake moves downward. Correct.
-    // FIX (#11): Larger flake radii and higher base brightness so snow is unmistakably visible.
-    static float snowFlake(float2 uv, float T, float cellScale) {
-        float2 cell = float2(uv.x * cellScale + T * 0.10,   // gentle sideways drift
-                              uv.y * cellScale - T * 1.1);   // fall DOWN (subtract T → flake at larger uv.y)
-        float2 cellI = floor(cell);
-        float2 cellF = fract(cell);
-        // Per-flake hash
-        float flakeH  = uhash(uint(cellI.x) * 1664525u + uint(cellI.y) * 22695477u);
-        float flakeH2 = uhash(uint(cellI.x) * 6364136u ^ uint(cellI.y) * 1013904223u);
-        // Flake position within cell (random, drifts slightly)
-        float2 flakePosOffset = float2(flakeH - 0.5, flakeH2 - 0.5) * 0.6;
-        float2 flakePos = float2(0.5) + flakePosOffset;
-        float2 diff = cellF - flakePos;
-        float dist = dot(diff, diff);
-        // Larger circular flake — radius in cell units ~0.10..0.17 (was 0.05..0.10)
-        float r = 0.10 + flakeH * 0.07;
-        float inFlake = 1.0 - smoothstep(r * r * 0.5, r * r, dist);
-        return inFlake * (0.70 + flakeH * 0.30);   // higher base brightness (was 0.5+)
-    }
+    // (Old screen-space rainStreak / snowFlake helpers removed in #32 — precipitation
+    //  is now environmental world-space particles; see the precip* shaders below.)
 
     fragment float4 compositeFrag(FSVOut in [[stage_in]],
                                   texture2d<float> hdrTex   [[texture(0)]],
@@ -2779,46 +2848,133 @@ final class Renderer: NSObject, MTKViewDelegate {
         float vignette = 1.0 - smoothstep(0.20, 0.70, vigRad * 4.0) * pu.vignetteStr;
         tonemapped *= vignette;
 
-        // ---- Animated precipitation overlay ---------------------------------
-        // pu.rainStrength > 0 => rain streaks, < 0 => snow flakes, 0 => clear.
-        // Applied AFTER tonemapping so it's visible on top of everything (LDR overlay).
-        float precipStr = abs(pu.rainStrength);
-        if (precipStr > 0.005) {
-            float T = pu.wallClockSecs;
-            bool isSnow = (pu.rainStrength < 0.0);
-
-            if (isSnow) {
-                // FIX (#11): Three layers of snow flakes at different densities / speeds
-                // for clearly visible, dense-looking snowfall.
-                float layer1 = snowFlake(in.uv, T * 1.0,  32.0);         // dense fine layer
-                float layer2 = snowFlake(in.uv, T * 0.70, 20.0) * 0.85;  // medium layer
-                float layer3 = snowFlake(in.uv + float2(0.37, 0.19), T * 0.45, 12.0) * 0.75; // large slow
-                float flakes = clamp(layer1 + layer2 + layer3, 0.0, 1.0);
-                float3 snowCol = float3(0.93, 0.95, 1.00);
-                // Fade near the top (flakes enter screen from above)
-                float topFade = smoothstep(0.0, 0.10, in.uv.y) * smoothstep(1.0, 0.82, in.uv.y);
-                // Raised from 0.85 to 1.0 — flakes replace underlying colour fully at peak
-                tonemapped = mix(tonemapped, snowCol, flakes * precipStr * 1.0 * topFade);
-            } else {
-                // FIX (#11): Three rain streak layers — fine fast + medium + coarse slow.
-                // Increased cell densities and higher mix weight so streaks are unmistakable.
-                float s1 = rainStreak(in.uv, T, 80.0);                              // fine dense
-                float s2 = rainStreak(in.uv + float2(0.50, 0.30), T * 0.80, 52.0) * 0.85;  // medium
-                float s3 = rainStreak(in.uv + float2(0.22, 0.61), T * 0.55, 30.0) * 0.65;  // coarse
-                float streaks = clamp(s1 * 0.50 + s2 * 0.30 + s3 * 0.20, 0.0, 1.0);
-                // Rain colour: blue-grey, slightly transparent
-                float3 rainCol = float3(0.72, 0.78, 0.92);
-                // Streaks are more visible top-to-bottom (vertical, so fade near edges)
-                float edgeFade = smoothstep(0.0, 0.06, in.uv.x) * smoothstep(0.0, 0.06, 1.0 - in.uv.x);
-                // Raised from 0.55 to 0.82 — streaks are clearly visible (not just hinted)
-                tonemapped = mix(tonemapped, rainCol, streaks * precipStr * 0.82 * edgeFade);
-            }
-        }
+        // ---- Precipitation is now ENVIRONMENTAL (world-space particles) ------
+        // FIX (#32): The old screen-space rain-streak / snow-flake overlay was
+        // removed. It read as a static full-frame HUD overlay with no parallax.
+        // Precipitation is now drawn as instanced world-space quads (see the
+        // precip* shaders + ParticleSystem-style pass in the HDR scene), so it
+        // falls through the 3D world around the camera with real parallax.
+        // pu.rainStrength is still passed (kept for struct-layout stability and
+        // the rain wet-darkening of terrain) but no longer composited here.
 
         // Gamma: drawable is bgra8Unorm (no hardware sRGB), apply manual gamma 2.2.
         tonemapped = pow(clamp(tonemapped, 0.0, 1.0), float3(1.0 / 2.2));
 
         return float4(tonemapped, 1.0);
+    }
+
+    // =========================================================
+    // WORLD-SPACE PRECIPITATION — rain streaks + snow flakes (#32)
+    //
+    // Replaces the old screen-space overlay. A fixed pool of instanced quads
+    // (6 verts each) lives in a cube of edge `boxSize` centred on the camera.
+    // Each particle has a STABLE world position derived from its seed offset +
+    // the camera position, so as the camera moves/turns the particles show real
+    // parallax (they are anchored in world space, not the screen). Falling and
+    // recycling are done entirely on the GPU: the y coordinate sweeps downward
+    // with wall-clock time and WRAPS within the box (modulo), and x/z wrap into
+    // the box around the camera — so particles that leave the volume reappear on
+    // the opposite side. No per-frame CPU update; just a few thousand quads.
+    //
+    // mode: 1 = rain (thin vertical streaks, fast), 2 = snow (small flakes, slow
+    //       drift). Driven from frame.camera.weather.
+    // =========================================================
+    struct PrecipVOut {
+        float4 position [[position]];
+        float2 uv;        // quad-local UV in [-1,1]
+        float  fade;      // edge-of-box fade (0 at box boundary, 1 in centre)
+        uint   isSnow [[flat]];
+    };
+
+    // Wrap v into [0, range) (handles negatives), branchless.
+    static float wrapf(float v, float range) {
+        return v - floor(v / range) * range;
+    }
+
+    vertex PrecipVOut precipVert(uint vid [[vertex_id]],
+                                 device const PrecipParticle* parts [[buffer(0)]],
+                                 constant PrecipUniforms& pu [[buffer(1)]]) {
+        uint pi = vid / 6u;
+        uint ci = vid % 6u;
+        PrecipParticle sp = parts[pi];
+
+        bool isSnow = (pu.mode > 1.5);
+        float box     = pu.boxSize;
+        float halfBox = box * 0.5;     // NB: `half` is a reserved MSL type name — do not use it
+        float3 cam    = pu.camPosW.xyz;
+
+        // Fall speed (world units / sec): rain fast, snow slow.
+        float speed = isSnow ? 1.6 : 18.0;
+        // Phase staggers each particle's start so they don't all fall in lockstep.
+        float phase = sp.seed.w;
+
+        // World position. x/z: stable seed offset around the camera, wrapped into
+        // the box so the field always surrounds the player (recycling sideways as
+        // the camera moves). y: sweeps downward over time and wraps within the box.
+        float baseX = cam.x + sp.seed.x * box;
+        float baseZ = cam.z + sp.seed.z * box;
+        // Snow drifts sideways gently; rain falls near-straight (tiny slant).
+        float drift = isSnow ? (sin(pu.wallClock * 0.5 + phase * 6.2831) * 0.6) : 0.0;
+        baseX += drift;
+
+        // Wrap x/z into [cam-halfBox, cam+halfBox]: keeps the volume centred on the camera.
+        float wx = wrapf(baseX - (cam.x - halfBox), box) + (cam.x - halfBox);
+        float wz = wrapf(baseZ - (cam.z - halfBox), box) + (cam.z - halfBox);
+
+        // y: start from top of box, fall, wrap. Using wall-clock * speed + phase.
+        float fallY = (sp.seed.y * box) - (pu.wallClock * speed + phase * box);
+        float wy = wrapf(fallY - (cam.y - halfBox), box) + (cam.y - halfBox);
+
+        float3 worldPos = float3(wx, wy, wz);
+
+        // Edge fade: dim particles near the box boundary so the volume edge isn't a
+        // hard wall (also hides the wrap discontinuity). Based on horizontal distance.
+        float2 dxz = float2(wx - cam.x, wz - cam.z);
+        float horiz = max(abs(dxz.x), abs(dxz.y));
+        float fade = 1.0 - smoothstep(halfBox * 0.6, halfBox, horiz);
+
+        // Billboard the quad toward the camera in clip space (like ambientLifeVert),
+        // but stretch rain vertically into a streak. Snow is a small square.
+        const float2 corners[6] = {
+            float2(-1,-1), float2(1,-1), float2(1, 1),
+            float2(-1,-1), float2(1, 1), float2(-1, 1)
+        };
+        float2 corner = corners[ci];
+
+        float4 clipC = pu.viewProj * float4(worldPos, 1.0);
+        // Half-size in clip units, scaled by 1/w so it's a consistent on-screen size.
+        float wsafe = max(clipC.w, 0.001);
+        float halfW = (isSnow ? 0.045 : 0.012) / wsafe;   // rain: thin in X
+        float halfH = (isSnow ? 0.045 : 0.130) / wsafe;   // rain: long streak in Y
+        float4 pos = clipC + float4(corner.x * halfW, corner.y * halfH, 0.0, 0.0);
+
+        PrecipVOut o;
+        o.position = pos;
+        o.uv       = corner;
+        o.fade     = fade;
+        o.isSnow   = isSnow ? 1u : 0u;
+        return o;
+    }
+
+    fragment float4 precipFrag(PrecipVOut in [[stage_in]]) {
+        float alpha;
+        float3 col;
+        if (in.isSnow == 1u) {
+            // Soft round flake.
+            float d = dot(in.uv, in.uv);
+            if (d > 1.0) discard_fragment();
+            alpha = (1.0 - smoothstep(0.3, 1.0, d)) * 0.85;
+            col = float3(0.95, 0.97, 1.00);
+        } else {
+            // Rain streak: soft vertical bar, fade toward the ends for a motion look.
+            float xs = 1.0 - smoothstep(0.4, 1.0, abs(in.uv.x));   // across the streak
+            float ys = 1.0 - smoothstep(0.6, 1.0, abs(in.uv.y));   // along the streak
+            alpha = xs * ys * 0.55;
+            col = float3(0.72, 0.80, 0.92);
+        }
+        alpha *= in.fade;
+        if (alpha < 0.01) discard_fragment();
+        return float4(col, alpha);
     }
 
     // =========================================================
@@ -2920,6 +3076,14 @@ struct ShadowVertUniforms {
 struct AmbientSpritePod {
     var posW:    SIMD4<Float>   // xyz = world pos, w = size (screen-space radius)
     var color:   SIMD4<Float>   // rgb = HDR colour (>1 allowed for bloom), a = alpha
+}
+
+// MARK: - Precipitation particle POD (matches MSL PrecipParticle, 16 bytes)
+/// One per particle. seed = a stable per-particle offset within the spawn box +
+/// a phase, written ONCE at init; the vertex shader derives the animated world
+/// position from it each frame (no per-frame CPU update — cheap & recycling-free).
+struct PrecipParticlePod {
+    var seed: SIMD4<Float>   // xyz = offset within box [-0.5..0.5]^3, w = per-particle phase 0..1
 }
 
 // MARK: - Offscreen render self-test (CI: proves terrain pixels actually draw)

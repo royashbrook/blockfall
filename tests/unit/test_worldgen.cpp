@@ -143,6 +143,14 @@ static void test_no_seams() {
     // Shared boundary: in chunk0 lx=15 is world x=15; in chunk1 lx=0 is world x=16.
     int seam_violations = 0;
     for (int lz = 0; lz < kChunkDim; ++lz) {
+        // Structures (#17) place solid walls/roofs above terrain that the seam
+        // test counts as "top solid"; a build straddling the border legitimately
+        // makes the two sides differ.  The seam invariant is about natural TERRAIN
+        // continuity, so exempt structure-footprint columns (same as hole test).
+        std::int32_t wzc = static_cast<std::int32_t>(lz);
+        if (worldgen_structure_footprint(15, wzc, SEED) ||
+            worldgen_structure_footprint(16, wzc, SEED)) continue;
+
         std::int32_t h_left  = top_solid(c0_y0, c0_yn, 15, lz);  // world x=15
         std::int32_t h_right = top_solid(c1_y0, c1_yn,  0, lz);  // world x=16
 
@@ -209,6 +217,14 @@ static void test_no_seams_biome_transition() {
             };
 
             for (int lz = 0; lz < kChunkDim; ++lz) {
+                // Exempt structure-footprint columns from the TERRAIN seam check
+                // (#17 — builds straddling a border legitimately raise top-solid).
+                std::int32_t wx_l = static_cast<std::int32_t>(cx)   * kChunkDim + 15;
+                std::int32_t wx_r = static_cast<std::int32_t>(cx+1) * kChunkDim + 0;
+                std::int32_t wz_c = static_cast<std::int32_t>(cz)   * kChunkDim + lz;
+                if (worldgen_structure_footprint(wx_l, wz_c, SEED) ||
+                    worldgen_structure_footprint(wx_r, wz_c, SEED)) continue;
+
                 std::int32_t hl = top_solid(a_slices, 15, lz);
                 std::int32_t hr = top_solid(b_slices,  0, lz);
                 std::int32_t diff = hl - hr;
@@ -840,6 +856,10 @@ static void test_no_surface_holes() {
                     std::int32_t col_wx = static_cast<std::int32_t>(cx) * kChunkDim + lx;
                     std::int32_t col_wz = static_cast<std::int32_t>(cz) * kChunkDim + lz;
                     if (worldgen_is_cave_entrance(col_wx, col_wz, SEED)) continue;
+                    // #17: structures (roofed cabins, temples, wells, watchtowers)
+                    // legitimately have interior air beneath their topmost solid,
+                    // exactly like cave entrances.  Exempt structure footprints.
+                    if (worldgen_structure_footprint(col_wx, col_wz, SEED)) continue;
 
                     // Check the 5 blocks directly below the surface.
                     // They must all be non-AIR (solid or water — no cave pockets).
@@ -1965,6 +1985,140 @@ static void test_deadwood() {
 }
 
 // ---------------------------------------------------------------------------
+// 28. CONTIGUOUS BIOMES — NO GRID MIXING (#6)
+//     The old smooth-weight argmax flickered between 2-4 biomes block-to-block
+//     near borders (a checkerboard).  The Voronoi TYPE map makes each region one
+//     contiguous biome with a single clean edge.  We probe transects in BOTH
+//     directions across several seeds and assert:
+//       a) biome runs are long (mean run length comfortably > 12 blocks),
+//       b) true A-B-A flicker (a short <12 run flanked by the SAME biome — the
+//          checkerboard signature) is rare (< 3% of runs),
+//       c) the worst single run is not vanishingly thin on average.
+//     This is the direct regression guard for "biomes mix in a grid".
+// ---------------------------------------------------------------------------
+static void test_biomes_contiguous() {
+    const std::uint64_t seeds[] = {1ull, 2ull, 3ull, 0xB10BE5EED1234567ull};
+    long total_runs = 0, short_runs = 0, aba_flicker = 0;
+    long sum_runlen = 0;
+
+    for (std::uint64_t s : seeds) {
+        for (int axis = 0; axis < 2; ++axis) {
+            for (int line = -256; line < 256; line += 8) {
+                // Collect the run-length encoding of the biome along this transect,
+                // then analyse run lengths and the A-B-A flicker pattern.
+                int rl_biome[600]; int rl_len[600]; int nrl = 0;
+                int cur = -1, curlen = 0;
+                for (int t = -256; t < 256; ++t) {
+                    int x = axis ? line : t;
+                    int z = axis ? t : line;
+                    int b = worldgen_dominant_biome(x, z, s);
+                    if (b != cur) {
+                        if (cur >= 0 && nrl < 600) { rl_biome[nrl] = cur; rl_len[nrl] = curlen; ++nrl; }
+                        cur = b; curlen = 1;
+                    } else ++curlen;
+                }
+                if (cur >= 0 && nrl < 600) { rl_biome[nrl] = cur; rl_len[nrl] = curlen; ++nrl; }
+
+                for (int i = 0; i < nrl; ++i) {
+                    ++total_runs; sum_runlen += rl_len[i];
+                    if (rl_len[i] < 12) ++short_runs;
+                    if (i > 0 && i + 1 < nrl && rl_len[i] < 12 &&
+                        rl_biome[i-1] == rl_biome[i+1]) ++aba_flicker;
+                }
+            }
+        }
+    }
+
+    double mean_run = total_runs ? double(sum_runlen) / double(total_runs) : 0.0;
+    double aba_pct  = total_runs ? 100.0 * double(aba_flicker) / double(total_runs) : 0.0;
+
+    std::printf("  [biome probe] runs=%ld mean_run=%.1f short(<12)=%ld aba_flicker=%ld (%.2f%%)\n",
+                total_runs, mean_run, short_runs, aba_flicker, aba_pct);
+
+    // Mean run length must be well above the old flickery world (~1-2 effective).
+    CHECK(mean_run >= 20.0,
+          "contiguous biomes: mean biome run length along a transect is >= 20 blocks (#6)");
+    // The checkerboard signature (short run flanked by the same biome) must be rare.
+    CHECK(aba_pct < 3.0,
+          "contiguous biomes: A-B-A flicker is rare (< 3% of runs) — no grid mixing (#6)");
+}
+
+// ---------------------------------------------------------------------------
+// 29. STRUCTURE VARIETY + ENGINE MARKER HOOK (#17)
+//     Confirm the structures are now VARIED characterful builds (multiple
+//     distinctive block kinds appear: glass windows, doors, stone-brick temples/
+//     wells/obelisks, wool tents, crystal lamps, chests) — not a single box —
+//     and that the engine MARKER hook works:
+//       a) worldgen_structure_marker_at() returns true at structure anchors and
+//          gives a sane surface y, and
+//       b) the buried BEACON_BLOCK marker is present at (anchor, y-1) in the
+//          generated chunk (the voxel-scan detection path).
+// ---------------------------------------------------------------------------
+static void test_structure_variety_and_marker() {
+    constexpr std::uint64_t SEED = 0x5704C705EED2024ull;
+    TerrainGen g; g.seed(SEED);
+
+    // Distinctive block ids only structures place.
+    bool has_glass = false, has_door = false, has_sbrick = false,
+         has_wool = false, has_lamp = false, has_chest = false, has_marker = false;
+
+    // Scan a wide area across a few seeds for the rarer build kinds (wool tents).
+    const std::uint64_t var_seeds[] = { SEED, 1ull, 2ull, 3ull, 4ull, 5ull };
+    for (std::uint64_t s : var_seeds) {
+        TerrainGen gs; gs.seed(s);
+        for (int cz = -8; cz <= 8; ++cz)
+            for (int cx = -8; cx <= 8; ++cx)
+                for (int cy = 0; cy <= 4; ++cy) {
+                    PaletteChunk ch({cx, cy, cz}, 0);
+                    gs.generate({cx, cy, cz}, ch);
+                    for (int lz = 0; lz < kChunkDim; ++lz)
+                        for (int ly = 0; ly < kChunkDim; ++ly)
+                            for (int lx = 0; lx < kChunkDim; ++lx) {
+                                BlockId b = ch.get(lx, ly, lz);
+                                if (b == 25u) has_glass  = true;   // glass_pane
+                                if (b == 33u) has_door   = true;   // oak_door
+                                if (b == 8u)  has_sbrick = true;   // stone_brick
+                                if (b == 28u) has_wool   = true;   // wool tent
+                                if (b == 35u) has_lamp   = true;   // crystal_lamp
+                                if (b == 31u) has_chest  = true;   // chest
+                                if (b == 34u) has_marker = true;   // beacon marker
+                            }
+                }
+    }
+
+    // Count distinct distinctive kinds — a "single box" would show ~1.
+    int kinds = int(has_glass) + int(has_door) + int(has_sbrick) + int(has_wool)
+              + int(has_lamp) + int(has_chest);
+    CHECK(kinds >= 5,
+          "structure variety: >=5 distinctive structure block kinds appear (varied builds) — #17");
+    CHECK(has_glass, "structure variety: cabins have glass-pane windows (#17)");
+    CHECK(has_sbrick, "structure variety: stone-brick builds (temple/well/obelisk) present (#17)");
+    CHECK(has_wool,   "structure variety: wool tents (camps) present (#17)");
+    CHECK(has_chest,  "structure variety: temple chests present (#17)");
+
+    // Engine marker hook: find a structure anchor by query, confirm it agrees
+    // with a buried BEACON_BLOCK in the generated world.
+    int hooks_ok = 0, hooks_tested = 0;
+    for (int wz = -300; wz <= 300 && hooks_tested < 6; ++wz) {
+        for (int wx = -300; wx <= 300 && hooks_tested < 6; ++wx) {
+            int oy = 0;
+            if (!worldgen_structure_marker_at(wx, wz, SEED, oy)) continue;
+            ++hooks_tested;
+            // Generate the chunk containing (wx, oy-1, wz) and check for the marker.
+            auto fdiv = [](int a, int b){ return a/b - (a%b!=0 && (a^b)<0 ? 1:0); };
+            int cx = fdiv(wx, kChunkDim), cy = fdiv(oy - 1, kChunkDim), cz = fdiv(wz, kChunkDim);
+            PaletteChunk ch({cx, cy, cz}, 0);
+            g.generate({cx, cy, cz}, ch);
+            int lx = wx - cx*kChunkDim, ly = (oy-1) - cy*kChunkDim, lz = wz - cz*kChunkDim;
+            if (ch.get(lx, ly, lz) == 34u) ++hooks_ok;
+        }
+    }
+    CHECK(has_marker, "structure marker: BEACON_BLOCK markers present in world (#17 hook)");
+    CHECK(hooks_tested > 0 && hooks_ok == hooks_tested,
+          "structure marker: worldgen_structure_marker_at() agrees with buried BEACON_BLOCK (#17 hook)");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -1997,6 +2151,8 @@ int main() {
     test_underwater_vegetation();
     test_structure_density();
     test_deadwood();
+    test_biomes_contiguous();
+    test_structure_variety_and_marker();
 
     if (fails == 0) {
         std::printf("OK: worldgen tests\n");

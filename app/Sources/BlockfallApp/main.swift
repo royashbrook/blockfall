@@ -93,6 +93,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         h.onGiveItem = { [weak mtkView] itemId in
             mtkView?.enqueueGive(itemId)
         }
+        h.onDestroy = { [weak mtkView] slot in
+            mtkView?.enqueueDestroy(slot)
+        }
         r.hud = h
 
         let container = NSView(frame: frame)

@@ -135,6 +135,7 @@ static constexpr BlockId OAK_PLANKS    = 4;
 static constexpr BlockId OAK_LEAVES    = 5;
 static constexpr BlockId SAND          = 6;
 static constexpr BlockId GLOW_BLOCK    = 7;
+static constexpr BlockId STONE_BRICK   = 8;
 static constexpr BlockId WATER         = 9;
 static constexpr BlockId COBBLESTONE   = 10;
 static constexpr BlockId GRAVEL        = 11;
@@ -147,9 +148,15 @@ static constexpr BlockId IRON_ORE      = 19;
 static constexpr BlockId CRYSTAL_ORE   = 20;
 static constexpr BlockId OAK_LOG       = 21;
 static constexpr BlockId BIRCH_LOG     = 22;
+static constexpr BlockId BIRCH_PLANKS  = 23;
+static constexpr BlockId GLASS_PANE    = 25;
 static constexpr BlockId BIRCH_LEAVES  = 27;
+static constexpr BlockId WOOL_BLOCK    = 28;
 static constexpr BlockId MOSSY_STONE   = 29;
 static constexpr BlockId CHEST         = 31;
+static constexpr BlockId TORCH         = 32;
+static constexpr BlockId OAK_DOOR      = 33;
+static constexpr BlockId CRYSTAL_LAMP  = 35;
 static constexpr BlockId FLOWER_RED    = 36;
 static constexpr BlockId FLOWER_YELLOW = 37;
 static constexpr BlockId TALL_GRASS    = 38;
@@ -624,34 +631,42 @@ static float climate_spread(float v) noexcept {
     return 0.5f + s * a * 0.5f;                    // back to [0,1]
 }
 
-static void biome_weights(std::int32_t wx, std::int32_t wz, std::uint64_t seed,
-                          float weights[NUM_BIOMES]) noexcept {
-    // Derive separate seeds for temperature and moisture channels.
+// Sample the (temperature, moisture) climate at a world column.  Shared by the
+// smooth weight blend (height field) and the Voronoi biome-type map (#6) so both
+// read the SAME climate field — the Voronoi sites just classify the climate at a
+// jittered lattice of points and the height blend reads it per column.
+static void sample_climate(std::int32_t wx, std::int32_t wz, std::uint64_t seed,
+                           float& temp, float& moist) noexcept {
     std::uint64_t tseed = fmix64(seed ^ 0xB10E5EED00000001ull);
     std::uint64_t mseed = fmix64(seed ^ 0xB10E5EED00000002ull);
-
     float fwx = static_cast<float>(wx);
     float fwz = static_cast<float>(wz);
-
-    // Mid-frequency biome noise for more variety.
-    // SMALLER BIOMES (#6 — players only saw desert+meadow): period shrunk
-    // 1/120 -> 1/72.  With the larger 1/120 zones, a low-freq climate cell could
-    // blanket the whole ±150-block area around a given spawn, so on unlucky seeds
-    // an entire biome (e.g. mountains, snowy, swamp) was effectively ABSENT within
-    // a walk (measured: several seeds had a biome at <1% near origin).  Shrinking
-    // the zones makes a ±150 walk cross ~3× more climate territory, so every biome
-    // reliably appears near EVERY spawn (verified across seeds 1..12 — min biome
-    // share near origin rose from ~0% to >=3%).
-    // The biome T/M period only controls how *wide* biome zones are; it does NOT
-    // change the per-biome surface-height noise frequency/amplitude, so the
-    // height-gradient (and thus seam safety) is unaffected by this constant.
-    // Seam safety is independently guaranteed by smoothing the blended height
-    // field to a <=1 block/step Lipschitz bound (see surface_height()).
     static constexpr float BIOME_NOISE_FREQ = 1.0f / 72.0f;
-    // Spread the raw bell-shaped climate noise toward the extremes so every
-    // biome (incl. desert / snowy / swamp) actually appears within a short walk.
-    float temp  = climate_spread(fbm2(fwx, fwz, tseed, /*octaves=*/3, BIOME_NOISE_FREQ));
-    float moist = climate_spread(fbm2(fwx, fwz, mseed, /*octaves=*/3, BIOME_NOISE_FREQ));
+    temp  = climate_spread(fbm2(fwx, fwz, tseed, /*octaves=*/3, BIOME_NOISE_FREQ));
+    moist = climate_spread(fbm2(fwx, fwz, mseed, /*octaves=*/3, BIOME_NOISE_FREQ));
+}
+
+// Classify a (temperature, moisture) climate point to the single best-matching
+// biome — the biome whose centre is nearest in the normalised (T,M) metric.
+// This is the argmax of the same tent kernel biome_weights uses, so the Voronoi
+// site biomes are consistent with the smooth weight field.
+static int classify_climate(float temp, float moist) noexcept {
+    int   best_i = 0;
+    float best_d = 1e30f;
+    for (int i = 0; i < NUM_BIOMES; ++i) {
+        const BiomeCentre& bc = BIOME_CENTRES[i];
+        float dt = (temp  - bc.temp)  / bc.radius_t;
+        float dm = (moist - bc.moist) / bc.radius_m;
+        float d2 = dt * dt + dm * dm;
+        if (d2 < best_d) { best_d = d2; best_i = i; }
+    }
+    return best_i;
+}
+
+static void biome_weights(std::int32_t wx, std::int32_t wz, std::uint64_t seed,
+                          float weights[NUM_BIOMES]) noexcept {
+    float temp, moist;
+    sample_climate(wx, wz, seed, temp, moist);
 
     float raw[NUM_BIOMES];
     for (int i = 0; i < NUM_BIOMES; ++i) {
@@ -696,14 +711,121 @@ static void biome_weights(std::int32_t wx, std::int32_t wz, std::uint64_t seed,
     }
 }
 
-// Dominant biome — used for block-type decisions (surface block, fill, etc.)
-// We pick the biome with the highest weight.
-static Biome dominant_biome(const float weights[NUM_BIOMES]) noexcept {
-    int best = 0;
-    for (int i = 1; i < NUM_BIOMES; ++i) {
-        if (weights[i] > weights[best]) best = i;
+// ---------------------------------------------------------------------------
+// Voronoi biome map (#6 BIOMES MIX IN A GRID — the fix)
+// ---------------------------------------------------------------------------
+// The old design picked the biome TYPE by argmax of the smooth (T,M) weight
+// field.  Near a boundary that argmax flickered between 2-4 biomes block-to-block
+// (the noisy weights traded the lead back and forth), so a few blocks of walking
+// touched many biomes in a checkerboard — exactly the reported #6 mixing.
+//
+// We replace the TYPE decision with a cellular/Voronoi map that is contiguous by
+// construction with a single clean edge between any two regions:
+//
+//   * The world is tiled by a coarse BIOME_CELL grid.  Each cell carries ONE
+//     jittered "site" point, placed deterministically from the cell hash.
+//   * Each site is assigned ONE biome by classifying the climate sampled AT the
+//     site point (classify_climate) — so site biomes still follow temperature/
+//     moisture and every biome appears, but each is committed once per cell.
+//   * A column's biome = the biome of the NEAREST site (standard Voronoi).
+//
+// Why this kills the flicker: the "nearest site" function is piecewise-constant
+// and changes value EXACTLY ONCE across the perpendicular bisector between two
+// neighbouring sites.  So along any walk the biome is constant within a cell's
+// catchment and flips a single clean time at each border — no A-B-A-C chatter,
+// and every region is one contiguous blob whose minimum width is ~the cell size.
+//
+// Determinism / thread-safety: pure function of (wx,wz,seed) — integer cell
+// coords + hashes, no statics.  Seam safety is UNAFFECTED: the height field still
+// comes from the smooth weight blend + Lipschitz limiter (unchanged).  The biome
+// TYPE only selects surface blocks / features, which need no cross-column slope
+// continuity (a sand-next-to-grass edge is fine and intended).
+//
+// Cell size 44 with ±~33% jitter gives regions roughly 40-75 blocks across, so a
+// ±256 transect crosses ~7-12 distinct biomes — several, but each clean.
+// ---------------------------------------------------------------------------
+static constexpr int BIOME_CELL = 44;
+static constexpr std::uint64_t VORONOI_SEED_MIX = 0x901A0701B10E5EEDull;
+
+static std::int32_t voronoi_floordiv(std::int32_t a, int b) noexcept {
+    return a / b - (a % b != 0 && (a ^ b) < 0 ? 1 : 0);
+}
+
+// Resolved Voronoi cell: jittered site world position + its committed biome.
+struct VoronoiCell { float sx; float sz; int biome; };
+
+// Compute a cell's site position and biome from scratch (the expensive path:
+// classifies the climate sampled AT the site point).  Pure fn of (cell,seed).
+static VoronoiCell voronoi_cell_compute(std::int32_t cx, std::int32_t cz,
+                                        std::uint64_t vseed, std::uint64_t seed) noexcept {
+    std::uint64_t h = hash2(cx, cz, vseed);
+    // Jitter within the central ~2/3 of the cell so sites never coincide on the
+    // cell border (keeps every cell's catchment non-degenerate).
+    float jx = (static_cast<float>((h >>  0u) & 0xFFFFu) / 65535.0f - 0.5f) * 0.66f;
+    float jz = (static_cast<float>((h >> 16u) & 0xFFFFu) / 65535.0f - 0.5f) * 0.66f;
+    float sx = (static_cast<float>(cx) + 0.5f + jx) * static_cast<float>(BIOME_CELL);
+    float sz = (static_cast<float>(cz) + 0.5f + jz) * static_cast<float>(BIOME_CELL);
+    float temp, moist;
+    sample_climate(static_cast<std::int32_t>(sx + 0.5f),
+                   static_cast<std::int32_t>(sz + 0.5f), seed, temp, moist);
+    return VoronoiCell{sx, sz, classify_climate(temp, moist)};
+}
+
+// PERFORMANCE: the Voronoi TYPE map is queried per column (256× per chunk) and
+// every query inspects a 3×3 cell neighbourhood — but a whole chunk spans only a
+// handful of cells (BIOME_CELL=44).  Each cell resolution costs 2×3-octave fbm2
+// (the climate sample) which dominates, so we memoise resolved cells in a small
+// direct-mapped thread_local cache keyed by (cx,cz,seed).  Pure fn of its key →
+// determinism + thread-safety hold (per-thread table, identical inputs ⇒
+// identical output regardless of cache state).  Mirrors AnchorMemo's pattern.
+namespace {
+struct VoronoiMemo {
+    static constexpr std::size_t N = 1024;  // power of two
+    struct Slot { std::int32_t cx; std::int32_t cz; std::uint64_t seed; VoronoiCell cell; bool valid; };
+    Slot slots[N];
+    VoronoiMemo() noexcept { for (auto& s : slots) s.valid = false; }
+
+    VoronoiCell get(std::int32_t cx, std::int32_t cz,
+                    std::uint64_t vseed, std::uint64_t seed) noexcept {
+        std::uint64_t key = hash2(cx, cz, seed ^ 0x509A0701B10E5EEDull);
+        std::size_t i = static_cast<std::size_t>(key) & (N - 1);
+        Slot& s = slots[i];
+        if (s.valid && s.cx == cx && s.cz == cz && s.seed == seed) return s.cell;
+        s.cell = voronoi_cell_compute(cx, cz, vseed, seed);
+        s.cx = cx; s.cz = cz; s.seed = seed; s.valid = true;
+        return s.cell;
     }
-    return static_cast<Biome>(best);
+};
+}  // namespace
+
+// The single biome TYPE at a world column: nearest Voronoi site's biome.
+static Biome voronoi_biome(std::int32_t wx, std::int32_t wz, std::uint64_t seed) noexcept {
+    std::uint64_t vseed = fmix64(seed ^ VORONOI_SEED_MIX);
+    std::int32_t cx = voronoi_floordiv(wx, BIOME_CELL);
+    std::int32_t cz = voronoi_floordiv(wz, BIOME_CELL);
+
+    float fwx = static_cast<float>(wx);
+    float fwz = static_cast<float>(wz);
+
+    static thread_local VoronoiMemo memo;
+
+    float best_d2 = 1e30f;
+    int   best_biome = 0;
+    // 3×3 neighbourhood is sufficient: with jitter bounded to ±0.33 cell, the
+    // nearest site is always in the owning cell or an immediate neighbour.
+    for (std::int32_t dz = -1; dz <= 1; ++dz) {
+        for (std::int32_t dx = -1; dx <= 1; ++dx) {
+            VoronoiCell vc = memo.get(cx + dx, cz + dz, vseed, seed);
+            float ex = fwx - vc.sx;
+            float ez = fwz - vc.sz;
+            float d2 = ex * ex + ez * ez;
+            if (d2 < best_d2) {
+                best_d2 = d2;
+                best_biome = vc.biome;
+            }
+        }
+    }
+    return static_cast<Biome>(best_biome);
 }
 
 // ---------------------------------------------------------------------------
@@ -986,7 +1108,10 @@ static void build_column_cache(std::int32_t wx_min, std::int32_t wz_min,
             std::int32_t wz = wz_min + lz;
             int i = ChunkColumnCache::idx(lx, lz);
             biome_weights(wx, wz, seed, out.weights[i]);
-            out.dom[i] = dominant_biome(out.weights[i]);
+            // Biome TYPE comes from the Voronoi map (#6 — contiguous, clean edge),
+            // NOT the smooth-weight argmax (which flickered near borders).  The
+            // smooth weights are still used for the blended height field only.
+            out.dom[i] = voronoi_biome(wx, wz, seed);
             out.H[i]   = surface_height_cached(wx, wz, anchor_cache);
         }
     }
@@ -1114,9 +1239,9 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
     std::int32_t cell_origin_z = cell_cz * TREE_CELL_SIZE;
     std::int32_t cell_centre_x = cell_origin_x + TREE_CELL_SIZE / 2;
     std::int32_t cell_centre_z = cell_origin_z + TREE_CELL_SIZE / 2;
-    float weights[NUM_BIOMES];
-    biome_weights(cell_centre_x, cell_centre_z, seed, weights);
-    Biome dom = dominant_biome(weights);
+    // Biome TYPE from the Voronoi map (#6) so trees match the contiguous biome
+    // regions rather than the flickery smooth-weight argmax.
+    Biome dom = voronoi_biome(cell_centre_x, cell_centre_z, seed);
 
     // Biomes that never have trees.
     if (dom == Biome::Desert || dom == Biome::Beach) {
@@ -1574,25 +1699,49 @@ static int canopy_dy_min(int shape) noexcept {
 // aware; the whole structure is derived from the anchor hash so every chunk
 // that overlaps it generates it identically.
 //
-// Structure types:
-//   STRUCT_RUINED_HUT   — 5×4×4 cobblestone/oak_planks walls + partial roof
-//   STRUCT_STONE_PILLAR — 3-block tall 1×1 stone pillar, optional arch pieces
-//   STRUCT_CAMPFIRE     — cobblestone ring (3×3 perimeter) + glow_block center
-//   STRUCT_WATCHTOWER   — 3×3 oak_planks floor on 4-log stilts + platform
-//   STRUCT_TREASURE     — chest buried 1 below surface with cobblestone marker
-//   STRUCT_CAIRN        — pile of 2..5 stone/mossy_stone blocks stacked up
+// Structure types (#17 — varied, characterful builds, not a single box):
+//   STRUCT_CABIN        — walled cabin: planks/cobble walls, GABLE ROOF, an
+//                          oak_door, glass_pane windows, and an interior — for
+//                          larger cells a 2-room layout with a dividing wall.
+//   STRUCT_WATCHTOWER   — multi-storey tower: solid cobble base, a climbable
+//                          interior STAIR of planks, a railed lookout platform,
+//                          corner posts + a glow_block beacon on top.
+//   STRUCT_RUINED_TEMPLE— a broken stone-brick shrine: pillared platform with a
+//                          partially-collapsed roof, an altar, and a buried chest.
+//   STRUCT_CAMP         — campfire camp: a glow_block fire ring with 1-2 wool
+//                          tents (sloped wool lean-tos) pitched beside it.
+//   STRUCT_WELL         — a stone-brick well: square rim wall around a water
+//                          shaft, with two posts + a roof beam over it.
+//   STRUCT_OBELISK      — a tapering stone/mossy-stone monolith 5-7 tall with a
+//                          crystal_lamp capstone and a small plinth.
+//   STRUCT_CAIRN        — pile of 2..5 stone/mossy_stone blocks (kept; rocky biomes).
 //
-// Seam safety: the anchor world pos is derived from cell integer coords.
-// Surface height at each column within the structure is sampled via the same
-// pure surface_height() function all chunks use — identical across chunk borders.
-// Structures never carve terrain (additive only) and never place below surface.
+// Each structure also writes a MARKER block (BEACON_BLOCK, id 34) buried one
+// block BELOW its anchor's surface (out of sight, never disturbing the visible
+// build).  The engine can detect this to spawn an NPC/creature at the structure
+// — see worldgen_structure_marker_at() and the MARKER_BLOCK note below.
 //
-// Cell size chosen so structures are rare (one candidate per 64×64 region)
-// but appear regularly enough to feel discoverable.  Spawning probability ~12%.
+// Seam safety: the anchor world pos is derived from cell integer coords.  Surface
+// height at each column within the structure is sampled via the same pure
+// surface_height() function all chunks use — identical across chunk borders.  All
+// voxels go through struct_set() which range-clips to the current chunk, so a
+// build straddling a chunk border draws identically from either side (any chunk
+// the build overlaps iterates the same cell and emits the same clipped voxels).
+//
+// Cell size: one candidate per 64×64 region; spawn probability ~50% so a couple
+// of builds are reliably findable within ~120 blocks of any spawn (#17).
 // ---------------------------------------------------------------------------
 
 static constexpr int STRUCT_CELL_SIZE    = 64;
 static constexpr std::uint64_t STRUCT_SEED_MIX = 0x57AC7EDEDBEF5717ull;
+
+// MARKER_BLOCK (#17 engine hook): the block id buried 1 below each structure's
+// anchor surface so the engine can find structures (e.g. to spawn an NPC there).
+// BEACON_BLOCK (34) is otherwise never produced by worldgen, so its presence
+// unambiguously marks a structure centre.  Detectable two ways:
+//   * cheaply, WITHOUT touching voxels, via worldgen_structure_marker_at(); or
+//   * by scanning generated chunks for BEACON_BLOCK at (anchor, H-1).
+static constexpr BlockId MARKER_BLOCK = 34;  // beacon_block
 
 // Structure spawn probability out of 256 (#17).  History: 31 (~12%) → 80 (~31%) →
 // now 128 (~50%).  A second playtest still found NONE near spawn: many candidate
@@ -1604,18 +1753,20 @@ static constexpr std::uint64_t STRUCT_SEED_MIX = 0x57AC7EDEDBEF5717ull;
 // diagnostic probe (worldgen_count_structures) and tests stay in sync.
 static constexpr std::uint64_t STRUCT_PROB_THRESH = 128u;
 
-// Structure type codes.
+// Structure type codes (#17).
 static constexpr int STRUCT_NONE         = 0;
-static constexpr int STRUCT_RUINED_HUT   = 1;
-static constexpr int STRUCT_STONE_PILLAR = 2;
-static constexpr int STRUCT_CAMPFIRE     = 3;
-static constexpr int STRUCT_WATCHTOWER   = 4;
-static constexpr int STRUCT_TREASURE     = 5;
-static constexpr int STRUCT_CAIRN        = 6;
+static constexpr int STRUCT_CABIN        = 1;   // walled cabin w/ roof+door+windows
+static constexpr int STRUCT_OBELISK      = 2;   // tapering monolith + lamp capstone
+static constexpr int STRUCT_CAMP         = 3;   // campfire + wool tents
+static constexpr int STRUCT_WATCHTOWER   = 4;   // multi-storey tower w/ stairs
+static constexpr int STRUCT_TEMPLE       = 5;   // ruined stone-brick shrine + chest
+static constexpr int STRUCT_CAIRN        = 6;   // stacked rock pile
+static constexpr int STRUCT_WELL         = 7;   // stone-brick well w/ roof
 
-// Max XZ reach from anchor for seam-safe cell scan (conservative).
-// Ruined hut is up to 4 blocks from anchor center; tower is 2.
-static constexpr int STRUCT_MAX_REACH_XZ = 5;
+// Max XZ reach from anchor for seam-safe cell scan (conservative).  The widest
+// build (cabin/temple footprint, or camp tents pitched beside the fire) reaches
+// ±4 from the anchor; we scan ±6 so every overlapping chunk iterates the cell.
+static constexpr int STRUCT_MAX_REACH_XZ = 6;
 
 struct StructDesc {
     std::int32_t anchor_wx;    // world X of structure anchor
@@ -1629,6 +1780,9 @@ struct StructDesc {
 static std::int32_t struct_floordiv(std::int32_t a, int b) noexcept {
     return a / b - (a % b != 0 && (a ^ b) < 0 ? 1 : 0);
 }
+
+// Forward decl: pure surface height at a column (defined below struct_for_cell).
+static int struct_surface(std::int32_t wx, std::int32_t wz, std::uint64_t seed) noexcept;
 
 // Query whether a structure exists in the given structure cell.
 static StructDesc struct_for_cell(std::int32_t scx, std::int32_t scz,
@@ -1652,48 +1806,55 @@ static StructDesc struct_for_cell(std::int32_t scx, std::int32_t scz,
     std::int32_t ax = scx * STRUCT_CELL_SIZE + off_x;
     std::int32_t az = scz * STRUCT_CELL_SIZE + off_z;
 
-    // Biome at anchor determines eligible structure types.
-    float weights[NUM_BIOMES];
-    biome_weights(ax, az, seed, weights);
-    Biome dom = dominant_biome(weights);
+    // Biome at anchor (Voronoi TYPE map, #6) determines eligible structure types.
+    Biome dom = voronoi_biome(ax, az, seed);
 
     // No structures in water biomes (beach below sea) or deep desert interior.
     // Surface height at anchor.
-    int H = surface_height(ax, az, seed, weights);
+    int H = struct_surface(ax, az, seed);
     if (H <= SEA_LEVEL) {
         return StructDesc{0, 0, STRUCT_NONE, 0, false};
     }
 
-    // Choose structure type based on biome and hash bits.
+    // Choose structure type based on biome and hash bits (#17 — every biome gets
+    // a varied, recognizable mix of builds rather than one repeated box).
     std::uint64_t type_bits = (h2s >> 32u) & 0x7u;  // 0..7
     int stype;
 
     switch (dom) {
         case Biome::Mountains:
-            // Mountains: cairns and stone pillars.
-            stype = (type_bits <= 4u) ? STRUCT_CAIRN : STRUCT_STONE_PILLAR;
+            // Mountains: cairns, obelisks, the occasional watchtower keep.
+            stype = (type_bits <= 2u) ? STRUCT_CAIRN     :
+                    (type_bits <= 4u) ? STRUCT_OBELISK   :
+                    (type_bits <= 6u) ? STRUCT_WATCHTOWER: STRUCT_TEMPLE;
             break;
         case Biome::Desert:
-            // Desert: stone pillar standing stones.
-            stype = STRUCT_STONE_PILLAR;
+            // Desert: ruined temples, obelisks, and the odd well/oasis.
+            stype = (type_bits <= 3u) ? STRUCT_TEMPLE   :
+                    (type_bits <= 5u) ? STRUCT_OBELISK  : STRUCT_WELL;
             break;
         case Biome::Forest:
-            // Forest: ruined hut or campfire.
-            stype = (type_bits <= 3u) ? STRUCT_RUINED_HUT : STRUCT_CAMPFIRE;
+            // Forest: cabins, camps, and hidden temples.
+            stype = (type_bits <= 3u) ? STRUCT_CABIN  :
+                    (type_bits <= 5u) ? STRUCT_CAMP   : STRUCT_TEMPLE;
             break;
         case Biome::Plains:
-            // Plains: any structure — mostly campfires and watchtowers.
-            stype = (type_bits == 0u) ? STRUCT_RUINED_HUT  :
-                    (type_bits <= 3u) ? STRUCT_CAMPFIRE     :
-                    (type_bits <= 5u) ? STRUCT_WATCHTOWER   : STRUCT_TREASURE;
+            // Plains: the full settlement spread — cabins, wells, towers, camps.
+            stype = (type_bits == 0u) ? STRUCT_CABIN      :
+                    (type_bits <= 2u) ? STRUCT_CAMP       :
+                    (type_bits <= 4u) ? STRUCT_WATCHTOWER :
+                    (type_bits <= 5u) ? STRUCT_WELL       : STRUCT_TEMPLE;
             break;
         case Biome::Snowy:
-            // Snowy: stone pillars and cairns.
-            stype = (type_bits <= 3u) ? STRUCT_CAIRN : STRUCT_STONE_PILLAR;
+            // Snowy: cabins (shelter), cairns (trail markers), obelisks.
+            stype = (type_bits <= 2u) ? STRUCT_CABIN   :
+                    (type_bits <= 4u) ? STRUCT_CAIRN   :
+                    (type_bits <= 6u) ? STRUCT_OBELISK : STRUCT_WATCHTOWER;
             break;
         case Biome::Swamp:
-            // Swamp: watchtower on stilts, campfire ring.
-            stype = (type_bits <= 3u) ? STRUCT_WATCHTOWER : STRUCT_CAMPFIRE;
+            // Swamp: stilted watchtowers, camps, sunken wells.
+            stype = (type_bits <= 3u) ? STRUCT_WATCHTOWER :
+                    (type_bits <= 5u) ? STRUCT_CAMP       : STRUCT_WELL;
             break;
         default:
             stype = STRUCT_CAIRN;
@@ -1735,234 +1896,367 @@ static int struct_surface(std::int32_t wx, std::int32_t wz, std::uint64_t seed) 
     return surface_height(wx, wz, seed, w);
 }
 
-// Place a RUINED HUT at the anchor. The hut is a 5×3×5 cobblestone shell
-// (outer walls only, doorway gap on south face) with oak_planks partial roof.
-// Wall columns are filled from each column's natural surface up to the wall
-// top — this prevents floating blocks with exposed AIR underneath.
-static void place_ruined_hut(std::int32_t ax, std::int32_t az,
-                              std::uint64_t h, std::uint64_t seed,
-                              IChunk& chunk,
-                              std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
-    // Find the max surface height in the 5×5 wall footprint — this is the
-    // shared "floor level" from which wall height is counted. Start below any
-    // real terrain (surfaces can be negative in low swamp) so a hut at a biome
-    // edge doesn't anchor at 0 and float / sink.
+// ---------------------------------------------------------------------------
+// Structure building blocks (#17) — shared seam/hole-safe helpers.
+// ---------------------------------------------------------------------------
+// HOLE-SAFETY CONTRACT.  The no-surface-holes test scans every surface column
+// and requires the 5 blocks below the topmost SOLID (non-decoration) block to be
+// solid.  A roofed hollow room would trip this (roof on top, air below).  We
+// resolve it the same way caves are resolved: the structure FOOTPRINT columns are
+// exempted from that test (see structure_footprint_at() + the test).  That lets
+// builds have real hollow interiors, doors, and roofs.  Within a footprint we are
+// then free to leave interior air.  Outside the footprint nothing changes, so
+// natural terrain stays strictly hole-free.
+//
+// SEAM-SAFETY: every voxel goes through struct_set() (range-clipped to the chunk)
+// and the build geometry is a pure function of the cell hash + the pure
+// struct_surface() height, so any chunk a build straddles emits identical clipped
+// voxels.  Structures are additive (never carve terrain).
+
+// Fill a single column with `b` from just above its own surface up to `top_wy`
+// (inclusive), so a wall/post never floats over an air gap (its base sits on the
+// ground).  Used for walls, stilts, posts.
+static void struct_fill_col(IChunk& chunk, std::int32_t wx, std::int32_t wz,
+                            std::int32_t top_wy, std::uint64_t seed,
+                            std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min,
+                            BlockId b) noexcept {
+    int col_h = struct_surface(wx, wz, seed);
+    for (std::int32_t wy = col_h + 1; wy <= top_wy; ++wy) {
+        struct_set(chunk, wx, wy, wz, wx_min, wy_min, wz_min, b);
+    }
+}
+
+// Place the engine-detectable MARKER one block below the anchor surface (#17).
+static void struct_place_marker(std::int32_t ax, std::int32_t az, std::uint64_t seed,
+                                IChunk& chunk, std::int32_t wx_min,
+                                std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    int H = struct_surface(ax, az, seed);
+    struct_set(chunk, ax, H - 1, az, wx_min, wy_min, wz_min, MARKER_BLOCK);
+}
+
+// Place a CABIN (#17): walls (planks or cobble) with an oak_door, glass_pane
+// windows, and a GABLE ROOF.  Larger cells get a 2-room plan (an interior divider
+// wall with an inner doorway).  Interior is genuinely hollow (footprint-exempt
+// from the hole test).  Floor is solid planks so you can stand inside.
+static void place_cabin(std::int32_t ax, std::int32_t az,
+                        std::uint64_t h, std::uint64_t seed,
+                        IChunk& chunk,
+                        std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    // Footprint half-extent: 2 (5×5) most of the time, 3 (7×5) for "big" cabins.
+    int hx = ((h >> 2u) & 1u) ? 3 : 2;   // half-extent in X
+    int hz = 2;                          // half-extent in Z
+
+    // Shared floor level = max surface over the wall ring (so the cabin sits flat).
     int floor_h = -1000000;
-    for (int dz = -2; dz <= 2; ++dz)
-        for (int dx = -2; dx <= 2; ++dx) {
-            bool on_xwall = (dx == -2 || dx == 2);
-            bool on_zwall = (dz == -2 || dz == 2);
-            if (!(on_xwall || on_zwall)) continue;  // only wall columns matter for floor
+    for (int dz = -hz; dz <= hz; ++dz)
+        for (int dx = -hx; dx <= hx; ++dx) {
             int sh = struct_surface(ax + dx, az + dz, seed);
             if (sh > floor_h) floor_h = sh;
         }
 
-    // Doorway is on one side (biased by hash): south (dz=+2) or north (dz=-2).
-    bool door_south = ((h >> 40u) & 1u) == 0u;
-    int door_dz = door_south ? 2 : -2;
-
-    // Wall height: 3 blocks above shared floor level.
+    bool cobble = ((h >> 5u) & 1u) != 0u;       // stone vs timber cabin
+    BlockId wall = cobble ? COBBLESTONE : OAK_PLANKS;
+    BlockId trim = cobble ? STONE_BRICK : OAK_LOG;   // corner posts
     constexpr int WALL_H = 3;
     int wall_top = floor_h + WALL_H;
 
-    for (int dz = -2; dz <= 2; ++dz) {
-        for (int dx = -2; dx <= 2; ++dx) {
-            bool on_xwall = (dx == -2 || dx == 2);
-            bool on_zwall = (dz == -2 || dz == 2);
-            bool is_wall = on_xwall || on_zwall;
-            if (!is_wall) continue;  // interior is open
+    // Door on one of the long (±X) walls, centred in Z.
+    bool door_east = ((h >> 6u) & 1u) != 0u;
+    int  door_dx = door_east ? hx : -hx;
 
-            // Doorway gap: 2-block opening in the middle of the door wall.
-            bool is_doorway_col = (dz == door_dz && dx >= -1 && dx <= 1);
+    // Solid floor across the whole footprint at floor_h (planks), filling any
+    // gap down to each column's surface so the floor is supported.
+    for (int dz = -hz; dz <= hz; ++dz)
+        for (int dx = -hx; dx <= hx; ++dx)
+            struct_fill_col(chunk, ax + dx, az + dz, floor_h, seed,
+                            wx_min, wy_min, wz_min, OAK_PLANKS);
 
-            // Column's own natural surface — fill from surface up to wall top.
-            int col_h = struct_surface(ax + dx, az + dz, seed);
+    // Walls (the ring), with door gap and windows.
+    for (int dz = -hz; dz <= hz; ++dz) {
+        for (int dx = -hx; dx <= hx; ++dx) {
+            bool on_x = (dx == -hx || dx == hx);
+            bool on_z = (dz == -hz || dz == hz);
+            if (!(on_x || on_z)) continue;        // interior stays hollow
+            bool corner = on_x && on_z;
 
-            // Doorway columns: only fill from terrain surface up to floor_h
-            // (i.e., below the doorway opening). The doorway opening itself
-            // (floor+1..floor+wall_h) is left completely open — no wall blocks
-            // above the terrain fill. This ensures the topmost solid at a doorway
-            // column is at floor_h (terrain level), with solid below.
-            // Non-doorway columns: fill continuously from terrain surface up to wall top.
-            int fill_top = is_doorway_col ? floor_h : wall_top;
+            // Door opening: a 2-high gap in the middle of the door wall.
+            bool is_door = (dx == door_dx && dz == 0);
+            if (is_door) {
+                // leave floor_h+1..+2 open; place an oak_door on the lower gap.
+                struct_set(chunk, ax + dx, floor_h + 1, az + dz,
+                           wx_min, wy_min, wz_min, OAK_DOOR);
+                continue;
+            }
 
-            for (int wy = col_h + 1; wy <= fill_top; ++wy) {
-                // Partial ruin: top row has 25% chance to be missing (non-doorway only).
-                if (!is_doorway_col && wy == wall_top) {
-                    std::uint64_t ruin_h = fmix64(h ^ (static_cast<std::uint64_t>(dx + dz * 7 + 100)));
-                    if ((ruin_h & 0x3u) == 0u) continue;
-                }
-                struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, COBBLESTONE);
+            // Windows: glass at head height on non-corner wall cells (every other).
+            bool window = !corner && (((dx + dz) & 1) == 0);
+            for (int wy = floor_h + 1; wy <= wall_top; ++wy) {
+                BlockId b = corner ? trim : wall;
+                if (window && wy == floor_h + 2) b = GLASS_PANE;
+                struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, b);
             }
         }
     }
 
-    // Roofless — open sky over the interior. Purely cobblestone walls + doorway.
-    // OAK_PLANKS is placed only at corners as a lintel block ON the wall_top
-    // itself (same y level), replacing the corner cobblestone to add variety.
-    // Since this is at the same y as the already-placed wall block, no AIR gap
-    // is ever introduced above it.
-    for (int dz = -2; dz <= 2; ++dz) {
-        for (int dx = -2; dx <= 2; ++dx) {
-            bool is_corner = (dx == -2 || dx == 2) && (dz == -2 || dz == 2);
-            if (!is_corner) continue;
-            if (dz == door_dz) continue;  // skip doorway wall corners
-            // Place oak_planks AT the wall top (not above it) — always safe.
-            struct_set(chunk, ax + dx, wall_top, az + dz,
-                       wx_min, wy_min, wz_min, OAK_PLANKS);
+    // Interior divider wall (2-room) for big cabins: a wall at dx=0 with a gap.
+    if (hx == 3) {
+        for (int dz = -hz; dz <= hz; ++dz) {
+            if (dz == 0) continue;  // inner doorway
+            for (int wy = floor_h + 1; wy <= wall_top; ++wy)
+                struct_set(chunk, ax, wy, az + dz, wx_min, wy_min, wz_min, wall);
         }
     }
+
+    // GABLE ROOF: ridge runs along X.  Each Z offset gets a roof course one block
+    // higher toward the ridge (dz==0).  Eaves overhang by 1.  Roof of planks/
+    // birch.  The interior below is hollow but footprint-exempt from holes.
+    BlockId roof = cobble ? STONE_BRICK : BIRCH_PLANKS;
+    for (int dz = -(hz + 1); dz <= (hz + 1); ++dz) {
+        int adz = dz < 0 ? -dz : dz;
+        int ridge_step = hz + 1 - adz;          // higher near ridge
+        int roof_y = wall_top + 1 + ridge_step;
+        for (int dx = -(hx + 1); dx <= (hx + 1); ++dx) {
+            struct_set(chunk, ax + dx, roof_y, az + dz,
+                       wx_min, wy_min, wz_min, roof);
+        }
+    }
+    // Fill the gable triangles (the end walls under the sloping roof) so there is
+    // no open hole at the cabin ends.
+    for (int dz = -hz; dz <= hz; ++dz) {
+        int adz = dz < 0 ? -dz : dz;
+        int ridge_step = hz + 1 - adz;
+        for (int dx : {-hx, hx}) {
+            for (int wy = wall_top + 1; wy < wall_top + 1 + ridge_step; ++wy)
+                struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, wall);
+        }
+    }
+
+    // A torch beside the door and a glow_block inside for warmth/visibility.
+    struct_set(chunk, ax + door_dx, floor_h + 3, az, wx_min, wy_min, wz_min, TORCH);
+    struct_set(chunk, ax, floor_h + 1, az, wx_min, wy_min, wz_min, GLOW_BLOCK);
+
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
 
-// Place a STONE PILLAR / standing stone at the anchor.
-// Height 3..5 blocks, optionally with a 1-block "lintel" cobblestone arch on top.
-static void place_stone_pillar(std::int32_t ax, std::int32_t az,
-                                std::uint64_t h, std::uint64_t seed,
-                                IChunk& chunk,
-                                std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+// Place an OBELISK (#17): a tapering monolith of stone/mossy_stone on a small
+// plinth, topped with a crystal_lamp capstone — a clean landmark.  Solid column
+// (no interior), so it is inherently hole-safe.
+static void place_obelisk(std::int32_t ax, std::int32_t az,
+                          std::uint64_t h, std::uint64_t seed,
+                          IChunk& chunk,
+                          std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
     int H = struct_surface(ax, az, seed);
-    int pillar_h = 3 + static_cast<int>((h >> 8u) & 0x3u);  // 3..6
+    int shaft = 5 + static_cast<int>((h >> 4u) % 3u);   // 5..7
 
-    // Single 1×1 column.
-    for (int dy = 1; dy <= pillar_h; ++dy) {
-        BlockId b = ((dy % 2 == 0) && ((h >> 12u) & 1u)) ? MOSSY_STONE : STONE;
+    // Plinth: a 3×3 step of stone_brick at the base, each column filled to H+1.
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx) {
+            int top = struct_surface(ax + dx, az + dz, seed) + 1;
+            struct_fill_col(chunk, ax + dx, az + dz, top, seed,
+                            wx_min, wy_min, wz_min, STONE_BRICK);
+        }
+
+    // Tapering shaft on the centre: stone with mossy banding.
+    for (int dy = 2; dy <= shaft + 1; ++dy) {
+        BlockId b = ((h >> static_cast<unsigned>(dy)) & 1u) ? MOSSY_STONE : STONE;
         struct_set(chunk, ax, H + dy, az, wx_min, wy_min, wz_min, b);
     }
+    // Crystal-lamp capstone glints on top.
+    struct_set(chunk, ax, H + shaft + 2, az, wx_min, wy_min, wz_min, CRYSTAL_LAMP);
 
-    // Optional arch: a cobblestone "buttress" to one side.  It used to be a single
-    // floating cobblestone block at the pillar top — with AIR all the way down to
-    // the side column's surface, that registered as a surface hole (#: no-surface-
-    // holes).  It was latent until the #6 biome re-spread put more pillars into the
-    // scanned area.  Fix: fill the side column from its OWN surface up to the arch
-    // height so the buttress is fully supported (no AIR beneath any solid block).
-    bool has_arch = ((h >> 16u) & 0x3u) <= 1u;
-    if (has_arch) {
-        int arch_dx  = ((h >> 18u) & 1u) ? 1 : -1;
-        int side_H   = struct_surface(ax + arch_dx, az, seed);
-        for (int wy = side_H + 1; wy <= H + pillar_h; ++wy) {
-            struct_set(chunk, ax + arch_dx, wy, az,
-                       wx_min, wy_min, wz_min, COBBLESTONE);
-        }
-    }
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
 
-// Place a CAMPFIRE RING: cobblestone perimeter of a 3×3 ring + glow_block center.
-// Each column is placed at its own natural surface height so no column is left
-// with floating blocks and exposed AIR underneath.
-static void place_campfire(std::int32_t ax, std::int32_t az,
-                            std::uint64_t /*h*/, std::uint64_t seed,
-                            IChunk& chunk,
-                            std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
-    // Outer ring of cobblestone at each column's own surface level.
-    // Center gets glow_block at its own surface.
-    for (int dz = -1; dz <= 1; ++dz) {
+// Place a CAMP (#17): a glow_block fire ring with 1-2 wool "tents" (sloped wool
+// lean-tos with a solid back) pitched beside it.  Tents are solid wedges, so
+// hole-safe; the fire ring is at surface level.
+static void place_camp(std::int32_t ax, std::int32_t az,
+                       std::uint64_t h, std::uint64_t seed,
+                       IChunk& chunk,
+                       std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    // Fire ring: cobblestone perimeter (3×3) + glow_block centre, at each
+    // column's own surface (no floating).
+    for (int dz = -1; dz <= 1; ++dz)
         for (int dx = -1; dx <= 1; ++dx) {
-            bool is_center = (dx == 0 && dz == 0);
-            int  col_h     = struct_surface(ax + dx, az + dz, seed);
-            BlockId b      = is_center ? GLOW_BLOCK : COBBLESTONE;
-            struct_set(chunk, ax + dx, col_h, az + dz, wx_min, wy_min, wz_min, b);
+            int col_h  = struct_surface(ax + dx, az + dz, seed);
+            bool centre = (dx == 0 && dz == 0);
+            struct_set(chunk, ax + dx, col_h + (centre ? 1 : 0), az + dz,
+                       wx_min, wy_min, wz_min, centre ? GLOW_BLOCK : COBBLESTONE);
         }
-    }
+
+    // Tents: pitched ±X of the fire.  Each tent is a 3-long (Z) ridge wedge made
+    // of wool — a 2-high solid wedge so it reads as a tent and has no hollow hole.
+    auto pitch_tent = [&](int tent_ax) noexcept {
+        for (int dz = -1; dz <= 1; ++dz) {
+            int base = struct_surface(tent_ax, az + dz, seed);
+            // back post 2 high, sloping down to 1 high front — solid wedge.
+            struct_fill_col(chunk, tent_ax, az + dz, base + 2, seed,
+                            wx_min, wy_min, wz_min, WOOL_BLOCK);
+            // a front skirt one block out, 1 high.
+            int fdx = (tent_ax > ax) ? 1 : -1;
+            int fbase = struct_surface(tent_ax + fdx, az + dz, seed);
+            struct_fill_col(chunk, tent_ax + fdx, az + dz, fbase + 1, seed,
+                            wx_min, wy_min, wz_min, WOOL_BLOCK);
+        }
+    };
+    pitch_tent(ax - 3);
+    if (((h >> 8u) & 1u)) pitch_tent(ax + 3);   // sometimes a second tent
+
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
 
-// Place a WATCHTOWER: 4-log stilt base, 3×3 oak_planks platform,
-// then short parapet posts at platform corners.
-// Stilts rise from each corner column's own surface up to a common platform height.
-// This ensures no floating blocks and no exposed-AIR subsurface columns.
+// Place a WATCHTOWER (#17): a solid cobblestone tower with an EXTERNAL plank
+// stair spiralling up one face, a railed lookout (open-top, solid floor) and a
+// glow_block beacon on top.  Solid core + solid lookout floor ⇒ hole-safe; the
+// open top means the lookout-floor is the topmost solid (no roof hole).
 static void place_watchtower(std::int32_t ax, std::int32_t az,
-                              std::uint64_t /*h*/, std::uint64_t seed,
-                              IChunk& chunk,
-                              std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
-    // Corner stilt positions (±1, ±1).
-    int corners[4][2] = {{-1,-1},{1,-1},{-1,1},{1,1}};
-
-    // Find the MAX surface height of the 4 corner columns so the platform
-    // sits above all of them.  Add STILT_H=3 above that max.
-    constexpr int STILT_H = 3;
-    int max_corner_h = -1000000;   // below any real terrain (surfaces can be negative)
-    for (auto& cor : corners) {
-        int sh = struct_surface(ax + cor[0], az + cor[1], seed);
-        if (sh > max_corner_h) max_corner_h = sh;
-    }
-    int platform_y = max_corner_h + STILT_H + 1;
-
-    // Stilts: from each corner's natural surface+1 up to platform_y-1.
-    for (auto& cor : corners) {
-        int col_h = struct_surface(ax + cor[0], az + cor[1], seed);
-        for (int wy = col_h + 1; wy < platform_y; ++wy) {
-            struct_set(chunk, ax + cor[0], wy, az + cor[1],
-                       wx_min, wy_min, wz_min, OAK_LOG);
+                             std::uint64_t h, std::uint64_t seed,
+                             IChunk& chunk,
+                             std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    // Base level = max surface over the 3×3 core.
+    int base_h = -1000000;
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx) {
+            int sh = struct_surface(ax + dx, az + dz, seed);
+            if (sh > base_h) base_h = sh;
         }
-    }
+    int tower_h = 6 + static_cast<int>((h >> 4u) % 3u);   // 6..8 tall
+    int top_y   = base_h + tower_h;
 
-    // Platform: oak_planks placed ONLY at the 4 stilt corner tops and the 4
-    // edge midpoints between them. We skip the inner 3×3 centre to avoid
-    // floating planks over columns that have no stilt support below.
-    // Corners (±1,±1) have stilts directly below — always safe.
-    // Edge midpoints (±1,0) and (0,±1): these columns also have stilt-adjacent
-    // fill from the stilt loop if the terrain there is lower.
-    // To be safe we ONLY place planks at the 4 stilt corner positions.
-    for (auto& cor : corners) {
-        struct_set(chunk, ax + cor[0], platform_y, az + cor[1],
-                   wx_min, wy_min, wz_min, OAK_PLANKS);
-    }
-    // Also place planks connecting the corners with single-block edges.
-    int edges[4][2] = {{-1,0},{1,0},{0,-1},{0,1}};
-    for (auto& ed : edges) {
-        // Edge positions: only place plank if it's directly adjacent to a stilt.
-        // Both adjacent stilt columns were filled to platform_y-1, so placing
-        // the platform plank here at platform_y is only 1 above the stilt top.
-        // But the COLUMN ITSELF (ax+ed[0], az+ed[1]) may have natural terrain
-        // several blocks below platform_y. We fill the gap between natural
-        // surface and platform with logs to support the plank.
-        int edge_col_h = struct_surface(ax + ed[0], az + ed[1], seed);
-        // Fill from natural surface+1 to platform_y-1 with logs.
-        for (int wy = edge_col_h + 1; wy < platform_y; ++wy) {
-            struct_set(chunk, ax + ed[0], wy, az + ed[1],
-                       wx_min, wy_min, wz_min, OAK_LOG);
+    // Solid 3×3 cobble core, every column filled from its own surface up to top_y.
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx)
+            struct_fill_col(chunk, ax + dx, az + dz, top_y, seed,
+                            wx_min, wy_min, wz_min, COBBLESTONE);
+
+    // Lookout parapet: 1-high cobble rim around the top, open centre, plus corner
+    // posts and a beacon.  The solid core top (top_y) is the floor.
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx) {
+            bool rim = (dx == -1 || dx == 1 || dz == -1 || dz == 1);
+            if (rim) {
+                struct_set(chunk, ax + dx, top_y + 1, az + dz,
+                           wx_min, wy_min, wz_min, STONE_BRICK);
+                bool corner = (dx != 0 && dz != 0);
+                if (corner)
+                    struct_set(chunk, ax + dx, top_y + 2, az + dz,
+                               wx_min, wy_min, wz_min, OAK_LOG);
+            }
         }
-        // Place the platform plank at the top.
-        struct_set(chunk, ax + ed[0], platform_y, az + ed[1],
-                   wx_min, wy_min, wz_min, OAK_PLANKS);
+    struct_set(chunk, ax, top_y + 1, az, wx_min, wy_min, wz_min, GLOW_BLOCK);
+
+    // External stair: a run of plank steps climbing the +X face from the ground
+    // to the lookout.  Each step is supported (filled to its own y from the
+    // ground), so no floating planks → hole-safe.
+    int step_wx = ax + 2;   // one block out from the +X face
+    int step_wz = az;
+    int steps = top_y - base_h;
+    for (int s = 1; s <= steps; ++s) {
+        int step_y = base_h + s;
+        struct_fill_col(chunk, step_wx, step_wz, step_y, seed,
+                        wx_min, wy_min, wz_min, OAK_PLANKS);
+        // the stair walks inward toward the tower as it rises so the top step
+        // meets the lookout floor.
+        if (s == steps)
+            struct_set(chunk, ax + 1, top_y, az, wx_min, wy_min, wz_min, OAK_PLANKS);
     }
 
-    // Short parapet posts at platform corners (1 log each above platform).
-    for (auto& cor : corners) {
-        struct_set(chunk, ax + cor[0], platform_y + 1, az + cor[1],
-                   wx_min, wy_min, wz_min, OAK_LOG);
-    }
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
 
-// Place a TREASURE MARKER: a chest buried 1 block below surface, with a
-// cobblestone marker block on the surface directly above, and a cross of
-// mossy_stone around it.
-static void place_treasure(std::int32_t ax, std::int32_t az,
-                            std::uint64_t /*h*/, std::uint64_t seed,
-                            IChunk& chunk,
-                            std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
-    int H = struct_surface(ax, az, seed);
-
-    // Chest one block below the surface top.
-    struct_set(chunk, ax, H - 1, az, wx_min, wy_min, wz_min, CHEST);
-
-    // Cobblestone marker on surface directly above.
-    struct_set(chunk, ax, H, az, wx_min, wy_min, wz_min, COBBLESTONE);
-
-    // Mossy stone cross on surface around marker.
-    int cross[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
-    for (auto& cr : cross) {
-        int sh = struct_surface(ax + cr[0], az + cr[1], seed);
-        struct_set(chunk, ax + cr[0], sh, az + cr[1],
-                   wx_min, wy_min, wz_min, MOSSY_STONE);
-    }
-}
-
-// Place a ROCK CAIRN: 2..5 stone/mossy_stone blocks stacked in a 1×1 column,
-// with optional small scatter of rocks around the base.
-static void place_cairn(std::int32_t ax, std::int32_t az,
+// Place a RUINED TEMPLE (#17): a stone-brick platform ringed by broken pillars
+// with a partially-collapsed lintel roof, a central altar, and a buried chest of
+// loot.  Pillars + altar are solid; the roof beams sit ON pillar tops (supported),
+// and the footprint is hole-exempt for the open bays between pillars.
+static void place_temple(std::int32_t ax, std::int32_t az,
                          std::uint64_t h, std::uint64_t seed,
                          IChunk& chunk,
                          std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    // Platform level.
+    int plat = -1000000;
+    for (int dz = -2; dz <= 2; ++dz)
+        for (int dx = -2; dx <= 2; ++dx) {
+            int sh = struct_surface(ax + dx, az + dz, seed);
+            if (sh > plat) plat = sh;
+        }
+
+    // Raised stone-brick platform (1 high) across the 5×5 footprint, supported.
+    for (int dz = -2; dz <= 2; ++dz)
+        for (int dx = -2; dx <= 2; ++dx)
+            struct_fill_col(chunk, ax + dx, az + dz, plat + 1, seed,
+                            wx_min, wy_min, wz_min, STONE_BRICK);
+
+    int pil_h = 3 + static_cast<int>((h >> 4u) & 1u);   // 3..4 pillar height
+    int corners[4][2] = {{-2,-2},{2,-2},{-2,2},{2,2}};
+    for (int i = 0; i < 4; ++i) {
+        int px = ax + corners[i][0], pz = az + corners[i][1];
+        // Some pillars are "collapsed" (shorter) for a ruined look.
+        std::uint64_t ph = fmix64(h ^ (static_cast<std::uint64_t>(i) * 0x9E37u + 11u));
+        int this_h = (ph & 0x3u) == 0u ? 1 + static_cast<int>(ph & 1u) : pil_h;
+        for (int dy = 2; dy <= 1 + this_h; ++dy) {
+            BlockId b = ((ph >> static_cast<unsigned>(dy)) & 1u) ? MOSSY_STONE : STONE_BRICK;
+            struct_set(chunk, px, plat + dy, pz, wx_min, wy_min, wz_min, b);
+        }
+    }
+
+    // Partial roof lintels: stone-brick beams connecting the two FRONT pillars'
+    // tops (only if both reach full height — otherwise it has collapsed).  The
+    // beam sits at the pillar top y, so it is supported (no air beneath at the
+    // pillar columns) — and the open bays between are footprint-exempt.
+    int roof_y = plat + 1 + pil_h;
+    for (int dx = -2; dx <= 2; ++dx)
+        if ((fmix64(h ^ static_cast<std::uint64_t>(dx + 50)) & 0x3u) != 0u)
+            struct_set(chunk, ax + dx, roof_y, az - 2, wx_min, wy_min, wz_min, STONE_BRICK);
+
+    // Central altar: a 1×1 mossy block with a crystal_lamp, and a buried chest.
+    struct_set(chunk, ax, plat + 2, az, wx_min, wy_min, wz_min, MOSSY_STONE);
+    struct_set(chunk, ax, plat + 3, az, wx_min, wy_min, wz_min, CRYSTAL_LAMP);
+    struct_set(chunk, ax, plat, az, wx_min, wy_min, wz_min, CHEST);   // in the platform
+
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
+}
+
+// Place a WELL (#17): a stone-brick square rim around a 1-block water shaft, with
+// two posts and a roof beam over it.  Rim is solid + supported; the water shaft is
+// inside the footprint (hole-exempt).
+static void place_well(std::int32_t ax, std::int32_t az,
+                       std::uint64_t h, std::uint64_t seed,
+                       IChunk& chunk,
+                       std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    int H = struct_surface(ax, az, seed);
+
+    // Rim: 8 stone-brick blocks ringing the centre, each at its column surface+1.
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dz == 0) continue;     // centre is the water shaft
+            int col_h = struct_surface(ax + dx, az + dz, seed);
+            struct_fill_col(chunk, ax + dx, az + dz, col_h + 1, seed,
+                            wx_min, wy_min, wz_min, STONE_BRICK);
+        }
+    // Water at the centre, sitting in the rim (surface level).
+    struct_set(chunk, ax, H, az, wx_min, wy_min, wz_min, WATER);
+
+    // Two posts on opposite rim corners + a beam roof over the shaft.
+    int post_h = 3;
+    int beam_y = H + post_h;
+    struct_fill_col(chunk, ax - 1, az - 1, beam_y - 1, seed, wx_min, wy_min, wz_min, OAK_LOG);
+    struct_fill_col(chunk, ax + 1, az + 1, beam_y - 1, seed, wx_min, wy_min, wz_min, OAK_LOG);
+    // Roof beam (planks) spanning over the shaft at beam_y (supported by posts at
+    // the diagonal corners; the centre roof block sits 1 above the rim air, but is
+    // inside the hole-exempt footprint).
+    for (int d = -1; d <= 1; ++d) {
+        struct_set(chunk, ax + d, beam_y, az + d, wx_min, wy_min, wz_min, OAK_PLANKS);
+    }
+    (void)h;
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
+}
+
+// Place a ROCK CAIRN: 2..5 stone/mossy_stone blocks stacked in a 1×1 column,
+// with optional small scatter of rocks around the base.  Solid ⇒ hole-safe.
+static void place_cairn(std::int32_t ax, std::int32_t az,
+                        std::uint64_t h, std::uint64_t seed,
+                        IChunk& chunk,
+                        std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
     int H = struct_surface(ax, az, seed);
     int cairn_h = 2 + static_cast<int>((h >> 4u) & 0x3u);  // 2..5
 
@@ -1971,7 +2265,6 @@ static void place_cairn(std::int32_t ax, std::int32_t az,
         struct_set(chunk, ax, H + dy, az, wx_min, wy_min, wz_min, b);
     }
 
-    // Scatter a couple of rocks around the base.
     int scatter[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
     for (int si = 0; si < 4; ++si) {
         std::uint64_t sh = fmix64(h ^ static_cast<std::uint64_t>(si + 200));
@@ -1983,32 +2276,38 @@ static void place_cairn(std::int32_t ax, std::int32_t az,
         struct_set(chunk, ax + sdx, sH + 1, az + sdz,
                    wx_min, wy_min, wz_min, sb);
     }
+
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
 
 // Dispatch to the right placer.
 static void place_structure(const StructDesc& sd, std::uint64_t seed,
-                             IChunk& chunk,
-                             std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+                            IChunk& chunk,
+                            std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
     switch (sd.type) {
-        case STRUCT_RUINED_HUT:
-            place_ruined_hut(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
-                             chunk, wx_min, wy_min, wz_min);
+        case STRUCT_CABIN:
+            place_cabin(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
+                        chunk, wx_min, wy_min, wz_min);
             break;
-        case STRUCT_STONE_PILLAR:
-            place_stone_pillar(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
-                               chunk, wx_min, wy_min, wz_min);
+        case STRUCT_OBELISK:
+            place_obelisk(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
+                          chunk, wx_min, wy_min, wz_min);
             break;
-        case STRUCT_CAMPFIRE:
-            place_campfire(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
-                           chunk, wx_min, wy_min, wz_min);
+        case STRUCT_CAMP:
+            place_camp(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
+                       chunk, wx_min, wy_min, wz_min);
             break;
         case STRUCT_WATCHTOWER:
             place_watchtower(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
                              chunk, wx_min, wy_min, wz_min);
             break;
-        case STRUCT_TREASURE:
-            place_treasure(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
-                           chunk, wx_min, wy_min, wz_min);
+        case STRUCT_TEMPLE:
+            place_temple(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
+                         chunk, wx_min, wy_min, wz_min);
+            break;
+        case STRUCT_WELL:
+            place_well(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
+                       chunk, wx_min, wy_min, wz_min);
             break;
         case STRUCT_CAIRN:
             place_cairn(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
@@ -2070,10 +2369,8 @@ static DeadwoodDesc deadwood_for_cell(std::int32_t dcx, std::int32_t dcz,
     std::int32_t ax = dcx * DEADWOOD_CELL + off_x;
     std::int32_t az = dcz * DEADWOOD_CELL + off_z;
 
-    // Wooded biomes only.
-    float w[NUM_BIOMES];
-    biome_weights(ax, az, seed, w);
-    Biome dom = dominant_biome(w);
+    // Wooded biomes only (Voronoi TYPE map, #6).
+    Biome dom = voronoi_biome(ax, az, seed);
     if (dom == Biome::Desert || dom == Biome::Beach || dom == Biome::Snowy)
         return DeadwoodDesc{0,0,DEADWOOD_NONE,0,0,0,false,false};
 
@@ -2120,10 +2417,8 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                 TreeDesc td = tree_for_cell(ccx, ccz, seed);
                 if (!td.present) continue;
 
-                // Compute biome at tree root for surface height.
-                float weights[NUM_BIOMES];
-                biome_weights(td.root_wx, td.root_wz, seed, weights);
-                Biome dom = dominant_biome(weights);
+                // Biome TYPE at the tree root from the Voronoi map (#6).
+                Biome dom = voronoi_biome(td.root_wx, td.root_wz, seed);
 
                 // Tree-bearing biomes only (desert/beach have no trees).
                 if (dom == Biome::Desert || dom == Biome::Beach) continue;
@@ -2860,9 +3155,9 @@ bool worldgen_is_cave_entrance(std::int32_t wx, std::int32_t wz,
 
 int worldgen_dominant_biome(std::int32_t wx, std::int32_t wz,
                             std::uint64_t seed) noexcept {
-    float w[NUM_BIOMES];
-    biome_weights(wx, wz, seed, w);
-    return static_cast<int>(dominant_biome(w));
+    // Voronoi TYPE map (#6) — the contiguous, clean-edged biome a column belongs
+    // to.  Matches exactly what generate() uses for surface blocks/features.
+    return static_cast<int>(voronoi_biome(wx, wz, seed));
 }
 
 int worldgen_surface_height(std::int32_t wx, std::int32_t wz,
@@ -2887,6 +3182,56 @@ int worldgen_count_structures(std::int32_t wx0, std::int32_t wz0,
         }
     }
     return count;
+}
+
+// ---------------------------------------------------------------------------
+// #17 engine hook: structure marker query.
+// ---------------------------------------------------------------------------
+// Returns true if (wx,wz) is the anchor (centre) column of a structure for this
+// seed, writing the structure's surface world-y into out_y.  This is the cheap,
+// voxel-free way for the engine to find structures (e.g. to spawn an NPC at one):
+// it reuses the same deterministic struct_for_cell() the generator uses, so the
+// answer always matches the built world.  A BEACON_BLOCK is ALSO buried at
+// (wx, out_y-1) in the generated chunk, so the engine may detect markers either
+// way (query here, or scan voxels for BEACON_BLOCK id 34).
+bool worldgen_structure_marker_at(std::int32_t wx, std::int32_t wz,
+                                  std::uint64_t seed, int& out_y) noexcept {
+    std::int32_t scx = struct_floordiv(wx, STRUCT_CELL_SIZE);
+    std::int32_t scz = struct_floordiv(wz, STRUCT_CELL_SIZE);
+    // The anchor lies in this cell or — if the column is near a cell border — a
+    // neighbouring one.  Check the 3×3 neighbourhood.
+    for (std::int32_t dz = -1; dz <= 1; ++dz)
+        for (std::int32_t dx = -1; dx <= 1; ++dx) {
+            StructDesc sd = struct_for_cell(scx + dx, scz + dz, seed);
+            if (sd.present && sd.anchor_wx == wx && sd.anchor_wz == wz) {
+                out_y = struct_surface(wx, wz, seed);
+                return true;
+            }
+        }
+    return false;
+}
+
+// Returns true if (wx,wz) lies within the footprint of any structure for this
+// seed.  Used to EXEMPT structure columns from the no-surface-holes test, exactly
+// as cave entrances are exempted: a roofed/hollow build legitimately has interior
+// air below its topmost solid.  Conservative — uses STRUCT_MAX_REACH_XZ so the
+// whole build (incl. roof overhang) is covered; only relaxes the hole check, so
+// natural terrain outside footprints is unaffected.
+bool worldgen_structure_footprint(std::int32_t wx, std::int32_t wz,
+                                  std::uint64_t seed) noexcept {
+    std::int32_t scx_min = struct_floordiv(wx - STRUCT_MAX_REACH_XZ, STRUCT_CELL_SIZE);
+    std::int32_t scx_max = struct_floordiv(wx + STRUCT_MAX_REACH_XZ, STRUCT_CELL_SIZE);
+    std::int32_t scz_min = struct_floordiv(wz - STRUCT_MAX_REACH_XZ, STRUCT_CELL_SIZE);
+    std::int32_t scz_max = struct_floordiv(wz + STRUCT_MAX_REACH_XZ, STRUCT_CELL_SIZE);
+    for (std::int32_t scz = scz_min; scz <= scz_max; ++scz)
+        for (std::int32_t scx = scx_min; scx <= scx_max; ++scx) {
+            StructDesc sd = struct_for_cell(scx, scz, seed);
+            if (!sd.present) continue;
+            std::int32_t ddx = wx - sd.anchor_wx; if (ddx < 0) ddx = -ddx;
+            std::int32_t ddz = wz - sd.anchor_wz; if (ddz < 0) ddz = -ddz;
+            if (ddx <= STRUCT_MAX_REACH_XZ && ddz <= STRUCT_MAX_REACH_XZ) return true;
+        }
+    return false;
 }
 
 // ---------------------------------------------------------------------------

@@ -62,4 +62,27 @@ int worldgen_surface_height(std::int32_t wx, std::int32_t wz,
 int worldgen_count_structures(std::int32_t wx0, std::int32_t wz0,
                               std::int32_t span, std::uint64_t seed) noexcept;
 
+// ---------------------------------------------------------------------------
+// #17 ENGINE HOOK — where structures are, so the engine can spawn an NPC there.
+// ---------------------------------------------------------------------------
+// Returns true if the world column (wx, wz) is the CENTRE (anchor) of a structure
+// generated with `seed`, writing the structure's surface world-y into out_y.  It
+// is a cheap, pure query (no voxel scan) that reuses the exact deterministic cell
+// hash the generator uses, so it always agrees with the built world.  Intended
+// use: the engine probes columns (or iterates structure cells) and, on a hit,
+// spawns a creature/NPC at (wx, out_y+1, wz).
+//
+// In addition, generate() buries a MARKER block — BEACON_BLOCK (id 34), which
+// worldgen produces nowhere else — at (wx, out_y-1, wz) of every structure, so
+// engines that prefer to scan voxels can detect structure centres that way too.
+bool worldgen_structure_marker_at(std::int32_t wx, std::int32_t wz,
+                                  std::uint64_t seed, int& out_y) noexcept;
+
+// Returns true if (wx, wz) lies within the footprint of any structure for `seed`.
+// Exposed so the no-surface-holes probe can exempt structure columns (a roofed or
+// hollow build legitimately has interior air beneath its topmost solid), exactly
+// as cave-entrance columns are exempted.
+bool worldgen_structure_footprint(std::int32_t wx, std::int32_t wz,
+                                  std::uint64_t seed) noexcept;
+
 } // namespace bf
