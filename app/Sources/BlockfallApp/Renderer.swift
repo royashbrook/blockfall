@@ -155,6 +155,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var ambientLifeDepthState: MTLDepthStencilState!
     private var ambientLifeBuffer: MTLBuffer!   // AmbientSprite array (CPU-updated each frame)
     private let kMaxAmbientSprites = 80
+    // Water translucency pass — re-draws chunks with alpha blend, water-only
+    private var waterPipeline: MTLRenderPipelineState!
+    private var waterDepthState: MTLDepthStencilState!
     // Sub-systems
     private var entityRenderer: EntityRenderer!
     private var particles: ParticleSystem!
@@ -266,6 +269,27 @@ final class Renderer: NSObject, MTKViewDelegate {
         udesc.depthAttachmentPixelFormat = .depth32Float
         do { underwaterPipeline = try device.makeRenderPipelineState(descriptor: udesc) }
         catch { fatalError("underwater pipeline failed: \(error)") }
+
+        // ---- Water translucency pipeline (alpha blend, depth test, NO depth write) ----
+        // Re-draws chunk meshes; fragment discards any fragment whose material != 9 (water).
+        // Depth test lessEqual so water surfaces at the right depth blend over the lake bottom.
+        let wdesc = MTLRenderPipelineDescriptor()
+        wdesc.vertexFunction   = lib.makeFunction(name: "vmain")
+        wdesc.fragmentFunction = lib.makeFunction(name: "waterFmain")
+        wdesc.colorAttachments[0].pixelFormat = .rgba16Float
+        wdesc.colorAttachments[0].isBlendingEnabled = true
+        wdesc.colorAttachments[0].sourceRGBBlendFactor        = .sourceAlpha
+        wdesc.colorAttachments[0].destinationRGBBlendFactor   = .oneMinusSourceAlpha
+        wdesc.colorAttachments[0].sourceAlphaBlendFactor      = .one
+        wdesc.colorAttachments[0].destinationAlphaBlendFactor = .zero
+        wdesc.depthAttachmentPixelFormat = .depth32Float
+        do { waterPipeline = try device.makeRenderPipelineState(descriptor: wdesc) }
+        catch { fatalError("water pipeline failed: \(error)") }
+
+        let wdd = MTLDepthStencilDescriptor()
+        wdd.depthCompareFunction = .lessEqual
+        wdd.isDepthWriteEnabled  = false   // don't write depth — lake bottom must stay visible
+        waterDepthState = device.makeDepthStencilState(descriptor: wdd)
 
         // ---- Shadow depth-only pipeline (no colour attachment) ---------------
         let shadDesc = MTLRenderPipelineDescriptor()
@@ -393,7 +417,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         cfg.abi_version = BF_ABI_VERSION
         cfg.role = BF_ROLE_SINGLEPLAYER
         cfg.start_mode = BF_MODE_SURVIVAL
-        cfg.render_distance_chunks = 10
+        cfg.render_distance_chunks = 16
         cfg.memory_budget_bytes = 10 * 1024 * 1024 * 1024
         // Content is bundled at Resources/content (build.sh copies it there).
         // The registry loads <dir>/blocks, <dir>/items, … so point at that folder,
@@ -516,10 +540,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         let wallClock = Float(now.truncatingRemainder(dividingBy: 3600.0))
         let isUnderwater = frame.camera.underwater
 
-        // Compute rain strength from the same weather cycle used by skyFmain.
-        // weatherCycle = sin(wallClock * π/150) * 0.5 + 0.5
-        let weatherCycle = sin(wallClock * (.pi / 150.0)) * 0.5 + 0.5
-        let rainStrength  = max(0, min(1, (weatherCycle - 0.60) / (0.82 - 0.60)))
+        // Weather is now fully engine-owned: frame.camera.weather = 0=clear, 1=rain, 2=snow.
+        // Map that to a rain strength for wind/wet-darkening (0 when clear or snow, 1 when rain).
+        let engineWeather = Int(frame.camera.weather)   // 0, 1, or 2
+        let rainStrength: Float = (engineWeather == 1) ? 1.0 : 0.0
 
         // Wind uniforms (index 3 on vertex shaders — new dedicated buffer)
         var windU = WindUniforms(wallClockSecs: wallClock, rainStrength: rainStrength)
@@ -674,6 +698,39 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: spriteCount * 6)
             }
 
+            // --- Water translucency pass ---
+            // Re-draw chunk meshes with the water pipeline: the fragment shader discards
+            // all material IDs except 9 (water) and outputs alpha 0.55 so the lake
+            // bottom (already in the colour buffer from the opaque terrain pass) shows
+            // through. Depth write is OFF; depth test is lessEqual so only actual water
+            // surface fragments are drawn (terrain below is already at lesser depth).
+            enc.setRenderPipelineState(waterPipeline)
+            enc.setDepthStencilState(waterDepthState)
+            enc.setCullMode(.none)   // water seen from below should also be translucent
+            enc.setFrontFacing(.counterClockwise)
+            // Reuse the same WaterUniforms / shadow / wind bindings already set above
+            enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
+            enc.setFragmentTexture(shadowMap, index: 0)
+            enc.setFragmentSamplerState(shadowSampler, index: 0)
+            enc.setFragmentBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)
+            enc.setVertexBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)
+            for i in 0..<Int(frame.draw_count) {
+                let d = frame.draws[i]
+                guard d.index_count > 0,
+                      let vbuf = registry.lookup(d.vertex_buffer),
+                      let ibuf = registry.lookup(d.index_buffer) else { continue }
+                var u = Uniforms(
+                    viewProj:      viewProj,
+                    chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
+                    sunDirTime:    SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
+                    lightViewProj: lightViewProj)
+                enc.setVertexBuffer(vbuf, offset: Int(d.vertex_offset), index: 0)
+                enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+                enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
+                                          indexType: .uint32, indexBuffer: ibuf,
+                                          indexBufferOffset: Int(d.index_offset))
+            }
+
             // --- Underwater post-pass ---
             if isUnderwater > 0.01 {
                 enc.setRenderPipelineState(underwaterPipeline)
@@ -728,16 +785,14 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor,    index: 0)
                 enc.setFragmentTexture(bloomBright, index: 1)
-                // Snow vs rain: use engine biome_cold (0..1; 1 = snowy/cold biome).
-                // Snow only in storm phase (rainStrength > 0) AND biome_cold > 0.5.
-                // Rain only in storm phase AND biome is warm (biome_cold ≤ 0.5).
-                // No precipitation outside the storm phase (rainStrength ≈ 0).
-                let biomeCold = frame.camera.biome_cold
-                let isColdBiome = (biomeCold > 0.5)
-                let precipRain = isColdBiome ? 0.0 : rainStrength
-                let precipSnow = isColdBiome ? rainStrength : 0.0
-                // Pack rain+snow: composite shader reads rainStrength>0 as rain, <0 as snow (abs = strength)
-                let precipPacked = precipRain > 0.001 ? precipRain : -precipSnow
+                // Precipitation driven entirely by engine weather field (0=clear, 1=rain, 2=snow).
+                // Pack: >0 = rain (strength), <0 = snow (abs = strength), 0 = clear.
+                let precipPacked: Float
+                switch engineWeather {
+                case 1:  precipPacked =  1.0   // rain
+                case 2:  precipPacked = -1.0   // snow
+                default: precipPacked =  0.0   // clear
+                }
                 var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.38,
                                       rainStrength: precipPacked, wallClockSecs: wallClock)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
@@ -2053,9 +2108,85 @@ final class Renderer: NSObject, MTKViewDelegate {
             float fogFactor = clamp(exp(-0.046 * dist), 0.0, 1.0);
             float3 waterFogColor = float3(0.08, 0.28, 0.40);
             col = mix(waterFogColor, col, fogFactor);
+        } else {
+            // Atmospheric distance fog: fade distant terrain toward the horizon sky colour
+            // so the far edge of the render distance (16 chunks = 256 blocks) reads as
+            // haze rather than a hard pop-in cut. Nearby terrain (< ~40 blocks) is clear.
+            // Exponential fog: fogFactor = exp(-k * dist). k = 0.010 gives:
+            //   20 blocks → ~82% scene, 80 blocks → ~45%, 180 blocks → ~16%.
+            // The horizon sky colour approximates a mid-morning blue-grey haze.
+            float3 camPos3 = UW_CAM_POS(wu);
+            float dist = length(in.worldPos - camPos3);
+            float fogK = 0.010;   // tune: bigger k = denser fog, smaller = more distant
+            float fogFactor = clamp(exp(-fogK * dist), 0.0, 1.0);
+            // Sky/horizon colour at current time of day — a blue-grey that blends
+            // naturally with the horizon band in skyFmain.
+            float3 horizFogColor = float3(0.48, 0.62, 0.82);   // daytime blue haze
+            col = mix(horizFogColor, col, fogFactor);
         }
 
         return float4(col, 1.0);
+    }
+
+    // =========================================================
+    // WATER TRANSLUCENCY FRAGMENT SHADER
+    // Same vertex shader as terrain (vmain). Discards any fragment whose material
+    // is not 9 (water) so only water surfaces are drawn. Outputs alpha 0.55 for
+    // translucent blending over the lake bottom already in the colour buffer.
+    // Depth write is OFF (set by waterDepthState), depth test is lessEqual.
+    // =========================================================
+    fragment float4 waterFmain(VOut in [[stage_in]],
+                               constant WaterUniforms& wu [[buffer(2)]],
+                               constant WindUniforms& wind [[buffer(3)]],
+                               depth2d<float, access::sample> shadowTex [[texture(0)]],
+                               sampler shadowSamp [[sampler(0)]]) {
+        // Only render water (material id 9); discard all other blocks.
+        if (in.material != 9u) discard_fragment();
+
+        float t = wu.wallClockSecs;
+        float2 uv = in.worldPos.xz;
+        float wave1 = noise2(uv * 0.8  + float2( t * 0.22,  t * 0.14));
+        float wave2 = noise2(uv * 1.40 + float2(-t * 0.17,  t * 0.28));
+        float wave3 = noise2(uv * 2.80 + float2( t * 0.35, -t * 0.19));
+        float ripple = wave1 * 0.50 + wave2 * 0.35 + wave3 * 0.15;
+        float rippleN = ripple * 2.0 - 1.0;
+
+        float3 waterBase = float3(0.10, 0.36, 0.75);
+
+        // Normal perturbation for specular
+        float2 nAB = float2(
+            noise2(uv * 1.2 + float2(t * 0.22 + 0.1, t * 0.14)) - wave1,
+            noise2(uv * 1.2 + float2(t * 0.22, t * 0.14 + 0.1)) - wave1
+        ) * 4.0;
+        float3 perturbedN = normalize(float3(nAB.x, 1.4, nAB.y));
+        float3 sunDir3 = normalize(float3(0.5, 0.9, 0.3));
+        float spec = pow(max(0.0, dot(perturbedN, sunDir3)), 22.0);
+
+        // Shadow + AO
+        float aoFactor = mix(0.45, 1.0, in.ao);
+        float dayFactor = clamp(in.shade * 1.5, 0.0, 1.0);
+        float rawShadow = sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos, dayFactor);
+        float shadowStrength = 0.65 * dayFactor;
+        float shadowFactor = 1.0 - shadowStrength * (1.0 - rawShadow);
+
+        float3 col = waterBase * in.shade * aoFactor * shadowFactor;
+        col *= 1.0 + rippleN * 0.18;
+
+        // Fresnel-like surface brightening on top face
+        float fresnelBias = (in.faceNorm == 2u) ? 0.28 : 0.06;
+        float fresnelAmt  = fresnelBias + rippleN * 0.10;
+        col = mix(col, float3(0.80, 0.92, 1.00), clamp(fresnelAmt, 0.0, 0.40));
+        col += float3(1.0, 0.98, 0.88) * spec * 0.45 * in.shade;
+
+        // Saturation
+        float lum = dot(col, float3(0.299, 0.587, 0.114));
+        col = mix(float3(lum), col, clamp(in.sat, 0.0, 1.0));
+        col = clamp(col, 0.0, 1.0);
+
+        // Alpha: 0.55 makes water clearly see-through (bottom visible) but
+        // still reads as a distinct water surface, not invisible.
+        float alpha = 0.55;
+        return float4(col, alpha);
     }
 
     // =========================================================
@@ -2138,16 +2269,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         skyCol = mix(skyCol, sunColor,          sunDisc  * sunVis);
         skyCol = mix(skyCol, float3(1.0, 1.0, 0.96), sunInner * sunVis);
 
-        // HDR: sun disc pushed above 1 so it blooms.
-        // Only the very inner disc (sunInner, radius ~0.08°) gets the HDR push.
-        // The broad sky/haze/glow region is clamped to ≤1.2 so it never triggers
-        // the bloom bright-pass (threshold 1.6) — prevents view-rotation washout.
-        skyCol += sunColor * 1.1 * sunInner * sunVis;
+        // HDR: sun disc pushed just above the bloom threshold (1.6) so it glows
+        // but does NOT flood the frame. The multiplier of 0.5 keeps the peak at
+        // ~1.5 * sunVis; combined with the 1.0 base the disc reaches ~1.5–1.7 HDR,
+        // which is near the bright-pass floor (1.6) — gives a tight local glow
+        // without smearing bloom across the whole screen when you face the sun.
+        // The broad sky/glow is clamped to ≤1.1 so it stays well below threshold.
+        float3 discHDR = sunColor * 0.5 * sunInner * sunVis;
+        skyCol += discHDR;
 
-        // Cap the broad sky colour (everything except the inner sun disc) to ≤1.2.
-        // The sun disc itself (sunInner) can still go overbright for bloom.
-        float3 discHDR = sunColor * 1.1 * sunInner * sunVis;
-        skyCol = clamp(skyCol - discHDR, 0.0, 1.2) + discHDR;
+        // Cap everything except the inner disc to ≤1.1 (well below bloom threshold 1.6).
+        skyCol = clamp(skyCol - discHDR, 0.0, 1.1) + discHDR;
 
         float3 moonDir3 = -sunDir3;
         float moonDot  = dot(ray, moonDir3);
@@ -2366,7 +2498,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Each "cell" is a tall thin column; the streak falls through the column over time.
     static float rainStreak(float2 uv, float T, float cellScale) {
         // Scale uv into rain-cell space: many narrow columns, short in Y.
-        float2 cell = float2(uv.x * cellScale, uv.y * 3.0 + T * 3.5);
+        // uv.y=0 is TOP, uv.y=1 is BOTTOM. Subtracting T from cell.y means that
+        // as T increases, the same cell fragment is at a LARGER uv.y → streaks
+        // move downward (falling rain). Adding T would move them upward.
+        float2 cell = float2(uv.x * cellScale, uv.y * 3.0 - T * 3.5);
         float2 cellI = floor(cell);
         float2 cellF = fract(cell);
         // Per-column hash: random X offset and brightness
@@ -2388,12 +2523,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Snow: returns 0..1 flake intensity. Flakes fall downward + gentle sideways drift.
     // UV convention: fullscreenVert maps NDC y=+1 (top) → uv.y=0, NDC y=-1 (bottom) → uv.y=1.
     // So "falling down" means uv.y INCREASES over time.
-    // We achieve this by ADDING T to the cell Y offset: as T grows, cell.y grows,
-    // which means for a fixed flake cellI the same cell.y is reached at a LARGER uv.y
-    // → the flake appears lower on screen (further down). Correct falling motion.
+    // We SUBTRACT T from the cell Y offset: as T grows, cell.y decreases, so for a fixed
+    // flake (fixed cellI+cellF) it maps to a LARGER uv.y → flake moves downward. Correct.
     static float snowFlake(float2 uv, float T, float cellScale) {
         float2 cell = float2(uv.x * cellScale + T * 0.08,   // gentle sideways drift
-                              uv.y * cellScale + T * 0.9);   // fall DOWN (add T → uv.y increases)
+                              uv.y * cellScale - T * 0.9);   // fall DOWN (subtract T → flake at larger uv.y)
         float2 cellI = floor(cell);
         float2 cellF = fract(cell);
         // Per-flake hash
@@ -2420,8 +2554,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 hdr   = hdrTex.sample(s, in.uv).rgb;
         float3 bloom = bloomTex.sample(s, in.uv).rgb;
 
-        // Add bloom
-        float3 combined = hdr + bloom * pu.bloomStrength;
+        // Clamp the bloom contribution per-channel so a large bright region (sun disc,
+        // emissive blocks) can never flood the frame and wash out directional shading.
+        // Max bloom additive per channel is 0.25 — enough for a visible glow around
+        // the sun and emissives but far below the point where it lifts everything to
+        // flat-bright. (bloomStrength=0.08 * clamp(bloom, 0, ~3) ≤ 0.25 per channel.)
+        float3 bloomClamped = clamp(bloom * pu.bloomStrength, 0.0, 0.25);
+        float3 combined = hdr + bloomClamped;
 
         // ACES filmic tone-map
         float3 tonemapped = ACESFilmic(combined);

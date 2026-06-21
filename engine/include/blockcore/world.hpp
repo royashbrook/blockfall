@@ -185,7 +185,10 @@ public:
                 store_.insert(std::move(ch)); dirty_.insert(cc);
             }
         }
-        pos_ = V3{0.5f, float(surface) + 2.5f, 0.5f};
+        // Eye 3.2 above the surface block so the FEET (eye-1.6) clear the top
+        // block and the player settles onto it, instead of spawning embedded
+        // (which left you "stuck" until you jumped).
+        pos_ = V3{0.5f, float(surface) + 3.2f, 0.5f};
         spawn_ = pos_;                                  // respawn here on defeat
         yaw_ = 0.6f; pitch_ = -0.25f;
         restore_region(ChunkCoord{0, 0, 0});           // spawn region starts colorful
@@ -527,6 +530,12 @@ public:
                 else if (b != AIR && b != WATER && !is_plant(b)) break;
             }
             out.camera.biome_cold = cold ? 1.0f : 0.0f;
+            // Weather: a slow ~4-min cycle, precipitation ~25% of the time; snow
+            // where it's cold, rain otherwise. Engine-owned so the HUD label and
+            // the renderer overlay agree.
+            bool storm = std::fmod(world_clock_ / 240.0, 1.0) > 0.75;
+            weather_ = storm ? (cold ? 2 : 1) : 0;
+            out.camera.weather = float(weather_);
         }
         out.interp_alpha = 0.0f;
         out.draws = draws.data();
@@ -771,6 +780,25 @@ private:
             if (collide_solid(x, y, z)) return y + 1;   // water/plants aren't standable
         return kNoFloor;
     }
+    static bool solid_block(BlockId b) { return b != AIR && b != WATER && !is_plant(b); }
+    // Top standable block at a world column, GENERATING the column if it isn't
+    // resident (used by respawn so you never land in unloaded void or dirt).
+    int surface_top(int wx, int wz) const {
+        if (!gen_) return kNoFloor;
+        int lx = mod16(wx), lz = mod16(wz);
+        for (int cy = CY_MAX; cy >= CY_MIN; --cy) {
+            ChunkCoord cc{ to_chunk(IVec3{wx, cy * kChunkDim, wz}).x, cy, to_chunk(IVec3{wx, cy * kChunkDim, wz}).z };
+            if (IChunk* res = const_cast<ChunkStore&>(store_).get(cc)) {
+                for (int ly = kChunkDim - 1; ly >= 0; --ly)
+                    if (solid_block(res->get(lx, ly, lz))) return cy * kChunkDim + ly;
+            } else {
+                PaletteChunk tmp(cc); gen_->generate(cc, tmp);
+                for (int ly = kChunkDim - 1; ly >= 0; --ly)
+                    if (solid_block(tmp.get(lx, ly, lz))) return cy * kChunkDim + ly;
+            }
+        }
+        return kNoFloor;
+    }
 
     // Is a block solid for player collision? (air + water are passable.)
     // Cross-plants (grass/flowers/mushroom) are decorative — you walk through them.
@@ -904,8 +932,15 @@ private:
     }
 
     void respawn() {
-        pos_ = spawn_; vy_ = 0.0f; health_ = 20.0f;
-        hurt_cd_ = 1.5f; regen_cd_ = 0.0f;
+        // Place the player safely ON the surface above the spawn column (scan +
+        // generate it if needed) so you never wake up buried or floating in void.
+        int top = surface_top(ifloor(spawn_.x), ifloor(spawn_.z));
+        float y = (top != kNoFloor) ? float(top) + 3.2f : spawn_.y;
+        pos_ = V3{spawn_.x, y, spawn_.z};
+        vy_ = 0.0f; health_ = 20.0f; oxygen_ = 1.0f;
+        hurt_cd_ = 1.5f; regen_cd_ = 0.0f; drown_cd_ = 0.0f;
+        first_stream_ = true;                            // force the spawn area to (re)stream
+        recompute_stream_set();
         creatures_.erase(std::remove_if(creatures_.begin(), creatures_.end(),
             [](const Creature& c){ return c.hostile; }), creatures_.end());
         fx(6, player_voxel());                           // respawn chime
@@ -1354,6 +1389,7 @@ private:
         h.oxygen = oxygen_;
         h.achievements_done  = std::uint8_t(ach_done_count_);
         h.achievements_total = std::uint8_t(kAchievementCount);
+        h.weather = std::uint8_t(weather_);
         if (ach_toast_timer_ > 0.0f)
             std::strncpy(h.achievement_toast, ach_toast_.c_str(), sizeof(h.achievement_toast) - 1);
         // Look-at name: a creature under the crosshair takes priority, else the
@@ -1401,6 +1437,7 @@ private:
     bool          on_ground_{false};
     float         bob_phase_{0.0f}, bob_amt_{0.0f};   // view bob
     double        world_clock_{0.0};   // accumulates dt; drives day/night for spawns
+    int           weather_{0};         // 0 clear, 1 rain, 2 snow
     V3            spawn_{0, 12, 0};     // respawn point
     float         hurt_cd_{0.0f};       // i-frames after taking damage
     float         regen_cd_{0.0f};      // delay before health regenerates

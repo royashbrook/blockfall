@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var hud: HUDView?
     let audio = GameAudio()
     let menu = MenuController()
+    var guide: GuideController?
     var device: MTLDevice!
     weak var gameView: GameView?
     var gameContainer: NSView?
@@ -42,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         device = dev
         audio.start()
+        guide = GuideController()   // on-device AI "Guide" companion (press 'G')
         audio.setAmbienceEnabled(true)
 
         // Show the main menu first; start the game when a world is chosen.

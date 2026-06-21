@@ -136,12 +136,15 @@ final class GameAudio {
 
         if targetTrackGroup != currentTrackGroup {
             currentTrackGroup = targetTrackGroup
-            // Cross-fade to the new group on the next natural track boundary
-            // (we flag it so scheduleNextTrack picks the right group).
-            // If music is running and we want an immediate feel, force a transition.
-            if engine?.isRunning == true && musicEnabled {
-                startMusic()
-            }
+            guard engine?.isRunning == true && musicEnabled else { return }
+            // Crossfade to the first track of the new group rather than hard-cutting.
+            // Cancel the current rotation timer so it restarts from the new track.
+            trackTimer?.invalidate()
+            trackTimer = nil
+            let newIdx = firstTrackIndex(for: currentTrackGroup)
+            currentTrackIndex = newIdx
+            crossFadeToTrack(newIdx)
+            scheduleTrackRotation()
         }
     }
 
@@ -212,10 +215,12 @@ final class GameAudio {
     private var musicMixer:      AVAudioMixerNode?
     private var activeBank:      Int = 0                    // 0 or 1
 
-    // Crossfade duration in seconds (linear gain curve, no shared-mixer touch).
+    // Crossfade duration in seconds (equal-power √ curve for transparent blend).
     private let kCrossfadeDur: Double = 3.5
     // How long before scheduling the next rotation.
-    private let kTrackRotationInterval: Double = 60.0
+    // 75 s gives a full melody listen even on short 12 s loops (≥6 repeats) and
+    // is long enough that a 3.5 s crossfade takes only ~5% of playtime.
+    private let kTrackRotationInterval: Double = 75.0
 
     private enum TrackGroup { case day, evening }
     private var currentTrackGroup: TrackGroup = .day
@@ -337,7 +342,7 @@ final class GameAudio {
     }
 
     // -----------------------------------------------------------------------
-    // MARK: Music — four fun, upbeat, kid-friendly tracks
+    // MARK: Music — eight fun, upbeat, kid-friendly tracks
     // -----------------------------------------------------------------------
     //
     // Track 0: "Sunshine Sprint"  — C major, 120 BPM, 16 s loop  [DAY]
@@ -352,14 +357,26 @@ final class GameAudio {
     // Track 3: "Starlight Waltz"  — D major, 120 BPM, 12 s loop  [EVENING]
     //   Lilting 3/4 feel, gentle melody, happy but calm.
     //
+    // Track 4: "Adventure March"  — A major, 126 BPM, ~15.2 s loop [DAY]
+    //   Bold dotted-rhythm march feel, bright and energetic.
+    //
+    // Track 5: "Rainbow Road"     — Bb major, 116 BPM, ~16.5 s loop [DAY]
+    //   Joyful chromatic-flavored melody with a skip-hop groove.
+    //
+    // Track 6: "Firefly Lullaby"  — G major, 96 BPM, ~20 s loop [EVENING]
+    //   Gentle pentatonic melody, soft and dreamy but still happy.
+    //
+    // Track 7: "Moon Garden"      — E major, 104 BPM, ~18.5 s loop [EVENING]
+    //   Flowing waltz-like 6/8 feel, warm and lush.
+    //
     // Each track is synthesized as 4 independent looping voice buffers:
     //   Voice 0 = melody   (sine + slight harmonic blend, medium vol)
     //   Voice 1 = bass     (triangle, lower octave, punchy envelope)
     //   Voice 2 = arpeggio (sine, fast ascending broken chord, light vol)
     //   Voice 3 = pad      (sine, sustained chord, very soft backing)
     //
-    // Tracks 0,1 belong to .day group; Tracks 2,3 to .evening group.
-    // Rotation: tracks alternate within their group every 60 s via crossFadeToTrack.
+    // Tracks 0,1,4,5 belong to .day group; Tracks 2,3,6,7 to .evening group.
+    // Rotation: tracks cycle within their group every 75 s via crossFadeToTrack.
 
     private func startMusic() {
         if allTrackBuffers.isEmpty { buildAllTrackBuffers() }
@@ -382,18 +399,23 @@ final class GameAudio {
         scheduleTrackRotation()
     }
 
-    private func firstTrackIndex(for group: TrackGroup) -> Int {
+    // Indices for each group: day → 0,1,4,5   evening → 2,3,6,7
+    private func trackIndices(for group: TrackGroup) -> [Int] {
         switch group {
-        case .day:     return 0
-        case .evening: return 2
+        case .day:     return [0, 1, 4, 5]
+        case .evening: return [2, 3, 6, 7]
         }
     }
 
+    private func firstTrackIndex(for group: TrackGroup) -> Int {
+        return trackIndices(for: group)[0]
+    }
+
     private func nextTrackIndex(after idx: Int) -> Int {
-        // Cycle within the two tracks of the current group.
-        let groupStart = firstTrackIndex(for: currentTrackGroup)
-        let offset     = (idx - groupStart + 1) % 2
-        return groupStart + offset
+        // Cycle within the four tracks of the current group.
+        let indices = trackIndices(for: currentTrackGroup)
+        let pos     = indices.firstIndex(of: idx) ?? 0
+        return indices[(pos + 1) % indices.count]
     }
 
     /// Start looping a track's voice buffers on the four nodes of `bank` (0 or 1).
@@ -422,10 +444,19 @@ final class GameAudio {
     }
 
     /// True A/B crossfade: the outgoing bank fades 1→0 while the incoming bank
-    /// fades 0→1 simultaneously over kCrossfadeDur seconds (linear gain curve).
-    /// Both banks play audio concurrently during the overlap — no gap, no cut.
+    /// fades 0→1 simultaneously over kCrossfadeDur seconds.
+    /// Uses an equal-power (sin/cos) curve so perceived loudness stays constant
+    /// throughout the overlap — no gap, no cut, no pumping artefact.
+    ///
+    /// Safety guarantees:
+    ///   • Cancels any in-flight crossfadeTimer before starting a new one.
+    ///   • Clamps both bank volumes to exact 0.0 / 1.0 at the final step —
+    ///     no floating-point residue left behind.
+    ///   • Stops the outgoing bank's nodes after the fade completes to free
+    ///     scheduling resources; the incoming bank continues to loop.
     private func crossFadeToTrack(_ idx: Int) {
         // Cancel any still-running crossfade before starting a new one.
+        // This guarantees bank volumes never fight between two concurrent faders.
         crossfadeTimer?.invalidate()
         crossfadeTimer = nil
 
@@ -433,32 +464,38 @@ final class GameAudio {
         let inBank  = 1 - activeBank
         activeBank  = inBank
 
+        // Snap outgoing to 1.0 in case a previous interrupted fade left it
+        // somewhere in the middle — we always start from a clean 1/0 split.
+        musicBankMixers[outBank].outputVolume = 1.0
+        musicBankMixers[inBank].outputVolume  = 0.0
+
         // Pre-start the incoming bank at volume 0 so it is audibly silent.
-        musicBankMixers[inBank].outputVolume = 0.0
         playTrackOnBank(idx, bank: inBank)
 
-        let steps    = 70                               // ~70 steps over 3.5 s → 50 ms/step
-        let stepDur  = kCrossfadeDur / Double(steps)
-        var step     = 0
+        let steps   = 70                               // ~70 steps over 3.5 s → 50 ms/step
+        let stepDur = kCrossfadeDur / Double(steps)
+        var step    = 0
 
         crossfadeTimer = Timer.scheduledTimer(withTimeInterval: stepDur, repeats: true) {
             [weak self] timer in
             guard let self else { timer.invalidate(); return }
             step += 1
-            // Linear ramp: inBank 0→1, outBank 1→0.
-            let progress = Float(step) / Float(steps)
-            self.musicBankMixers[inBank].outputVolume  = progress
-            self.musicBankMixers[outBank].outputVolume = 1.0 - progress
             if step >= steps {
+                // Final step: clamp to exact endpoints, then stop outgoing voices.
                 timer.invalidate()
                 self.crossfadeTimer = nil
-                // Clamp to exact endpoints and stop outgoing voices to free resources.
                 self.musicBankMixers[inBank].outputVolume  = 1.0
                 self.musicBankMixers[outBank].outputVolume = 0.0
                 let nodeOffset = outBank * 4
-                for i in 0 ..< 4 {
-                    self.musicBankNodes[nodeOffset + i].stop()
-                }
+                for i in 0 ..< 4 { self.musicBankNodes[nodeOffset + i].stop() }
+            } else {
+                // Equal-power curve: angle sweeps 0 → π/2
+                // inBank  gain = sin(angle)  0 → 1
+                // outBank gain = cos(angle)  1 → 0
+                // sin²+cos²=1 preserves total RMS power throughout the crossfade.
+                let angle = Float(step) / Float(steps) * (.pi / 2)
+                self.musicBankMixers[inBank].outputVolume  = sin(angle)
+                self.musicBankMixers[outBank].outputVolume = cos(angle)
             }
         }
     }
@@ -475,10 +512,14 @@ final class GameAudio {
 
     private func buildAllTrackBuffers() {
         allTrackBuffers = []
-        allTrackBuffers.append(buildTrack0_SunshineSprint())
-        allTrackBuffers.append(buildTrack1_PixelBounce())
-        allTrackBuffers.append(buildTrack2_CozyCampfire())
-        allTrackBuffers.append(buildTrack3_StarlightWaltz())
+        allTrackBuffers.append(buildTrack0_SunshineSprint())   // Day 0
+        allTrackBuffers.append(buildTrack1_PixelBounce())      // Day 1
+        allTrackBuffers.append(buildTrack2_CozyCampfire())     // Evening 2
+        allTrackBuffers.append(buildTrack3_StarlightWaltz())   // Evening 3
+        allTrackBuffers.append(buildTrack4_AdventureMarch())   // Day 4
+        allTrackBuffers.append(buildTrack5_RainbowRoad())      // Day 5
+        allTrackBuffers.append(buildTrack6_FireflyLullaby())   // Evening 6
+        allTrackBuffers.append(buildTrack7_MoonGarden())       // Evening 7
     }
 
     // -----------------------------------------------------------------------
@@ -893,6 +934,310 @@ final class GameAudio {
         if let v = buildNoteVoice(notes: bassNotes,   shape: .triangle, vol: 0.18, totalSamples: totalSamples) { voices.append(v) }
         if let v = buildNoteVoice(notes: arpNotes,    shape: .sine,     vol: 0.11, totalSamples: totalSamples) { voices.append(v) }
         if let v = buildNoteVoice(notes: padNotes,    shape: .sine,     vol: 0.08, totalSamples: totalSamples) { voices.append(v) }
+        return voices
+    }
+
+    // -----------------------------------------------------------------------
+    // MARK: Track 4 — "Adventure March" (A major, 126 BPM, ~15.24 s loop) [DAY]
+    // -----------------------------------------------------------------------
+    // Quarter note = 60/126 ≈ 0.4762 s.  Loop = 32 q ≈ 15.238 s.
+    // Bold dotted-rhythm feel inspired by a kid's adventure theme.
+    // A major uses C# (Cs) = 277.183 Hz, E = 329.628, F# (Fs) = 369.994.
+
+    private func buildTrack4_AdventureMarch() -> [AVAudioPCMBuffer] {
+        let q: Float = 60.0 / 126.0
+        let e: Float = q / 2
+        let h: Float = q * 2
+        let dq: Float = q * 1.5   // dotted quarter = 3 eighth notes
+
+        let A3: Float = 220.000; let E4: Float = 329.628; let Cs4: Float = 277.183
+        let A4: Float = 440.000; let Cs5: Float = 554.365; let E5: Float = 659.255
+        let Fs5: Float = 739.989; let A5: Float = 880.000; let B4: Float = 493.883
+
+        let loopDur: Float    = q * 32
+        let totalSamples: Int = Int(Float(format.sampleRate) * loopDur)
+
+        // Melody — 16 q slots with dotted-rhythm snap.
+        // Pattern: dq e | dq e | dq e | h (= 4 bars of 4/4)
+        let melodyNotes: [MusicalNote] = [
+            // Bar 1
+            .init(hz: A5,  dur: dq * 0.88, gap: dq * 0.12),
+            .init(hz: Fs5, dur: e  * 0.80, gap: e  * 0.20),
+            .init(hz: E5,  dur: dq * 0.88, gap: dq * 0.12),
+            .init(hz: Cs5, dur: e  * 0.80, gap: e  * 0.20),
+            // Bar 2
+            .init(hz: A4,  dur: h  * 0.80, gap: h  * 0.20),
+            .init(hz: Cs5, dur: q  * 0.85, gap: q  * 0.15),
+            .init(hz: E5,  dur: q  * 0.85, gap: q  * 0.15),
+            // Bar 3
+            .init(hz: Fs5, dur: dq * 0.88, gap: dq * 0.12),
+            .init(hz: E5,  dur: e  * 0.80, gap: e  * 0.20),
+            .init(hz: Cs5, dur: dq * 0.88, gap: dq * 0.12),
+            .init(hz: A4,  dur: e  * 0.80, gap: e  * 0.20),
+            // Bar 4
+            .init(hz: B4,  dur: q  * 0.85, gap: q  * 0.15),
+            .init(hz: Cs5, dur: q  * 0.85, gap: q  * 0.15),
+            .init(hz: A5,  dur: h  * 0.80, gap: h  * 0.20),
+        ]
+
+        // Bass — A3 E4 A3 Cs4 (half notes, strong march downbeat).
+        let bassNotes: [MusicalNote] = [
+            .init(hz: A3,  dur: h * 0.60, gap: h * 0.40),
+            .init(hz: E4,  dur: h * 0.60, gap: h * 0.40),
+            .init(hz: A3,  dur: h * 0.60, gap: h * 0.40),
+            .init(hz: Cs4, dur: h * 0.60, gap: h * 0.40),
+        ]
+
+        // Arpeggio — A4 Cs5 E5 A5 (eighth notes, march bugle feel).
+        let arpNotes: [MusicalNote] = [
+            .init(hz: A4,  dur: e * 0.72, gap: e * 0.28),
+            .init(hz: Cs5, dur: e * 0.72, gap: e * 0.28),
+            .init(hz: E5,  dur: e * 0.72, gap: e * 0.28),
+            .init(hz: A5,  dur: e * 0.72, gap: e * 0.28),
+        ]
+
+        // Pad — A4 E4 A4 Cs5.
+        let padNotes: [MusicalNote] = [
+            .init(hz: A4,  dur: h * 0.92, gap: h * 0.08),
+            .init(hz: E4,  dur: h * 0.92, gap: h * 0.08),
+            .init(hz: A4,  dur: h * 0.92, gap: h * 0.08),
+            .init(hz: Cs5, dur: h * 0.92, gap: h * 0.08),
+        ]
+
+        var voices: [AVAudioPCMBuffer] = []
+        if let v = buildNoteVoice(notes: melodyNotes, shape: .sine,     vol: 0.27, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: bassNotes,   shape: .triangle, vol: 0.22, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: arpNotes,    shape: .sine,     vol: 0.13, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: padNotes,    shape: .sine,     vol: 0.09, totalSamples: totalSamples) { voices.append(v) }
+        return voices
+    }
+
+    // -----------------------------------------------------------------------
+    // MARK: Track 5 — "Rainbow Road" (Bb major, 116 BPM, ~16.55 s loop) [DAY]
+    // -----------------------------------------------------------------------
+    // Quarter note = 60/116 ≈ 0.5172 s.  Loop = 32 q ≈ 16.552 s.
+    // Joyful skip-hop feel; melody bounces between mid and high registers.
+    // Bb major: Bb = 466.164, D (D4=293.665), F (F4=349.228), Eb (Eb5=622.254).
+
+    private func buildTrack5_RainbowRoad() -> [AVAudioPCMBuffer] {
+        let q: Float = 60.0 / 116.0
+        let e: Float = q / 2
+        let h: Float = q * 2
+
+        let Bb3: Float = 233.082; let F4: Float  = 349.228; let D4: Float  = 293.665
+        let Bb4: Float = 466.164; let D5: Float  = 587.330; let F5: Float  = 698.456
+        let G5: Float  = 783.991; let Bb5: Float = 932.328; let C5: Float  = 523.251
+        let Eb5: Float = 622.254
+
+        let loopDur: Float    = q * 32
+        let totalSamples: Int = Int(Float(format.sampleRate) * loopDur)
+
+        // Melody — cheerful skip pattern with chromatic colour note (Eb5).
+        let melodyNotes: [MusicalNote] = [
+            .init(hz: Bb4, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: D5,  dur: q * 0.85, gap: q * 0.15),
+            .init(hz: F5,  dur: q * 0.85, gap: q * 0.15),
+            .init(hz: Bb5, dur: q * 0.70, gap: q * 0.30),
+            .init(hz: G5,  dur: q * 0.85, gap: q * 0.15),
+            .init(hz: Eb5, dur: q * 0.80, gap: q * 0.20),   // chromatic colour
+            .init(hz: F5,  dur: h * 0.82, gap: h * 0.18),
+            .init(hz: D5,  dur: q * 0.85, gap: q * 0.15),
+            .init(hz: C5,  dur: q * 0.85, gap: q * 0.15),
+            .init(hz: Bb4, dur: q * 0.85, gap: q * 0.15),
+            .init(hz: D5,  dur: q * 0.85, gap: q * 0.15),
+            .init(hz: F5,  dur: q * 0.85, gap: q * 0.15),
+            .init(hz: G5,  dur: q * 0.85, gap: q * 0.15),
+            .init(hz: F5,  dur: q * 0.80, gap: q * 0.20),
+            .init(hz: Eb5, dur: q * 0.80, gap: q * 0.20),
+            .init(hz: D5,  dur: h * 0.78, gap: h * 0.22),
+        ]
+
+        // Bass — Bb3 F4 Bb3 D4 (half notes, bouncy).
+        let bassNotes: [MusicalNote] = [
+            .init(hz: Bb3, dur: h * 0.68, gap: h * 0.32),
+            .init(hz: F4,  dur: h * 0.68, gap: h * 0.32),
+            .init(hz: Bb3, dur: h * 0.68, gap: h * 0.32),
+            .init(hz: D4,  dur: h * 0.68, gap: h * 0.32),
+        ]
+
+        // Arpeggio — Bb4 D5 F5 Bb5 (eighth notes, rainbow shimmer).
+        let arpNotes: [MusicalNote] = [
+            .init(hz: Bb4, dur: e * 0.75, gap: e * 0.25),
+            .init(hz: D5,  dur: e * 0.75, gap: e * 0.25),
+            .init(hz: F5,  dur: e * 0.75, gap: e * 0.25),
+            .init(hz: Bb5, dur: e * 0.75, gap: e * 0.25),
+        ]
+
+        // Pad — Bb4 F4 Bb4 D5.
+        let padNotes: [MusicalNote] = [
+            .init(hz: Bb4, dur: h * 0.91, gap: h * 0.09),
+            .init(hz: F4,  dur: h * 0.91, gap: h * 0.09),
+            .init(hz: Bb4, dur: h * 0.91, gap: h * 0.09),
+            .init(hz: D5,  dur: h * 0.91, gap: h * 0.09),
+        ]
+
+        var voices: [AVAudioPCMBuffer] = []
+        if let v = buildNoteVoice(notes: melodyNotes, shape: .sine,     vol: 0.27, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: bassNotes,   shape: .triangle, vol: 0.21, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: arpNotes,    shape: .sine,     vol: 0.12, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: padNotes,    shape: .sine,     vol: 0.09, totalSamples: totalSamples) { voices.append(v) }
+        return voices
+    }
+
+    // -----------------------------------------------------------------------
+    // MARK: Track 6 — "Firefly Lullaby" (G major, 96 BPM, ~20 s loop) [EVENING]
+    // -----------------------------------------------------------------------
+    // Quarter note = 60/96 = 0.625 s.  Loop = 32 q = 20.0 s exactly.
+    // Gentle pentatonic melody (G-A-B-D-E), soft and dreamy yet warm.
+    // Slower tempo and lighter articulation give it a floaty evening feel.
+
+    private func buildTrack6_FireflyLullaby() -> [AVAudioPCMBuffer] {
+        let q: Float = 60.0 / 96.0
+        let e: Float = q / 2
+        let h: Float = q * 2
+
+        let G3: Float = 195.998; let D4: Float = 293.665; let B3: Float = 246.942
+        let G4: Float = 391.995; let A4: Float = 440.000; let B4: Float = 493.883
+        let D5: Float = 587.330; let E5: Float = 659.255; let G5: Float = 783.991
+        let A5: Float = 880.000
+
+        let loopDur: Float    = q * 32
+        let totalSamples: Int = Int(Float(format.sampleRate) * loopDur)
+
+        // Melody — pentatonic scale only (G A B D E), very legato, floaty.
+        let melodyNotes: [MusicalNote] = [
+            .init(hz: G5,  dur: q * 0.92, gap: q * 0.08),
+            .init(hz: E5,  dur: q * 0.92, gap: q * 0.08),
+            .init(hz: D5,  dur: h * 0.90, gap: h * 0.10),
+            .init(hz: B4,  dur: q * 0.92, gap: q * 0.08),
+            .init(hz: A4,  dur: q * 0.92, gap: q * 0.08),
+            .init(hz: G4,  dur: h * 0.88, gap: h * 0.12),
+            .init(hz: A4,  dur: q * 0.90, gap: q * 0.10),
+            .init(hz: B4,  dur: q * 0.90, gap: q * 0.10),
+            .init(hz: D5,  dur: q * 0.90, gap: q * 0.10),
+            .init(hz: E5,  dur: q * 0.90, gap: q * 0.10),
+            .init(hz: G5,  dur: h * 0.88, gap: h * 0.12),
+            .init(hz: A5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: G5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: E5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: D5,  dur: q * 0.88, gap: q * 0.12),
+            .init(hz: G4,  dur: h * 0.85, gap: h * 0.15),
+        ]
+
+        // Bass — G3 D4 G3 B3 (half notes, gentle).
+        let bassNotes: [MusicalNote] = [
+            .init(hz: G3, dur: h * 0.80, gap: h * 0.20),
+            .init(hz: D4, dur: h * 0.80, gap: h * 0.20),
+            .init(hz: G3, dur: h * 0.80, gap: h * 0.20),
+            .init(hz: B3, dur: h * 0.80, gap: h * 0.20),
+        ]
+
+        // Arpeggio — G4 B4 D5 G5 (eighth notes, firefly shimmer).
+        let arpNotes: [MusicalNote] = [
+            .init(hz: G4, dur: e * 0.68, gap: e * 0.32),
+            .init(hz: B4, dur: e * 0.68, gap: e * 0.32),
+            .init(hz: D5, dur: e * 0.68, gap: e * 0.32),
+            .init(hz: G5, dur: e * 0.68, gap: e * 0.32),
+        ]
+
+        // Pad — G4 D4 B4 D5 (half notes, lush sustained backing).
+        let padNotes: [MusicalNote] = [
+            .init(hz: G4, dur: h * 0.94, gap: h * 0.06),
+            .init(hz: D4, dur: h * 0.94, gap: h * 0.06),
+            .init(hz: B4, dur: h * 0.94, gap: h * 0.06),
+            .init(hz: D5, dur: h * 0.94, gap: h * 0.06),
+        ]
+
+        var voices: [AVAudioPCMBuffer] = []
+        if let v = buildNoteVoice(notes: melodyNotes, shape: .sine,     vol: 0.24, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: bassNotes,   shape: .triangle, vol: 0.17, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: arpNotes,    shape: .sine,     vol: 0.10, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: padNotes,    shape: .sine,     vol: 0.10, totalSamples: totalSamples) { voices.append(v) }
+        return voices
+    }
+
+    // -----------------------------------------------------------------------
+    // MARK: Track 7 — "Moon Garden" (E major, 104 BPM, ~18.46 s loop) [EVENING]
+    // -----------------------------------------------------------------------
+    // Quarter note = 60/104 ≈ 0.5769 s.  Loop = 32 q ≈ 18.462 s.
+    // Flowing 6/8-flavored melody (groups of 3 eighth notes), warm and lush.
+    // E major: G# (Gs4=415.305), B (B4=493.883), C# (Cs5=554.365).
+
+    private func buildTrack7_MoonGarden() -> [AVAudioPCMBuffer] {
+        let q: Float = 60.0 / 104.0
+        let e: Float = q / 2
+        let h: Float = q * 2
+
+        let E3: Float  = 164.814; let B3: Float  = 246.942; let Gs3: Float = 207.652
+        let E4: Float  = 329.628; let Gs4: Float = 415.305; let B4: Float  = 493.883
+        let E5: Float  = 659.255; let Gs5: Float = 830.609; let B5: Float  = 987.767
+        let Cs5: Float = 554.365; let Fs5: Float = 739.989
+
+        let loopDur: Float    = q * 32
+        let totalSamples: Int = Int(Float(format.sampleRate) * loopDur)
+
+        // Melody — flowing 6/8 groups (patterns of 3 eighth notes).
+        // 32 quarter slots = 64 eighth slots → use groupings of 3e (= 1 dotted-q).
+        let melodyNotes: [MusicalNote] = [
+            // Group 1 (dotted q = 3e)
+            .init(hz: E5,  dur: e * 0.88, gap: e * 0.12),
+            .init(hz: Gs5, dur: e * 0.88, gap: e * 0.12),
+            .init(hz: B5,  dur: e * 0.88, gap: e * 0.12),
+            // Group 2
+            .init(hz: Gs5, dur: e * 0.88, gap: e * 0.12),
+            .init(hz: Fs5, dur: e * 0.88, gap: e * 0.12),
+            .init(hz: E5,  dur: e * 0.88, gap: e * 0.12),
+            // Group 3
+            .init(hz: Cs5, dur: e * 0.88, gap: e * 0.12),
+            .init(hz: E5,  dur: e * 0.88, gap: e * 0.12),
+            .init(hz: Gs5, dur: e * 0.88, gap: e * 0.12),
+            // Group 4 — long note + rest
+            .init(hz: B4,  dur: e * 2.80, gap: e * 0.20),
+            // Group 5
+            .init(hz: E5,  dur: e * 0.88, gap: e * 0.12),
+            .init(hz: Cs5, dur: e * 0.88, gap: e * 0.12),
+            .init(hz: B4,  dur: e * 0.88, gap: e * 0.12),
+            // Group 6
+            .init(hz: Gs4, dur: e * 0.88, gap: e * 0.12),
+            .init(hz: B4,  dur: e * 0.88, gap: e * 0.12),
+            .init(hz: E5,  dur: e * 0.88, gap: e * 0.12),
+            // Group 7
+            .init(hz: Fs5, dur: e * 0.88, gap: e * 0.12),
+            .init(hz: Gs5, dur: e * 0.88, gap: e * 0.12),
+            .init(hz: B5,  dur: e * 0.88, gap: e * 0.12),
+            // Group 8 — final long resolution
+            .init(hz: E5,  dur: e * 2.80, gap: e * 0.20),
+        ]
+
+        // Bass — E3 B3 E3 Gs3 (half notes, warm walking).
+        let bassNotes: [MusicalNote] = [
+            .init(hz: E3,  dur: h * 0.78, gap: h * 0.22),
+            .init(hz: B3,  dur: h * 0.78, gap: h * 0.22),
+            .init(hz: E3,  dur: h * 0.78, gap: h * 0.22),
+            .init(hz: Gs3, dur: h * 0.78, gap: h * 0.22),
+        ]
+
+        // Arpeggio — E4 Gs4 B4 E5 (eighth notes, garden shimmer).
+        let arpNotes: [MusicalNote] = [
+            .init(hz: E4,  dur: e * 0.70, gap: e * 0.30),
+            .init(hz: Gs4, dur: e * 0.70, gap: e * 0.30),
+            .init(hz: B4,  dur: e * 0.70, gap: e * 0.30),
+            .init(hz: E5,  dur: e * 0.70, gap: e * 0.30),
+        ]
+
+        // Pad — E4 B4 Gs4 B4 (half notes, moonlit atmosphere).
+        let padNotes: [MusicalNote] = [
+            .init(hz: E4,  dur: h * 0.95, gap: h * 0.05),
+            .init(hz: B4,  dur: h * 0.95, gap: h * 0.05),
+            .init(hz: Gs4, dur: h * 0.95, gap: h * 0.05),
+            .init(hz: B4,  dur: h * 0.95, gap: h * 0.05),
+        ]
+
+        var voices: [AVAudioPCMBuffer] = []
+        if let v = buildNoteVoice(notes: melodyNotes, shape: .sine,     vol: 0.24, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: bassNotes,   shape: .triangle, vol: 0.17, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: arpNotes,    shape: .sine,     vol: 0.10, totalSamples: totalSamples) { voices.append(v) }
+        if let v = buildNoteVoice(notes: padNotes,    shape: .sine,     vol: 0.09, totalSamples: totalSamples) { voices.append(v) }
         return voices
     }
 

@@ -282,6 +282,19 @@ final class HUDView: NSView {
         drawText(modeStr, at: NSPoint(x: b.maxX - 110, y: b.maxY - 32), size: 13,
                  color: (hud.mode == BF_MODE_CREATIVE) ? .systemTeal : .systemOrange, bold: true)
 
+        // Weather line (under the mode badge). Tells the player what the
+        // on-screen precipitation overlay represents. 0=clear, 1=rain, 2=snow.
+        switch hud.weather {
+        case 1:
+            drawText("Rain", at: NSPoint(x: b.maxX - 110, y: b.maxY - 50), size: 12,
+                     color: NSColor(srgbRed: 0.62, green: 0.78, blue: 0.95, alpha: 1), bold: false)
+        case 2:
+            drawText("Snow", at: NSPoint(x: b.maxX - 110, y: b.maxY - 50), size: 12,
+                     color: NSColor(srgbRed: 0.92, green: 0.95, blue: 0.98, alpha: 1), bold: false)
+        default:
+            break   // clear: no label (unobtrusive)
+        }
+
         // Achievement toast (top-center banner) when one was just unlocked.
         let toast = withUnsafeBytes(of: hud.achievement_toast) { raw -> String in
             String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
@@ -468,19 +481,10 @@ final class HUDView: NSView {
         let base = itemChipColor(id)
         let chip = rect.insetBy(dx: 8, dy: 8)
         if id <= 40 {
-            // Block item → little isometric cube icon (top bright, sides shaded).
-            let cx = chip.midX, cy = chip.midY
-            let hw = chip.width * 0.46, qh = chip.height * 0.24, bd = chip.height * 0.34
-            let topApex   = NSPoint(x: cx,      y: cy + bd*0.5 + qh)
-            let rightApex = NSPoint(x: cx + hw, y: cy + bd*0.5)
-            let leftApex  = NSPoint(x: cx - hw, y: cy + bd*0.5)
-            let ctrTop    = NSPoint(x: cx,      y: cy + bd*0.5 - qh)
-            let botLeft   = NSPoint(x: cx - hw, y: cy - bd*0.5)
-            let botRight  = NSPoint(x: cx + hw, y: cy - bd*0.5)
-            let botCtr    = NSPoint(x: cx,      y: cy - bd*0.5 - qh)
-            fillPoly([leftApex, ctrTop, botCtr, botLeft],  shade(base, 0.74))   // left
-            fillPoly([ctrTop, rightApex, botRight, botCtr], shade(base, 0.56))  // right
-            fillPoly([topApex, rightApex, ctrTop, leftApex], shade(base, 1.15)) // top
+            // Block item → little isometric cube icon with a procedural texture
+            // pattern on each visible face, so the material reads at a glance
+            // (grass, stone, wood …) instead of three flat shaded diamonds.
+            drawTexturedCube(id: id, in: chip, base: base)
         } else {
             // Tool / material / food → distinct procedural icon per item, so
             // each is recognizable at a glance (no more uniform chips).
@@ -489,6 +493,276 @@ final class HUDView: NSView {
         if count > 1 {
             drawText("\(count)", at: NSPoint(x: rect.maxX - 18, y: rect.minY + 3),
                      size: 12, color: .white, bold: true)
+        }
+    }
+
+    // ===== Textured block cube icons =======================================
+    // A small isometric cube (top diamond + left + right faces) with a cheap
+    // procedural texture drawn ON each face so the material is recognizable —
+    // no block icon is ever a plain flat-coloured diamond. Texture ops are
+    // clipped to the exact face polygon via NSBezierPath.addClip inside a
+    // save/restore pair, so nothing bleeds outside the cube. Non-flipped: +y UP.
+
+    // Which texture "family" a block id belongs to. Keeps the dispatcher tidy.
+    private enum BlockTex {
+        case grass, grain, stone, sand, log, planks, leaves, snow, ice
+        case bricks, table, chest, glow, plain
+    }
+    private func blockTexFamily(_ id: bf_item_id) -> BlockTex {
+        switch id {
+        case 2:              return .grass
+        case 1, 6, 9, 11:    return .grain          // dirt / gravel / clay / dim dirt
+        case 3, 4, 16, 10, 21: return .stone        // stone / cobble / brick / dim / mossy
+        case 5:              return .sand
+        case 12, 14:         return .log            // oak / birch log
+        case 13, 15:         return .planks         // oak / birch planks
+        case 7:              return .snow
+        case 8:              return .ice
+        case 17:             return .bricks         // clay brick
+        case 22:             return .table          // crafting table
+        case 23:             return .chest
+        case 26, 27, 28, 31: return .glow           // beacon / glow / crystal lamp / crystal
+        default:             return .grain          // everything else gets some grain
+        }
+    }
+
+    // Run `body` with the drawing context clipped to the given polygon. Uses an
+    // explicit save/restore so the clip is always balanced (no force-unwrap;
+    // NSGraphicsContext.current is optional and we no-op if absent).
+    private func clipped(to pts: [NSPoint], _ body: () -> Void) {
+        guard let ctx = NSGraphicsContext.current else { return }
+        ctx.saveGraphicsState()
+        let clip = NSBezierPath()
+        clip.move(to: pts[0])
+        for q in pts.dropFirst() { clip.line(to: q) }
+        clip.close()
+        clip.addClip()
+        body()
+        ctx.restoreGraphicsState()
+    }
+
+    // A short line segment helper used by several textures.
+    private func tick(_ a: NSPoint, _ b: NSPoint, _ color: NSColor, width: CGFloat) {
+        let p = NSBezierPath(); p.lineCapStyle = .round
+        p.move(to: a); p.line(to: b)
+        color.setStroke(); p.lineWidth = width; p.stroke()
+    }
+
+    private func drawTexturedCube(id: bf_item_id, in chip: NSRect, base: NSColor) {
+        let cx = chip.midX, cy = chip.midY
+        let hw = chip.width * 0.46, qh = chip.height * 0.24, bd = chip.height * 0.34
+        let topApex   = NSPoint(x: cx,      y: cy + bd*0.5 + qh)
+        let rightApex = NSPoint(x: cx + hw, y: cy + bd*0.5)
+        let leftApex  = NSPoint(x: cx - hw, y: cy + bd*0.5)
+        let ctrTop    = NSPoint(x: cx,      y: cy + bd*0.5 - qh)
+        let botLeft   = NSPoint(x: cx - hw, y: cy - bd*0.5)
+        let botRight  = NSPoint(x: cx + hw, y: cy - bd*0.5)
+        let botCtr    = NSPoint(x: cx,      y: cy - bd*0.5 - qh)
+
+        let leftFace  = [leftApex, ctrTop, botCtr, botLeft]
+        let rightFace = [ctrTop, rightApex, botRight, botCtr]
+        let topFace   = [topApex, rightApex, ctrTop, leftApex]
+
+        // Base shaded faces (same shading as before; texture draws on top).
+        let fam = blockTexFamily(id)
+        // Grass uses a dirt-brown body for the sides and a green top.
+        let sideBase = (fam == .grass) ? itemColor(0.50, 0.36, 0.23) : base
+        fillPoly(leftFace,  shade(sideBase, 0.74))
+        fillPoly(rightFace, shade(sideBase, 0.56))
+        fillPoly(topFace,   shade(base, 1.15))
+
+        // Texture each face, clipped to its polygon, with the face's own shade so
+        // the pattern reads as lit consistently with the underlying fill.
+        clipped(to: topFace)   { texture(fam, face: topFace,   shaded: shade(base, 1.15), kind: .top) }
+        clipped(to: leftFace)  { texture(fam, face: leftFace,  shaded: shade(sideBase, 0.74), kind: .left) }
+        clipped(to: rightFace) { texture(fam, face: rightFace, shaded: shade(sideBase, 0.56), kind: .right) }
+    }
+
+    private enum FaceKind { case top, left, right }
+
+    // Bounding box of a face polygon (used to size/iterate texture features).
+    private func bbox(_ pts: [NSPoint]) -> NSRect {
+        var minX = pts[0].x, maxX = pts[0].x, minY = pts[0].y, maxY = pts[0].y
+        for p in pts.dropFirst() {
+            minX = Swift.min(minX, p.x); maxX = Swift.max(maxX, p.x)
+            minY = Swift.min(minY, p.y); maxY = Swift.max(maxY, p.y)
+        }
+        return NSRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    // Per-family texture painter. `shaded` is the face's base colour; derive
+    // lighter/darker speckle colours from it so every face stays self-consistent.
+    private func texture(_ fam: BlockTex, face: [NSPoint],
+                         shaded: NSColor, kind: FaceKind) {
+        let r = bbox(face)
+        let dark = shade(shaded, 0.78)
+        let light = lighten(shaded, 0.30)
+        switch fam {
+        case .grass:
+            if kind == .top {
+                // Green top speckled with short upright blade ticks.
+                for o in [CGPoint(x: 0.30, y: 0.45), CGPoint(x: 0.50, y: 0.62),
+                          CGPoint(x: 0.62, y: 0.40), CGPoint(x: 0.42, y: 0.30),
+                          CGPoint(x: 0.55, y: 0.50), CGPoint(x: 0.38, y: 0.58)] {
+                    let p = NSPoint(x: r.minX + r.width * o.x, y: r.minY + r.height * o.y)
+                    tick(p, NSPoint(x: p.x, y: p.y + r.height * 0.10),
+                         lighten(shaded, 0.45), width: 1)
+                }
+            } else {
+                // Brown dirt side with a green fringe band along the top edge.
+                // The outer per-face clip already constrains this to the face.
+                let fringeH = r.height * 0.22
+                itemColor(0.40, 0.62, 0.30).setFill()
+                NSBezierPath(rect: NSRect(x: r.minX, y: r.maxY - fringeH,
+                                          width: r.width, height: fringeH)).fill()
+                speckle(in: r, count: 5, color: dark, size: r.width * 0.05)
+            }
+        case .grain:
+            speckle(in: r, count: 7, color: dark, size: r.width * 0.05)
+            speckle(in: r, count: 4, color: light, size: r.width * 0.04)
+        case .stone:
+            // Grey mottling + a few darker crack/cell lines (underground look).
+            speckle(in: r, count: 6, color: dark, size: r.width * 0.06)
+            speckle(in: r, count: 3, color: light, size: r.width * 0.04)
+            let cracks: [(CGPoint, CGPoint)] = [
+                (CGPoint(x: 0.20, y: 0.30), CGPoint(x: 0.45, y: 0.55)),
+                (CGPoint(x: 0.55, y: 0.65), CGPoint(x: 0.78, y: 0.45)),
+                (CGPoint(x: 0.40, y: 0.70), CGPoint(x: 0.50, y: 0.40)),
+            ]
+            for (a, bpt) in cracks {
+                tick(NSPoint(x: r.minX + r.width * a.x, y: r.minY + r.height * a.y),
+                     NSPoint(x: r.minX + r.width * bpt.x, y: r.minY + r.height * bpt.y),
+                     shade(shaded, 0.62), width: 1)
+            }
+        case .sand:
+            // Fine horizontal ripple lines.
+            let n = 4
+            for i in 1...n {
+                let y = r.minY + r.height * CGFloat(i) / CGFloat(n + 1)
+                tick(NSPoint(x: r.minX + r.width * 0.10, y: y),
+                     NSPoint(x: r.maxX - r.width * 0.10, y: y),
+                     dark.withAlphaComponent(0.7), width: 0.8)
+            }
+        case .log:
+            if kind == .top {
+                // Concentric rings on the cut end.
+                let c = NSPoint(x: r.midX, y: r.midY)
+                for f in [0.62, 0.40, 0.20] {
+                    let rad = r.width * 0.5 * CGFloat(f)
+                    let rect = NSRect(x: c.x - rad, y: c.y - rad * 0.6,
+                                      width: rad * 2, height: rad * 1.2)
+                    let p = NSBezierPath(ovalIn: rect)
+                    dark.setStroke(); p.lineWidth = 1; p.stroke()
+                }
+            } else {
+                // Vertical grain lines along the bark side.
+                for fx in [0.30, 0.50, 0.70] {
+                    let x = r.minX + r.width * CGFloat(fx)
+                    tick(NSPoint(x: x, y: r.minY + r.height * 0.08),
+                         NSPoint(x: x, y: r.maxY - r.height * 0.08),
+                         dark, width: 1)
+                }
+            }
+        case .planks:
+            // Plank seam lines: horizontal boards on the top, with end nicks.
+            let n = 3
+            for i in 1...n {
+                let y = r.minY + r.height * CGFloat(i) / CGFloat(n + 1)
+                tick(NSPoint(x: r.minX + r.width * 0.08, y: y),
+                     NSPoint(x: r.maxX - r.width * 0.08, y: y),
+                     dark, width: 1)
+            }
+        case .leaves:
+            for o in [CGPoint(x: 0.30, y: 0.40), CGPoint(x: 0.55, y: 0.55),
+                      CGPoint(x: 0.45, y: 0.30), CGPoint(x: 0.65, y: 0.42)] {
+                fillCircle(NSPoint(x: r.minX + r.width * o.x, y: r.minY + r.height * o.y),
+                           r.width * 0.08, light, outline: nil)
+            }
+            speckle(in: r, count: 4, color: dark, size: r.width * 0.05)
+        case .snow:
+            // White with a few sparkle dots.
+            speckle(in: r, count: 4, color: .white, size: r.width * 0.05)
+            for o in [CGPoint(x: 0.35, y: 0.55), CGPoint(x: 0.60, y: 0.40)] {
+                drawSparkle(at: NSPoint(x: r.minX + r.width * o.x, y: r.minY + r.height * o.y),
+                            s: r.width * 0.07, color: .white)
+            }
+        case .ice:
+            // Pale blue with thin crack-like facet lines.
+            let cracks: [(CGPoint, CGPoint)] = [
+                (CGPoint(x: 0.25, y: 0.30), CGPoint(x: 0.55, y: 0.65)),
+                (CGPoint(x: 0.50, y: 0.35), CGPoint(x: 0.75, y: 0.55)),
+            ]
+            for (a, bpt) in cracks {
+                tick(NSPoint(x: r.minX + r.width * a.x, y: r.minY + r.height * a.y),
+                     NSPoint(x: r.minX + r.width * bpt.x, y: r.minY + r.height * bpt.y),
+                     lighten(shaded, 0.55), width: 0.8)
+            }
+        case .bricks:
+            // Offset brick courses: horizontal mortar lines + staggered verticals.
+            let rows = 3
+            for i in 1...rows {
+                let y = r.minY + r.height * CGFloat(i) / CGFloat(rows + 1)
+                tick(NSPoint(x: r.minX, y: y), NSPoint(x: r.maxX, y: y), dark, width: 0.9)
+            }
+            for i in 0..<rows {
+                let y0 = r.minY + r.height * CGFloat(i) / CGFloat(rows + 1)
+                let y1 = r.minY + r.height * CGFloat(i + 1) / CGFloat(rows + 1)
+                let xoff: CGFloat = (i % 2 == 0) ? 0.34 : 0.66
+                let x = r.minX + r.width * xoff
+                tick(NSPoint(x: x, y: y0), NSPoint(x: x, y: y1), dark, width: 0.9)
+            }
+        case .table:
+            if kind == .top {
+                // Grid lines on the top (a 2x2 work surface).
+                tick(NSPoint(x: r.midX, y: r.minY + r.height * 0.10),
+                     NSPoint(x: r.midX, y: r.maxY - r.height * 0.10), dark, width: 1)
+                tick(NSPoint(x: r.minX + r.width * 0.12, y: r.midY),
+                     NSPoint(x: r.maxX - r.width * 0.12, y: r.midY), dark, width: 1)
+            } else {
+                for fx in [0.40, 0.60] {
+                    let x = r.minX + r.width * CGFloat(fx)
+                    tick(NSPoint(x: x, y: r.minY + r.height * 0.10),
+                         NSPoint(x: x, y: r.maxY - r.height * 0.10), dark, width: 1)
+                }
+            }
+        case .chest:
+            if kind == .top {
+                speckle(in: r, count: 3, color: dark, size: r.width * 0.05)
+            } else {
+                // Lid seam across the upper third + a small latch in the centre.
+                let seamY = r.minY + r.height * 0.62
+                tick(NSPoint(x: r.minX, y: seamY), NSPoint(x: r.maxX, y: seamY), dark, width: 1.2)
+                let latch = NSRect(x: r.midX - r.width * 0.07, y: seamY - r.height * 0.10,
+                                   width: r.width * 0.14, height: r.height * 0.18)
+                shade(shaded, 0.55).setFill(); NSBezierPath(rect: latch).fill()
+            }
+        case .glow:
+            // Bright with a sparkle/facet motif (lamp / crystal / beacon / glow).
+            fillCircle(NSPoint(x: r.midX, y: r.midY), r.width * 0.16,
+                       lighten(shaded, 0.6).withAlphaComponent(0.7), outline: nil)
+            drawSparkle(at: NSPoint(x: r.midX, y: r.midY), s: r.width * 0.16, color: .white)
+            for o in [CGPoint(x: 0.30, y: 0.40), CGPoint(x: 0.65, y: 0.55)] {
+                drawSparkle(at: NSPoint(x: r.minX + r.width * o.x, y: r.minY + r.height * o.y),
+                            s: r.width * 0.07, color: .white)
+            }
+        case .plain:
+            speckle(in: r, count: 5, color: dark, size: r.width * 0.05)
+        }
+    }
+
+    // Deterministic speckle: a fixed scatter of small dots inside a rect. Cheap
+    // and stable frame-to-frame (no RNG), readable at ~40px.
+    private func speckle(in r: NSRect, count: Int, color: NSColor, size: CGFloat) {
+        // A fixed low-discrepancy-ish set of offsets in [0,1]^2.
+        let pts: [CGPoint] = [
+            CGPoint(x: 0.22, y: 0.34), CGPoint(x: 0.58, y: 0.24), CGPoint(x: 0.40, y: 0.52),
+            CGPoint(x: 0.70, y: 0.46), CGPoint(x: 0.30, y: 0.66), CGPoint(x: 0.62, y: 0.64),
+            CGPoint(x: 0.48, y: 0.38), CGPoint(x: 0.35, y: 0.45), CGPoint(x: 0.55, y: 0.58),
+        ]
+        for i in 0..<Swift.min(count, pts.count) {
+            let o = pts[i]
+            fillCircle(NSPoint(x: r.minX + r.width * o.x, y: r.minY + r.height * o.y),
+                       size, color, outline: nil)
         }
     }
 

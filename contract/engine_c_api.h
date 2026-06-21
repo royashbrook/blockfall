@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 5u   /* v5: HUD achievement toast + counts (ADR 0008) */
+#define BF_ABI_VERSION 6u   /* v6: engine-owned weather (camera + HUD) (ADR 0009) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -231,6 +231,7 @@ typedef struct bf_camera {
     float   time_of_day;      /* 0..1, 0=midnight 0.5=noon                   */
     bf_vec3 sun_dir;
     float   underwater;       /* 1 when the eye is submerged (for water tint)  */
+    float   weather;          /* 0=clear, 1=rain, 2=snow (drives the overlay)  */
 } bf_camera;
 
 /* ---- HUD state (read-only snapshot for the SwiftUI/Metal overlay) ------- */
@@ -272,6 +273,7 @@ typedef struct bf_hud_state {
     char         achievement_toast[48]; /* recently-unlocked achievement banner, "" if none */
     uint8_t      achievements_done;
     uint8_t      achievements_total;
+    uint8_t      weather;          /* 0=clear, 1=rain, 2=snow (for the HUD label) */
 } bf_hud_state;
 
 /* The whole frame, borrowed from the engine between acquire/end. */

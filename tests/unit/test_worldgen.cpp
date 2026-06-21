@@ -923,42 +923,32 @@ static void test_flatness() {
 }
 
 // ---------------------------------------------------------------------------
-// 15. TREE VARIETY AND UNDERGROWTH (M5)
+// 15. TREE VARIETY (M5)
 //     Verify that:
 //       a) Trees of at least two distinct trunk heights appear in a scan
-//          (confirming the new 4..8 range rather than uniform 4..6).
+//          (confirming the new 4..12 range rather than uniform 4..6).
 //       b) At least one "short" tree (trunk ≤ 5 blocks) and one "tall" tree
 //          (trunk ≥ 7 blocks) appear — confirming the full height range.
-//       c) OAK_LEAVES or BIRCH_LEAVES appear at low world-y in a flat biome
-//          context — i.e., as ground-level bushes, not just canopy blocks.
-//          We detect this by finding a leaf block whose world-y is < 20
-//          (well below any tall tree canopy) in a chunk that has surface
-//          grass at y ~ 7-14.  Such blocks are ground-level bushes placed
-//          by the undergrowth scatter pass.
 //
 //     Strategy: generate many chunks, record trunk heights by counting
-//     contiguous log columns, and scan for low-elevation leaf blocks.
+//     contiguous log columns.
 // ---------------------------------------------------------------------------
 static void test_tree_variety_and_undergrowth() {
     constexpr std::uint64_t SEED = 0x7A3E2B1C5D0F9E8Aull;
     TerrainGen g;
     g.seed(SEED);
 
-    constexpr BlockId OAK_LOG_ID      = 21;
-    constexpr BlockId BIRCH_LOG_ID    = 22;
-    constexpr BlockId OAK_LEAVES_ID   = 5;
-    constexpr BlockId BIRCH_LEAVES_ID = 27;
+    constexpr BlockId OAK_LOG_ID   = 21;
+    constexpr BlockId BIRCH_LOG_ID = 22;
 
     // We collect trunk heights by scanning vertical log columns.
-    // For each (wx, wz) we record the number of consecutive log blocks.
     bool found_short_tree = false;  // trunk height <= 5
     bool found_tall_tree  = false;  // trunk height >= 7
-    bool found_ground_bush = false; // leaf block at wy < 20 in a flat chunk
 
     constexpr int SCAN_R = 10;
 
-    for (int cz = -SCAN_R; cz <= SCAN_R && !(found_short_tree && found_tall_tree && found_ground_bush); ++cz) {
-        for (int cx = -SCAN_R; cx <= SCAN_R && !(found_short_tree && found_tall_tree && found_ground_bush); ++cx) {
+    for (int cz = -SCAN_R; cz <= SCAN_R && !(found_short_tree && found_tall_tree); ++cz) {
+        for (int cx = -SCAN_R; cx <= SCAN_R && !(found_short_tree && found_tall_tree); ++cx) {
             // We need y-chunks 0 and 1 to see trunks and canopies.
             PaletteChunk ch0({cx, 0, cz}, 0);
             PaletteChunk ch1({cx, 1, cz}, 0);
@@ -973,14 +963,10 @@ static void test_tree_variety_and_undergrowth() {
             auto is_log = [](BlockId b) -> bool {
                 return b == OAK_LOG_ID || b == BIRCH_LOG_ID;
             };
-            auto is_leaf = [](BlockId b) -> bool {
-                return b == OAK_LEAVES_ID || b == BIRCH_LEAVES_ID;
-            };
 
             for (int lz = 0; lz < kChunkDim; ++lz) {
                 for (int lx = 0; lx < kChunkDim; ++lx) {
                     // Count consecutive log blocks starting from ground up.
-                    // Find first log block in column.
                     int log_start = -1;
                     int log_count = 0;
                     for (int wy = 0; wy < 30; ++wy) {
@@ -993,25 +979,6 @@ static void test_tree_variety_and_undergrowth() {
                     }
                     if (log_count >= 4 && log_count <= 5) found_short_tree = true;
                     if (log_count >= 7)                    found_tall_tree  = true;
-
-                    // Detect ground-level bush: leaf block at wy < 20 where
-                    // there is NO log block anywhere in this (lx,lz) column.
-                    // (If there's a log, this column is under a tree canopy —
-                    // leaves there are canopy, not bush.)
-                    if (!found_ground_bush) {
-                        bool col_has_log = false;
-                        for (int wy = 0; wy < 30; ++wy) {
-                            if (is_log(get_block(lx, wy, lz))) { col_has_log = true; break; }
-                        }
-                        if (!col_has_log) {
-                            for (int wy = 1; wy < 20; ++wy) {
-                                if (is_leaf(get_block(lx, wy, lz))) {
-                                    found_ground_bush = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -1021,8 +988,6 @@ static void test_tree_variety_and_undergrowth() {
           "tree variety: short trees (trunk height 4-5) found in world scan");
     CHECK(found_tall_tree,
           "tree variety: tall trees (trunk height >=7) found in world scan");
-    CHECK(found_ground_bush,
-          "undergrowth: ground-level leaf/bush block found (not under a tree trunk)");
 }
 
 // ---------------------------------------------------------------------------
