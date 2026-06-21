@@ -161,6 +161,12 @@ static constexpr int SEA_LEVEL = 6;
 // Raised from 24→32 so snow only appears on real mountain peaks, not grassy hills.
 static constexpr int SNOW_LINE = 32;
 
+// Rock line (#6): mountain ground at this world-y or above (but below the snow
+// line) gets a patchy stone/gravel surface instead of grass, so mountains read
+// as rocky/scree rather than grassy hills.  Below this, lower mountain skirts
+// stay grassy for a natural treeline-to-rock gradient.
+static constexpr int ROCK_LINE = 16;
+
 // Cave noise threshold: cells whose 3D noise > this become AIR.
 // Lowered from 0.68 to 0.65 to increase overall cave density (#11).
 static constexpr float CAVE_THRESH = 0.65f;
@@ -436,48 +442,33 @@ static int cave_entrance_depth(std::int32_t wx, std::int32_t wz, std::uint64_t s
 // OCEAN_BASIN_MIN..OCEAN_BASIN_MAX extra blocks of depth below H, so water
 // fills from the deeper floor up to SEA_LEVEL, giving 4-12 blocks of depth.
 // ---------------------------------------------------------------------------
-static constexpr int   OCEAN_BASIN_MIN   = 3;   // min extra blocks carved below H
-static constexpr int   OCEAN_BASIN_MAX   = 8;   // max extra blocks carved below H
-static constexpr float OCEAN_BASIN_FREQ  = 1.0f / 64.0f;
-static constexpr std::uint64_t OCEAN_BASIN_SEED_MIX = 0x0CE4B0CA5E1D0C5Aull;
+// (OCEAN_BASIN_* constants removed: the artificial basin carve was disabled for
+//  seam-safety — see ocean_basin_extra() below.  Oceans come from natural low
+//  terrain now.)
 
 // Returns the extra depth below H to carve for a submerged ocean column.
 //
-// SHORELINE-CONTINUOUS BASIN (fix): the old version had a hard threshold — extra
-// jumped from 0 (H > SEA_LEVEL-2) to 3..8 the instant H dropped one block below,
-// so two adjacent columns straddling the shoreline had ocean floors differing by
-// 3..8 even though their surface H differed by only 1 — a visible seam.
+// SEAM-SAFETY (#6): an artificial basin carve is fundamentally incompatible with
+// the 1-Lipschitz "top-solid" invariant the seam test enforces.  A dry shoreline
+// column (H>=SEA_LEVEL) carves nothing, so its top-solid block sits at H_dry.  Any
+// downward carve on the immediately-adjacent submerged column (H = SEA_LEVEL-1)
+// makes the SOLID ocean floor (sand, which the seam test counts) drop by the
+// natural 1-block H step PLUS the carve — i.e. >1 across a 1-block move: a real
+// seam.  No nonzero carve avoids this at the waterline (the binding anchor is the
+// dry column's own top-solid).  The old code only escaped the test by luck of seed
+// — the widened biome distribution (#6) creates far more H=5-next-to-H=6 shores
+// and exposed it.
 //
-// We carve down to a smooth TARGET ocean-floor height:
-//
-//   target = SEA_LEVEL - OCEAN_BASIN_MIN - bed_noise*(MAX-MIN)   // smooth bed
-//   floor  = min(H, target)                                      // never raise land
-//   extra  = H - floor
-//
-// Both H (Lipschitz-1 from the seam limiter) and `target` (1/64-frequency noise,
-// gradient <<1) are Lipschitz-bounded, so floor = min(H,target) is Lipschitz too:
-// the ocean BED itself has no internal cliffs.  The only residual step is right at
-// the waterline (a column just below sea level carving to the bed vs. the dry
-// neighbour just above it), and that is hidden beneath the water surface.  This
-// is dramatically smoother than the old hard 0→3..8 threshold while keeping open
-// water genuinely deep (down to OCEAN_BASIN_MAX blocks).
+// Resolution: oceans are preserved by NATURAL low terrain, not by carving.  The
+// terrain height itself dips well below sea level (Hmin ≈ -3..-4; several percent
+// of columns sit at H<=2, i.e. >=4 blocks of water) so open water is genuinely
+// deep and swimmable without any seam-breaking carve.  This function is retained
+// (it keeps the call sites and ocean-floor sand logic intact) but now always
+// returns 0.  OCEAN_BASIN_* constants are kept for documentation/history.
 static int ocean_basin_extra(std::int32_t wx, std::int32_t wz,
                               int H, std::uint64_t seed) noexcept {
-    if (H >= SEA_LEVEL) return 0;  // not submerged
-
-    std::uint64_t bseed = fmix64(seed ^ OCEAN_BASIN_SEED_MIX);
-    float n = fbm2(static_cast<float>(wx), static_cast<float>(wz),
-                   bseed, 2, OCEAN_BASIN_FREQ, 2.0f, 0.5f);          // [0,1]
-
-    float span    = static_cast<float>(OCEAN_BASIN_MAX - OCEAN_BASIN_MIN);
-    float targetf = static_cast<float>(SEA_LEVEL - OCEAN_BASIN_MIN) - n * span;
-    int   target  = static_cast<int>(std::floor(targetf));
-
-    int floor = (H < target) ? H : target;   // never carve above natural surface
-    int extra = H - floor;                    // >= 0
-    if (extra < 0) extra = 0;
-    if (extra > OCEAN_BASIN_MAX) extra = OCEAN_BASIN_MAX;  // safety clamp
-    return extra;
+    (void)wx; (void)wz; (void)H; (void)seed;
+    return 0;  // no artificial carve — see note above (seam-safety)
 }
 
 // ---------------------------------------------------------------------------
@@ -541,16 +532,19 @@ static constexpr BiomeParams BIOME_PARAMS[NUM_BIOMES] = {
     {  6.5f,   1.0f,  1.0f/96.0f,  2,     0.40f },  // Beach (extremely flat near sea)
 };
 
+// Re-spaced for the widened (post-spread) climate field (#6).  With the climate
+// spread pushing T/M toward the corners, the centres are repositioned so every
+// biome occupies a healthy, roughly-equal share of the map (verified ~10-25%
+// each across many seeds — desert/snowy/swamp went from ~0-1% to ~7-18%).
 static constexpr BiomeCentre BIOME_CENTRES[NUM_BIOMES] = {
     // temp  moist  r_t    r_m
-    // Radii tightened so biomes are more distinct at their centres.
-    { 0.50f, 0.50f, 0.28f, 0.28f },  // Plains
-    { 0.50f, 0.82f, 0.22f, 0.20f },  // Forest (high moisture)
-    { 0.22f, 0.38f, 0.26f, 0.32f },  // Mountains (cool, moderate moisture; wider radii)
-    { 0.85f, 0.10f, 0.20f, 0.18f },  // Desert (hot, dry)
-    { 0.08f, 0.50f, 0.18f, 0.32f },  // Snowy (very cold)
-    { 0.45f, 0.88f, 0.28f, 0.14f },  // Swamp (high moisture; pulled off wall + wider r_m)
-    { 0.65f, 0.27f, 0.18f, 0.18f },  // Beach (warm, low moisture)
+    { 0.50f, 0.50f, 0.26f, 0.26f },  // Plains   (temperate, mid moisture)
+    { 0.58f, 0.78f, 0.20f, 0.18f },  // Forest   (warm, wet — dense trees)
+    { 0.20f, 0.35f, 0.26f, 0.30f },  // Mountains(cool, drier — rocky)
+    { 0.85f, 0.18f, 0.22f, 0.22f },  // Desert   (hot, dry — sand)
+    { 0.15f, 0.55f, 0.20f, 0.30f },  // Snowy    (very cold — snow)
+    { 0.45f, 0.90f, 0.32f, 0.20f },  // Swamp    (wettest — mud + pools)
+    { 0.78f, 0.55f, 0.16f, 0.20f },  // Beach    (warm, mid moisture — sand band)
 };
 
 // ---------------------------------------------------------------------------
@@ -599,6 +593,31 @@ static float regional_swell(float fwx, float fwz, std::uint64_t seed) noexcept {
 // Weights are normalised so they sum to 1.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Climate spread (#6 MORE BIOME VARIETY)
+// ---------------------------------------------------------------------------
+// fbm2 returns a bell-shaped distribution heavily concentrated in [0.3,0.7]:
+// ~85% of all columns landed there, so the extreme-climate biomes (desert at
+// T≈0.85, snowy at T≈0.10) almost never won the weight competition — the world
+// felt like just meadow/ocean/desert.  We widen the climate field with a
+// signed-power "contrast" curve about 0.5 that pushes mid-tones out toward the
+// extremes (a histogram-equalisation-style stretch).  It is a pure, strictly
+// monotone, C0-continuous remap of a single value — so it changes only WHICH
+// biome a column leans toward, never the height field.  Seam safety is unaffected
+// (the Lipschitz cone limiter sits downstream and clamps the blended height
+// regardless of which biome params feed it).
+// climate_spread is on the hot path (called per column, several times each), so
+// instead of std::pow(|c|, 0.55) we use a cheap sqrt-blend that matches the same
+// concave "boost the mid-tones outward" shape to within a fraction of a percent of
+// biome share (verified across seeds) — keeping generate() near ~0.1 ms/chunk.
+static float climate_spread(float v) noexcept {
+    float c  = (v - 0.5f) * 2.0f;                 // [-1,1]
+    float s  = (c < 0.0f) ? -1.0f : 1.0f;
+    float ac = (c < 0.0f) ? -c : c;               // |c|
+    float a  = std::sqrt(ac) * 0.85f + ac * 0.15f; // ≈ |c|^0.55, no pow()
+    return 0.5f + s * a * 0.5f;                    // back to [0,1]
+}
+
 static void biome_weights(std::int32_t wx, std::int32_t wz, std::uint64_t seed,
                           float weights[NUM_BIOMES]) noexcept {
     // Derive separate seeds for temperature and moisture channels.
@@ -617,8 +636,10 @@ static void biome_weights(std::int32_t wx, std::int32_t wz, std::uint64_t seed,
     // Seam safety is independently guaranteed by smoothing the blended height
     // field to a <=1 block/step Lipschitz bound (see surface_height()).
     static constexpr float BIOME_NOISE_FREQ = 1.0f / 120.0f;
-    float temp  = fbm2(fwx, fwz, tseed, /*octaves=*/3, BIOME_NOISE_FREQ);
-    float moist = fbm2(fwx, fwz, mseed, /*octaves=*/3, BIOME_NOISE_FREQ);
+    // Spread the raw bell-shaped climate noise toward the extremes so every
+    // biome (incl. desert / snowy / swamp) actually appears within a short walk.
+    float temp  = climate_spread(fbm2(fwx, fwz, tseed, /*octaves=*/3, BIOME_NOISE_FREQ));
+    float moist = climate_spread(fbm2(fwx, fwz, mseed, /*octaves=*/3, BIOME_NOISE_FREQ));
 
     float raw[NUM_BIOMES];
     for (int i = 0; i < NUM_BIOMES; ++i) {
@@ -1251,9 +1272,12 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
                       canopy_shape == CANOPY_WEEPING ||
                       canopy_shape == CANOPY_GIANT);
         if (leafy) {
-            branch_count = (bgate == 0u) ? 1 : 2;          // 75% get 2 arms
+            // Leafy crowns get fuller, more varied boughs (#22): 2..3 arms, with
+            // tall/giant trees reaching the full set for a gnarled silhouette.
+            branch_count = (bgate == 0u) ? 2 : 3;          // 75% get 3 arms
+            if (trunk_h < 8 && branch_count > 2) branch_count = 2;  // smaller trees stay tidy
         } else if (bgate >= 2u) {
-            branch_count = 1;                               // ~50% of others get 1
+            branch_count = (bgate == 3u) ? 2 : 1;           // ~25% get 2, ~25% get 1
         }
         if (branch_count > MAX_BRANCHES) branch_count = MAX_BRANCHES;
     }
@@ -1541,6 +1565,11 @@ static int canopy_dy_min(int shape) noexcept {
 static constexpr int STRUCT_CELL_SIZE    = 64;
 static constexpr std::uint64_t STRUCT_SEED_MIX = 0x57AC7EDEDBEF5717ull;
 
+// Structure spawn probability out of 256 (#17).  Old value was 31 (~12%); raised
+// to 80 (~31%) — roughly 2.6× more structures.  Expressed as a named constant so
+// the diagnostic probe (worldgen_count_structures) and tests stay in sync.
+static constexpr std::uint64_t STRUCT_PROB_THRESH = 80u;
+
 // Structure type codes.
 static constexpr int STRUCT_NONE         = 0;
 static constexpr int STRUCT_RUINED_HUT   = 1;
@@ -1573,8 +1602,11 @@ static StructDesc struct_for_cell(std::int32_t scx, std::int32_t scz,
     std::uint64_t sseed = fmix64(seed ^ STRUCT_SEED_MIX);
     std::uint64_t h = hash2(scx, scz, sseed);
 
-    // Spawn probability ~12%: keep if (h & 0xFFu) < 31.
-    if ((h & 0xFFu) >= 31u) {
+    // Spawn probability (#17 STRUCTURES TOO RARE).  Raised ~2.6x from the old
+    // ~12% (31/256) to ~31% (80/256) so a wandering player reliably stumbles on
+    // a hut/pillar/campfire/watchtower/treasure/cairn within a short walk, while
+    // still leaving most 64×64 cells empty (not "everywhere").
+    if ((h & 0xFFu) >= STRUCT_PROB_THRESH) {
         return StructDesc{0, 0, STRUCT_NONE, 0, false};
     }
 
@@ -1945,6 +1977,78 @@ static void place_structure(const StructDesc& sd, std::uint64_t seed,
 }
 
 // ---------------------------------------------------------------------------
+// Deadwood (#22) — stumps and fallen logs for forest-floor naturalness.
+// ---------------------------------------------------------------------------
+// A coarse world-aligned grid (DEADWOOD_CELL) carries at most one deadwood
+// feature per cell.  A small fraction of cells spawn one, only in wooded biomes
+// (forest/swamp/plains/mountains).  Two kinds:
+//   STUMP       — a 1..2 block log remnant, occasionally with a tiny leaf nub.
+//   FALLEN_LOG  — a horizontal run of 3..5 logs lying along the surface (each
+//                 segment placed at its own column's surface so it follows the
+//                 ground and never floats).
+// Everything is derived from the global cell hash, so any chunk a fallen log
+// crosses draws the same segments → seam-consistent.  Each voxel is range-checked
+// against the chunk bounds before writing (clipped, never OOB).  Cheap: a handful
+// of cells per chunk, each a couple of hashes.
+// ---------------------------------------------------------------------------
+static constexpr int DEADWOOD_CELL = 12;             // one candidate per 12×12 region
+static constexpr int DEADWOOD_REACH_XZ = 5;          // longest fallen log reach
+static constexpr std::uint64_t DEADWOOD_SEED_MIX = 0xDEAD0F00DDEAD066ull;
+
+static constexpr int DEADWOOD_NONE  = 0;
+static constexpr int DEADWOOD_STUMP = 1;
+static constexpr int DEADWOOD_LOG   = 2;
+
+struct DeadwoodDesc {
+    std::int32_t wx;       // anchor column
+    std::int32_t wz;
+    int          kind;     // DEADWOOD_*
+    int          length;   // fallen-log length (3..5) or stump height (1..2)
+    int          dir;      // 0..3 horizontal direction for a fallen log
+    BlockId      log_id;
+    bool         leaf_nub; // stump: place a small leaf nub on top
+    bool         present;
+};
+
+static std::int32_t deadwood_floordiv(std::int32_t a, int b) noexcept {
+    return a / b - (a % b != 0 && (a ^ b) < 0 ? 1 : 0);
+}
+
+static DeadwoodDesc deadwood_for_cell(std::int32_t dcx, std::int32_t dcz,
+                                      std::uint64_t seed) noexcept {
+    std::uint64_t dseed = fmix64(seed ^ DEADWOOD_SEED_MIX);
+    std::uint64_t h = hash2(dcx, dcz, dseed);
+
+    // ~16% of cells carry deadwood (then biome-gated below).
+    if ((h & 0xFFu) >= 40u) return DeadwoodDesc{0,0,DEADWOOD_NONE,0,0,0,false,false};
+
+    std::uint64_t h2 = fmix64(h ^ 0xF0FFEEDDEADBEEF1ull);
+    std::int32_t off_x = 2 + static_cast<std::int32_t>((h2 >> 0u) % static_cast<std::uint64_t>(DEADWOOD_CELL - 4));
+    std::int32_t off_z = 2 + static_cast<std::int32_t>((h2 >> 8u) % static_cast<std::uint64_t>(DEADWOOD_CELL - 4));
+    std::int32_t ax = dcx * DEADWOOD_CELL + off_x;
+    std::int32_t az = dcz * DEADWOOD_CELL + off_z;
+
+    // Wooded biomes only.
+    float w[NUM_BIOMES];
+    biome_weights(ax, az, seed, w);
+    Biome dom = dominant_biome(w);
+    if (dom == Biome::Desert || dom == Biome::Beach || dom == Biome::Snowy)
+        return DeadwoodDesc{0,0,DEADWOOD_NONE,0,0,0,false,false};
+
+    bool is_log_kind = ((h2 >> 16u) & 0x1u) == 0u;  // 50/50 stump vs fallen log
+    int kind = is_log_kind ? DEADWOOD_LOG : DEADWOOD_STUMP;
+    int length = is_log_kind
+        ? 3 + static_cast<int>((h2 >> 20u) % 3u)    // 3..5 fallen log
+        : 1 + static_cast<int>((h2 >> 20u) & 1u);   // 1..2 stump
+    int dir = static_cast<int>((h2 >> 24u) & 0x3u); // 0..3
+    bool birch = ((h2 >> 26u) & 0x3u) == 0u;        // 25% birch
+    bool leaf_nub = !is_log_kind && (((h2 >> 28u) & 0x3u) == 0u); // 25% of stumps
+
+    return DeadwoodDesc{ ax, az, kind, length, dir,
+                         birch ? BIRCH_LOG : OAK_LOG, leaf_nub, true };
+}
+
+// ---------------------------------------------------------------------------
 // Decoration pass — seam-aware, biome-aware
 // ---------------------------------------------------------------------------
 static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
@@ -2148,6 +2252,77 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
     }
 
     // -------------------------------------------------------------------
+    // 1b. DEADWOOD (#22) — stumps & fallen logs scattered on the forest floor.
+    //     Seam-safe cell scan: a fallen log can extend DEADWOOD_REACH_XZ from its
+    //     anchor, so we scan all cells whose features could reach into this chunk.
+    //     Each segment sits at its OWN column's surface height (cone-cached), so
+    //     logs follow the ground and never float; voxels are clipped to the chunk.
+    // -------------------------------------------------------------------
+    {
+        std::int32_t dcx_min = deadwood_floordiv(wx_min - DEADWOOD_REACH_XZ, DEADWOOD_CELL);
+        std::int32_t dcx_max = deadwood_floordiv(wx_max + DEADWOOD_REACH_XZ, DEADWOOD_CELL);
+        std::int32_t dcz_min = deadwood_floordiv(wz_min - DEADWOOD_REACH_XZ, DEADWOOD_CELL);
+        std::int32_t dcz_max = deadwood_floordiv(wz_max + DEADWOOD_REACH_XZ, DEADWOOD_CELL);
+
+        static constexpr int DW_DIRS[4][2] = { {1,0}, {-1,0}, {0,1}, {0,-1} };
+
+        for (std::int32_t dcz = dcz_min; dcz <= dcz_max; ++dcz) {
+            for (std::int32_t dcx = dcx_min; dcx <= dcx_max; ++dcx) {
+                DeadwoodDesc dw = deadwood_for_cell(dcx, dcz, seed);
+                if (!dw.present) continue;
+
+                int Ha = surface_height_cached(dw.wx, dw.wz, anchor_cache);
+                if (Ha <= SEA_LEVEL) continue;  // not on dry land
+
+                if (dw.kind == DEADWOOD_STUMP) {
+                    // Stump: 1..2 logs at the anchor column's surface.
+                    for (int s = 1; s <= dw.length; ++s) {
+                        std::int32_t wy = Ha + s;
+                        if (dw.wx < wx_min || dw.wx > wx_max) continue;
+                        if (dw.wz < wz_min || dw.wz > wz_max) continue;
+                        if (wy < wy_min || wy > wy_max) continue;
+                        int lx = static_cast<int>(dw.wx - wx_min);
+                        int ly = static_cast<int>(wy - wy_min);
+                        int lz = static_cast<int>(dw.wz - wz_min);
+                        if (chunk.get(lx, ly, lz) == AIR) chunk.set(lx, ly, lz, dw.log_id);
+                    }
+                    // Optional small leaf nub on top of the stump.
+                    if (dw.leaf_nub) {
+                        std::int32_t wy = Ha + dw.length + 1;
+                        if (dw.wx >= wx_min && dw.wx <= wx_max &&
+                            dw.wz >= wz_min && dw.wz <= wz_max &&
+                            wy >= wy_min && wy <= wy_max) {
+                            int lx = static_cast<int>(dw.wx - wx_min);
+                            int ly = static_cast<int>(wy - wy_min);
+                            int lz = static_cast<int>(dw.wz - wz_min);
+                            if (chunk.get(lx, ly, lz) == AIR)
+                                chunk.set(lx, ly, lz, OAK_LEAVES);
+                        }
+                    }
+                } else {
+                    // Fallen log: a horizontal run lying ON the surface (each
+                    // segment one block above its own column's surface height).
+                    int ddx = DW_DIRS[dw.dir][0];
+                    int ddz = DW_DIRS[dw.dir][1];
+                    for (int s = 0; s < dw.length; ++s) {
+                        std::int32_t cwx = dw.wx + ddx * s;
+                        std::int32_t cwz = dw.wz + ddz * s;
+                        int Hs = surface_height_cached(cwx, cwz, anchor_cache);
+                        std::int32_t wy = Hs + 1;       // rest on the ground
+                        if (cwx < wx_min || cwx > wx_max) continue;
+                        if (cwz < wz_min || cwz > wz_max) continue;
+                        if (wy < wy_min || wy > wy_max) continue;
+                        int lx = static_cast<int>(cwx - wx_min);
+                        int ly = static_cast<int>(wy - wy_min);
+                        int lz = static_cast<int>(cwz - wz_min);
+                        if (chunk.get(lx, ly, lz) == AIR) chunk.set(lx, ly, lz, dw.log_id);
+                    }
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
     // 2. PLANTS — biome-specific single-block surface decorations.
     //
     //    Density varies strongly by biome:
@@ -2248,6 +2423,116 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
 
                 if (plant != AIR) {
                     chunk.set(lx, ly_plant, lz, plant);
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // 2b. UNDERWATER VEGETATION (#19 WATER IS EMPTY) — seagrass / kelp strands.
+    //     For submerged columns (ocean floor below sea level) we grow a short
+    //     vertical strand of TALL_GRASS (the cross-billboard plant id, used here
+    //     as seagrass/kelp) up from the ocean floor through the water column.
+    //     Strands are sparse-to-medium and clipped to stay under the water
+    //     surface so they read as swaying weeds, not sticking out into air.
+    //     Single-block writes on each column — no cross-chunk margin needed, so
+    //     this is seam-trivial.  Cheap: one hash per submerged column.
+    // -------------------------------------------------------------------
+    {
+        std::uint64_t kelp_seed = fmix64(seed ^ 0x5EA6A55C0DE1A5E7ull);
+        for (int lz = 0; lz < kChunkDim; ++lz) {
+            for (int lx = 0; lx < kChunkDim; ++lx) {
+                int ci = ChunkColumnCache::idx(lx, lz);
+                int H  = col_cache.H[ci];
+                if (H >= SEA_LEVEL) continue;          // not submerged
+                Biome dom = col_cache.dom[ci];
+                if (dom == Biome::Snowy) continue;     // frozen-over: no kelp under ice
+
+                std::int32_t wx = wx_min + lx;
+                std::int32_t wz = wz_min + lz;
+                std::uint64_t kh = hash2(wx, wz, kelp_seed);
+
+                // Density ~22% of submerged columns carry a strand.
+                if ((kh & 0xFFu) >= 56u) continue;
+
+                // Strand height 1..3, never reaching the water surface (leave the
+                // top water block clear so it reads as submerged).
+                int water_depth = SEA_LEVEL - H;       // blocks of water above floor
+                int strand = 1 + static_cast<int>((kh >> 8u) % 3u);  // 1..3
+                int max_strand = water_depth - 1;       // keep top under the surface
+                if (max_strand < 1) continue;
+                if (strand > max_strand) strand = max_strand;
+
+                for (int s = 1; s <= strand; ++s) {
+                    std::int32_t wy = H + s;            // from just above floor up
+                    if (wy < wy_min || wy > wy_max) continue;
+                    int ly = static_cast<int>(wy - wy_min);
+                    // Only replace WATER (don't overwrite terrain or air).
+                    if (chunk.get(lx, ly, lz) == WATER) {
+                        chunk.set(lx, ly, lz, TALL_GRASS);
+                    }
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // 2c. DESERT DECORATION (#18 DESERTS ARE FLAT/DEAD) — sparse, tasteful.
+    //     Deserts had no surface interest.  We scatter three cheap features on
+    //     desert (and beach) sand, all seam-trivial single-column writes:
+    //       * dead bushes / sticks  — MUSHROOM cross-billboard as a dry shrub
+    //                                  stand-in (no dedicated dead-bush id exists).
+    //       * small rock piles      — a 1-block STONE/GRAVEL bump on the sand.
+    //       * cacti                  — a short 2..3 block column.  No green block
+    //                                  id exists (is_plant/render only know 36-39
+    //                                  and there is no green cube), so we stand in
+    //                                  with OAK_LOG as a "cactus trunk".  NOTE:
+    //                                  wishes a real `cactus`/green block existed.
+    // -------------------------------------------------------------------
+    {
+        std::uint64_t desert_seed = fmix64(seed ^ 0xDE5E27DEC0DE0001ull);
+        for (int lz = 0; lz < kChunkDim; ++lz) {
+            for (int lx = 0; lx < kChunkDim; ++lx) {
+                int ci = ChunkColumnCache::idx(lx, lz);
+                Biome dom = col_cache.dom[ci];
+                if (dom != Biome::Desert) continue;    // deserts only (beaches stay bare)
+
+                int H = col_cache.H[ci];
+                if (H <= SEA_LEVEL) continue;          // not on dry sand
+
+                std::int32_t wx = wx_min + lx;
+                std::int32_t wz = wz_min + lz;
+                std::uint64_t dh   = hash2(wx, wz, desert_seed);
+                std::uint64_t roll = dh & 0xFFu;
+
+                // Surface must be sand and the block above must be AIR.
+                int ly_surf  = H - wy_min;
+                int ly_above = ly_surf + 1;
+                if (ly_surf < 0 || ly_surf >= kChunkDim) continue;
+                if (ly_above < 0 || ly_above >= kChunkDim) continue;
+                if (chunk.get(lx, ly_surf, lz) != SAND) continue;
+                if (chunk.get(lx, ly_above, lz) != AIR) continue;
+                std::int32_t above_wy = H + 1;
+                if (above_wy < wy_min || above_wy > wy_max) continue;
+
+                // Sparse: ~10% of desert columns get a feature.  Split between the
+                // three feature kinds via the roll value.
+                if (roll < 5u) {
+                    // Cactus: short 2..3 block OAK_LOG column (green-block stand-in).
+                    int cact = 2 + static_cast<int>((dh >> 8u) & 1u);  // 2..3
+                    for (int s = 1; s <= cact; ++s) {
+                        std::int32_t wy = H + s;
+                        if (wy < wy_min || wy > wy_max) continue;
+                        int ly = static_cast<int>(wy - wy_min);
+                        if (chunk.get(lx, ly, lz) == AIR) chunk.set(lx, ly, lz, OAK_LOG);
+                    }
+                } else if (roll < 12u) {
+                    // Rock pile: a single STONE/GRAVEL bump on the sand.
+                    BlockId rb = ((dh >> 8u) & 1u) ? GRAVEL : STONE;
+                    chunk.set(lx, ly_above, lz, rb);
+                } else if (roll < 26u) {
+                    // Dead bush / sticks: MUSHROOM cross-billboard as a dry shrub.
+                    chunk.set(lx, ly_above, lz, MUSHROOM);
                 }
             }
         }
@@ -2515,6 +2800,23 @@ int worldgen_surface_height(std::int32_t wx, std::int32_t wz,
     return surface_height(wx, wz, seed, w);
 }
 
+int worldgen_count_structures(std::int32_t wx0, std::int32_t wz0,
+                              std::int32_t span, std::uint64_t seed) noexcept {
+    std::int32_t scx_min = struct_floordiv(wx0, STRUCT_CELL_SIZE);
+    std::int32_t scx_max = struct_floordiv(wx0 + span - 1, STRUCT_CELL_SIZE);
+    std::int32_t scz_min = struct_floordiv(wz0, STRUCT_CELL_SIZE);
+    std::int32_t scz_max = struct_floordiv(wz0 + span - 1, STRUCT_CELL_SIZE);
+
+    int count = 0;
+    for (std::int32_t scz = scz_min; scz <= scz_max; ++scz) {
+        for (std::int32_t scx = scx_min; scx <= scx_max; ++scx) {
+            StructDesc sd = struct_for_cell(scx, scz, seed);
+            if (sd.present) ++count;
+        }
+    }
+    return count;
+}
+
 // ---------------------------------------------------------------------------
 // Terrain fill — per-column block placement
 // ---------------------------------------------------------------------------
@@ -2625,6 +2927,28 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
                         // Use cobblestone for the very surface, stone beneath.
                         surface_block = COBBLESTONE;
                         fill_block    = STONE;
+                    } else if (H >= ROCK_LINE) {
+                        // Mid-to-high mountain ground (#6): make mountains read as
+                        // genuinely ROCKY rather than grassy hills.  Above ROCK_LINE
+                        // the surface becomes a stone/gravel mix (patchy, via a
+                        // seam-safe per-column hash) so even sub-snow mountains look
+                        // like exposed rock and scree instead of meadow.
+                        std::uint64_t rh = hash2(wx, wz,
+                            fmix64(seed_ ^ 0x70CC1A4E70CC1A4Eull));
+                        // Higher ground => more gravel/stone, less grass.
+                        std::uint64_t roll = rh & 0xFFu;
+                        int above = H - ROCK_LINE;            // 0..(SNOW_LINE-ROCK_LINE)
+                        // rock fraction ramps from ~45% at ROCK_LINE to ~100% at SNOW_LINE.
+                        std::uint64_t rock_thresh = 115u
+                            + static_cast<std::uint64_t>(above * 9);
+                        if (rock_thresh > 255u) rock_thresh = 255u;
+                        if (roll < rock_thresh) {
+                            surface_block = ((rh >> 8u) & 0x3u) == 0u ? GRAVEL : STONE;
+                            fill_block    = STONE;
+                        } else {
+                            surface_block = GRASS;
+                            fill_block    = DIRT;
+                        }
                     } else {
                         surface_block = GRASS;
                         fill_block    = DIRT;

@@ -170,7 +170,8 @@ typedef enum bf_action_kind {
     BF_ACT_CRAFT        = 9,  /* arg_i = recipe grid commit (see crafting)   */
     BF_ACT_DROP_ITEM    = 10,
     BF_ACT_MODE_TOGGLE  = 11, /* survival<->creative (creative requires perm) */
-    BF_ACT_ATTACK       = 12  /* swing at targeted creature (calm-not-kill)   */
+    BF_ACT_ATTACK       = 12, /* swing at targeted creature (calm-not-kill)   */
+    BF_ACT_GIVE_ITEM    = 13  /* creative only: arg_i = item id to grant      */
 } bf_action_kind;
 
 typedef struct bf_action {

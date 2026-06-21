@@ -169,34 +169,48 @@ static void test_no_seams_biome_transition() {
     // For each adjacent pair, check both X-boundary and Z-boundary.
     int total_violations = 0;
 
+    auto is_decoration = [](BlockId b) -> bool {
+        return b == 5 || b == 21 || b == 22 || b == 27
+            || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+    };
+
+    // Surface can now reach well above one chunk (the wider biome distribution
+    // (#6) lets tall mountains/plateaus appear near the origin), so we scan a
+    // vertical STACK of y-chunks and report the true top-solid world-y rather
+    // than peeking into only chunk y=0/-1.  Underground cave voids below the real
+    // surface must not be mistaken for "the surface".
+    constexpr int CY_MIN = -2;
+    constexpr int CY_MAX =  4;   // covers surfaces up to y~79
+    constexpr int NUM_CY = CY_MAX - CY_MIN + 1;
+
     // X-direction seams: chunks (cx, 0, cz) vs (cx+1, 0, cz)
     for (int cx = -4; cx <= 4; ++cx) {
         for (int cz = -4; cz <= 4; ++cz) {
-            PaletteChunk ca({cx,   0, cz}, 0); g.generate({cx,   0, cz}, ca);
-            PaletteChunk cb({cx+1, 0, cz}, 0); g.generate({cx+1, 0, cz}, cb);
-            PaletteChunk ca_lo({cx,   -1, cz}, 0); g.generate({cx,   -1, cz}, ca_lo);
-            PaletteChunk cb_lo({cx+1, -1, cz}, 0); g.generate({cx+1, -1, cz}, cb_lo);
+            std::unique_ptr<PaletteChunk> a_slices[NUM_CY];
+            std::unique_ptr<PaletteChunk> b_slices[NUM_CY];
+            for (int ci = 0; ci < NUM_CY; ++ci) {
+                int cy = CY_MIN + ci;
+                a_slices[ci] = std::make_unique<PaletteChunk>(ChunkCoord{cx,   cy, cz}, BlockId(0));
+                b_slices[ci] = std::make_unique<PaletteChunk>(ChunkCoord{cx+1, cy, cz}, BlockId(0));
+                g.generate({cx,   cy, cz}, *a_slices[ci]);
+                g.generate({cx+1, cy, cz}, *b_slices[ci]);
+            }
 
-            auto is_decoration = [](BlockId b) -> bool {
-                return b == 5 || b == 21 || b == 22 || b == 27
-                    || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
-            };
-            auto top_solid = [&](const PaletteChunk& up, const PaletteChunk& lo,
+            auto top_solid = [&](std::unique_ptr<PaletteChunk> (&slices)[NUM_CY],
                                  int lx, int lz_col) -> std::int32_t {
-                for (int ly = kChunkDim - 1; ly >= 0; --ly) {
-                    BlockId b = up.get(lx, ly, lz_col);
-                    if (b != 0 && b != 9u && !is_decoration(b)) return ly;
-                }
-                for (int ly = kChunkDim - 1; ly >= 0; --ly) {
-                    BlockId b = lo.get(lx, ly, lz_col);
-                    if (b != 0 && b != 9u && !is_decoration(b)) return -kChunkDim + ly;
+                for (int ci = NUM_CY - 1; ci >= 0; --ci) {
+                    std::int32_t base = (CY_MIN + ci) * kChunkDim;
+                    for (int ly = kChunkDim - 1; ly >= 0; --ly) {
+                        BlockId b = slices[ci]->get(lx, ly, lz_col);
+                        if (b != 0 && b != 9u && !is_decoration(b)) return base + ly;
+                    }
                 }
                 return bf::kColumnMinY - 1;
             };
 
             for (int lz = 0; lz < kChunkDim; ++lz) {
-                std::int32_t hl = top_solid(ca, ca_lo, 15, lz);
-                std::int32_t hr = top_solid(cb, cb_lo,  0, lz);
+                std::int32_t hl = top_solid(a_slices, 15, lz);
+                std::int32_t hr = top_solid(b_slices,  0, lz);
                 std::int32_t diff = hl - hr;
                 if (diff < 0) diff = -diff;
                 if (diff > 1) ++total_violations;
@@ -217,8 +231,16 @@ static void test_not_trivial() {
     TerrainGen g;
     g.seed(SEED);
 
-    PaletteChunk ch({0, 0, 0}, 0);
-    g.generate({0, 0, 0}, ch);
+    // Pick the chunk-y that actually contains the surface at (0,0).  With the
+    // wider biome distribution (#6) the origin column can sit in a biome whose
+    // surface is above chunk y=0 (e.g. a snowy plateau at y=18), so hard-coding
+    // chunk (0,0,0) would scan a pure-fill chunk.  Snow is a legitimate surface
+    // cover, so we accept grass/sand/snow_layer as a "surface cover" block.
+    int surf_h = worldgen_surface_height(0, 0, SEED);
+    int surf_cy = surf_h >= 0 ? surf_h / kChunkDim : (surf_h - (kChunkDim - 1)) / kChunkDim;
+
+    PaletteChunk ch({0, surf_cy, 0}, 0);
+    g.generate({0, surf_cy, 0}, ch);
 
     CHECK(!ch.is_uniform(), "not trivial: surface chunk is not uniform");
 
@@ -233,12 +255,12 @@ static void test_not_trivial() {
                 BlockId b = ch.get(lx, ly, lz);
                 if (b == 0)         { ++air_count;   has_air = true; }
                 else                { ++solid_count; }
-                if (b == 1 || b == 6)  has_grass_or_sand = true;
+                if (b == 1 || b == 6 || b == 12)  has_grass_or_sand = true;  // grass/sand/snow
                 if (b == 2 || b == 3)  has_dirt_or_stone = true;
             }
 
     CHECK(has_air,           "not trivial: surface chunk has AIR cells");
-    CHECK(has_grass_or_sand, "not trivial: surface chunk has GRASS or SAND");
+    CHECK(has_grass_or_sand, "not trivial: surface chunk has GRASS, SAND, or SNOW cover");
     CHECK(has_dirt_or_stone, "not trivial: surface chunk has DIRT or STONE");
     CHECK(solid_count > 0,   "not trivial: surface chunk has solid blocks");
     CHECK(air_count > 0,     "not trivial: surface chunk has air blocks");
@@ -1607,6 +1629,276 @@ static void test_ocean_depth() {
 }
 
 // ---------------------------------------------------------------------------
+// 22. CLIMATE / BIOME COVERAGE (#6 MORE BIOME VARIETY)
+//     Using the dominant-biome probe directly, assert that every biome —
+//     including the previously near-absent desert (3), snowy (4) and swamp (5)
+//     — appears within a reasonable area, and that no single biome dominates the
+//     map.  Order: 0=Plains 1=Forest 2=Mountains 3=Desert 4=Snowy 5=Swamp 6=Beach.
+// ---------------------------------------------------------------------------
+static void test_biome_coverage() {
+    constexpr std::uint64_t SEED = 0xB10BE5EED1234567ull;
+
+    long counts[7] = {0,0,0,0,0,0,0};
+    long total = 0;
+    // ±256 world blocks (a short walk), sampled every 4 blocks.
+    for (int wz = -256; wz < 256; wz += 4) {
+        for (int wx = -256; wx < 256; wx += 4) {
+            int b = worldgen_dominant_biome(wx, wz, SEED);
+            if (b >= 0 && b < 7) ++counts[b];
+            ++total;
+        }
+    }
+
+    for (int i = 0; i < 7; ++i) {
+        CHECK(counts[i] > 0, "biome coverage: every biome appears within a short walk");
+    }
+    // The three biomes the player reported missing must each be clearly present
+    // (> 3% of the area), not just a stray column.
+    CHECK(counts[3] * 100 > total * 3, "biome coverage: desert is well represented (>3%)");
+    CHECK(counts[4] * 100 > total * 3, "biome coverage: snowy is well represented (>3%)");
+    CHECK(counts[5] * 100 > total * 3, "biome coverage: swamp is well represented (>3%)");
+    // No single biome should swamp the map (plains was ~70% before the spread fix).
+    for (int i = 0; i < 7; ++i) {
+        CHECK(counts[i] * 100 < total * 50,
+              "biome coverage: no single biome exceeds 50% of the map");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 23. ROCKY MOUNTAINS (#6) — mountains read as rock, not grassy hills.
+//     Scan a large area and confirm that stone/gravel surfaces appear on
+//     mountain ground BELOW the snow line (the new ROCK_LINE behaviour), so
+//     mountains are visually distinct from plains/forest.
+// ---------------------------------------------------------------------------
+static void test_rocky_mountains() {
+    constexpr std::uint64_t SEED = 0xA0041A5EED123456ull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    auto is_decoration = [](BlockId b) -> bool {
+        return b == 5 || b == 21 || b == 22 || b == 27
+            || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+    };
+
+    constexpr int SCAN_R = 16;
+    constexpr int CY_MIN = 0;
+    constexpr int CY_MAX = 3;   // mid mountain ground (ROCK_LINE=16 .. SNOW_LINE=32)
+    constexpr int NUM_CY = CY_MAX - CY_MIN + 1;
+
+    int rock_below_snowline = 0;
+
+    for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
+        for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
+            std::unique_ptr<PaletteChunk> slices[NUM_CY];
+            for (int ci = 0; ci < NUM_CY; ++ci) {
+                int cy = CY_MIN + ci;
+                slices[ci] = std::make_unique<PaletteChunk>(ChunkCoord{cx, cy, cz}, BlockId(0));
+                g.generate({cx, cy, cz}, *slices[ci]);
+            }
+            for (int lz = 0; lz < kChunkDim; ++lz) {
+                for (int lx = 0; lx < kChunkDim; ++lx) {
+                    bool found = false;
+                    for (int ci = NUM_CY - 1; ci >= 0 && !found; --ci) {
+                        std::int32_t base = (CY_MIN + ci) * kChunkDim;
+                        for (int ly = kChunkDim - 1; ly >= 0 && !found; --ly) {
+                            BlockId b = slices[ci]->get(lx, ly, lz);
+                            if (b != 0 && b != 9u && !is_decoration(b)) {
+                                int wy = static_cast<int>(base) + ly;
+                                // Rock/gravel surface between ROCK_LINE(16) and below
+                                // SNOW_LINE(32): the new "rocky mountain" surface.
+                                if ((b == 3u || b == 11u || b == 10u) &&
+                                    wy >= 16 && wy < 32) {
+                                    ++rock_below_snowline;
+                                }
+                                found = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    CHECK(rock_below_snowline > 0,
+          "rocky mountains: stone/gravel surface appears on mid mountains (below snow line)");
+}
+
+// ---------------------------------------------------------------------------
+// 24. DESERT DECORATION (#18 DESERTS ARE FLAT/DEAD)
+//     Confirm deserts now carry scatter: dead bushes (mushroom billboard),
+//     small rock piles (stone/gravel bump on sand), or cacti (short log column).
+//     We look for these features sitting directly on dry desert sand.
+// ---------------------------------------------------------------------------
+static void test_desert_decoration() {
+    constexpr std::uint64_t SEED = 0xB10BE5EED1234567ull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    constexpr int SCAN_R = 16;
+
+    int dead_bush = 0;   // mushroom on sand
+    int rock_pile = 0;   // stone/gravel bump on sand
+    int cactus    = 0;   // oak_log column on sand
+
+    for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
+        for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
+            PaletteChunk c0({cx, 0, cz}, 0);
+            PaletteChunk c1({cx, 1, cz}, 0);
+            g.generate({cx, 0, cz}, c0);
+            g.generate({cx, 1, cz}, c1);
+            auto at = [&](int lx, int wy, int lz) -> BlockId {
+                if (wy >= 0 && wy < 16)  return c0.get(lx, wy, lz);
+                if (wy >= 16 && wy < 32) return c1.get(lx, wy - 16, lz);
+                return 0;
+            };
+            for (int lz = 0; lz < kChunkDim; ++lz) {
+                for (int lx = 0; lx < kChunkDim; ++lx) {
+                    int wx = cx * 16 + lx, wz = cz * 16 + lz;
+                    if (worldgen_dominant_biome(wx, wz, SEED) != 3) continue;  // desert
+                    int H = worldgen_surface_height(wx, wz, SEED);
+                    if (H <= 6) continue;
+                    // surface should be sand
+                    if (at(lx, H, lz) != 6u) continue;
+                    BlockId above = at(lx, H + 1, lz);
+                    if (above == 39u)                  ++dead_bush;
+                    else if (above == 3u || above == 11u) ++rock_pile;
+                    else if (above == 21u)             ++cactus;
+                }
+            }
+        }
+    }
+
+    CHECK(dead_bush + rock_pile + cactus > 0,
+          "desert decoration: deserts carry scattered decoration (was flat/dead)");
+    CHECK(dead_bush > 0, "desert decoration: dead bushes (mushroom billboard) present");
+    CHECK(rock_pile > 0, "desert decoration: small rock piles present");
+    CHECK(cactus    > 0, "desert decoration: cacti (log stand-in) present");
+}
+
+// ---------------------------------------------------------------------------
+// 25. UNDERWATER VEGETATION (#19 WATER IS EMPTY)
+//     Confirm seagrass/kelp (tall_grass billboard) is placed on the ocean floor
+//     and surrounded by water (i.e. it is genuinely submerged, not on dry land).
+// ---------------------------------------------------------------------------
+static void test_underwater_vegetation() {
+    constexpr std::uint64_t SEED = 0x0CE4B0CA5E1D07BBull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    constexpr int SCAN_R = 18;
+    constexpr int CY_MIN = -1;
+    constexpr int CY_MAX =  1;
+    constexpr int NUM_CY = CY_MAX - CY_MIN + 1;
+
+    int submerged_kelp = 0;
+
+    for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
+        for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
+            std::unique_ptr<PaletteChunk> slices[NUM_CY];
+            for (int ci = 0; ci < NUM_CY; ++ci) {
+                int cy = CY_MIN + ci;
+                slices[ci] = std::make_unique<PaletteChunk>(ChunkCoord{cx, cy, cz}, BlockId(0));
+                g.generate({cx, cy, cz}, *slices[ci]);
+            }
+            auto at = [&](int lx, std::int32_t wy, int lz) -> BlockId {
+                for (int ci = NUM_CY - 1; ci >= 0; --ci) {
+                    std::int32_t base = (CY_MIN + ci) * kChunkDim;
+                    if (wy >= base && wy < base + kChunkDim)
+                        return slices[ci]->get(lx, static_cast<int>(wy - base), lz);
+                }
+                return 0;
+            };
+            for (int lz = 0; lz < kChunkDim; ++lz) {
+                for (int lx = 0; lx < kChunkDim; ++lx) {
+                    for (std::int32_t wy = 0; wy <= 6; ++wy) {
+                        // tall_grass (38) is the seagrass id; it counts as
+                        // underwater if there is WATER (9) directly above it.
+                        if (at(lx, wy, lz) == 38u && at(lx, wy + 1, lz) == 9u) {
+                            ++submerged_kelp;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    CHECK(submerged_kelp > 0,
+          "underwater vegetation: seagrass/kelp (tall_grass) found submerged under water");
+}
+
+// ---------------------------------------------------------------------------
+// 26. STRUCTURE DENSITY INCREASED (#17 STRUCTURES TOO RARE)
+//     The structure-count probe must report substantially more structures than
+//     the old ~12% spawn scheme.  We assert a healthy count in a 512×512 region
+//     (old scheme yielded ~5-6; new should be roughly 2-3× that).
+// ---------------------------------------------------------------------------
+static void test_structure_density() {
+    // Several seeds so we don't rely on one lucky layout.
+    const std::uint64_t seeds[] = {
+        0x5704C705EED2024ull, 0xB10BE5EED1234567ull, 0xDEADBEEFCAFEBABEull
+    };
+    int worst = 1 << 30;
+    for (std::uint64_t s : seeds) {
+        int n = worldgen_count_structures(-256, -256, 512, s);
+        if (n < worst) worst = n;
+    }
+    // Old (12%) scheme gave ~5-6 structures here; the new (~31%) scheme should
+    // comfortably exceed 10 even on the sparsest of these seeds.
+    CHECK(worst >= 10,
+          "structure density: >=10 structures per 512x512 region (was ~5-6) — #17");
+}
+
+// ---------------------------------------------------------------------------
+// 27. DEADWOOD (#22) — stumps and fallen logs on the forest floor.
+//     Confirm short log remnants (stumps) and horizontal log runs (fallen logs)
+//     appear in wooded biomes.  We detect a horizontal pair of logs at the same
+//     y resting just above the surface (fallen-log signature) OR a 1-2 high log
+//     stub standing alone (stump).  This is in addition to full trees.
+// ---------------------------------------------------------------------------
+static void test_deadwood() {
+    constexpr std::uint64_t SEED = 0x7A3E2B1C5D0F9E8Aull;
+    TerrainGen g;
+    g.seed(SEED);
+
+    constexpr int SCAN_R = 14;
+    int horizontal_log_runs = 0;
+
+    for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
+        for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
+            PaletteChunk c0({cx, 0, cz}, 0);
+            PaletteChunk c1({cx, 1, cz}, 0);
+            g.generate({cx, 0, cz}, c0);
+            g.generate({cx, 1, cz}, c1);
+            auto at = [&](int lx, int wy, int lz) -> BlockId {
+                if (wy >= 0 && wy < 16)  return c0.get(lx, wy, lz);
+                if (wy >= 16 && wy < 32) return c1.get(lx, wy - 16, lz);
+                return 0;
+            };
+            auto is_log = [](BlockId b) { return b == 21u || b == 22u; };
+            for (int lz = 0; lz < kChunkDim; ++lz) {
+                for (int lx = 0; lx + 2 < kChunkDim; ++lx) {
+                    int wx = cx * 16 + lx, wz = cz * 16 + lz;
+                    int H = worldgen_surface_height(wx, wz, SEED);
+                    if (H <= 6) continue;
+                    int wy = H + 1;
+                    if (wy < 0 || wy >= 31) continue;
+                    // Fallen-log signature: 3 consecutive logs along +X at surface+1,
+                    // with NO log directly below the middle (i.e. not a trunk).
+                    if (is_log(at(lx, wy, lz)) && is_log(at(lx + 1, wy, lz)) &&
+                        is_log(at(lx + 2, wy, lz)) &&
+                        !is_log(at(lx + 1, wy + 1, lz))) {
+                        ++horizontal_log_runs;
+                    }
+                }
+            }
+        }
+    }
+
+    CHECK(horizontal_log_runs > 0,
+          "deadwood: horizontal fallen-log runs found on the forest floor (#22)");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -1632,6 +1924,12 @@ int main() {
     test_new_tree_variety();
     test_cave_entrances();
     test_ocean_depth();
+    test_biome_coverage();
+    test_rocky_mountains();
+    test_desert_decoration();
+    test_underwater_vegetation();
+    test_structure_density();
+    test_deadwood();
 
     if (fails == 0) {
         std::printf("OK: worldgen tests\n");

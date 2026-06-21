@@ -2,7 +2,7 @@
 
 - **Area:** worldgen
 - **Priority:** P1
-- **Status:** open
+- **Status:** needs-verify
 - **Source:** playtest feedback (baseline round)
 
 ## Description
@@ -13,3 +13,6 @@ Several visually distinct biomes appear within a short walk; biome colors are cl
 
 ## Notes
 _(updates / PR refs go here)_
+
+## Update
+Addressed in the post-baseline parallel batch; pending playtest verification.

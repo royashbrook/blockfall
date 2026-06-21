@@ -57,6 +57,7 @@ struct Creature {
     bool  friendly{false};
     bool  hostile{false};   // night monster: chases + hurts the player (kind 5)
     bool  skittish{false};  // flees the player (rabbits/foxes)
+    bool  aquatic{false};   // lives in water (fish): swims, isn't water-blocked
     float atk_cd{0};        // cooldown between hits on the player
     float hit_flash{0};     // brief white flash when the player hits it
     float wander{0};
@@ -433,7 +434,10 @@ public:
         V3 fwd = forward_dir();
         V3 flat = normalize(V3{fwd.x, 0, fwd.z});
         V3 right = normalize(cross(flat, V3{0, 1, 0}));
-        float speed = (in.sprint ? 16.0f : 8.0f) * float(dt);
+        // Creative flies fast; survival walks, with a real sprint boost (#14).
+        float baseSpd   = (mode_ == BF_MODE_CREATIVE) ? 8.0f  : 5.0f;
+        float sprintSpd = (mode_ == BF_MODE_CREATIVE) ? 16.0f : 8.5f;
+        float speed = (in.sprint ? sprintSpd : baseSpd) * float(dt);
         V3 hmove = flat * (in.move_forward * speed) + right * (in.move_strafe * speed);
         if (mode_ == BF_MODE_CREATIVE) {
             // Creative: free fly, no collision.
@@ -559,6 +563,10 @@ public:
                 }
                 break;
             }
+            case BF_ACT_GIVE_ITEM:           // creative item picker (#15)
+                if (mode_ == BF_MODE_CREATIVE && inv_ && a.arg_i > 0)
+                    inv_->add(ItemStack{ItemId(a.arg_i), 64, 0xFFFF});
+                break;
             case BF_ACT_HOTBAR_SELECT:
                 if (a.arg_i >= 0 && a.arg_i < BF_HOTBAR_SLOTS) selected_ = std::uint8_t(a.arg_i);
                 break;
@@ -722,7 +730,7 @@ public:
 
 private:
     // Start in bright morning (+0.30) and cycle slowly (~12 min/day).
-    static float day_time(double clock) { return float(std::fmod(clock * 0.0014 + 0.30, 1.0)); }
+    static float day_time(double clock) { return float(std::fmod(clock * 0.00175 + 0.30, 1.0)); }  // ~25% shorter cycle (#3)
 
     V3 forward_dir() const {
         return normalize(V3{ std::cos(pitch_) * std::sin(yaw_), std::sin(pitch_),
@@ -1317,10 +1325,17 @@ private:
         float t = day_time(world_clock_);
         bool surv = mode_ == BF_MODE_SURVIVAL;
         bool night = surv && (t < 0.20f || t > 0.80f);
-        // Underground = well below the surface (depth-based; reliable regardless
-        // of the sky-light data). Monsters lurk in caves any time of day.
-        int surfY = surface_top(ifloor(pos_.x), ifloor(pos_.z));
-        bool darkCave = surv && surfY != kNoFloor && (surfY - ifloor(pos_.y)) > 6;
+        // Real cave/underground = actual ROCK directly overhead — NOT just a tree
+        // canopy. (The old depth-vs-surface_top check treated a tree's leaves as the
+        // "surface", so standing under a tree spawned monsters in daylight. #2)
+        bool darkCave = false;
+        if (surv) {
+            int px = ifloor(pos_.x), pz = ifloor(pos_.z);
+            for (int y = ifloor(pos_.y) + 2; y <= ifloor(pos_.y) + 9; ++y) {
+                BlockId b = block_at(IVec3{px, y, pz});
+                if (b != AIR && b != WATER && !is_log(b) && !is_leaf(b) && !is_plant(b)) { darkCave = true; break; }
+            }
+        }
         // First-night grace: no monsters until the kid finishes their first quest,
         // so a brand-new player gets a safe session to learn before the scary part.
         bool monstersActive = (night || darkCave) && quests_completed_ > 0;
@@ -1330,13 +1345,17 @@ private:
                 [](const Creature& c){ return c.hostile; }), creatures_.end());
         int ambient = 0, bosses = 0, hostiles = 0;
         for (auto& c : creatures_) { if (c.hostile) ++hostiles; else if (c.is_boss) ++bosses; else ++ambient; }
-        // Fill the area quickly at first (small timer), then top up slowly.
-        creature_timer_ = ((monstersActive ? hostiles : ambient) < 4) ? 0.08f : 0.5f;
+        creature_timer_ = 1.0f;   // default cadence when nothing needs spawning
         if (monstersActive) {
-            if (hostiles < 5) spawn_hostile(8.0f, 24.0f);   // a real but survivable night threat
+            // Pace hostile spawns so caves/night are challenging but explorable (#7):
+            // a small cap and a long gap between spawns instead of a constant swarm.
+            creature_timer_ = 2.5f;
+            if (hostiles < 4) spawn_hostile(10.0f, 22.0f);
         } else if (ambient < 9) {
+            creature_timer_ = (ambient < 6) ? 0.1f : 0.5f;   // fill day-animals fast (pacing is only for hostiles, #7)
             spawn_ring_creature(false, 8.0f, 26.0f);
         } else if (bosses < 2) {
+            creature_timer_ = 1.0f;
             spawn_ring_creature(true, 18.0f, 40.0f);
         }
     }
@@ -1348,15 +1367,20 @@ private:
             V3 toPlayer = pos_ - c.pos;
             // In Creative the monsters leave you alone (no chase, no damage).
             if (c.hostile && mode_ == BF_MODE_SURVIVAL) {
-                // Night monster: relentlessly chases the player and bites on contact.
-                if (dot(toPlayer, toPlayer) > 0.0001f) c.yaw = std::atan2(toPlayer.x, toPlayer.z);
                 if (c.atk_cd > 0) c.atk_cd -= dt;
-                // Bite test in XZ (+ a vertical guard): pos_ is the EYE (~1.6 above
-                // the feet) and c.pos is the creature's feet, so a 3D distance never
-                // got close enough — that's why monsters never actually hurt you.
                 float xzd = std::sqrt(toPlayer.x*toPlayer.x + toPlayer.z*toPlayer.z);
-                float yd  = std::fabs((c.pos.y + c.scale * 0.5f) - (pos_.y - 1.6f));
-                if (xzd < 1.3f && yd < 1.6f && c.atk_cd <= 0.0f) { hurt_player(2.5f); c.atk_cd = 1.1f; }
+                // Aggro perimeter (#8): only chase + bite within range; beyond it they
+                // give up and wander, so they don't track you across the whole world.
+                constexpr float kAggro = 16.0f;
+                if (xzd < kAggro) {
+                    if (dot(toPlayer, toPlayer) > 0.0001f) c.yaw = std::atan2(toPlayer.x, toPlayer.z);
+                    // Bite test in XZ (+ a vertical guard): pos_ is the EYE (~1.6 above
+                    // the creature's feet), so a plain 3D distance never got close enough.
+                    float yd = std::fabs((c.pos.y + c.scale * 0.5f) - (pos_.y - 1.6f));
+                    if (xzd < 1.3f && yd < 1.6f && c.atk_cd <= 0.0f) { hurt_player(2.5f); c.atk_cd = 1.1f; }
+                } else if (c.wander <= 0.0f) {                  // out of range — lose interest
+                    c.yaw = rand01() * 6.2831853f; c.wander = 1.5f + rand01() * 2.5f;
+                }
             } else if (c.friendly) {
                 // follow the player when not too close
                 float d = std::sqrt(dot(toPlayer, toPlayer));
@@ -1371,9 +1395,14 @@ private:
             V3 dir{std::sin(c.yaw), 0, std::cos(c.yaw)};
             V3 next = c.pos + dir * (c.speed * dt);
             IVec3 nv{ifloor(next.x), ifloor(next.y), ifloor(next.z)};
-            // Use collide_solid so creatures walk THROUGH grass/flowers/mushrooms
-            // (and water) instead of bumping into them like walls.
-            if (!collide_solid(nv.x, nv.y, nv.z)) {
+            // Land creatures refuse to step into water and turn away (#21); aquatic
+            // ones (fish) ignore this. Use collide_solid so creatures still walk
+            // THROUGH grass/flowers/mushrooms instead of bumping into them.
+            bool intoWater = !c.aquatic && (block_at(IVec3{nv.x, nv.y, nv.z}) == WATER
+                                         || block_at(IVec3{nv.x, nv.y - 1, nv.z}) == WATER);
+            if (intoWater) {
+                c.yaw += 2.4f; c.wander = 0.5f;                           // turn away from water
+            } else if (!collide_solid(nv.x, nv.y, nv.z)) {
                 c.pos.x = next.x; c.pos.z = next.z;                       // clear path
             } else if (!collide_solid(nv.x, nv.y + 1, nv.z)) {
                 c.pos.x = next.x; c.pos.z = next.z; c.pos.y += 1.0f;      // step up a 1-block ledge

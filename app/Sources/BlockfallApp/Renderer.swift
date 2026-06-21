@@ -634,6 +634,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         let wallClock = Float(now.truncatingRemainder(dividingBy: 3600.0))
         let isUnderwater = frame.camera.underwater
 
+        // Feed the HUD the player's world position + facing so it can show
+        // coordinates. facing = heading angle (radians) from forward.x/forward.z.
+        hud?.setPlayerInfo(x: frame.camera.position.x,
+                           y: frame.camera.position.y,
+                           z: frame.camera.position.z,
+                           facing: atan2(frame.camera.forward.x, frame.camera.forward.z))
+
         // Weather is now fully engine-owned: frame.camera.weather = 0=clear, 1=rain, 2=snow.
         // Map that to a rain strength for wind/wet-darkening (0 when clear or snow, 1 when rain).
         let engineWeather = Int(frame.camera.weather)   // 0, 1, or 2
@@ -1173,6 +1180,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         float4 cameraPosW;   // xyz = world pos, w = pad
     };
     #define UW_CAM_POS(wu) (wu).cameraPosW.xyz
+
+    // ---- Shared water palette (keeps every water-related path consistent) ----
+    // One source of truth so the translucent surface, the submerged-solid depth
+    // tint and the full-screen underwater overlay all read as the SAME body of
+    // water. Kept bright/aqua (no near-black murk) per the kid-friendly look.
+    //   WATER_SURFACE_COL : base albedo of the water surface (top + sides)
+    //   WATER_FOG_COL      : colour distant submerged solids fade toward, and the
+    //                        colour of the full-screen underwater overlay. Same
+    //                        value in both places so entering/looking around is smooth.
+    constant float3 WATER_SURFACE_COL = float3(0.11, 0.38, 0.78);
+    constant float3 WATER_FOG_COL     = float3(0.10, 0.34, 0.62);
 
     // PostUniforms (32 bytes) — composite pass.
     // >0 rainStrength = rain, <0 = snow, 0 = clear.
@@ -1992,36 +2010,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         float aoFactor = mix(0.45, 1.0, in.ao);
 
         // ---- Water block special path ----
+        // Water is rendered ONLY by the dedicated translucent pass (waterFmain),
+        // never here in the opaque pass. Previously this branch painted water as a
+        // fully opaque surface AND wrote depth, then the translucency pass blended
+        // 0.55 on top of it — a double-draw that (a) double-blended the surface,
+        // (b) overwrote the lake bottom so the "see-through" alpha had nothing real
+        // to reveal, and (c) used a slightly different base colour, so the surface
+        // read inconsistently. Discarding here keeps the lake bottom in the colour
+        // buffer (and the bottom's depth), so the single translucent pass blends
+        // cleanly over real terrain with no z-fighting or double-blend.
         if (mat == 9u) {
-            float t = wu.wallClockSecs;
-            float2 uv = in.worldPos.xz;
-            float wave1 = noise2(uv * 0.8  + float2( t * 0.22,  t * 0.14));
-            float wave2 = noise2(uv * 1.40 + float2(-t * 0.17,  t * 0.28));
-            float wave3 = noise2(uv * 2.80 + float2( t * 0.35, -t * 0.19));
-            float ripple = wave1 * 0.50 + wave2 * 0.35 + wave3 * 0.15;
-            float rippleN = ripple * 2.0 - 1.0;
-            float3 waterBase = float3(0.12, 0.40, 0.80);
-            float fresnelBias = (in.faceNorm == 2u) ? 0.30 : 0.08;
-            float fresnelAmt  = fresnelBias + rippleN * 0.12;
-            float2 nAB = float2(
-                noise2(uv * 1.2 + float2(t * 0.22 + 0.1, t * 0.14)) - wave1,
-                noise2(uv * 1.2 + float2(t * 0.22, t * 0.14 + 0.1)) - wave1
-            ) * 4.0;
-            float3 perturbedN = normalize(float3(nAB.x, 1.4, nAB.y));
-            float3 sunDir3 = normalize(float3(0.5, 0.9, 0.3));
-            float spec = pow(max(0.0, dot(perturbedN, sunDir3)), 22.0);
-            float specular = spec * 0.55 * in.shade;
-            float3 col = waterBase * in.shade * aoFactor;
-            col *= 1.0 + rippleN * 0.20;
-            col = mix(col, float3(0.85, 0.95, 1.00), clamp(fresnelAmt, 0.0, 0.45));
-            col += float3(1.0, 0.98, 0.88) * specular;
-            // Apply shadow on water too
-            col *= shadowFactor;
-            // Boost above 1 for HDR to trigger bloom on specular highlights
-            col += float3(1.0, 0.98, 0.88) * specular * 0.8;
-            float lum = dot(col, float3(0.299, 0.587, 0.114));
-            col = mix(float3(lum), col, clamp(in.sat, 0.0, 1.0));
-            return float4(col, 1.0);
+            discard_fragment();
         }
 
         // =========================================================
@@ -2242,13 +2241,28 @@ final class Renderer: NSObject, MTKViewDelegate {
         // fog tint; tint builds gradually beyond that. This ensures walls, floor,
         // and ledges directly around the player are clearly readable.
         if (wu.underwater > 0.5) {
+            // Flatten directional lighting underwater. Above water, `col` carries the
+            // full sun term (in.shade) + bump, which makes a submerged wall flip
+            // between bright/dim depending on which way the face points relative to
+            // the sun — reading as inconsistent tint/dimming as you look around.
+            // Underwater, light is scattered and effectively ambient, so blend the
+            // lit colour heavily toward an AO-only flat version: the depth tint then
+            // varies only with DISTANCE, never with face direction or view angle.
+            // (AO is kept so concave corners still read; sun direction is dropped.)
+            float3 flatCol = in.color * detail * aoFactor;   // no in.shade / bump
+            if (!isEmissive) flatCol = clamp(flatCol, 0.0, 1.0);
+            float flatLum = dot(flatCol, float3(0.299, 0.587, 0.114));
+            flatCol = mix(float3(flatLum), flatCol, clamp(in.sat, 0.0, 1.0));
+            col = mix(col, flatCol, 0.80);
+
             float dist = length(in.worldPos - UW_CAM_POS(wu));
             float rawFog = exp(-0.030 * dist);
             // Ramp: no tint at all within 4 blocks; smoothly add fog beyond that.
             float ramp = smoothstep(4.0, 14.0, dist);
             float fogFactor = clamp(mix(1.0, rawFog, ramp), 0.0, 1.0);
-            float3 waterFogColor = float3(0.08, 0.28, 0.40);
-            col = mix(waterFogColor, col, fogFactor);
+            // Same colour the full-screen overlay uses (WATER_FOG_COL) so the
+            // submerged-solid tint and the water volume read as one body of water.
+            col = mix(WATER_FOG_COL, col, fogFactor);
         } else {
             // Atmospheric distance fog: fade distant terrain toward the horizon sky colour
             // so the far edge of the render distance (16 chunks = 256 blocks) reads as
@@ -2292,7 +2306,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         float ripple = wave1 * 0.50 + wave2 * 0.35 + wave3 * 0.15;
         float rippleN = ripple * 2.0 - 1.0;
 
-        float3 waterBase = float3(0.10, 0.36, 0.75);
+        // Single shared base colour (WATER_SURFACE_COL) so the surface always
+        // matches the submerged-solid tint and the underwater overlay.
+        float3 waterBase = WATER_SURFACE_COL;
 
         // Normal perturbation for specular
         float2 nAB = float2(
@@ -2313,20 +2329,28 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 col = waterBase * in.shade * aoFactor * shadowFactor;
         col *= 1.0 + rippleN * 0.18;
 
-        // Fresnel-like surface brightening on top face
-        float fresnelBias = (in.faceNorm == 2u) ? 0.28 : 0.06;
-        float fresnelAmt  = fresnelBias + rippleN * 0.10;
-        col = mix(col, float3(0.80, 0.92, 1.00), clamp(fresnelAmt, 0.0, 0.40));
-        col += float3(1.0, 0.98, 0.88) * spec * 0.45 * in.shade;
+        // Surface highlights (sky reflection + sun specular) belong ONLY on the
+        // top face. On side faces the old fresnelBias (0.06) still pushed a cool
+        // brightening that, combined with cull-none double-sided side quads, made
+        // edges flip/shimmer at grazing angles. Gate both highlight terms to the
+        // up-facing surface so side faces stay a flat, stable water colour.
+        bool topFace = (in.faceNorm == 2u);
+        if (topFace) {
+            float fresnelAmt = 0.28 + rippleN * 0.10;
+            col = mix(col, float3(0.80, 0.92, 1.00), clamp(fresnelAmt, 0.0, 0.40));
+            col += float3(1.0, 0.98, 0.88) * spec * 0.45 * in.shade;
+        }
 
         // Saturation
         float lum = dot(col, float3(0.299, 0.587, 0.114));
         col = mix(float3(lum), col, clamp(in.sat, 0.0, 1.0));
         col = clamp(col, 0.0, 1.0);
 
-        // Alpha: 0.55 makes water clearly see-through (bottom visible) but
-        // still reads as a distinct water surface, not invisible.
-        float alpha = 0.55;
+        // Alpha is constant per face orientation only (never view-angle dependent),
+        // so the surface never vanishes at grazing angles and never double-blends
+        // unevenly. Top face slightly more opaque (you mostly look down through it);
+        // side faces a touch more see-through so shorelines read cleanly.
+        float alpha = topFace ? 0.58 : 0.50;
         return float4(col, alpha);
     }
 
@@ -2536,7 +2560,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         float2 cUV2 = in.uv * float2(2.2, 3.1) + float2(-t * 0.06, t * 0.09);
         float caustic = noise2(cUV1) * 0.6 + noise2(cUV2) * 0.4;
         caustic = smoothstep(0.55, 0.80, caustic) * 0.08;   // very subtle
-        float3 uwColor = float3(0.08, 0.28, 0.44);
+        // Same colour the in-water distance fog fades toward (WATER_FOG_COL) so the
+        // full-screen overlay and the submerged-solid tint are the SAME blue — no
+        // strobing/mismatch between the water volume and the tinted surfaces.
+        float3 uwColor = WATER_FOG_COL;
         float3 col = uwColor + float3(caustic * 0.4, caustic * 0.6, caustic * 0.3);
         // Constant alpha — no variation of any kind.
         // FIX (#10): Reduced from 0.16 to 0.08 so the post-pass overlay is a

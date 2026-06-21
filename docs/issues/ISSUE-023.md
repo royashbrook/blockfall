@@ -2,7 +2,7 @@
 
 - **Area:** render/mesher
 - **Priority:** P1
-- **Status:** open
+- **Status:** needs-verify
 - **Source:** playtest feedback (baseline round)
 
 ## Description
@@ -13,3 +13,6 @@ Torch is a closed solid with no see-through faces.
 
 ## Notes
 _(updates / PR refs go here)_
+
+## Update
+Addressed in the post-baseline parallel batch; pending playtest verification.

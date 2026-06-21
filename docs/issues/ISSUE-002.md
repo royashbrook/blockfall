@@ -2,7 +2,7 @@
 
 - **Area:** gameplay
 - **Priority:** P1
-- **Status:** open
+- **Status:** needs-verify
 - **Source:** playtest feedback (baseline round)
 
 ## Description
@@ -13,3 +13,6 @@ No hostile spawns from standing under foliage in daytime; spawns gated to night 
 
 ## Notes
 _(updates / PR refs go here)_
+
+## Update
+Addressed in the post-baseline parallel batch; pending playtest verification.

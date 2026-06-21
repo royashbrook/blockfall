@@ -90,6 +90,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         h.onCraft = { [weak mtkView] index in
             mtkView?.enqueueCraft(index)
         }
+        h.onGiveItem = { [weak mtkView] itemId in
+            mtkView?.enqueueGive(itemId)
+        }
         r.hud = h
 
         let container = NSView(frame: frame)

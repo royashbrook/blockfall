@@ -2,7 +2,7 @@
 
 - **Area:** gameplay
 - **Priority:** P1
-- **Status:** open
+- **Status:** needs-verify
 - **Source:** playtest feedback (baseline round)
 
 ## Description
@@ -13,3 +13,6 @@ Cave hostile spawn rate is capped/paced so caving is challenging but explorable.
 
 ## Notes
 _(updates / PR refs go here)_
+
+## Update
+Addressed in the post-baseline parallel batch; pending playtest verification.

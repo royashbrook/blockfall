@@ -2,7 +2,7 @@
 
 - **Area:** gameplay
 - **Priority:** P2
-- **Status:** open
+- **Status:** needs-verify
 - **Source:** playtest feedback (baseline round)
 
 ## Description
@@ -13,3 +13,6 @@ Holding a sprint key/double-tap increases move speed; readable and kid-friendly.
 
 ## Notes
 _(updates / PR refs go here)_
+
+## Update
+Addressed in the post-baseline parallel batch; pending playtest verification.

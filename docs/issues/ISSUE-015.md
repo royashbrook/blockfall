@@ -2,7 +2,7 @@
 
 - **Area:** ui/gameplay
 - **Priority:** P2
-- **Status:** open
+- **Status:** needs-verify
 - **Source:** playtest feedback (baseline round)
 
 ## Description
@@ -13,3 +13,6 @@ Creative has an item picker that grants any item to the inventory.
 
 ## Notes
 _(updates / PR refs go here)_
+
+## Update
+Addressed in the post-baseline parallel batch; pending playtest verification.

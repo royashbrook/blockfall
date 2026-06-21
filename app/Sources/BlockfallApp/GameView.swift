@@ -11,6 +11,7 @@ import CBlockcore
 final class GameView: MTKView {
     private var pressed = Set<UInt16>()
     private var shiftDown = false
+    private var ctrlDown = false
     private var captured = false
 
     // Mouse-look inversion: left/right inverted, up/down normal by default.
@@ -30,7 +31,7 @@ final class GameView: MTKView {
     // keyUp/mouseUp never arrive for the other app, so without this a held key
     // would walk you forever and a held mine would never stop.
     func clearInput() {
-        pressed.removeAll(); shiftDown = false; lookDX = 0; lookDY = 0
+        pressed.removeAll(); shiftDown = false; ctrlDown = false; lookDX = 0; lookDY = 0
         queue(BF_ACT_MINE_STOP)
     }
     func setPaused(_ b: Bool) { gamePaused = b; if b { releasePointer() } }
@@ -58,6 +59,7 @@ final class GameView: MTKView {
         inp.move_strafe  = (pressed.contains(K.d) ? 1 : 0) - (pressed.contains(K.a) ? 1 : 0)
         inp.jump  = pressed.contains(K.space) ? 1 : 0
         inp.sneak = shiftDown ? 1 : 0
+        inp.sprint = ctrlDown ? 1 : 0          // hold Ctrl to run (#14)
         // Default to inverted on both axes (toggle with 'I').
         inp.look_yaw_delta   = lookDX * 0.0035 * (invertX ? -1 : 1)
         inp.look_pitch_delta = lookDY * 0.0035 * (invertY ?  1 : -1)
@@ -76,6 +78,9 @@ final class GameView: MTKView {
 
     // Craft a specific craftable index, clicked in the HUD's crafting list.
     func enqueueCraft(_ index: Int) { queue(BF_ACT_CRAFT, Int32(index)) }
+
+    // Creative item picker: grant an item id to the player.
+    func enqueueGive(_ itemId: UInt16) { queue(BF_ACT_GIVE_ITEM, Int32(itemId)) }
 
     // Inventory move from the HUD (BF_ACT_INV_MOVE: from, to, count).
     func enqueueMove(from: Int, to: Int, count: Int) {
@@ -125,7 +130,10 @@ final class GameView: MTKView {
         if invOpen { releasePointer() } else { capturePointer() }
     }
     override func keyUp(with e: NSEvent) { pressed.remove(e.keyCode) }
-    override func flagsChanged(with e: NSEvent) { shiftDown = e.modifierFlags.contains(.shift) }
+    override func flagsChanged(with e: NSEvent) {
+        shiftDown = e.modifierFlags.contains(.shift)
+        ctrlDown  = e.modifierFlags.contains(.control)
+    }
 
     // ---- mouse -------------------------------------------------------------
     override func mouseDown(with e: NSEvent) {

@@ -493,21 +493,35 @@ bool emit_cross_plant(int bx, int by, int bz,
 }
 
 // ---- torch emission ---------------------------------------------------------
-// Emit a THIN torch for a single torch cell (id 32) at (bx, by, bz).
+// Emit a CLOSED, torch-shaped prop for a single torch cell (id 32) at
+// (bx, by, bz).  Two stacked sub-cell boxes (issues #23, #24):
 //
-// Geometry: a square post centred in the cell, 4/16 wide (X and Z span the
-// block-local fractions 6..10), rising from the cell floor (y frac 0) to a
-// short 10/16 height stub.  We emit the 4 side faces (+X,-X,+Z,-Z) and a top
-// cap (+Y) — 5 quads = 20 verts = 30 indices.  No bottom face (it sits on the
-// floor / is never seen).
+//   POST  : a thin wooden shaft, 4/16 wide (X/Z frac 6..10), from the cell
+//           floor (Y frac 0) up to Y frac 7.  4 side faces + a bottom cap.
+//   HEAD  : a wider glowing tuft, 6/16 wide (X/Z frac 5..11), from Y frac 7 up
+//           to Y frac 11.  4 side faces + a top cap + a bottom cap.
+//
+// The head is WIDER than the post, so its full bottom cap (frac 5..11) sits at
+// Y frac 7 and completely covers the post's top — no post top cap is needed and
+// there is no see-through gap at the post/head junction.  Together the caps make
+// the prop a closed solid from every angle: bottom (post bottom cap), top (head
+// top cap), the seam at Y frac 7 (head bottom cap), and all eight side faces.
+// This fixes #23 (see-through top/bottom) and #24 (it now reads as a torch: a
+// narrow neutral post with a brighter, fatter glowing head).
+//
+//   11 quads = 44 verts + 66 indices.
 //
 // Sub-cell positions use bf_pack_pos(x,y,z, fx,fy,fz) where fx/fy/fz are
-// sixteenths of a block.  The post's X/Z faces sit at frac 6 and 10; the top
-// cap sits at the integer block y plus frac 10 (the shader adds frac/16).
+// sixteenths of a block (the shader adds frac/16 to the integer corner).
 //
-// Winding matches the cube faces (CCW from outside) using the same BFNormal
-// codes.  AO = full (3); light = the torch cell's own sky/block values, like
-// the cross-plant pass.
+// Both boxes use material id 32 so the shader's torch coloring/emissive applies;
+// the post and head therefore share the glow.  (A distinct "torch_post" material
+// id would let the shader render the post as neutral/brown wood while only the
+// head glows — see summary; we can't add one here without touching content.)
+//
+// Winding matches the cube faces (CCW from outside) with the same BFNormal
+// codes.  AO = full (3); light = the torch cell's own sky/block values, like the
+// cross-plant pass.
 //
 // Returns false if buffers are full (caller stops).
 bool emit_torch(int bx, int by, int bz,
@@ -515,9 +529,9 @@ bool emit_torch(int bx, int by, int bz,
                 std::span<std::byte>& vtx_out, std::uint32_t& vtx_written,
                 std::span<std::byte>& idx_out, std::uint32_t& idx_written,
                 std::uint32_t& vtx_count) {
-    // 5 quads: 20 verts + 30 indices.
-    if (vtx_out.size() - vtx_written < 20 * sizeof(BFVertex))       return false;
-    if (idx_out.size()  - idx_written < 30 * sizeof(std::uint32_t)) return false;
+    // 11 quads: 44 verts + 66 indices.
+    if (vtx_out.size() - vtx_written < 44 * sizeof(BFVertex))       return false;
+    if (idx_out.size()  - idx_written < 66 * sizeof(std::uint32_t)) return false;
 
     constexpr std::uint32_t AO = 3u;                  // fully unoccluded
     const std::uint16_t mat = static_cast<std::uint16_t>(32);
@@ -526,12 +540,6 @@ bool emit_torch(int bx, int by, int bz,
     const std::uint32_t X = static_cast<std::uint32_t>(bx);
     const std::uint32_t Y = static_cast<std::uint32_t>(by);
     const std::uint32_t Z = static_cast<std::uint32_t>(bz);
-
-    // Sub-cell fractions (sixteenths). Post spans X/Z frac 6..10, Y frac 0..10.
-    constexpr std::uint32_t LO = 6u;   // -X / -Z face plane
-    constexpr std::uint32_t HI = 10u;  // +X / +Z face plane
-    constexpr std::uint32_t BOT = 0u;  // bottom (sits on floor)
-    constexpr std::uint32_t TOP = 10u; // short stub height
 
     // Build a BFVertex directly with fractional position + packed normal/uv.
     auto vert = [&](std::uint32_t fx, std::uint32_t fy, std::uint32_t fz,
@@ -558,37 +566,65 @@ bool emit_torch(int bx, int by, int bz,
         idx_written += static_cast<std::uint32_t>(6 * sizeof(std::uint32_t));
     };
 
-    // +X face (plane at frac HI, normal +X). Corner order is CCW from outside:
-    // start lo, walk +Y, then +Z so cross(e0,e1) points +X.
-    quad(vert(HI, BOT, LO, BF_NX_POS, 0u, 0u),
-         vert(HI, TOP, LO, BF_NX_POS, 0u, 1u),
-         vert(HI, TOP, HI, BF_NX_POS, 1u, 1u),
-         vert(HI, BOT, HI, BF_NX_POS, 1u, 0u));
+    // Emit a closed box's 4 side faces between Y fracs [yb..yt] with the X/Z
+    // square spanning [lo..hi].  Caps are emitted separately so we can skip the
+    // post's top cap (covered by the head) while still capping the head.
+    auto sides = [&](std::uint32_t lo, std::uint32_t hi,
+                     std::uint32_t yb, std::uint32_t yt) {
+        // +X face (plane at frac hi, normal +X). Start lo, walk +Y then +Z so
+        // cross(e0,e1) points +X.
+        quad(vert(hi, yb, lo, BF_NX_POS, 0u, 0u),
+             vert(hi, yt, lo, BF_NX_POS, 0u, 1u),
+             vert(hi, yt, hi, BF_NX_POS, 1u, 1u),
+             vert(hi, yb, hi, BF_NX_POS, 1u, 0u));
+        // -X face (plane at frac lo, normal -X). CCW from outside (-X side).
+        quad(vert(lo, yb, hi, BF_NX_NEG, 0u, 0u),
+             vert(lo, yt, hi, BF_NX_NEG, 0u, 1u),
+             vert(lo, yt, lo, BF_NX_NEG, 1u, 1u),
+             vert(lo, yb, lo, BF_NX_NEG, 1u, 0u));
+        // +Z face (plane at frac hi, normal +Z). CCW from outside (+Z side).
+        quad(vert(hi, yb, hi, BF_NZ_POS, 0u, 0u),
+             vert(hi, yt, hi, BF_NZ_POS, 0u, 1u),
+             vert(lo, yt, hi, BF_NZ_POS, 1u, 1u),
+             vert(lo, yb, hi, BF_NZ_POS, 1u, 0u));
+        // -Z face (plane at frac lo, normal -Z). CCW from outside (-Z side).
+        quad(vert(lo, yb, lo, BF_NZ_NEG, 0u, 0u),
+             vert(lo, yt, lo, BF_NZ_NEG, 0u, 1u),
+             vert(hi, yt, lo, BF_NZ_NEG, 1u, 1u),
+             vert(hi, yb, lo, BF_NZ_NEG, 1u, 0u));
+    };
 
-    // -X face (plane at frac LO, normal -X). CCW from outside (-X side).
-    quad(vert(LO, BOT, HI, BF_NX_NEG, 0u, 0u),
-         vert(LO, TOP, HI, BF_NX_NEG, 0u, 1u),
-         vert(LO, TOP, LO, BF_NX_NEG, 1u, 1u),
-         vert(LO, BOT, LO, BF_NX_NEG, 1u, 0u));
-
-    // +Z face (plane at frac HI, normal +Z). CCW from outside (+Z side).
-    quad(vert(HI, BOT, HI, BF_NZ_POS, 0u, 0u),
-         vert(HI, TOP, HI, BF_NZ_POS, 0u, 1u),
-         vert(LO, TOP, HI, BF_NZ_POS, 1u, 1u),
-         vert(LO, BOT, HI, BF_NZ_POS, 1u, 0u));
-
-    // -Z face (plane at frac LO, normal -Z). CCW from outside (-Z side).
-    quad(vert(LO, BOT, LO, BF_NZ_NEG, 0u, 0u),
-         vert(LO, TOP, LO, BF_NZ_NEG, 0u, 1u),
-         vert(HI, TOP, LO, BF_NZ_NEG, 1u, 1u),
-         vert(HI, BOT, LO, BF_NZ_NEG, 1u, 0u));
-
-    // +Y top cap (plane at frac TOP, normal +Y). Outward +Y, CCW from above:
+    // +Y cap at frac y over the square [lo..hi]. Outward +Y, CCW from above:
     // walk -X then +Z so cross(edge0,edge1) points +Y.
-    quad(vert(HI, TOP, LO, BF_NY_POS, 0u, 0u),
-         vert(LO, TOP, LO, BF_NY_POS, 1u, 0u),
-         vert(LO, TOP, HI, BF_NY_POS, 1u, 1u),
-         vert(HI, TOP, HI, BF_NY_POS, 0u, 1u));
+    auto top_cap = [&](std::uint32_t lo, std::uint32_t hi, std::uint32_t y) {
+        quad(vert(hi, y, lo, BF_NY_POS, 0u, 0u),
+             vert(lo, y, lo, BF_NY_POS, 1u, 0u),
+             vert(lo, y, hi, BF_NY_POS, 1u, 1u),
+             vert(hi, y, hi, BF_NY_POS, 0u, 1u));
+    };
+    // -Y cap at frac y over the square [lo..hi]. Outward -Y, CCW from below:
+    // walk +X then +Z so cross(edge0,edge1) points -Y.
+    auto bottom_cap = [&](std::uint32_t lo, std::uint32_t hi, std::uint32_t y) {
+        quad(vert(lo, y, lo, BF_NY_NEG, 0u, 0u),
+             vert(hi, y, lo, BF_NY_NEG, 1u, 0u),
+             vert(hi, y, hi, BF_NY_NEG, 1u, 1u),
+             vert(lo, y, hi, BF_NY_NEG, 0u, 1u));
+    };
+
+    // POST: narrow shaft, X/Z frac 6..10, Y frac 0..7. Sides + bottom cap.
+    // (No post top cap — the wider head's bottom cap covers frac 6..10 at y=7.)
+    constexpr std::uint32_t PLO = 6u,  PHI = 10u;  // post X/Z span (4/16 wide)
+    constexpr std::uint32_t PBOT = 0u, PTOP = 7u;  // post Y span
+    sides(PLO, PHI, PBOT, PTOP);
+    bottom_cap(PLO, PHI, PBOT);
+
+    // HEAD: wider glowing tuft, X/Z frac 5..11, Y frac 7..11. Sides + both caps.
+    // Its full bottom cap (frac 5..11) closes the seam over the post at y=7.
+    constexpr std::uint32_t HLO = 5u,  HHI = 11u;  // head X/Z span (6/16 wide)
+    constexpr std::uint32_t HBOT = 7u, HTOP = 11u; // head Y span
+    sides(HLO, HHI, HBOT, HTOP);
+    bottom_cap(HLO, HHI, HBOT);
+    top_cap(HLO, HHI, HTOP);
 
     return true;
 }

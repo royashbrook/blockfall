@@ -164,6 +164,9 @@ final class HUDView: NSView {
     var onMove: ((_ from: Int, _ to: Int, _ count: Int) -> Void)?
     // Called when the player clicks a craftable row. index = 0-based craftable slot.
     var onCraft: ((Int) -> Void)?
+    // #15: creative item picker — clicking an item in the picker gives it to the
+    // player. Wired by the lead to BF_ACT_GIVE_ITEM (or equivalent). nil = no-op.
+    var onGiveItem: ((UInt16) -> Void)?
     // Slot-index (0..35) of a "picked up" stack, or nil when nothing is held.
     private var heldSlot: Int? = nil
     private var heldItem: bf_item_id = 0
@@ -183,6 +186,38 @@ final class HUDView: NSView {
     // jumping back to full from a near-empty state and flash a kid-readable banner.
     private var prevHealth: Float = 20
     private var deathFlashUntil: TimeInterval = 0
+
+    // --- #12: always-visible coordinates + facing readout ---
+    // The renderer calls setPlayerInfo each frame. facing is a yaw in radians
+    // from atan2(forward.x, forward.z); we round coords to ints for display.
+    private var playerX: Float = 0
+    private var playerY: Float = 0
+    private var playerZ: Float = 0
+    private var playerFacing: Float = 0   // yaw radians
+
+    // --- #16: scrollable craft list ---
+    // Vertical scroll offset (in points) into the craft band. 0 = top of list.
+    // Clamped to [0, maxCraftScroll] each draw against the real content height.
+    private var craftScroll: CGFloat = 0
+    private var maxCraftScroll: CGFloat = 0
+    // The clipping rect of the craft rows viewport (set each draw); used to
+    // reject clicks/hover on rows scrolled out of view.
+    private var craftViewport: NSRect = .zero
+    // Index parallel to craftRects: the recipe index each drawn rect represents.
+    // (Only visible rows get rects, so positions in craftRects no longer equal
+    // recipe indices once scrolled — keep the mapping explicit.)
+    private var craftRowIndex: [Int] = []
+
+    // --- #15: creative item picker ---
+    // Scroll offset into the picker grid and its clamp/viewport, mirroring the
+    // craft-list approach. Rects parallel to pickerItemIds for hit-testing.
+    private var pickerScroll: CGFloat = 0
+    private var maxPickerScroll: CGFloat = 0
+    private var pickerViewport: NSRect = .zero
+    private var pickerRects: [NSRect] = []
+    private var pickerItemIds: [UInt16] = []
+    // Sorted list of every known item id (built once from kItemTable).
+    private static let kAllItemIds: [UInt16] = kItemTable.keys.sorted()
 
     override var isFlipped: Bool { false }
     override var isOpaque: Bool { false }
@@ -207,6 +242,33 @@ final class HUDView: NSView {
 
     private func clearHeld() {
         heldSlot = nil; heldItem = 0; heldCount = 0
+    }
+
+    // #12: Renderer pushes the player's world position + yaw each frame. We only
+    // request a repaint when the displayed (rounded) value actually changes, so
+    // the always-on readout doesn't force a redraw 60×/s while standing still.
+    func setPlayerInfo(x: Float, y: Float, z: Float, facing: Float) {
+        let changed = x.rounded() != playerX.rounded()
+            || y.rounded() != playerY.rounded()
+            || z.rounded() != playerZ.rounded()
+            || cardinal(from: facing) != cardinal(from: playerFacing)
+        playerX = x; playerY = y; playerZ = z; playerFacing = facing
+        // Don't fight the inventory's own repaints; in-world readout only.
+        if changed && hud.inventory_open == 0 { needsDisplay = true }
+    }
+
+    // Map a yaw (radians, from atan2(forward.x, forward.z)) to an 8-way compass
+    // label. We bucket into 8 sectors of 45°. atan2(x,z): +z forward = 0,
+    // +x (east) = +90°. Normalize to [0,360) then divide into octants.
+    private func cardinal(from yaw: Float) -> String {
+        let names = ["S", "SW", "W", "NW", "N", "NE", "E", "SE"]
+        // yaw=0 points toward +z. We label +z as South and +x as East so the
+        // compass reads naturally on the standard right-handed world layout.
+        var deg = Double(yaw) * 180.0 / .pi
+        deg = deg.truncatingRemainder(dividingBy: 360)
+        if deg < 0 { deg += 360 }
+        let idx = Int((deg / 45.0).rounded()) % 8
+        return names[idx]
     }
 
     // ----- Mouse handling (active only while the inventory is open) -----
@@ -245,7 +307,16 @@ final class HUDView: NSView {
         let p = convert(event.locationInWindow, from: nil)
         mousePos = p
 
-        // Check craft rows first — clicking one crafts the recipe.
+        // #15: Creative item picker takes priority when shown — clicking an item
+        // gives it to the player. Only active in creative mode (its rects are
+        // empty otherwise, so this is a no-op in survival).
+        if heldSlot == nil, let pid = pickerItemId(at: p) {
+            onGiveItem?(pid)
+            needsDisplay = true
+            return
+        }
+
+        // Check craft rows next — clicking one crafts the recipe.
         if heldSlot == nil, let ci = craftIndex(at: p) {
             onCraft?(ci)
             needsDisplay = true
@@ -272,6 +343,26 @@ final class HUDView: NSView {
                 heldSlot = idx; heldItem = s.item; heldCount = s.count
                 needsDisplay = true
             }
+        }
+    }
+
+    // #16 / #15: mouse-wheel scrolling for the craft list and the creative
+    // picker. Whichever panel the cursor is over receives the scroll; offsets
+    // are clamped against the live content height (recomputed each draw). When
+    // the inventory is closed we ignore the wheel entirely (pass it through is
+    // unnecessary since hitTest already returns nil during play).
+    override func scrollWheel(with event: NSEvent) {
+        guard hud.inventory_open != 0 else { super.scrollWheel(with: event); return }
+        let p = convert(event.locationInWindow, from: nil)
+        // scrollingDeltaY: +up / -down in AppKit. Scrolling "down" should reveal
+        // lower entries, i.e. increase the offset.
+        let dy = event.scrollingDeltaY
+        if pickerViewport.contains(p) && maxPickerScroll > 0 {
+            pickerScroll = min(max(0, pickerScroll + dy), maxPickerScroll)
+            needsDisplay = true
+        } else if craftViewport.contains(p) && maxCraftScroll > 0 {
+            craftScroll = min(max(0, craftScroll + dy), maxCraftScroll)
+            needsDisplay = true
         }
     }
 
@@ -399,6 +490,39 @@ final class HUDView: NSView {
             NSBezierPath(roundedRect: NSRect(x: barRect.minX, y: barRect.minY,
                                              width: barRect.width * p, height: barRect.height),
                          xRadius: 3, yRadius: 3).fill()
+        }
+
+        // --- #12: Coordinates + facing readout (top-left, always visible) ---
+        // Sits under the quest block when a quest is active so they don't
+        // overlap; otherwise tucks into the top-left corner. Compact: a coord
+        // line + a cardinal direction badge.
+        do {
+            let xi = Int(playerX.rounded())
+            let yi = Int(playerY.rounded())
+            let zi = Int(playerZ.rounded())
+            let dir = cardinal(from: playerFacing)
+            let coordStr = "X: \(xi)   Y: \(yi)   Z: \(zi)"
+            let facingStr = "Facing: \(dir)"
+            // Anchor below the quest panel if present (progress bar bottom is
+            // b.maxY - 70), else top-left corner.
+            let topY = (hud.active_quest_id != 0) ? (b.maxY - 92) : (b.maxY - 24)
+            let coAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold),
+                .foregroundColor: NSColor.white,
+                .strokeColor: NSColor.black, .strokeWidth: -3.0,
+            ]
+            let cSz = (coordStr as NSString).size(withAttributes: coAttrs)
+            let fSz = (facingStr as NSString).size(withAttributes: coAttrs)
+            let pad: CGFloat = 6
+            let boxW = max(cSz.width, fSz.width) + pad * 2
+            let boxH = cSz.height + fSz.height + pad * 2 + 2
+            let box = NSRect(x: 16, y: topY - boxH + cSz.height, width: boxW, height: boxH)
+            NSColor.black.withAlphaComponent(0.40).setFill()
+            NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6).fill()
+            (coordStr as NSString).draw(at: NSPoint(x: box.minX + pad, y: box.maxY - cSz.height - pad),
+                                        withAttributes: coAttrs)
+            (facingStr as NSString).draw(at: NSPoint(x: box.minX + pad, y: box.minY + pad - 1),
+                                         withAttributes: coAttrs)
         }
 
         // Mode badge (top-right)
@@ -538,34 +662,41 @@ final class HUDView: NSView {
             }
         }
 
-        // --- Craftable recipes: vertical stacked rows BELOW the hotbar, two
-        // columns when there are more than fit in one. Each row is a clickable
-        // strip: icon + name + "×N". Number-key badge on the first 9 rows.
-        // Layout is pinned to the inventory grid width so it never overflows the
-        // window regardless of how many recipes are available (up to 24). ---
+        // --- #16: Craftable recipes — a SINGLE-column scrollable list BELOW the
+        // hotbar. Rows are clipped to a fixed viewport; the mouse wheel scrolls
+        // when there are more rows than fit. Each row is a clickable strip:
+        // icon + name + "×N", with a number-key badge on recipes 1–9. ---
         let n = Int(hud.craftable_count)
         let hotbarBottom = rects[0].minY
         let bandGap: CGFloat = 20           // gap between hotbar and craft band
         let craftTitleH: CGFloat = 20       // title strip height
         let rowH: CGFloat = 36              // height of each recipe row
         let rowGap: CGFloat = 3             // vertical gap between rows
+        let panelPad: CGFloat = 6           // inner padding of the rows viewport
 
-        // How many rows fit in the available vertical space above the bottom of
-        // the view. We reserve space from hotbarBottom downward, then check
-        // whether we need one or two columns.
-        let availH = hotbarBottom - bandGap - craftTitleH - 8   // space for rows
-        let maxRowsPerCol = max(1, Int(availH / (rowH + rowGap)))
+        // Width: leave room on the right for the creative picker panel when it
+        // is shown so the two don't overlap. The picker lives on the right edge.
+        let pickerActive = (hud.mode == BF_MODE_CREATIVE)
+        let craftRightLimit = pickerActive ? (kPickerPanelX(in: b) - 16) : b.maxX
+        let craftLeft = originX - 10
+        let craftWidth = min(gridW + 20, craftRightLimit - craftLeft)
+        let colW = craftWidth - panelPad * 2 - 12   // row width inside viewport (reserve scrollbar)
 
-        // Decide column layout: one column if <= maxRowsPerCol recipes, else two.
-        let useDoubleCol = n > maxRowsPerCol
-        let col1Count = useDoubleCol ? Int(ceil(Double(n) / 2.0)) : n
-        let colW = useDoubleCol ? (gridW - 4) / 2 : gridW
+        // The band spans from just under the hotbar down to a bottom margin.
+        let bandBottom: CGFloat = 44        // keep clear of the bottom hint line
+        let bandTop = hotbarBottom - bandGap
+        let titleY = bandTop - craftTitleH + 2
 
-        // Panel background covers the title + all rows.
-        let rowsInTallestCol = max(col1Count, 1)
-        let panelH = craftTitleH + CGFloat(rowsInTallestCol) * (rowH + rowGap) - rowGap + 12
-        let panelY = hotbarBottom - bandGap - panelH
-        let panel = NSRect(x: originX - 10, y: panelY, width: gridW + 20, height: panelH)
+        // Viewport (the clipped scroll area) sits below the title.
+        let viewTop = titleY - 6
+        let viewBottom = bandBottom + 4
+        let viewH = max(rowH, viewTop - viewBottom)
+        let viewport = NSRect(x: craftLeft, y: viewBottom, width: craftWidth, height: viewH)
+        craftViewport = viewport
+
+        // Panel background (title + viewport).
+        let panel = NSRect(x: craftLeft, y: viewBottom - 2,
+                           width: craftWidth, height: (titleY + craftTitleH) - (viewBottom - 2))
         NSColor.black.withAlphaComponent(0.38).setFill()
         let panelPath = NSBezierPath(roundedRect: panel, xRadius: 8, yRadius: 8)
         panelPath.fill()
@@ -573,99 +704,71 @@ final class HUDView: NSView {
         panelPath.lineWidth = 1; panelPath.stroke()
 
         // Title strip.
-        let craftTitleY = hotbarBottom - bandGap - craftTitleH + 2
         drawText(n == 0 ? "Nothing craftable yet — gather wood and stone!"
                         : "Crafting  (click a row to craft  •  1–9 = number key)",
-                 at: NSPoint(x: originX, y: craftTitleY), size: 12, color: .systemYellow, bold: true)
+                 at: NSPoint(x: originX, y: titleY), size: 12, color: .systemYellow, bold: true)
 
-        // Draw recipe rows. Rebuild craftRects each frame so hit-testing matches.
+        // Total content height & scroll clamp. Top row sits at the top of the
+        // viewport; subsequent rows below it. scroll moves the content UP.
+        let contentH = CGFloat(n) * (rowH + rowGap) - (n > 0 ? rowGap : 0)
+        maxCraftScroll = max(0, contentH - viewH)
+        craftScroll = min(max(0, craftScroll), maxCraftScroll)
+
+        // Draw visible rows clipped to the viewport. Rebuild craftRects +
+        // craftRowIndex each frame so hit-testing matches exactly what we paint.
         var crafts = [NSRect]()
-        withUnsafeBytes(of: hud.craftable) { raw in
-            let cr = raw.bindMemory(to: bf_hud_slot.self)
-            for i in 0..<n {
-                // Column assignment: first half in col 0, rest in col 1.
-                let col = (useDoubleCol && i >= col1Count) ? 1 : 0
-                let rowInCol = useDoubleCol ? (col == 0 ? i : i - col1Count) : i
-                let rx = originX + CGFloat(col) * (colW + 4)
-                let ry = craftTitleY - CGFloat(rowInCol + 1) * (rowH + rowGap) + rowGap
-                let rowRect = NSRect(x: rx, y: ry, width: colW, height: rowH)
-                crafts.append(rowRect)
-
-                let hovered = mouseInside && heldSlot == nil && rowRect.contains(mousePos)
-                // Row background.
-                (hovered ? NSColor.systemYellow.withAlphaComponent(0.22)
-                         : NSColor.black.withAlphaComponent(0.45)).setFill()
-                let rr = NSBezierPath(roundedRect: rowRect, xRadius: 5, yRadius: 5); rr.fill()
-                NSColor.systemYellow.withAlphaComponent(hovered ? 0.90 : 0.40).setStroke()
-                rr.lineWidth = hovered ? 2 : 1; rr.stroke()
-
-                // Icon on the left side of the row.
-                let iconSize: CGFloat = rowH - 6
-                let iconRect = NSRect(x: rx + 4, y: ry + (rowH - iconSize) / 2,
-                                      width: iconSize, height: iconSize)
-                let s = cr[i]
-                if s.item != 0 {
-                    drawCenteredItem(id: s.item, count: s.count, in: iconRect, selected: false)
-                }
-
-                // Number-key badge (1–9) on first 9 rows, top-left of icon.
-                if i < 9 {
-                    let badge = NSRect(x: rx + 2, y: ry + rowH - 15, width: 14, height: 14)
-                    NSColor.black.withAlphaComponent(0.70).setFill()
-                    NSBezierPath(roundedRect: badge, xRadius: 3, yRadius: 3).fill()
-                    drawText("\(i + 1)", at: NSPoint(x: rx + 4, y: ry + rowH - 15),
-                             size: 11, color: .systemYellow, bold: true)
-                }
-
-                // Item name + count label to the right of the icon.
-                if s.item != 0 {
-                    let textX = rx + iconSize + 8
-                    let textW = colW - iconSize - 12   // remaining width
-                    let nameStr = itemName(s.item)
-                    let countStr = "×\(s.count)"
-                    // Name (truncated to available width to prevent overflow)
-                    let nameAttrs: [NSAttributedString.Key: Any] = [
-                        .font: NSFont.boldSystemFont(ofSize: 12),
-                        .foregroundColor: NSColor.white,
-                    ]
-                    let cntAttrs: [NSAttributedString.Key: Any] = [
-                        .font: NSFont.systemFont(ofSize: 11),
-                        .foregroundColor: NSColor.white.withAlphaComponent(0.75),
-                    ]
-                    let nameSz = (nameStr as NSString).size(withAttributes: nameAttrs)
-                    let cntSz  = (countStr as NSString).size(withAttributes: cntAttrs)
-                    // Vertically center both lines in the row.
-                    let totalTextH = nameSz.height + cntSz.height + 1
-                    let textY = ry + (rowH - totalTextH) / 2
-                    // Clip name if it's wider than textW.
-                    let displayName: String
-                    if nameSz.width > textW {
-                        var trunc = nameStr
-                        while !trunc.isEmpty &&
-                              ((trunc + "…") as NSString).size(withAttributes: nameAttrs).width > textW {
-                            trunc = String(trunc.dropLast())
-                        }
-                        displayName = trunc + "…"
-                    } else {
-                        displayName = nameStr
-                    }
-                    (displayName as NSString).draw(at: NSPoint(x: textX, y: textY + cntSz.height + 1),
-                                                   withAttributes: nameAttrs)
-                    (countStr as NSString).draw(at: NSPoint(x: textX, y: textY), withAttributes: cntAttrs)
+        var craftIdx = [Int]()
+        clipped(to: [NSPoint(x: viewport.minX, y: viewport.minY),
+                     NSPoint(x: viewport.maxX, y: viewport.minY),
+                     NSPoint(x: viewport.maxX, y: viewport.maxY),
+                     NSPoint(x: viewport.minX, y: viewport.maxY)]) {
+            withUnsafeBytes(of: hud.craftable) { raw in
+                let cr = raw.bindMemory(to: bf_hud_slot.self)
+                let rx = viewport.minX + panelPad
+                for i in 0..<n {
+                    // Row i's top within content; map to view coords (non-flipped:
+                    // +y up). Row 0 top aligns with viewport top + craftScroll.
+                    let ry = viewport.maxY - rowH - CGFloat(i) * (rowH + rowGap) + craftScroll
+                    let rowRect = NSRect(x: rx, y: ry, width: colW, height: rowH)
+                    // Skip rows fully outside the viewport (cheap cull).
+                    if rowRect.maxY < viewport.minY || rowRect.minY > viewport.maxY { continue }
+                    crafts.append(rowRect); craftIdx.append(i)
+                    let s = cr[i]
+                    let hovered = mouseInside && heldSlot == nil
+                        && rowRect.contains(mousePos) && viewport.contains(mousePos)
+                    drawCraftRow(rowRect, slot: s, recipeIndex: i, colW: colW, hovered: hovered)
                 }
             }
         }
         craftRects = crafts
+        craftRowIndex = craftIdx
 
-        // Bottom hint — sits just under the panel.
+        // Scrollbar indicator on the right edge of the viewport.
+        if maxCraftScroll > 0 {
+            drawScrollbar(in: viewport, contentH: contentH, scroll: craftScroll)
+        }
+
+        // #15: Creative item picker panel (right side), scrollable. Only built in
+        // creative mode; sets pickerRects/pickerItemIds (empty otherwise).
+        if pickerActive {
+            drawCreativePicker(in: b)
+        } else {
+            pickerRects = []; pickerItemIds = []
+            pickerViewport = .zero; maxPickerScroll = 0
+        }
+
+        // Bottom hint — sits at the very bottom of the screen.
         drawText("Esc / E to close   •   click a stack to pick it up, click a slot to place it",
-                 at: NSPoint(x: originX, y: panel.minY - 20), size: 12, color: .white, bold: false)
+                 at: NSPoint(x: originX, y: 18), size: 12, color: .white, bold: false)
 
         // --- Hover tooltips (only when not carrying a stack, so the tooltip
         //     doesn't fight the ghost). A craftable row under the cursor takes
         //     priority and shows what the recipe makes + its number key. ---
         if mouseInside && heldSlot == nil {
-            if let c = craftIndex(at: mousePos) {
+            if let pid = pickerItemId(at: mousePos) {
+                drawTooltip(name: itemName(pid), count: 1, itemId: pid,
+                            hint: "click to get", near: mousePos)
+            } else if let c = craftIndex(at: mousePos) {
                 let s = craftableSlot(c)
                 if s.item != 0 {
                     let keyHint = c < 9 ? "press \(c + 1)" : nil
@@ -710,9 +813,187 @@ final class HUDView: NSView {
     }
 
     // Craftable recipe index under a point, hit-tested against craftRects (which
-    // is rebuilt every draw to mirror exactly what we painted).
+    // is rebuilt every draw to mirror exactly what we painted). craftRects holds
+    // only the visible (scrolled) rows, so we map the matched rect position back
+    // to its true recipe index via craftRowIndex. Clicks outside the scroll
+    // viewport are rejected so a row peeking past the clip can't be clicked.
     private func craftIndex(at p: NSPoint) -> Int? {
-        for (i, r) in craftRects.enumerated() where r.contains(p) { return i }
+        guard craftViewport.contains(p) else { return nil }
+        for (k, r) in craftRects.enumerated() where r.contains(p) {
+            return k < craftRowIndex.count ? craftRowIndex[k] : nil
+        }
+        return nil
+    }
+
+    // ===== #16 helpers: craft row + scrollbar ==============================
+
+    // Draw a single craft recipe row strip. Pulled out of drawInventory so the
+    // scrolled list and any future layout reuse the same visuals.
+    private func drawCraftRow(_ rowRect: NSRect, slot s: bf_hud_slot,
+                              recipeIndex i: Int, colW: CGFloat, hovered: Bool) {
+        let rx = rowRect.minX, ry = rowRect.minY, rowH = rowRect.height
+        (hovered ? NSColor.systemYellow.withAlphaComponent(0.22)
+                 : NSColor.black.withAlphaComponent(0.45)).setFill()
+        let rr = NSBezierPath(roundedRect: rowRect, xRadius: 5, yRadius: 5); rr.fill()
+        NSColor.systemYellow.withAlphaComponent(hovered ? 0.90 : 0.40).setStroke()
+        rr.lineWidth = hovered ? 2 : 1; rr.stroke()
+
+        // Icon on the left.
+        let iconSize: CGFloat = rowH - 6
+        let iconRect = NSRect(x: rx + 4, y: ry + (rowH - iconSize) / 2,
+                              width: iconSize, height: iconSize)
+        if s.item != 0 {
+            drawCenteredItem(id: s.item, count: s.count, in: iconRect, selected: false)
+        }
+        // Number-key badge (1–9) on first 9 rows.
+        if i < 9 {
+            let badge = NSRect(x: rx + 2, y: ry + rowH - 15, width: 14, height: 14)
+            NSColor.black.withAlphaComponent(0.70).setFill()
+            NSBezierPath(roundedRect: badge, xRadius: 3, yRadius: 3).fill()
+            drawText("\(i + 1)", at: NSPoint(x: rx + 4, y: ry + rowH - 15),
+                     size: 11, color: .systemYellow, bold: true)
+        }
+        // Name + count to the right of the icon.
+        if s.item != 0 {
+            let textX = rx + iconSize + 8
+            let textW = colW - iconSize - 12
+            let nameStr = itemName(s.item)
+            let countStr = "×\(s.count)"
+            let nameAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: 12), .foregroundColor: NSColor.white,
+            ]
+            let cntAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor.white.withAlphaComponent(0.75),
+            ]
+            let nameSz = (nameStr as NSString).size(withAttributes: nameAttrs)
+            let cntSz  = (countStr as NSString).size(withAttributes: cntAttrs)
+            let totalTextH = nameSz.height + cntSz.height + 1
+            let textY = ry + (rowH - totalTextH) / 2
+            let displayName = truncated(nameStr, to: textW, attrs: nameAttrs)
+            (displayName as NSString).draw(at: NSPoint(x: textX, y: textY + cntSz.height + 1),
+                                           withAttributes: nameAttrs)
+            (countStr as NSString).draw(at: NSPoint(x: textX, y: textY), withAttributes: cntAttrs)
+        }
+    }
+
+    // Truncate a string with an ellipsis so it fits maxW at the given attrs.
+    private func truncated(_ s: String, to maxW: CGFloat,
+                           attrs: [NSAttributedString.Key: Any]) -> String {
+        if (s as NSString).size(withAttributes: attrs).width <= maxW { return s }
+        var t = s
+        while !t.isEmpty &&
+              ((t + "…") as NSString).size(withAttributes: attrs).width > maxW {
+            t = String(t.dropLast())
+        }
+        return t + "…"
+    }
+
+    // Subtle scrollbar on the right edge of a viewport. contentH is the full
+    // (unclipped) content height; scroll is the current offset in [0, max].
+    private func drawScrollbar(in viewport: NSRect, contentH: CGFloat, scroll: CGFloat) {
+        guard contentH > viewport.height else { return }
+        let trackW: CGFloat = 4
+        let track = NSRect(x: viewport.maxX - trackW - 2, y: viewport.minY + 2,
+                           width: trackW, height: viewport.height - 4)
+        NSColor.white.withAlphaComponent(0.10).setFill()
+        NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2).fill()
+        let frac = viewport.height / contentH                 // visible fraction
+        let thumbH = max(16, track.height * frac)
+        let maxScroll = max(1, contentH - viewport.height)
+        // scroll=0 → thumb at top (non-flipped: top = high y).
+        let t = scroll / maxScroll
+        let thumbY = track.maxY - thumbH - t * (track.height - thumbH)
+        let thumb = NSRect(x: track.minX, y: thumbY, width: trackW, height: thumbH)
+        NSColor.systemYellow.withAlphaComponent(0.55).setFill()
+        NSBezierPath(roundedRect: thumb, xRadius: 2, yRadius: 2).fill()
+    }
+
+    // ===== #15 helpers: creative item picker ==============================
+
+    // Left edge X of the creative picker panel for a given view bounds. Used both
+    // to draw it and to keep the craft list from overlapping it.
+    private func kPickerPanelX(in b: NSRect) -> CGFloat {
+        let panelW: CGFloat = 196
+        return b.maxX - panelW - 14
+    }
+
+    // Draw the "Creative Items" panel: a scrollable grid of every known item.
+    // Clicking an icon calls onGiveItem. Rebuilds pickerRects/pickerItemIds each
+    // frame so hit-testing matches the scrolled layout exactly.
+    private func drawCreativePicker(in b: NSRect) {
+        let panelW: CGFloat = 196
+        let panelX = b.maxX - panelW - 14
+        let titleH: CGFloat = 22
+        let panelTop = b.maxY - 100        // below the mode/weather/biome badges
+        let panelBottom: CGFloat = 44
+        let panel = NSRect(x: panelX, y: panelBottom, width: panelW,
+                           height: panelTop - panelBottom)
+
+        NSColor.black.withAlphaComponent(0.55).setFill()
+        let pp = NSBezierPath(roundedRect: panel, xRadius: 10, yRadius: 10); pp.fill()
+        NSColor.systemTeal.withAlphaComponent(0.55).setStroke()
+        pp.lineWidth = 1.5; pp.stroke()
+
+        drawText("Creative Items", at: NSPoint(x: panel.minX + 12, y: panel.maxY - titleH),
+                 size: 14, color: .systemTeal, bold: true)
+        drawText("click to get one", at: NSPoint(x: panel.minX + 12, y: panel.maxY - titleH - 15),
+                 size: 10, color: NSColor.white.withAlphaComponent(0.7), bold: false)
+
+        // Grid geometry inside the panel.
+        let pad: CGFloat = 10
+        let cell: CGFloat = 40, cgap: CGFloat = 6
+        let cols = Swift.max(1, Int((panelW - pad * 2 + cgap) / (cell + cgap)))
+        let viewTop = panel.maxY - titleH - 24
+        let viewBottom = panel.minY + 8
+        let viewport = NSRect(x: panel.minX + pad, y: viewBottom,
+                              width: panelW - pad * 2, height: Swift.max(cell, viewTop - viewBottom))
+        pickerViewport = viewport
+
+        let ids = HUDView.kAllItemIds
+        let rows = Int(ceil(Double(ids.count) / Double(cols)))
+        let contentH = CGFloat(rows) * (cell + cgap) - (rows > 0 ? cgap : 0)
+        maxPickerScroll = Swift.max(0, contentH - viewport.height)
+        pickerScroll = Swift.min(Swift.max(0, pickerScroll), maxPickerScroll)
+
+        var rects = [NSRect](); var outIds = [UInt16]()
+        clipped(to: [NSPoint(x: viewport.minX, y: viewport.minY),
+                     NSPoint(x: viewport.maxX, y: viewport.minY),
+                     NSPoint(x: viewport.maxX, y: viewport.maxY),
+                     NSPoint(x: viewport.minX, y: viewport.maxY)]) {
+            for (k, id) in ids.enumerated() {
+                let row = k / cols, col = k % cols
+                let cx = viewport.minX + CGFloat(col) * (cell + cgap)
+                // Row 0 at top of viewport (non-flipped: +y up), scroll moves up.
+                let cy = viewport.maxY - cell - CGFloat(row) * (cell + cgap) + pickerScroll
+                let cr = NSRect(x: cx, y: cy, width: cell, height: cell)
+                if cr.maxY < viewport.minY || cr.minY > viewport.maxY { continue }
+                rects.append(cr); outIds.append(id)
+                let hovered = mouseInside && heldSlot == nil
+                    && cr.contains(mousePos) && viewport.contains(mousePos)
+                (hovered ? NSColor.systemTeal.withAlphaComponent(0.30)
+                         : NSColor.black.withAlphaComponent(0.45)).setFill()
+                let bp = NSBezierPath(roundedRect: cr, xRadius: 5, yRadius: 5); bp.fill()
+                NSColor.systemTeal.withAlphaComponent(hovered ? 0.9 : 0.35).setStroke()
+                bp.lineWidth = hovered ? 2 : 1; bp.stroke()
+                drawCenteredItem(id: id, count: 1, in: cr, selected: false)
+            }
+        }
+        pickerRects = rects
+        pickerItemIds = outIds
+
+        if maxPickerScroll > 0 {
+            drawScrollbar(in: viewport, contentH: contentH, scroll: pickerScroll)
+        }
+    }
+
+    // Item id of the picker cell under a point, or nil. Rejects points outside
+    // the scroll viewport so a partially-clipped cell can't be clicked.
+    private func pickerItemId(at p: NSPoint) -> UInt16? {
+        guard pickerViewport.contains(p) else { return nil }
+        for (k, r) in pickerRects.enumerated() where r.contains(p) {
+            return k < pickerItemIds.count ? pickerItemIds[k] : nil
+        }
         return nil
     }
 

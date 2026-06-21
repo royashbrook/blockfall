@@ -2,7 +2,7 @@
 
 - **Area:** gameplay
 - **Priority:** P2
-- **Status:** open
+- **Status:** needs-verify
 - **Source:** playtest feedback (baseline round)
 
 ## Description
@@ -13,3 +13,6 @@ day_time period reduced ~25%; verified day and night both feel reasonably paced.
 
 ## Notes
 _(updates / PR refs go here)_
+
+## Update
+Addressed in the post-baseline parallel batch; pending playtest verification.
