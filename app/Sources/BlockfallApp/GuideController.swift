@@ -124,8 +124,11 @@ final class GuideController: NSObject {
         guard let responder = NSApp.keyWindow?.firstResponder else { return false }
         if responder is NSTextView { return true }
         if let tv = responder as? NSTextView, tv.isFieldEditor { return true }
-        // NSTextField uses a shared field editor (an NSText/NSTextView) while editing.
+        // NSTextField uses a shared field editor (an NSText/NSTextView) while editing,
+        // but can also be the responder itself before the editor is installed — both
+        // count as "typing" so 'G' doesn't close the panel mid-question.
         if responder is NSText { return true }
+        if responder is NSTextField { return true }
         return false
     }
 
