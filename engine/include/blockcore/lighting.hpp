@@ -39,6 +39,7 @@ inline std::uint8_t light_emit(BlockId b) {
         case 32:         return std::uint8_t(14);   // torch
         case 34:         return std::uint8_t(15);   // beacon_block
         case 35:         return std::uint8_t(15);   // crystal_lamp
+        case 40:         return std::uint8_t(8);    // color_crystal (was emitting 0 — content says 8)
         default:         return std::uint8_t(0);
     }
 }

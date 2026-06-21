@@ -84,7 +84,7 @@
     "hardness": 15,
     "required_tier": 1,
     "preferred_tool": "pickaxe",
-    "light_emit": 12,
+    "light_emit": 14,
     "light_color": [
       255,
       240,

@@ -143,6 +143,7 @@ public:
         inv_.emplace(BF_INVENTORY_SLOTS, items_);
         craft_.emplace(recipes_);
         glow_id_ = block_id_by_name("glow_block");
+        beacon_id_ = block_id_by_name("beacon_block");
         give_starter_items();
     }
 
@@ -504,8 +505,11 @@ public:
                 set_block_internal(place_, pb);
                 fx(1, place_);                        // place sound
                 notify_quest("place_block", block_name(pb));
-                if (pb == glow_id_) {
-                    notify_quest("light_beacon", "");
+                // A glow block or a crafted beacon lights up the dark and restores
+                // colour. Fire with the block name so quest 10 (target beacon_block)
+                // and the achievement (any) both match correctly.
+                if (pb == glow_id_ || (beacon_id_ != 0 && pb == beacon_id_)) {
+                    notify_quest("light_beacon", block_name(pb));
                     ChunkCoord rc = to_chunk(place_);
                     if (region_sat(rc) < 0.99f) { ++regions_restored_; notify_quest("restore_region", "dim_barrens"); }
                     restore_region(rc);
@@ -1605,6 +1609,7 @@ private:
     std::optional<Inventory>      inv_;
     std::optional<CraftingSystem> craft_;
     BlockId                       glow_id_{GLOW};
+    BlockId                       beacon_id_{0};
     bool                          inv_open_{false};
 
     // Creatures + quest state (M3).
