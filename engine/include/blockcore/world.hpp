@@ -100,8 +100,12 @@ public:
     static constexpr int    STREAM_R     = 6;      // horizontal radius (chunks)
     static constexpr int    CY_MIN       = -1;     // vertical chunk band (terrain)
     static constexpr int    CY_MAX       = 3;
-    static constexpr int    GEN_BUDGET   = 12;     // chunks generated per frame
-    static constexpr int    MESH_BUDGET  = 8;      // chunks remeshed per frame
+    // Streaming work is synchronous on the frame thread, so a big per-frame
+    // budget = a big hitch when you cross a chunk boundary. Smaller budgets
+    // spread the same work over more frames → much smoother 1%-low (pop-in is
+    // marginally slower, which is the right trade for kids).
+    static constexpr int    GEN_BUDGET   = 6;      // chunks generated per frame
+    static constexpr int    MESH_BUDGET  = 4;      // chunks remeshed per frame
 
     explicit World(IMesher& mesher, IWorldGen* gen = nullptr)
         : mesher_(mesher), gen_(gen) {}
@@ -664,10 +668,19 @@ private:
             const RecipeEntry& r = content_->recipe(i);
             if (r.pattern.empty() || r.result_item == 0) continue;
             if (r.grid_size >= 3 && !hasTable) continue;   // needs a crafting table
-            std::unordered_map<ItemId, int> need;
-            for (ItemId it : r.pattern) if (it != 0) need[it]++;
+            // Count required-per-item inline (pattern <= 9 slots) to avoid a
+            // per-recipe heap allocation every frame (fill_hud runs this each frame).
+            const auto& pat = r.pattern;
             bool ok = true;
-            for (auto& [it, n] : need) if (int(inv_->count_item(it)) < n) { ok = false; break; }
+            for (std::size_t a = 0; a < pat.size() && ok; ++a) {
+                ItemId it = pat[a];
+                if (it == 0) continue;
+                bool firstOcc = true; int need = 0;
+                for (std::size_t s = 0; s < pat.size(); ++s)
+                    if (pat[s] == it) { ++need; if (s < a) { firstOcc = false; } }
+                if (!firstOcc) continue;                   // already accounted for
+                if (int(inv_->count_item(it)) < need) ok = false;
+            }
             if (ok) out.push_back(i);
         }
     }
@@ -1322,9 +1335,13 @@ private:
         ensure_scratch();
         // Remesh nearest dirty chunks first, budgeted per frame.
         std::vector<ChunkCoord> todo(dirty_.begin(), dirty_.end());
-        std::sort(todo.begin(), todo.end(), [&](ChunkCoord a, ChunkCoord b) {
+        // We only ever process the nearest MESH_BUDGET this frame — partial_sort
+        // instead of a full O(n log n) sort of the whole dirty set every frame.
+        auto cmp = [&](ChunkCoord a, ChunkCoord b) {
             return dist2(a, last_center_) < dist2(b, last_center_);
-        });
+        };
+        std::size_t k = std::min<std::size_t>(std::size_t(MESH_BUDGET), todo.size());
+        std::partial_sort(todo.begin(), todo.begin() + std::ptrdiff_t(k), todo.end(), cmp);
         int done = 0;
         for (ChunkCoord cc : todo) {
             if (done >= MESH_BUDGET) break;

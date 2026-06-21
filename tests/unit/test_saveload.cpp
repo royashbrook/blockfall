@@ -51,7 +51,9 @@ int main() {
         w3.set_allocator(alloc); w3.init_world(424242);
         bf_frame_input zero{};
         // Pump enough frames for both worlds to fully stream the compared band.
-        for (int i = 0; i < 120; ++i) { w3.update(zero, 0.016); world.update(zero, 0.016); }
+        // (Per-frame stream budget is intentionally small for smooth framerate, so
+        // give streaming enough ticks to settle the origin band in both worlds.)
+        for (int i = 0; i < 300; ++i) { w3.update(zero, 0.016); world.update(zero, 0.016); }
         int matches = 0, total = 0;
         for (int x = 0; x < 8; ++x) for (int z = 0; z < 8; ++z) {
             for (int y = 0; y < 20; ++y) {

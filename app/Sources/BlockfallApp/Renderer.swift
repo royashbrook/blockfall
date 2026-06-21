@@ -46,6 +46,13 @@ final class BufferRegistry {
         lock.lock(); defer { lock.unlock() }
         return buffers[handle]
     }
+    // One-shot copy for the encode window: buffers are only added/freed between
+    // frame_end and the next frame_begin, so a per-frame snapshot lets the three
+    // render passes resolve handles lock-free (was ~1500 NSLock calls/frame).
+    func snapshot() -> [UInt64: MTLBuffer] {
+        lock.lock(); defer { lock.unlock() }
+        return buffers
+    }
     // Release buffers retired more than a few frames ago (GPU done with them).
     func collect() {
         lock.lock(); defer { lock.unlock() }
@@ -580,6 +587,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         let dt = now - lastTime; lastTime = now
         frameCounter += 1
         registry.currentFrame = frameCounter
+        let bufs = registry.snapshot()   // lock-free handle resolution for this frame's encode
 
         // Lazy texture init / resize check
         let dSize = view.drawableSize
@@ -659,8 +667,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             for i in 0..<Int(frame.draw_count) {
                 let d = frame.draws[i]
                 guard d.index_count > 0,
-                      let vbuf = registry.lookup(d.vertex_buffer),
-                      let ibuf = registry.lookup(d.index_buffer) else { continue }
+                      let vbuf = bufs[d.vertex_buffer],
+                      let ibuf = bufs[d.index_buffer] else { continue }
                 var su = ShadowVertUniforms(
                     lightViewProj: lightViewProj,
                     chunkOrigin: SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), 0))
@@ -727,8 +735,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             for i in 0..<Int(frame.draw_count) {
                 let d = frame.draws[i]
                 guard d.index_count > 0,
-                      let vbuf = registry.lookup(d.vertex_buffer),
-                      let ibuf = registry.lookup(d.index_buffer) else { continue }
+                      let vbuf = bufs[d.vertex_buffer],
+                      let ibuf = bufs[d.index_buffer] else { continue }
                 var u = Uniforms(
                     viewProj:      viewProj,
                     chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
@@ -787,8 +795,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             for i in 0..<Int(frame.draw_count) {
                 let d = frame.draws[i]
                 guard d.index_count > 0,
-                      let vbuf = registry.lookup(d.vertex_buffer),
-                      let ibuf = registry.lookup(d.index_buffer) else { continue }
+                      let vbuf = bufs[d.vertex_buffer],
+                      let ibuf = bufs[d.index_buffer] else { continue }
                 var u = Uniforms(
                     viewProj:      viewProj,
                     chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
