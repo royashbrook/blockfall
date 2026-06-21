@@ -65,6 +65,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startGame(saveDir: String, fresh: Bool = false, seed: UInt64 = 0) {
+        // Guard against a second start before the first finishes wiring up (e.g. a
+        // fast double-click on "Start Adventure!") — that would spin up a second
+        // engine and leak the first renderer mid-frame.
+        guard renderer == nil else { return }
         let frame = window.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         let mtkView = GameView(frame: frame, device: device)
         mtkView.colorPixelFormat = .bgra8Unorm

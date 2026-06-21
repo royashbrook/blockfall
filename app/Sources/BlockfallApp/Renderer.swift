@@ -569,7 +569,16 @@ final class Renderer: NSObject, MTKViewDelegate {
     func spawnBreakParticles(_ pos: bf_ivec3, blockId: Int = 0) { particles.spawn(at: pos, blockId: blockId) }
 
     func shutdown() {
-        if let e = engine { _ = bf_world_save(e); bf_engine_destroy(e); engine = nil }
+        guard let e = engine else { return }
+        engine = nil   // stop draw(in:) from touching the engine from here on
+        // The frame loop only waitUntilScheduled()s before present, so the GPU may
+        // still be reading chunk mesh buffers that bf_engine_destroy is about to
+        // free. Fence on a fresh command buffer to ensure all submitted work has
+        // completed before we free those buffers (prevents a GPU use-after-free
+        // when quitting to the menu mid-frame).
+        let fence = queue.makeCommandBuffer()
+        fence?.commit(); fence?.waitUntilCompleted()
+        _ = bf_world_save(e); bf_engine_destroy(e)
     }
     deinit { shutdown() }
 

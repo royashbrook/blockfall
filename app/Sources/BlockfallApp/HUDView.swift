@@ -271,7 +271,8 @@ final class HUDView: NSView {
         // --- Held item name (above the hotbar, centered) ---
         let heldName: String = withUnsafeBytes(of: hud.hotbar) { raw in
             let slots = raw.bindMemory(to: bf_hud_slot.self)
-            let s = slots[Int(hud.selected_slot)]
+            let sel = min(Int(hud.selected_slot), Int(BF_HOTBAR_SLOTS) - 1)  // never read past the hotbar
+            let s = slots[sel]
             return s.item != 0 ? itemName(s.item) : ""
         }
         if !heldName.isEmpty {
