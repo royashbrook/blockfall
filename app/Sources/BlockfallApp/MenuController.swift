@@ -320,7 +320,8 @@ private final class HowToPlayOverlay: NSView {
             ("1 – 9",               "Pick a slot in your hotbar"),
             ("E",                   "Open / close your backpack"),
             ("C",                   "Switch Creative ↔ Survival mode"),
-            ("Esc",                 "Release the mouse"),
+            ("G",                   "Ask the Guide for a hint!"),
+            ("Esc",                 "Release the mouse / pause"),
             ("H",                   "Host a LAN game for friends"),
             ("J",                   "Join a friend's LAN game"),
         ]

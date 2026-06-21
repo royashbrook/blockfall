@@ -110,8 +110,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         title.font = .boldSystemFont(ofSize: 40); title.textColor = .white
         title.alignment = .center; title.translatesAutoresizingMaskIntoConstraints = false
 
-        let resume = pauseButton("Resume", #selector(resumeGame))
-        let menuBtn = pauseButton("Save & Quit to Menu", #selector(quitToMenu))
+        let resume = pauseButton("Keep Playing", #selector(resumeGame))
+        let menuBtn = pauseButton("Save & Go to Menu", #selector(quitToMenu))
         let stack = NSStackView(views: [title, resume, menuBtn])
         stack.orientation = .vertical; stack.spacing = 18; stack.alignment = .centerX
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -125,9 +125,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private func pauseButton(_ t: String, _ sel: Selector) -> NSButton {
         let b = NSButton(title: t, target: self, action: sel)
-        b.bezelStyle = .rounded; b.font = .systemFont(ofSize: 18)
+        b.bezelStyle = .regularSquare
+        b.isBordered = false
+        b.wantsLayer = true
+        b.layer?.backgroundColor = NSColor(calibratedRed: 0.30, green: 0.62, blue: 0.42, alpha: 1).cgColor
+        b.layer?.cornerRadius = 12
+        b.contentTintColor = .white
+        b.attributedTitle = NSAttributedString(string: t, attributes: [
+            .font: NSFont.boldSystemFont(ofSize: 20),
+            .foregroundColor: NSColor.white,
+        ])
         b.translatesAutoresizingMaskIntoConstraints = false
-        b.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
+        b.widthAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 52).isActive = true
         return b
     }
     @objc private func resumeGame() {

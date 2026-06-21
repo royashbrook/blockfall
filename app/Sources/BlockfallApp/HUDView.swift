@@ -99,6 +99,10 @@ final class HUDView: NSView {
     private var mousePos: NSPoint = .zero
     private var mouseInside = false
     private var trackingAreaRef: NSTrackingArea?
+    // Death feedback: respawn happens same-frame, so we detect it as health
+    // jumping back to full from a near-empty state and flash a kid-readable banner.
+    private var prevHealth: Float = 20
+    private var deathFlashUntil: TimeInterval = 0
 
     override var isFlipped: Bool { false }
     override var isOpaque: Bool { false }
@@ -186,8 +190,32 @@ final class HUDView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let b = bounds
 
+        // Detect death+respawn (health was near-empty and is suddenly full again).
+        if hud.mode == BF_MODE_SURVIVAL {
+            if prevHealth < 6 && hud.health >= prevHealth + 8 {
+                deathFlashUntil = Date().timeIntervalSinceReferenceDate + 2.0
+            }
+            prevHealth = hud.health
+        }
+
         // When the inventory is open it replaces the in-world HUD.
         if hud.inventory_open != 0 { drawInventory(in: b); return }
+
+        // --- Death banner (fades over 2s) ---
+        let now = Date().timeIntervalSinceReferenceDate
+        if now < deathFlashUntil {
+            let a = CGFloat((deathFlashUntil - now) / 2.0)   // 1 -> 0
+            NSColor.systemRed.withAlphaComponent(0.35 * a).setFill()
+            b.fill()
+            let msg = "Oh no! You ran out of hearts!"
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: 34),
+                .foregroundColor: NSColor.white.withAlphaComponent(a),
+                .strokeColor: NSColor.black.withAlphaComponent(a), .strokeWidth: -3.0,
+            ]
+            let sz = (msg as NSString).size(withAttributes: attrs)
+            (msg as NSString).draw(at: NSPoint(x: b.midX - sz.width / 2, y: b.midY + 60), withAttributes: attrs)
+        }
 
         // --- Crosshair ---
         if crosshair {
