@@ -653,6 +653,43 @@ static void test_mountain_height() {
     // Mountain max height should be notably greater than flatland max.
     CHECK(max_mountain_h > max_flatland_h + 10,
           "mountain height: mountain max height notably exceeds flatland max height");
+
+    // Verify a very tall mountain (y>=45) exists in a ±20-chunk scan with a seed
+    // known to produce tall peaks — confirms Mountains biome reaches its intended height.
+    {
+        constexpr std::uint64_t SEED2 = 0xB10BE5EED1234567ull;
+        TerrainGen g2;
+        g2.seed(SEED2);
+        int max_h2 = -999;
+        for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
+            for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
+                std::unique_ptr<PaletteChunk> slices2[NUM_CY_M];
+                for (int ci = 0; ci < NUM_CY_M; ++ci) {
+                    int cy = CY_MIN + ci;
+                    slices2[ci] = std::make_unique<PaletteChunk>(ChunkCoord{cx, cy, cz}, BlockId(0));
+                    g2.generate({cx, cy, cz}, *slices2[ci]);
+                }
+                for (int lz = 0; lz < kChunkDim; ++lz) {
+                    for (int lx = 0; lx < kChunkDim; ++lx) {
+                        bool col_found2 = false;
+                        for (int ci = NUM_CY_M - 1; ci >= 0 && !col_found2; --ci) {
+                            std::int32_t base2 = (CY_MIN + ci) * kChunkDim;
+                            for (int ly = kChunkDim - 1; ly >= 0 && !col_found2; --ly) {
+                                BlockId b = slices2[ci]->get(lx, ly, lz);
+                                if (b != 0 && b != 9u && !is_decoration(b)) {
+                                    int wy = static_cast<int>(base2) + ly;
+                                    if (wy > max_h2) max_h2 = wy;
+                                    col_found2 = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        CHECK(max_h2 >= 45,
+              "mountain height: tall mountain (y>=45) found with mountain-biome seed");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1483,14 +1520,17 @@ static void test_cave_entrances() {
         }
     }
 
-    // At least one entrance must be found (density ~15% of 48×48 cells).
-    CHECK(entrance_cols_found > 0,
-          "cave entrances: at least one cave entrance column found in scan");
+    // Entrance density should be substantially higher than the old 1/48² ~15% scheme.
+    // New: 32×32 cell, 25% probability, 2×2 shaft = ~4 columns per ~1024 block area.
+    // In a ±16 chunk (512-block) scan ≈ 1024 cells × 25% × 4 shaft blocks = ~1024 cols.
+    // We require at minimum >100 entrance columns to confirm denser coverage.
+    CHECK(entrance_cols_found > 100,
+          "cave entrances: at least 100 entrance columns in scan (denser with 32-cell 25% 2x2)");
     // The carved shafts must actually have AIR below the surface.
     CHECK(entrance_with_air > 0,
           "cave entrances: entrance column(s) have AIR below the surface (shaft carved)");
-    // Entrances should be sparse — less than 1% of all scanned columns.
-    // (1 entrance per ~48×48 cell = 2304 blocks, far less than 1%.)
+    // Entrances should still be sparse enough to feel special — less than 1% of columns.
+    // (4 shaft blocks / 1024 cell blocks = 0.39%, safely under 1%.)
     int pct_times_1000 = (total_columns_scanned > 0)
         ? (entrance_cols_found * 1000) / total_columns_scanned : 0;
     CHECK(pct_times_1000 < 10,  // < 1% of columns

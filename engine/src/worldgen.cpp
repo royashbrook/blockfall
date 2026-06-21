@@ -156,7 +156,8 @@ static constexpr BlockId MUSHROOM      = 39;
 static constexpr int SEA_LEVEL = 6;
 
 // Snow line: columns at this world-y or above in mountain biome get snow.
-static constexpr int SNOW_LINE = 24;
+// Raised from 24→32 so snow only appears on real mountain peaks, not grassy hills.
+static constexpr int SNOW_LINE = 32;
 
 // Cave noise threshold: cells whose 3D noise > this become AIR.
 // Lowered from 0.68 to 0.65 to increase overall cave density (#11).
@@ -329,11 +330,12 @@ static float fbm3(float wx, float wy, float wz, std::uint64_t seed, int octaves,
 // We expose is_cave_entrance() via the header as worldgen_is_cave_entrance()
 // so the test can identify and skip those columns.
 // ---------------------------------------------------------------------------
-static constexpr int  ENTRANCE_CELL_SIZE  = 48;    // one candidate per 48×48 region
+static constexpr int  ENTRANCE_CELL_SIZE  = 32;    // one candidate per 32×32 region (was 48)
 static constexpr std::uint64_t ENTRANCE_SEED_MIX = 0xCA4E5EE7E57A4CE5ull;
 
-// Probability threshold: ~15% of cells spawn an entrance (out of 256).
-static constexpr std::uint64_t ENTRANCE_PROB_THRESH = 38u;  // 38/256 ≈ 14.8%
+// Probability threshold: ~25% of cells spawn an entrance (out of 256).
+// Raised from 38/256 (~15%) to 64/256 (~25%) so entrances are easier to find.
+static constexpr std::uint64_t ENTRANCE_PROB_THRESH = 64u;  // 64/256 ≈ 25%
 
 // Depth of the carved shaft: how many blocks below the surface are turned to AIR.
 // Chosen so the shaft always reaches the depth where normal cave noise kicks in.
@@ -383,25 +385,29 @@ static EntranceDesc entrance_for_cell(std::int32_t ecx, std::int32_t ecz,
     };
 }
 
-// Returns true if the world column (wx, wz) is the 1-block shaft of a cave entrance.
+// Returns true if the world column (wx, wz) is part of a 2×2 cave entrance shaft.
+// The shaft centre is at (ed.wx, ed.wz); the shaft covers (ed.wx, ed.wz),
+// (ed.wx+1, ed.wz), (ed.wx, ed.wz+1), (ed.wx+1, ed.wz+1) — all four blocks.
 // Used by terrain fill (to carve the shaft) and the public wrapper (for tests).
 static bool is_cave_entrance(std::int32_t wx, std::int32_t wz, std::uint64_t seed) noexcept {
     std::int32_t ecx = entrance_floordiv(wx, ENTRANCE_CELL_SIZE);
     std::int32_t ecz = entrance_floordiv(wz, ENTRANCE_CELL_SIZE);
 
-    // Check the owning cell and immediate neighbours (shaft is 1 block wide;
-    // at most 1 cell is relevant, but we scan a 3×3 neighbourhood for safety).
+    // Check the owning cell and immediate neighbours (shaft spans at most 2 cells).
     for (std::int32_t dce = -1; dce <= 1; ++dce) {
         for (std::int32_t dcf = -1; dcf <= 1; ++dcf) {
             EntranceDesc ed = entrance_for_cell(ecx + dce, ecz + dcf, seed);
             if (!ed.present) continue;
-            if (ed.wx == wx && ed.wz == wz) return true;
+            // Shaft is 2×2: covers (ed.wx..ed.wx+1) × (ed.wz..ed.wz+1).
+            if (wx >= ed.wx && wx <= ed.wx + 1 &&
+                wz >= ed.wz && wz <= ed.wz + 1) return true;
         }
     }
     return false;
 }
 
 // Get the shaft depth for a cave entrance column (0 if not an entrance).
+// Matches the 2×2 shaft footprint used by is_cave_entrance().
 static int cave_entrance_depth(std::int32_t wx, std::int32_t wz, std::uint64_t seed) noexcept {
     std::int32_t ecx = entrance_floordiv(wx, ENTRANCE_CELL_SIZE);
     std::int32_t ecz = entrance_floordiv(wz, ENTRANCE_CELL_SIZE);
@@ -409,7 +415,8 @@ static int cave_entrance_depth(std::int32_t wx, std::int32_t wz, std::uint64_t s
         for (std::int32_t dcf = -1; dcf <= 1; ++dcf) {
             EntranceDesc ed = entrance_for_cell(ecx + dce, ecz + dcf, seed);
             if (!ed.present) continue;
-            if (ed.wx == wx && ed.wz == wz) return ed.shaft_depth;
+            if (wx >= ed.wx && wx <= ed.wx + 1 &&
+                wz >= ed.wz && wz <= ed.wz + 1) return ed.shaft_depth;
         }
     }
     return 0;
@@ -516,10 +523,10 @@ static constexpr BiomeCentre BIOME_CENTRES[NUM_BIOMES] = {
     // Radii tightened so biomes are more distinct at their centres.
     { 0.50f, 0.50f, 0.28f, 0.28f },  // Plains
     { 0.50f, 0.82f, 0.22f, 0.20f },  // Forest (high moisture)
-    { 0.22f, 0.38f, 0.22f, 0.28f },  // Mountains (cool, moderate moisture)
+    { 0.22f, 0.38f, 0.26f, 0.32f },  // Mountains (cool, moderate moisture; wider radii)
     { 0.85f, 0.10f, 0.20f, 0.18f },  // Desert (hot, dry)
     { 0.08f, 0.50f, 0.18f, 0.32f },  // Snowy (very cold)
-    { 0.50f, 0.96f, 0.28f, 0.08f },  // Swamp (max moisture)
+    { 0.45f, 0.88f, 0.28f, 0.14f },  // Swamp (high moisture; pulled off wall + wider r_m)
     { 0.65f, 0.27f, 0.18f, 0.18f },  // Beach (warm, low moisture)
 };
 
@@ -578,9 +585,12 @@ static void biome_weights(std::int32_t wx, std::int32_t wz, std::uint64_t seed,
     float fwx = static_cast<float>(wx);
     float fwz = static_cast<float>(wz);
 
-    // Low-frequency (large scale biome zones).
-    float temp  = fbm2(fwx, fwz, tseed, /*octaves=*/2, /*freq=*/1.0f / 192.0f);
-    float moist = fbm2(fwx, fwz, mseed, /*octaves=*/2, /*freq=*/1.0f / 192.0f);
+    // Mid-frequency biome noise for more variety (was 1/192, 2 octaves).
+    // 1/192, 3 octaves: same large-scale period but 3rd octave adds fine texture,
+    // producing ~8-12 biome zones per 512-block transect while keeping seam-safe
+    // height gradients (the base period is unchanged; only detail is added).
+    float temp  = fbm2(fwx, fwz, tseed, /*octaves=*/3, /*freq=*/1.0f / 192.0f);
+    float moist = fbm2(fwx, fwz, mseed, /*octaves=*/3, /*freq=*/1.0f / 192.0f);
 
     float raw[NUM_BIOMES];
     for (int i = 0; i < NUM_BIOMES; ++i) {
@@ -767,14 +777,14 @@ static constexpr int TRUNK_MAX = 12;
 // GIANT canopy extends ±4 XZ; we use 4 as the conservative upper bound.
 static constexpr int CANOPY_MAX_REACH_XZ = 4;
 
-// Default tree probability threshold (~18% of cells).
-static constexpr std::uint64_t TREE_PROB_THRESH_DEFAULT = 11796u;   // 0.18 * 65535
-// Forest biome: much denser trees (~55%).
-static constexpr std::uint64_t TREE_PROB_THRESH_FOREST  = 36044u;   // 0.55 * 65535
-// Snowy biome: sparse birch (~12%).
-static constexpr std::uint64_t TREE_PROB_THRESH_SNOWY   = 7864u;    // 0.12 * 65535
-// Swamp biome: sparse (~15%).
-static constexpr std::uint64_t TREE_PROB_THRESH_SWAMP   = 9830u;    // 0.15 * 65535
+// Default tree probability threshold (~35% of cells — raised from 18% to fix barren plains).
+static constexpr std::uint64_t TREE_PROB_THRESH_DEFAULT = 22938u;   // 0.35 * 65535
+// Forest biome: much denser trees (~65%).
+static constexpr std::uint64_t TREE_PROB_THRESH_FOREST  = 42598u;   // 0.65 * 65535
+// Snowy biome: sparse birch (~15%).
+static constexpr std::uint64_t TREE_PROB_THRESH_SNOWY   = 9830u;    // 0.15 * 65535
+// Swamp biome: sparse (~20%).
+static constexpr std::uint64_t TREE_PROB_THRESH_SWAMP   = 13107u;   // 0.20 * 65535
 
 static constexpr std::uint64_t TREE_SEED_MIX  = 0xD7C0DECAF00D1234ull;
 static constexpr std::uint64_t PLANT_SEED_MIX = 0xB16B00B5CAFE5EEDull;
@@ -814,11 +824,15 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
     std::uint64_t tseed = fmix64(seed ^ TREE_SEED_MIX);
     std::uint64_t h = hash2(cell_cx, cell_cz, tseed);
 
-    // Get biome weights at cell origin to choose threshold and tree type.
+    // Sample biome weights at cell CENTRE (not the corner/origin) for accurate
+    // biome classification — corner sampling caused forested interiors to be
+    // misclassified as non-forest, producing nearly zero trees in those cells.
     std::int32_t cell_origin_x = cell_cx * TREE_CELL_SIZE;
     std::int32_t cell_origin_z = cell_cz * TREE_CELL_SIZE;
+    std::int32_t cell_centre_x = cell_origin_x + TREE_CELL_SIZE / 2;
+    std::int32_t cell_centre_z = cell_origin_z + TREE_CELL_SIZE / 2;
     float weights[NUM_BIOMES];
-    biome_weights(cell_origin_x, cell_origin_z, seed, weights);
+    biome_weights(cell_centre_x, cell_centre_z, seed, weights);
     Biome dom = dominant_biome(weights);
 
     // Biomes that never have trees.
