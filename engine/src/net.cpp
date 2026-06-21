@@ -54,8 +54,10 @@ std::uint32_t read_u32_le(const std::byte* p) {
 // Sequence-number comparison: seq A is "before" seq B in a wrapping sense if
 // the unsigned difference B-A < 2^31.  This handles 32-bit wraparound.
 bool seq_before(std::uint32_t a, std::uint32_t b) {
-    return static_cast<std::int64_t>(b) - static_cast<std::int64_t>(a) > 0
-        || (b < a && (a - b) >= 0x8000'0000u);
+    // Canonical 32-bit wrapping comparison: A is "before" B iff the forward
+    // unsigned distance A->B is non-zero and within the half-window. (The old
+    // signed-subtraction form misjudged distances larger than 2^31.)
+    return b != a && (std::uint32_t(b - a) < 0x8000'0000u);
 }
 
 } // anonymous namespace

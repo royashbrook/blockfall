@@ -95,24 +95,45 @@ public:
     static std::unique_ptr<PaletteChunk> deserialize(std::span<const std::byte> in) {
         if (in.size() < header_bytes()) return nullptr;
         const std::byte* p = in.data();
-        auto take = [&](void* dst, std::size_t n) { std::memcpy(dst, p, n); p += n; };
+        const std::byte* end = in.data() + in.size();
+        bool ok = true;
+        // Bounds-checked reader — a truncated/corrupt file must never read past
+        // the input span (these files can come from disk corruption or hand-edits).
+        auto take = [&](void* dst, std::size_t n) {
+            if (!ok || std::size_t(end - p) < n) { ok = false; return; }
+            std::memcpy(dst, p, n); p += n;
+        };
         char magic[4]; std::uint16_t ver, flags;
         take(magic, 4); take(&ver, 2); take(&flags, 2);
-        if (std::memcmp(magic, "BFCK", 4) != 0 || ver != 1) return nullptr;
+        if (!ok || std::memcmp(magic, "BFCK", 4) != 0 || ver != 1) return nullptr;
         ChunkCoord c{}; take(&c.x, 4); take(&c.y, 4); take(&c.z, 4);
         std::uint32_t rev; take(&rev, 4);
         std::uint16_t pc; std::uint8_t bits, pad;
         take(&pc, 2); take(&bits, 1); take(&pad, 1);
         (void)flags; (void)pad;   // present in the format; not needed to reconstruct
+        if (!ok) return nullptr;
+        // Validate width + palette size from disk before trusting them, otherwise
+        // a bogus bits_/pc lets indices run off the end of palette_/data_.
+        if (bits != 0 && bits != 1 && bits != 2 && bits != 4 && bits != 8 && bits != 16) return nullptr;
+        if (pc == 0 || pc > kChunkVol) return nullptr;
         auto ch = std::make_unique<PaletteChunk>(c);
         ch->palette_.resize(pc);
         take(ch->palette_.data(), std::size_t(pc) * 2);
         ch->bits_ = bits;
         if (bits) {
             std::uint32_t wc; take(&wc, 4);
+            if (!ok) return nullptr;
+            std::size_t per_word = 64u / bits;
+            std::size_t required = (kChunkVol + per_word - 1) / per_word;
+            if (wc != required) return nullptr;            // wrong word count
             ch->data_.resize(wc);
             take(ch->data_.data(), std::size_t(wc) * 8);
+            if (!ok) return nullptr;
+            // Every packed index must address a real palette entry.
+            for (std::uint32_t n = 0; n < kChunkVol; ++n)
+                if (ch->read_index(n) >= pc) return nullptr;
         }
+        if (!ok) return nullptr;
         ch->revision_ = rev;
         return ch;
     }

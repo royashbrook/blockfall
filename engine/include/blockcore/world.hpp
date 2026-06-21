@@ -347,7 +347,9 @@ public:
         for (auto& e : std::filesystem::directory_iterator(dir)) {
             if (e.path().extension() != ".chunk") continue;
             std::ifstream f(e.path(), std::ios::binary | std::ios::ate);
-            std::streamsize sz = f.tellg(); f.seekg(0);
+            std::streamsize sz = f.tellg();   // -1 if the file can't be opened
+            if (sz <= 0) continue;            // skip unreadable/empty (else size_t wrap → bad_alloc)
+            f.seekg(0);
             std::size_t n = std::size_t(sz);
             std::vector<std::byte> buf(n);
             f.read(reinterpret_cast<char*>(buf.data()), sz);
