@@ -30,7 +30,18 @@ inline constexpr BlockId LIGHT_AIR = 0, LIGHT_WATER = 9, LIGHT_GLOW = 7;
 // block beneath isn't rendered black.
 inline bool light_plant(BlockId b) { return b == 36 || b == 37 || b == 38 || b == 39; }
 inline bool light_opaque(BlockId b) { return b != LIGHT_AIR && b != LIGHT_WATER && !light_plant(b); }
-inline std::uint8_t light_emit(BlockId b) { return b == LIGHT_GLOW ? std::uint8_t(14) : std::uint8_t(0); }
+// Block light emitters (values mirror content/blocks/*.json light_emit). Without
+// torch/beacon/lamp here, placing a torch underground did nothing — light blocks
+// were purely decorative. (Ids: glow_block 7, torch 32, beacon_block 34, lamp 35.)
+inline std::uint8_t light_emit(BlockId b) {
+    switch (b) {
+        case LIGHT_GLOW: return std::uint8_t(14);   // glow_block (id 7)
+        case 32:         return std::uint8_t(14);   // torch
+        case 34:         return std::uint8_t(15);   // beacon_block
+        case 35:         return std::uint8_t(15);   // crystal_lamp
+        default:         return std::uint8_t(0);
+    }
+}
 
 class FloodLighting {
 public:

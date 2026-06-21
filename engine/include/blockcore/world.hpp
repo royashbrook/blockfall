@@ -246,6 +246,25 @@ public:
                 f.write(reinterpret_cast<const char*>(&s.count), 2);
                 f.write(reinterpret_cast<const char*>(&s.durability), 2);
             }
+            // Quest + achievement progress (tagged so older saves load gracefully).
+            f.write("BFQ1", 4);
+            std::uint32_t aq = std::uint32_t(active_quest_);
+            std::uint32_t qc = std::uint32_t(quests_completed_);
+            std::uint8_t  aqd = all_quests_done_ ? 1 : 0;
+            f.write(reinterpret_cast<const char*>(&aq), 4);
+            f.write(reinterpret_cast<const char*>(&qc), 4);
+            f.write(reinterpret_cast<const char*>(&aqd), 1);
+            std::uint32_t opn = std::uint32_t(obj_progress_.size());
+            f.write(reinterpret_cast<const char*>(&opn), 4);
+            for (std::uint32_t v : obj_progress_) f.write(reinterpret_cast<const char*>(&v), 4);
+            std::uint32_t an = std::uint32_t(kAchievementCount);
+            f.write(reinterpret_cast<const char*>(&an), 4);
+            for (int i = 0; i < kAchievementCount; ++i) {
+                std::uint8_t dn = ach_done_[i] ? 1 : 0;
+                std::int32_t pr = ach_progress_[i];
+                f.write(reinterpret_cast<const char*>(&dn), 1);
+                f.write(reinterpret_cast<const char*>(&pr), 4);
+            }
         }
         std::vector<std::byte> buf(1u << 20);
         for (ChunkCoord cc : edited_) {
@@ -277,6 +296,7 @@ public:
             meta.read(reinterpret_cast<char*>(&v), 4);
             region_sat_[k] = v;
         }
+        bool quest_loaded = false;
         std::ifstream pl(dir + "/player.dat", std::ios::binary);
         if (pl) {
             char m4[4]; pl.read(m4, 4);
@@ -294,6 +314,31 @@ public:
                     pl.read(reinterpret_cast<char*>(&s.count), 2);
                     pl.read(reinterpret_cast<char*>(&s.durability), 2);
                     if (inv_) inv_->set(std::size_t(i), s);
+                }
+                // Quest + achievement progress (only present in newer saves).
+                char qt[4] = {}; pl.read(qt, 4);
+                if (pl && std::memcmp(qt, "BFQ1", 4) == 0) {
+                    std::uint32_t aq = 0, qc = 0, opn = 0; std::uint8_t aqd = 0;
+                    pl.read(reinterpret_cast<char*>(&aq), 4);
+                    pl.read(reinterpret_cast<char*>(&qc), 4);
+                    pl.read(reinterpret_cast<char*>(&aqd), 1);
+                    pl.read(reinterpret_cast<char*>(&opn), 4);
+                    start_quest(std::size_t(aq));   // sizes obj_progress_ for this quest
+                    for (std::uint32_t i = 0; i < opn; ++i) {
+                        std::uint32_t v = 0; pl.read(reinterpret_cast<char*>(&v), 4);
+                        if (i < obj_progress_.size()) obj_progress_[i] = v;
+                    }
+                    quests_completed_ = int(qc); all_quests_done_ = aqd != 0;
+                    std::uint32_t an = 0; pl.read(reinterpret_cast<char*>(&an), 4);
+                    for (std::uint32_t i = 0; i < an; ++i) {
+                        std::uint8_t dn = 0; std::int32_t pr = 0;
+                        pl.read(reinterpret_cast<char*>(&dn), 1);
+                        pl.read(reinterpret_cast<char*>(&pr), 4);
+                        if (int(i) < kAchievementCount) { ach_done_[i] = dn != 0; ach_progress_[i] = pr; }
+                    }
+                    ach_done_count_ = 0;
+                    for (int i = 0; i < kAchievementCount; ++i) if (ach_done_[i]) ++ach_done_count_;
+                    quest_loaded = pl.good() || pl.eof();
                 }
             }
         }
@@ -317,7 +362,7 @@ public:
         first_stream_ = true;
         creatures_.clear();
         creature_timer_ = 0.0f;
-        start_quest(0);
+        if (!quest_loaded) start_quest(0);   // old save: begin the arc fresh
         recompute_stream_set();
         return true;
     }
