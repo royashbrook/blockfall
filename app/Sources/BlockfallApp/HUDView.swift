@@ -1309,12 +1309,22 @@ final class HUDView: NSView {
     private func drawCenteredItem(id: bf_item_id, count: UInt16, in rect: NSRect, selected: Bool) {
         let base = itemChipColor(id)
         let chip = rect.insetBy(dx: 8, dy: 8)
-        if id <= 40 {
+        // #31: A handful of "block" ids are really props/decor, not building
+        // cubes — drawing them as an iso cube reads as a meaningless coloured
+        // box (the torch was the worst offender). Route those to dedicated
+        // silhouettes so they're recognizable at hotbar size. Plain building
+        // blocks keep the iso-cube look below. (Falls through to the count badge.)
+        switch id {
+        case 24: drawTorch(in: chip)                                     // torch — stick + flame
+        case 25: drawDoor(in: chip, color: base)                        // wooden door
+        case 29: drawFlower(in: chip, petal: itemColor(0.90, 0.28, 0.28)) // red flower
+        case 30: drawFlower(in: chip, petal: itemColor(0.97, 0.86, 0.28)) // yellow flower
+        case let bid where bid <= 40:
             // Block item → little isometric cube icon with a procedural texture
             // pattern on each visible face, so the material reads at a glance
             // (grass, stone, wood …) instead of three flat shaded diamonds.
             drawTexturedCube(id: id, in: chip, base: base)
-        } else {
+        default:
             // Tool / material / food → distinct procedural icon per item, so
             // each is recognizable at a glance (no more uniform chips).
             drawItemIcon(id: id, in: chip, base: base)
@@ -1323,6 +1333,103 @@ final class HUDView: NSView {
             drawText("\(count)", at: NSPoint(x: rect.maxX - 18, y: rect.minY + 3),
                      size: 12, color: .white, bold: true)
         }
+    }
+
+    // ===== #31: prop / decor icons (non-cube blocks) =======================
+    // A few placeable ids are props, not building cubes. These cheap silhouettes
+    // make them readable at hotbar size instead of generic coloured boxes.
+
+    // Torch (#31 priority): a short brown handle with a layered orange→yellow
+    // flame and a soft warm glow, so it reads as a torch even at ~32px.
+    private func drawTorch(in r: NSRect) {
+        let cx = r.midX
+        // Handle: a thick vertical wooden stick in the lower half.
+        let handleTop = NSPoint(x: cx, y: r.minY + r.height * 0.56)
+        let handleBot = NSPoint(x: cx, y: r.minY + r.height * 0.12)
+        let stick = NSBezierPath()
+        stick.lineCapStyle = .round
+        stick.move(to: handleBot); stick.line(to: handleTop)
+        HUDView.kHandleCol.setStroke(); stick.lineWidth = max(2.5, r.width * 0.16); stick.stroke()
+        lighten(HUDView.kHandleCol, 0.28).setStroke()
+        stick.lineWidth = max(1, r.width * 0.05); stick.stroke()
+
+        // Warm glow halo behind the flame.
+        fillCircle(NSPoint(x: cx, y: handleTop.y + r.height * 0.10),
+                   r.width * 0.24,
+                   NSColor(srgbRed: 1.0, green: 0.78, blue: 0.30, alpha: 0.28),
+                   outline: nil)
+
+        // Flame: an outer orange teardrop, an inner yellow core, and a white
+        // hot spot — built bottom→tip→bottom so it points up like a real flame.
+        func flame(halfW: CGFloat, height: CGFloat, color: NSColor) {
+            let baseY = handleTop.y - r.height * 0.02
+            let tipY = baseY + height
+            let f = NSBezierPath()
+            f.move(to: NSPoint(x: cx - halfW, y: baseY))
+            f.curve(to: NSPoint(x: cx, y: tipY),
+                    controlPoint1: NSPoint(x: cx - halfW, y: baseY + height * 0.55),
+                    controlPoint2: NSPoint(x: cx - halfW * 0.35, y: tipY))
+            f.curve(to: NSPoint(x: cx + halfW, y: baseY),
+                    controlPoint1: NSPoint(x: cx + halfW * 0.35, y: tipY),
+                    controlPoint2: NSPoint(x: cx + halfW, y: baseY + height * 0.55))
+            f.close()
+            color.setFill(); f.fill()
+        }
+        flame(halfW: r.width * 0.17, height: r.height * 0.42, color: itemColor(0.98, 0.45, 0.10))
+        flame(halfW: r.width * 0.11, height: r.height * 0.32, color: itemColor(1.0, 0.80, 0.20))
+        flame(halfW: r.width * 0.05, height: r.height * 0.20, color: itemColor(1.0, 0.97, 0.78))
+    }
+
+    // Wooden door: a tall panelled rectangle with a knob — clearly a door, not
+    // a brown cube. Coloured from the door's chip colour.
+    private func drawDoor(in r: NSRect, color: NSColor) {
+        let dw = r.width * 0.46
+        let panel = NSRect(x: r.midX - dw / 2, y: r.minY + r.height * 0.10,
+                           width: dw, height: r.height * 0.80)
+        let body = NSBezierPath(roundedRect: panel, xRadius: 2, yRadius: 2)
+        color.setFill(); body.fill()
+        NSColor.black.withAlphaComponent(0.4).setStroke(); body.lineWidth = 1; body.stroke()
+        // Two recessed panels (upper + lower) for a door silhouette.
+        let inset = panel.insetBy(dx: panel.width * 0.18, dy: panel.height * 0.10)
+        let split = inset.minY + inset.height * 0.5
+        for sub in [
+            NSRect(x: inset.minX, y: split + 2, width: inset.width, height: inset.height * 0.5 - 4),
+            NSRect(x: inset.minX, y: inset.minY, width: inset.width, height: inset.height * 0.5 - 4),
+        ] {
+            shade(color, 0.78).setFill(); NSBezierPath(rect: sub).fill()
+            NSColor.black.withAlphaComponent(0.25).setStroke()
+            let sp = NSBezierPath(rect: sub); sp.lineWidth = 0.8; sp.stroke()
+        }
+        // Knob near the right edge, mid-height.
+        fillCircle(NSPoint(x: panel.maxX - panel.width * 0.16, y: panel.midY),
+                   max(1, r.width * 0.05),
+                   lighten(NSColor(srgbRed: 0.85, green: 0.72, blue: 0.30, alpha: 1), 0.1))
+    }
+
+    // Flower: a green stem, a small leaf, and a ring of petals around a centre.
+    // `petal` colours the bloom (red / yellow), so the two flowers read distinctly.
+    private func drawFlower(in r: NSRect, petal: NSColor) {
+        let cx = r.midX
+        let centre = NSPoint(x: cx, y: r.minY + r.height * 0.66)
+        // Stem.
+        let stem = NSBezierPath(); stem.lineCapStyle = .round
+        stem.move(to: NSPoint(x: cx, y: r.minY + r.height * 0.14))
+        stem.line(to: NSPoint(x: cx, y: centre.y - r.height * 0.06))
+        itemColor(0.30, 0.60, 0.26).setStroke()
+        stem.lineWidth = max(1.5, r.width * 0.07); stem.stroke()
+        // Leaf off the stem.
+        fillCircle(NSPoint(x: cx + r.width * 0.12, y: r.minY + r.height * 0.34),
+                   r.width * 0.08, itemColor(0.34, 0.66, 0.30), outline: nil)
+        // Petals: 5 around the centre.
+        let pr = r.width * 0.12
+        for k in 0..<5 {
+            let ang = CGFloat(k) / 5.0 * 2 * .pi + .pi / 2
+            let p = NSPoint(x: centre.x + cos(ang) * pr * 1.4,
+                            y: centre.y + sin(ang) * pr * 1.4)
+            fillCircle(p, pr, petal, outline: NSColor.black.withAlphaComponent(0.2))
+        }
+        // Bright centre.
+        fillCircle(centre, pr * 0.7, lighten(petal, 0.55), outline: nil)
     }
 
     // ===== Textured block cube icons =======================================

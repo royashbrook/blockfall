@@ -960,32 +960,27 @@ private:
     }
     static bool solid_block(BlockId b) { return b != AIR && b != WATER && !is_plant(b); }
     // Cheap biome label from the surface block under the player + nearby trees.
+    // Authoritative biome at the player, straight from worldgen (0=Plains 1=Forest
+    // 2=Mountains 3=Desert 4=Snowy 5=Swamp 6=Beach) — the old block-sniffing
+    // heuristic couldn't tell Swamp/Mountains apart, so those biomes' animals never
+    // spawned. (#10)
+    int biome_id() const { return worldgen_dominant_biome(ifloor(pos_.x), ifloor(pos_.z), seed_); }
     const char* biome_label() const {
-        int px = ifloor(pos_.x), pz = ifloor(pos_.z);
-        int top = -100000; BlockId surf = AIR;
-        for (int y = ifloor(pos_.y) + 2; y > ifloor(pos_.y) - 30; --y) {
-            BlockId b = block_at(IVec3{px, y, pz});
-            if (solid_block(b) || b == WATER) { surf = b; top = y; break; }
+        // Water surface reads as "Ocean" regardless of the underlying biome.
+        if (block_at(IVec3{ifloor(pos_.x), ifloor(pos_.y) - 1, ifloor(pos_.z)}) == WATER) return "Ocean";
+        switch (biome_id()) {
+            case 1: return "Forest";   case 2: return "Mountains"; case 3: return "Desert";
+            case 4: return "Snowy";    case 5: return "Swamp";     case 6: return "Beach";
+            default: return "Plains";
         }
-        if (surf == 12 || surf == 13) return "Snowy";
-        if (surf == 6)                return "Desert";
-        if (surf == WATER)            return "Ocean";
-        if (top < -50000)             return "Meadow";
-        int logs = 0;
-        for (int dx = -9; dx <= 9 && logs < 3; dx += 3)
-            for (int dz = -9; dz <= 9 && logs < 3; dz += 3)
-                for (int y = top + 1; y <= top + 6; ++y)
-                    if (is_log(block_at(IVec3{px + dx, y, pz + dz}))) { ++logs; break; }
-        return logs >= 3 ? "Forest" : "Meadow";
     }
     // Player's biome mapped to the content vocabulary (for biome-specific spawns).
     const char* biome_key() const {
-        const char* b = biome_label();
-        if (std::strcmp(b, "Snowy")  == 0) return "snowy";
-        if (std::strcmp(b, "Desert") == 0) return "desert";
-        if (std::strcmp(b, "Forest") == 0) return "forest";
-        if (std::strcmp(b, "Ocean")  == 0) return "beach";
-        return "plains";   // Meadow / default
+        switch (biome_id()) {
+            case 1: return "forest";   case 2: return "mountains"; case 3: return "desert";
+            case 4: return "snowy";    case 5: return "swamp";     case 6: return "beach";
+            default: return "plains";
+        }
     }
     // Top standable block at a world column, GENERATING the column if it isn't
     // resident (used by respawn so you never land in unloaded void or dirt).
@@ -1428,14 +1423,11 @@ private:
         // Real cave/underground = actual ROCK directly overhead — NOT just a tree
         // canopy. (The old depth-vs-surface_top check treated a tree's leaves as the
         // "surface", so standing under a tree spawned monsters in daylight. #2)
-        bool darkCave = false;
-        if (surv) {
-            int px = ifloor(pos_.x), pz = ifloor(pos_.z);
-            for (int y = ifloor(pos_.y) + 2; y <= ifloor(pos_.y) + 9; ++y) {
-                BlockId b = block_at(IVec3{px, y, pz});
-                if (b != AIR && b != WATER && !is_log(b) && !is_leaf(b) && !is_plant(b)) { darkCave = true; break; }
-            }
-        }
+        // "In a cave" = well below the terrain surface (from worldgen height, which
+        // ignores trees) — robust even in tall chambers where the rock ceiling is
+        // far overhead, unlike the old short overhead scan that missed them. (#7)
+        bool darkCave = surv &&
+            (worldgen_surface_height(ifloor(pos_.x), ifloor(pos_.z), seed_) - ifloor(pos_.y)) > 6;
         // First-night grace: no monsters until the kid finishes their first quest,
         // so a brand-new player gets a safe session to learn before the scary part.
         bool monstersActive = (night || darkCave) && quests_completed_ > 0;
@@ -1797,9 +1789,12 @@ private:
         auto score = [&](ChunkCoord a) -> double {
             V3 ctr{(float(a.x)+0.5f)*float(kChunkDim),(float(a.y)+0.5f)*float(kChunkDim),(float(a.z)+0.5f)*float(kChunkDim)};
             V3 to{ctr.x - pos_.x, ctr.y - pos_.y, ctr.z - pos_.z};
-            float d = std::sqrt(dot(to,to)) + 0.001f;
-            float facing = dot(to, camFwd) / d;           // ~1 ahead, <0 behind
-            return double(dist2(a, last_center_)) * (facing > 0.2f ? 1.0 : 4.0);
+            float d2 = dot(to, to);                       // 3D distance from the camera
+            float facing = dot(to, camFwd) / (std::sqrt(d2) + 0.001f);   // ~1 ahead, <0 behind
+            // Prioritise by 3D distance (not horizontal): a surface chunk at eye
+            // level meshes before a cave chunk directly under it, so you don't see
+            // through a mountain to the caves below it. Behind-camera deprioritised.
+            return double(d2) * (facing > 0.2f ? 1.0 : 4.0);
         };
         std::size_t k = std::min<std::size_t>(std::size_t(MESH_BUDGET), todo.size());
         std::partial_sort(todo.begin(), todo.begin() + std::ptrdiff_t(k), todo.end(),

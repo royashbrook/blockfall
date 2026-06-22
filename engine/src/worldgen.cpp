@@ -1283,6 +1283,19 @@ struct TreeDesc {
     int          lean_dz;        // trunk lean offset: 0 = straight, ±1 = leans in Z
     int          branch_count;   // number of log "arms" off the upper trunk (0..3)
     std::uint64_t branch_hash;   // deterministic bits driving branch direction/height
+    // #22 NATURALNESS (extended):
+    std::uint64_t leaf_hash;     // drives the per-voxel irregular-edge "nibble" so
+                                 // canopies are ragged, not perfect blobs.  Pure
+                                 // function of the cell hash → seam-consistent.
+    int          sparse;         // 0 = full crown, 1 = sparse/airy crown (more nibble)
+    int          extra_skirt;    // extra lower leaf tiers for "elder" trees (0 normally,
+                                 // 1 = one extra skirt ring 1 below the canopy bottom)
+};
+
+// Default-constructed "no tree" descriptor (keeps all the new fields zeroed so the
+// many early-out return paths don't have to spell every field out).
+static constexpr TreeDesc NO_TREE = TreeDesc{
+    0, 0, 0, 0, 0, 0, /*present=*/false, false, 0, 0, 0, 0, /*leaf_hash=*/0, 0, 0
 };
 
 // Branch geometry (M6 — visual variety).  A branch is a short run of log blocks
@@ -1334,7 +1347,7 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
 
     // Biomes that never have trees.
     if (dom == Biome::Desert || dom == Biome::Beach) {
-        return TreeDesc{0, 0, 0, 0, 0, 0, false, false, 0, 0, 0, 0};
+        return NO_TREE;
     }
 
     // Choose density threshold based on dominant biome.
@@ -1348,7 +1361,7 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
 
     std::uint64_t prob = h & 0xFFFFu;
     if (prob >= thresh) {
-        return TreeDesc{0, 0, 0, 0, 0, 0, false, false, 0, 0, 0, 0};
+        return NO_TREE;
     }
 
     // Root offset within cell (1..TREE_CELL_SIZE-2).
@@ -1384,12 +1397,27 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
     // Independent hash stream for branch geometry so adding branches does not
     // perturb the existing trunk/canopy/lean bit assignments above.
     std::uint64_t branch_hash = fmix64(h2 ^ 0xB7A11C4E5B7A11C4ull);
+    // #22 NATURALNESS: a separate stream drives the per-voxel irregular-edge
+    // nibble + the per-tree size/sparseness rolls, so these don't perturb the
+    // trunk/canopy/lean/branch bit assignments above.
+    std::uint64_t leaf_hash   = fmix64(h2 ^ 0x1EAF5EED1EAF5EEDull);
+    // ~30% of (non-pine) trees get an airy/sparse crown for shape variety.
+    int sparse = ((leaf_hash >> 40u) & 0x7u) <= 1u ? 1 : 0;
+    int extra_skirt = 0;
+
+    // #22 RARE "ELDER" tree: a giant that towers over the canopy — trunk 13..16,
+    // a full GIANT crown PLUS an extra lower skirt tier, always thick, full arms.
+    // ~1.5% of non-desert/beach cells (giant_bits==0 AND an extra rare gate), so
+    // a forest occasionally has a true landmark tree.  Canopy stays within ±4 XZ
+    // (the seam scan margin) — only the trunk/skirt change, so seam-safety holds.
+    bool elder = (giant_bits == 0u) && (((leaf_hash >> 8u) & 0x3u) == 0u);
 
     // Rare GIANT tree: appears ~6% of non-desert/beach cells regardless of biome.
-    // Trunk 10..12, giant canopy, always oak, always thick trunk (2×2 logs).
+    // Trunk 10..12 (elder: 13..16), giant canopy, always oak, always thick trunk.
     // Giants get the full set of arms for a gnarled, characterful silhouette.
     if (giant_bits == 0u && dom != Biome::Desert && dom != Biome::Beach) {
-        trunk_h      = 10 + static_cast<int>(trunk_bits % 3u);  // 10, 11, or 12
+        trunk_h      = elder ? (13 + static_cast<int>(trunk_bits % 4u))   // 13..16
+                             : (10 + static_cast<int>(trunk_bits % 3u));  // 10..12
         canopy_shape = CANOPY_GIANT;
         is_birch     = false;
         return TreeDesc{
@@ -1400,17 +1428,55 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
             true,
             /*thick_trunk=*/true,
             /*lean_dx=*/0, /*lean_dz=*/0,
-            /*branch_count=*/MAX_BRANCHES, branch_hash
+            /*branch_count=*/MAX_BRANCHES, branch_hash,
+            leaf_hash, /*sparse=*/0, /*extra_skirt=*/(elder ? 1 : 0)
         };
     }
 
-    // Determine lean for non-giant trees: ~25% of trees lean slightly.
+    // #22 SAPLING / small bushy tree: ~12% of remaining cells become a very short
+    // bush — trunk 2..3, a tight COMPACT crown, no branches.  Mixed in among the
+    // standard trees this gives the "small saplings next to mature trees" look and
+    // keeps forests walkable (a low bush is easy to step around).
+    bool sapling = (((leaf_hash >> 16u) & 0x7u) == 0u);
+    if (sapling) {
+        int strunk = 2 + static_cast<int>(trunk_bits % 2u);   // 2..3
+        bool sbirch = (birch_bits == 0u);                      // 25% birch sapling
+        // Lean is fine on saplings too (a windswept little bush), reuse gate below.
+        if (lean_gate <= 1u) {
+            switch (lean_dir) {
+                case 1u: lean_dx = +1; break;
+                case 2u: lean_dx = -1; break;
+                case 3u: lean_dz = +1; break;
+                default: lean_dz = -1; break;
+            }
+        }
+        return TreeDesc{
+            cell_origin_x + off_x,
+            cell_origin_z + off_z,
+            strunk, CANOPY_COMPACT,
+            sbirch ? BIRCH_LOG : OAK_LOG,
+            sbirch ? BIRCH_LEAVES : OAK_LEAVES,
+            true,
+            /*thick_trunk=*/false,
+            lean_dx, lean_dz,
+            /*branch_count=*/0, branch_hash,
+            leaf_hash, /*sparse=*/1, /*extra_skirt=*/0
+        };
+    }
+
+    // Determine lean for non-giant trees: ~25% lean slightly; a small fraction
+    // (#22) lean DIAGONALLY (both axes) for more windswept variety.
     if (lean_gate <= 1u) {
         switch (lean_dir) {
             case 1u: lean_dx = +1; break;
             case 2u: lean_dx = -1; break;
             case 3u: lean_dz = +1; break;
             default: lean_dz = -1; break;
+        }
+        // ~25% of leaning trees also lean on the other axis (diagonal lean).
+        if (((leaf_hash >> 24u) & 0x3u) == 0u) {
+            if (lean_dx != 0) lean_dz = (((leaf_hash >> 26u) & 1u) ? +1 : -1);
+            else              lean_dx = (((leaf_hash >> 26u) & 1u) ? +1 : -1);
         }
     }
 
@@ -1525,6 +1591,9 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
         if (branch_count > MAX_BRANCHES) branch_count = MAX_BRANCHES;
     }
 
+    // PINE keeps a crisp conical silhouette → never sparse-nibble it.
+    if (canopy_shape == CANOPY_PINE) sparse = 0;
+
     return TreeDesc{
         cell_origin_x + off_x,
         cell_origin_z + off_z,
@@ -1537,7 +1606,10 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
         lean_dx,
         lean_dz,
         branch_count,
-        branch_hash
+        branch_hash,
+        leaf_hash,
+        sparse,
+        extra_skirt
     };
 }
 
@@ -1745,6 +1817,33 @@ static bool in_canopy_forked(int dx, int dy, int dz) noexcept {
         right_fork = (dx >= 0  && dx <= 2 && dz == 0);
     }
     return left_fork || right_fork;
+}
+
+// #22 IRREGULAR CANOPY EDGES — decide whether to KEEP a given leaf voxel.
+// Perfect-blob canopies read as artificial; we drop a deterministic fraction of
+// the OUTER leaf voxels so every crown has a ragged, organic silhouette.
+//
+//   * The inner core (|dx|<=1 AND |dz|<=1) is ALWAYS kept, so the crown never
+//     disconnects from the trunk and tips/spines stay intact.
+//   * Outer voxels (chebyshev radius >= 2 in XZ) are dropped with probability
+//     ~18% (full crown) or ~38% (sparse crown), via a hash of the tree's
+//     leaf_hash and the voxel's GLOBAL world position — so any chunk the crown
+//     overlaps makes the identical keep/drop decision (seam-consistent), and it
+//     never writes out of bounds (the caller still bounds-clips every voxel).
+//
+// PINE/saplings pass sparse handling through the same path (pine has sparse=0 and
+// its skirt voxels are mostly radius<=2 so it keeps its crisp cone).
+static bool keep_leaf_voxel(std::uint64_t leaf_hash, int sparse,
+                            std::int32_t wlx, std::int32_t wly, std::int32_t wlz,
+                            int dx, int dz) noexcept {
+    int rxz = (dx < 0 ? -dx : dx);
+    int az  = (dz < 0 ? -dz : dz);
+    if (az > rxz) rxz = az;
+    if (rxz <= 1) return true;                 // inner core — always keep
+    std::uint64_t vh = hash3(wlx, wly, wlz, leaf_hash);
+    std::uint64_t r  = vh & 0xFFu;             // 0..255
+    std::uint64_t thr = sparse ? 98u : 46u;    // ~38% / ~18% drop on outer ring
+    return r >= thr;                           // keep unless under the drop threshold
 }
 
 static bool in_canopy(int dx, int dy, int dz, int shape) noexcept {
@@ -2751,7 +2850,7 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                 int trunk_base_wy = H + 1;
                 int trunk_top_wy  = H + td.trunk_height;
                 int dy_max_v      = canopy_dy_max(td.canopy_shape);
-                int dy_min_v      = canopy_dy_min(td.canopy_shape);
+                int dy_min_v      = canopy_dy_min(td.canopy_shape) - td.extra_skirt;  // #22 elder skirt
                 int canopy_wy_max = trunk_top_wy + dy_max_v;
                 int canopy_wy_min = trunk_top_wy + dy_min_v;
 
@@ -2783,6 +2882,14 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                         }
                         if (wx_log < wx_min || wx_log > wx_max) continue;
                         if (wz_log < wz_min || wz_log > wz_max) continue;
+                        // #22: a leaned upper trunk can tip into an adjacent
+                        // desert/beach column — never leave a log on the sand.  The
+                        // root column is already non-desert, so only the leaned half
+                        // (where the position differs from the root) needs the check.
+                        if ((wx_log != td.root_wx || wz_log != td.root_wz)) {
+                            Biome lb = voronoi_biome(wx_log, wz_log, seed);
+                            if (lb == Biome::Desert || lb == Biome::Beach) continue;
+                        }
                         int lx = wx_log - wx_min;
                         int ly = wy - wy_min;
                         int lz = wz_log - wz_min;
@@ -2807,6 +2914,12 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                                     int wz2 = wz_log + tz;
                                     if (wx2 < wx_min || wx2 > wx_max) continue;
                                     if (wz2 < wz_min || wz2 > wz_max) continue;
+                                    // #22: never drop a log onto a desert/beach column
+                                    // (a thick-trunk offset can cross a biome border
+                                    // into the sand; logs there read as misplaced
+                                    // tree trunks).  Cheap: voronoi_biome is memoised.
+                                    Biome ob = voronoi_biome(wx2, wz2, seed);
+                                    if (ob == Biome::Desert || ob == Biome::Beach) continue;
                                     int off_H = surface_height_cached(wx2, wz2, anchor_cache);
                                     if (wy <= off_H) continue;  // don't bury below this column's surface
                                     int olx = wx2 - wx_min, oly = ly, olz = wz2 - wz_min;
@@ -2827,10 +2940,26 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                 int reach = (td.canopy_shape == CANOPY_GIANT)   ? 4 :
                             (td.canopy_shape == CANOPY_WEEPING)  ? 4 :
                             (td.canopy_shape == CANOPY_BROAD || td.canopy_shape == CANOPY_PINE) ? 3 : 2;
+                // Lowest dy that the shape itself fills (excludes the elder skirt,
+                // which we synthesise below at dy = shape_min-1).
+                int shape_dy_min = canopy_dy_min(td.canopy_shape);
                 for (int dz = -reach; dz <= reach; ++dz) {
                     for (int dx = -reach; dx <= reach; ++dx) {
                         for (int dy = dy_min_v; dy <= dy_max_v; ++dy) {
-                            if (!in_canopy(dx, dy, dz, td.canopy_shape)) continue;
+                            bool fill;
+                            if (dy >= shape_dy_min) {
+                                fill = in_canopy(dx, dy, dz, td.canopy_shape);
+                            } else {
+                                // #22 ELDER skirt: a wide lower ring (radius 2..3,
+                                // corners clipped) hanging one tier below a GIANT
+                                // crown — gives elders a broad, drooping base.
+                                int ax = (dx < 0 ? -dx : dx);
+                                int az = (dz < 0 ? -dz : dz);
+                                bool inring = (ax <= 3 && az <= 3) && (ax >= 2 || az >= 2)
+                                              && !(ax == 3 && az == 3);
+                                fill = inring;
+                            }
+                            if (!fill) continue;
 
                             std::int32_t wlx = canopy_wx + dx;
                             std::int32_t wly = trunk_top_wy + dy;
@@ -2839,6 +2968,11 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                             if (wlx < wx_min || wlx > wx_max) continue;
                             if (wly < wy_min || wly > wy_max) continue;
                             if (wlz < wz_min || wlz > wz_max) continue;
+
+                            // #22 IRREGULAR EDGES: drop a deterministic fraction of
+                            // OUTER leaf voxels so the crown is ragged, not a blob.
+                            if (!keep_leaf_voxel(td.leaf_hash, td.sparse, wlx, wly, wlz, dx, dz))
+                                continue;
 
                             int lx = wlx - wx_min;
                             int ly = wly - wy_min;
@@ -2895,8 +3029,14 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                         if (cx >= wx_min && cx <= wx_max &&
                             cy >= wy_min && cy <= wy_max &&
                             cz >= wz_min && cz <= wz_max) {
-                            int lx = cx - wx_min, ly = cy - wy_min, lz = cz - wz_min;
-                            if (chunk.get(lx, ly, lz) == AIR) chunk.set(lx, ly, lz, td.log_id);
+                            // #22: a branch arm can reach across a biome border into
+                            // desert/beach sand — never leave a log there (reads as a
+                            // misplaced tree trunk).  Leaf clusters are fine (foliage).
+                            Biome ab = voronoi_biome(cx, cz, seed);
+                            if (ab != Biome::Desert && ab != Biome::Beach) {
+                                int lx = cx - wx_min, ly = cy - wy_min, lz = cz - wz_min;
+                                if (chunk.get(lx, ly, lz) == AIR) chunk.set(lx, ly, lz, td.log_id);
+                            }
                         }
                     }
 
@@ -2979,6 +3119,11 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                     for (int s = 0; s < dw.length; ++s) {
                         std::int32_t cwx = dw.wx + ddx * s;
                         std::int32_t cwz = dw.wz + ddz * s;
+                        // #22: a fallen-log run can stretch from its non-desert
+                        // anchor across a biome border onto desert/beach sand —
+                        // never leave a log there (it reads as a stray tree trunk).
+                        Biome sb = voronoi_biome(cwx, cwz, seed);
+                        if (sb == Biome::Desert || sb == Biome::Beach) continue;
                         int Hs = surface_height_cached(cwx, cwz, anchor_cache);
                         std::int32_t wy = Hs + 1;       // rest on the ground
                         if (cwx < wx_min || cwx > wx_max) continue;
@@ -3149,17 +3294,32 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
     }
 
     // -------------------------------------------------------------------
-    // 2c. DESERT DECORATION (#18 DESERTS ARE FLAT/DEAD) — sparse, tasteful.
-    //     Deserts had no surface interest.  We scatter three cheap features on
-    //     desert (and beach) sand, all seam-trivial single-column writes:
-    //       * dead bushes / sticks  — MUSHROOM cross-billboard as a dry shrub
-    //                                  stand-in (no dedicated dead-bush id exists).
-    //       * small rock piles      — a 1-block STONE/GRAVEL bump on the sand.
-    //       * cacti                  — a short 2..3 block column.  No green block
-    //                                  id exists (is_plant/render only know 36-39
-    //                                  and there is no green cube), so we stand in
-    //                                  with OAK_LOG as a "cactus trunk".  NOTE:
-    //                                  wishes a real `cactus`/green block existed.
+    // 2c. DESERT DECORATION (#18/#22 — sparser, and NO oak logs).
+    //     Player feedback: the old "cactus" was an OAK_LOG column, which read as
+    //     a tree trunk in the sand (wrong), and the desert was over-decorated
+    //     (~58% of columns) so it felt cluttered rather than sparse.
+    //
+    //     New scheme — desert reads as a dry desert using ONLY existing blocks:
+    //       * DEAD BUSH  — MUSHROOM (id 39) cross-billboard as a dry shrub.  This
+    //                      is the closest existing cross-plant to a desert dead
+    //                      bush (the plant family is ids 36-39).  Seam-safe: a
+    //                      decoration id excluded from the seam test, sits at H+1.
+    //       * ROCK SPIRE — a STONE/GRAVEL/SANDSTONE-look speckle EMBEDDED at the
+    //                      sand surface (replaces the top sand at H).  STONE/GRAVEL
+    //                      are counted as solid terrain by the seam test, so a
+    //                      STACKED rock would bump the measured "top solid" up by 1
+    //                      only on the desert side of a border (a fake >1 seam) —
+    //                      embedding it at H keeps top-solid identical to bare sand.
+    //
+    //     NO OAK LOGS are ever placed in the desert (the old cactus stand-in is
+    //     gone).  WISH: a real `cactus` / green vertical block id would let us
+    //     ship an actual standing cactus; that needs content+shader work this pass
+    //     does not own, so we ship the no-oak-log dead-bush + rock-spire version.
+    //
+    //     DENSITY: reduced ~50% (was ~58% of desert columns decorated → now
+    //     ~27%).  Deserts still have character (dead bushes + rocky speckle) but
+    //     read as noticeably sparser/emptier.  Decor gate: rolls 0..69 / 256 ≈
+    //     27%, split dead-bush (~16%) and rock-spire (~11%).
     // -------------------------------------------------------------------
     {
         std::uint64_t desert_seed = fmix64(seed ^ 0xDE5E27DEC0DE0001ull);
@@ -3187,41 +3347,19 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                 std::int32_t above_wy = H + 1;
                 if (above_wy < wy_min || above_wy > wy_max) continue;
 
-                // #18 DESERTS ARE FLAT/DEAD: raise decor probability hard so flat,
-                // featureless deserts are RARE.  Old scheme decorated only ~10% of
-                // desert sand columns (rolls 0..25/256) — most deserts read as dead.
-                // New scheme decorates ~60% of desert columns (rolls 0..153/256),
-                // split across cacti / rock piles / dead bushes, so a player almost
-                // always sees something on the sand.  (Measured desert-decor coverage
-                // rose from ~10% to ~60%.)
-                //
-                // SEAM-SAFETY: the rock pile is now EMBEDDED in the surface (it
-                // replaces the top sand at H) instead of stacking a STONE/GRAVEL
-                // block at H+1.  STONE/GRAVEL are counted as solid terrain by the
-                // seam test, so a stacked pile bumped the measured "top solid" up by
-                // 1 only on the desert side of a border — a fake >1 seam.  Embedding
-                // it at H keeps the top-solid height identical to the bare-sand case
-                // while still showing a rocky speckle.  Cacti (OAK_LOG) and dead
-                // bushes (MUSHROOM) are decoration ids excluded from the seam test,
-                // so they remain safe at H+1.
-                if (roll < 30u) {
-                    // Cactus: short 2..3 block OAK_LOG column (green-block stand-in).
-                    int cact = 2 + static_cast<int>((dh >> 8u) & 1u);  // 2..3
-                    for (int s = 1; s <= cact; ++s) {
-                        std::int32_t wy = H + s;
-                        if (wy < wy_min || wy > wy_max) continue;
-                        int ly = static_cast<int>(wy - wy_min);
-                        if (chunk.get(lx, ly, lz) == AIR) chunk.set(lx, ly, lz, OAK_LOG);
-                    }
-                } else if (roll < 80u) {
-                    // Rock pile: embed a STONE/GRAVEL speckle AT the sand surface
-                    // (replace the top sand) — seam-safe (no added height).
+                if (roll < 42u) {
+                    // Dead bush: MUSHROOM cross-billboard as a dry desert shrub.
+                    // ~16% of desert sand columns.  Decoration id (seam-excluded).
+                    chunk.set(lx, ly_above, lz, MUSHROOM);
+                } else if (roll < 70u) {
+                    // Rock spire: embed a STONE/GRAVEL speckle AT the sand surface
+                    // (replace the top sand) — seam-safe (no added height).  Reads
+                    // as a small sandstone/stone outcrop, not an oak log.
+                    // ~11% of desert sand columns.
                     BlockId rb = ((dh >> 8u) & 1u) ? GRAVEL : STONE;
                     chunk.set(lx, ly_surf, lz, rb);
-                } else if (roll < 154u) {
-                    // Dead bush / sticks: MUSHROOM cross-billboard as a dry shrub.
-                    chunk.set(lx, ly_above, lz, MUSHROOM);
                 }
+                // else: bare sand (no oak logs, ever).
             }
         }
     }

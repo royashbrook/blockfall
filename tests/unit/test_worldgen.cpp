@@ -1855,12 +1855,20 @@ static void test_rocky_mountains() {
 }
 
 // ---------------------------------------------------------------------------
-// 24. DESERT DECORATION (#18 DESERTS ARE FLAT/DEAD)
-//     Confirm deserts now carry DENSE scatter: dead bushes (mushroom billboard),
-//     small rock piles (stone/gravel EMBEDDED in the sand surface — seam-safe, no
-//     added height), or cacti (short log column).  We classify each dry desert
-//     column as decorated/flat and assert that flat deserts are now RARE: a clear
-//     majority (>=40%) of desert sand columns carry a feature, up from ~10%.
+// 24. DESERT DECORATION (#18/#22 — sparser, no oak logs)
+//     The desert is decorated with EXISTING blocks that read as dry desert:
+//       * DEAD BUSH  — MUSHROOM (id 39) cross-billboard, a dry shrub (at H+1).
+//       * ROCK SPIRE — STONE/GRAVEL (ids 3/11) EMBEDDED at the sand surface (H),
+//                      seam-safe (no added height) — a small sandstone-look rock.
+//     Player feedback fixed here:
+//       (1) NO OAK LOGS in the desert: the old "cactus" was an OAK_LOG column,
+//           which read as a stray tree trunk.  We assert that bare (non-structure)
+//           desert sand columns carry zero oak logs.  Structure footprints (camps
+//           /wells with oak posts) are legitimate builds and exempted, exactly as
+//           the seam / no-holes tests exempt them.
+//       (2) DENSITY reduced ~50%: deserts were over-decorated (~58% of columns);
+//           the new gate decorates ~25-30% so the desert reads as sparse but still
+//           has character.  We assert the decorated fraction now sits in [20%,38%].
 // ---------------------------------------------------------------------------
 static void test_desert_decoration() {
     constexpr std::uint64_t SEED = 0xB10BE5EED1234567ull;
@@ -1872,7 +1880,7 @@ static void test_desert_decoration() {
     long desert_cols = 0;
     long dead_bush = 0;   // mushroom on sand (H+1)
     long rock_pile = 0;   // stone/gravel embedded AT surface (H)
-    long cactus    = 0;   // oak_log column on sand (H+1)
+    long oak_on_sand = 0; // oak_log on a bare (non-structure) desert sand column
 
     for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
         for (int cx = -SCAN_R; cx <= SCAN_R; ++cx) {
@@ -1893,12 +1901,20 @@ static void test_desert_decoration() {
                     if (H <= 6) continue;
                     BlockId surf  = at(lx, H, lz);
                     BlockId above = at(lx, H + 1, lz);
+
+                    // NO OAK LOGS on bare desert sand (structures exempted — their
+                    // oak posts are legitimate builds, like the seam/hole tests).
+                    if (!worldgen_structure_footprint(wx, wz, SEED)) {
+                        for (int wy = H; wy <= H + 7; ++wy) {
+                            if (at(lx, wy, lz) == 21u) { ++oak_on_sand; break; }
+                        }
+                    }
+
                     if (surf == 6u) {                 // bare sand surface
                         ++desert_cols;
-                        if      (above == 39u) ++dead_bush;
-                        else if (above == 21u) ++cactus;
+                        if (above == 39u) ++dead_bush;
                     } else if (surf == 3u || surf == 11u) {
-                        // Embedded rock pile replaced the top sand (still a desert
+                        // Embedded rock spire replaced the top sand (still a desert
                         // sand column for coverage purposes).
                         ++desert_cols;
                         ++rock_pile;
@@ -1910,15 +1926,18 @@ static void test_desert_decoration() {
         }
     }
 
-    long decorated = dead_bush + rock_pile + cactus;
+    long decorated = dead_bush + rock_pile;
     CHECK(decorated > 0,
           "desert decoration: deserts carry scattered decoration (was flat/dead)");
     CHECK(dead_bush > 0, "desert decoration: dead bushes (mushroom billboard) present");
-    CHECK(rock_pile > 0, "desert decoration: small rock piles present (embedded)");
-    CHECK(cactus    > 0, "desert decoration: cacti (log stand-in) present");
-    // #18: flat deserts must be RARE — most desert columns now carry a feature.
-    CHECK(desert_cols > 0 && decorated * 100 >= desert_cols * 40,
-          "desert decoration: >=40% of desert columns decorated (flat deserts rare) — #18");
+    CHECK(rock_pile > 0, "desert decoration: small rock spires present (embedded)");
+    // #22: NO oak logs in the desert (the old cactus stand-in is gone).
+    CHECK(oak_on_sand == 0,
+          "desert decoration: no oak logs placed on (non-structure) desert columns — #22");
+    // #18/#22: density reduced ~50% — decorated fraction now sparse (20%..38%).
+    CHECK(desert_cols > 0 && decorated * 100 >= desert_cols * 20
+                          && decorated * 100 <= desert_cols * 38,
+          "desert decoration: ~25-30% of desert columns decorated (sparser than before) — #18/#22");
 }
 
 // ---------------------------------------------------------------------------
