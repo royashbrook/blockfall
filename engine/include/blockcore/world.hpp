@@ -426,6 +426,12 @@ public:
         // the ground into the void (collision is tested only at the end position).
         // Capping dt makes a spike merely slow the sim for a frame, never break it.
         if (dt > 0.1) dt = 0.1;
+        // Is the player actively travelling? While moving you outrun the far fill
+        // anyway, and cranking the stream budgets mid-travel would hitch — so the
+        // aggressive "bulk fill" (P-cores + big budgets) only engages when you're
+        // NOT moving (spawn-in, or stopped to look around), where it rushes the
+        // backlog in fast. (#5 fill responsiveness)
+        moving_ = (std::fabs(in.move_forward) + std::fabs(in.move_strafe) + std::fabs(float(in.jump))) > 0.1f;
         world_clock_ += dt;
         // Combat timers + slow health regeneration (kid-friendly: you bounce back).
         if (hurt_cd_  > 0) hurt_cd_  -= float(dt);
@@ -1671,6 +1677,20 @@ private:
         gen_done_.emplace_back(cc, std::move(ch));
     }
 
+    // How much terrain is still waiting to be generated + meshed.
+    std::size_t stream_backlog() const { return gen_queue_.size() + dirty_.size(); }
+    // A LARGE backlog means a bulk fill (spawn-in, teleport, or the initial load at a
+    // big render distance) — not the small ring added by normal walking. Only then do
+    // we crank budgets + recruit the P-cores, so steady-state play never hitches.
+    bool bulk_fill() const { return !moving_ && stream_backlog() > 384; }
+    // Steady state: E-cores only (Utility), so the render thread on the P-cores is
+    // never disturbed. Bulk fill: alternate pools so the idle P-cores pitch in too —
+    // terrain is otherwise confined to the E-cores while half the machine sits idle.
+    JobQoS terrain_qos() {
+        if (!bulk_fill()) return JobQoS::Utility;
+        return (job_rr_++ & 1u) ? JobQoS::Interactive : JobQoS::Utility;
+    }
+
     void stream_tick() {
         if (!gen_) return;
         // Synchronous mode (tests): generate inline so chunk availability is
@@ -1696,7 +1716,8 @@ private:
         // 1) Collect finished gen chunks (BUDGETED: meshing downstream is the limit,
         // so inserting the whole worker backlog at once explodes dirty_ and the
         // per-frame dirty scan, tanking FPS).
-        constexpr std::size_t kGenCollect = 16;
+        const bool bulk = bulk_fill();
+        const std::size_t kGenCollect = bulk ? 64 : 16;
         std::vector<std::pair<ChunkCoord, std::unique_ptr<PaletteChunk>>> done;
         {
             std::lock_guard<std::mutex> lk(gen_mtx_);
@@ -1713,12 +1734,12 @@ private:
             dirty_.insert(cc);
         }
         // 2) Submit more gen jobs, keeping a bounded number in flight (nearest-first).
-        constexpr std::size_t kMaxInFlight = 32;
+        const std::size_t kMaxInFlight = bulk ? 128 : 32;
         while (!gen_queue_.empty() && gen_inflight_.size() < kMaxInFlight) {
             ChunkCoord cc = gen_queue_.back(); gen_queue_.pop_back();
             if (store_.is_resident(cc) || gen_inflight_.count(cc)) continue;
             gen_inflight_.insert(cc);
-            sched_->submit(&World::gen_trampoline, new GenTask{this, cc}, JobQoS::Utility);
+            sched_->submit(&World::gen_trampoline, new GenTask{this, cc}, terrain_qos());
         }
     }
 
@@ -1763,9 +1784,10 @@ private:
         const IVec3 dirs[6] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
         for (auto d : dirs) add(ChunkCoord{cc.x + d.x, cc.y + d.y, cc.z + d.z});
         mesh_inflight_.insert(cc);
-        // Utility (E-cores): keep mesh work OFF the P-cores so it never starves the
-        // main render thread (running it on Interactive tanked FPS).
-        sched_->submit(&World::mesh_trampoline, t.release(), JobQoS::Utility);
+        // Steady state: Utility (E-cores) so mesh work never starves the P-core render
+        // thread. Bulk fill: terrain_qos() also recruits the otherwise-idle P-cores so
+        // a big load rushes in instead of trickling on the E-cores alone. (#5 fill)
+        sched_->submit(&World::mesh_trampoline, t.release(), terrain_qos());
     }
     void upload_mesh(ChunkCoord cc, MeshTask& t) {
         if (!store_.is_resident(cc)) return;          // evicted while meshing — drop
@@ -1792,8 +1814,9 @@ private:
         // Budgeted: GPU buffer alloc + memcpy is the main-thread cost, so cap how
         // many we upload per frame and let the rest wait (uploading the whole
         // worker backlog in one frame tanks FPS).
+        const bool bulk = bulk_fill();
         if (async) {
-            constexpr std::size_t kUploadBudget = 8;
+            const std::size_t kUploadBudget = bulk ? 24 : 8;
             std::vector<std::unique_ptr<MeshTask>> batch;
             {
                 std::lock_guard<std::mutex> lk(mesh_mtx_);
@@ -1818,13 +1841,15 @@ private:
             // through a mountain to the caves below it. Behind-camera deprioritised.
             return double(d2) * (facing > 0.2f ? 1.0 : 4.0);
         };
-        std::size_t k = std::min<std::size_t>(std::size_t(MESH_BUDGET), todo.size());
+        const std::size_t meshBudget      = bulk ? 36 : std::size_t(MESH_BUDGET);
+        const std::size_t meshInflightCap = bulk ? 192 : 64;
+        std::size_t k = std::min<std::size_t>(meshBudget, todo.size());
         std::partial_sort(todo.begin(), todo.begin() + std::ptrdiff_t(k), todo.end(),
                           [&](ChunkCoord a, ChunkCoord b){ return score(a) < score(b); });
-        int done = 0;
+        std::size_t done = 0;
         for (ChunkCoord cc : todo) {
-            if (done >= MESH_BUDGET) break;
-            if (async && (mesh_inflight_.count(cc) || mesh_inflight_.size() >= 64)) continue;
+            if (done >= meshBudget) break;
+            if (async && (mesh_inflight_.count(cc) || mesh_inflight_.size() >= meshInflightCap)) continue;
             if (!store_.is_resident(cc)) { dirty_.erase(cc); continue; }
             dirty_.erase(cc);
             ++done;
@@ -2064,6 +2089,8 @@ private:
     std::mutex                                                       gen_mtx_;
     std::vector<std::pair<ChunkCoord, std::unique_ptr<PaletteChunk>>> gen_done_;
     std::unordered_set<ChunkCoord, ChunkCoordHash>                   gen_inflight_;
+    unsigned                                                         job_rr_{0};   // round-robin P/E pools in bulk fill
+    bool                                                             moving_{false}; // player gave movement input this frame
     std::mutex                                                       mesh_mtx_;
     std::vector<std::unique_ptr<MeshTask>>                           mesh_done_;
     std::unordered_set<ChunkCoord, ChunkCoordHash>                   mesh_inflight_;
