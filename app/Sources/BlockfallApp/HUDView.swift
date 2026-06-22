@@ -365,6 +365,36 @@ final class HUDView: NSView {
         return h < 0 ? h + 24 : h
     }
 
+    // --- #13: Multiplayer compass — other connected players (remote peers) ---
+    // The Renderer scans the render frame for remote-player entities (kind 100),
+    // works out for each whether it is on-screen/in-front (with a screen point)
+    // or off-screen/behind (with an edge direction to point an arrow), plus the
+    // distance + that peer's tint colour, and pushes the list here each frame.
+    // We draw a floating marker for on-screen peers and a bright edge arrow for
+    // off-screen ones so co-op kids can always find each other. Honours
+    // hudVisible / hudScale like the rest of the HUD. Empty when no peers exist
+    // (the compass draws nothing then).
+    struct PeerMarker {
+        let onScreen: Bool      // true = in front AND inside the viewport
+        let screenPt: CGPoint   // view-pixel point (only meaningful when onScreen)
+        let edgeDir:  CGVector  // unit-ish direction to point the arrow (off-screen)
+        let distM:    Int       // distance to the peer, metres (rounded)
+        let color:    NSColor   // the peer's per-peer tint
+    }
+    private var peers: [PeerMarker] = []
+
+    // Renderer pushes the per-frame peer list. We always request a repaint when
+    // peers are present (or were present last frame) so markers/arrows track the
+    // moving camera; an empty→empty transition is a no-op so an idle solo game
+    // never forces extra redraws.
+    func setPeers(_ list: [PeerMarker]) {
+        let had = !peers.isEmpty
+        peers = list
+        if (had || !list.isEmpty) && hud.inventory_open == 0 && !questLogOpen {
+            needsDisplay = true
+        }
+    }
+
     // ----- Mouse handling (active only while the inventory is open) -----
 
     override func updateTrackingAreas() {
@@ -740,6 +770,9 @@ final class HUDView: NSView {
         (questHint as NSString).draw(at: NSPoint(x: b.maxX - qhSz.width - 14, y: 14), withAttributes: ghAttrs)
         (guideHint as NSString).draw(at: NSPoint(x: b.maxX - ghSz.width - 14, y: 14 + qhSz.height + 4), withAttributes: ghAttrs)
 
+        // --- #13: Multiplayer compass (only when other players are connected) ---
+        drawPeerCompass(in: b)
+
         // Achievement toast (top-center banner) when one was just unlocked.
         let toast = withUnsafeBytes(of: hud.achievement_toast) { raw -> String in
             String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
@@ -888,6 +921,129 @@ final class HUDView: NSView {
             }
             ly -= lineH + lineGap
         }
+    }
+
+    // ===== #13: Multiplayer compass =========================================
+    // Draws an indicator for every other connected player (a "remote peer").
+    // The Renderer has already done the camera/projection maths and handed us,
+    // per peer: whether it is on-screen (with a screen point), an off-screen
+    // arrow direction, the distance, and the peer's tint colour.
+    //
+    //   ON-SCREEN peer  : a small floating diamond marker + "Player" + "24m"
+    //                     hovering just above the peer's projected screen point.
+    //   OFF-SCREEN peer : a bright filled triangle ARROW pinned just inside the
+    //                     screen edge, pointing toward the peer, with the
+    //                     distance beside it — kid-obvious in the peer's colour.
+    //
+    // Cheap NSBezierPath / NSColor like the rest of the HUD. Nothing draws when
+    // there are zero peers, when the HUD is hidden, or while an overlay is up.
+    private func drawPeerCompass(in b: NSRect) {
+        guard !peers.isEmpty else { return }
+
+        for peer in peers {
+            if peer.onScreen {
+                drawOnScreenPeer(peer, in: b)
+            } else {
+                drawOffScreenPeerArrow(peer, in: b)
+            }
+        }
+    }
+
+    // A floating marker hovering at/above a peer that is visible on screen.
+    private func drawOnScreenPeer(_ peer: PeerMarker, in b: NSRect) {
+        // Clamp the projected point into the view so a marker right at the edge
+        // is still fully drawn.
+        let mPad: CGFloat = 22 * hudScale
+        let px = min(max(b.minX + mPad, peer.screenPt.x), b.maxX - mPad)
+        let py = min(max(b.minY + mPad, peer.screenPt.y), b.maxY - mPad)
+
+        // Small diamond marker in the peer's colour, hovering above their head.
+        let mR: CGFloat = 9 * hudScale
+        let cy = py + 26 * hudScale            // float above the projected point
+        let diamond = NSBezierPath()
+        diamond.move(to: NSPoint(x: px,      y: cy + mR))
+        diamond.line(to: NSPoint(x: px + mR, y: cy))
+        diamond.line(to: NSPoint(x: px,      y: cy - mR))
+        diamond.line(to: NSPoint(x: px - mR, y: cy))
+        diamond.close()
+        peer.color.withAlphaComponent(0.95).setFill()
+        diamond.fill()
+        NSColor.black.withAlphaComponent(0.85).setStroke()
+        diamond.lineWidth = 2 * hudScale
+        diamond.stroke()
+        // A little downward stem so it reads as a "pin" pointing at the player.
+        let stem = NSBezierPath()
+        stem.move(to: NSPoint(x: px, y: cy - mR))
+        stem.line(to: NSPoint(x: px, y: cy - mR - 8 * hudScale))
+        NSColor.black.withAlphaComponent(0.85).setStroke()
+        stem.lineWidth = 2 * hudScale
+        stem.stroke()
+
+        // Label: "Player" + distance, centered above the marker.
+        let label = "Player  \(peer.distM)m"
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: fs(12)),
+            .foregroundColor: NSColor.white,
+            .strokeColor: NSColor.black, .strokeWidth: -3.0,
+        ]
+        let sz = (label as NSString).size(withAttributes: attrs)
+        (label as NSString).draw(at: NSPoint(x: px - sz.width / 2, y: cy + mR + 4 * hudScale),
+                                 withAttributes: attrs)
+    }
+
+    // A bright triangle arrow pinned near the screen edge, pointing toward a peer
+    // who is off-screen or behind the camera.
+    private func drawOffScreenPeerArrow(_ peer: PeerMarker, in b: NSRect) {
+        // Normalize the supplied direction (Renderer keeps it stable for the
+        // behind-camera case). Guard against a zero vector.
+        var dx = peer.edgeDir.dx
+        var dy = peer.edgeDir.dy
+        let len = (dx * dx + dy * dy).squareRoot()
+        if len < 1e-4 { dx = 0; dy = 1 } else { dx /= len; dy /= len }
+
+        // Project a ray from the screen centre to the rectangle edge, then pull
+        // the arrow inward by a margin so it sits fully on screen.
+        let inset: CGFloat = 46 * hudScale
+        let rect = b.insetBy(dx: inset, dy: inset)
+        let cx = rect.midX, cy = rect.midY
+        let hw = rect.width / 2, hh = rect.height / 2
+        // Largest t such that (cx + dx*t, cy + dy*t) is still inside the rect.
+        var t = CGFloat.greatestFiniteMagnitude
+        if abs(dx) > 1e-4 { t = min(t, hw / abs(dx)) }
+        if abs(dy) > 1e-4 { t = min(t, hh / abs(dy)) }
+        if !t.isFinite { t = 0 }
+        let ax = cx + dx * t
+        let ay = cy + dy * t
+
+        // Triangle arrow pointing along (dx, dy), centered at (ax, ay).
+        let aLen: CGFloat = 20 * hudScale   // tip length
+        let aWide: CGFloat = 13 * hudScale  // half-width of the base
+        let tipX = ax + dx * aLen, tipY = ay + dy * aLen
+        // Perpendicular for the base corners.
+        let pxx = -dy, pyy = dx
+        let baseX = ax - dx * (aLen * 0.4), baseY = ay - dy * (aLen * 0.4)
+        let arrow = NSBezierPath()
+        arrow.move(to: NSPoint(x: tipX, y: tipY))
+        arrow.line(to: NSPoint(x: baseX + pxx * aWide, y: baseY + pyy * aWide))
+        arrow.line(to: NSPoint(x: baseX - pxx * aWide, y: baseY - pyy * aWide))
+        arrow.close()
+        peer.color.withAlphaComponent(0.95).setFill()
+        arrow.fill()
+        NSColor.black.withAlphaComponent(0.85).setStroke()
+        arrow.lineWidth = 2 * hudScale
+        arrow.stroke()
+
+        // Distance label, placed just inward of the arrow (toward the centre).
+        let label = "\(peer.distM)m"
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: fs(12)),
+            .foregroundColor: NSColor.white,
+            .strokeColor: NSColor.black, .strokeWidth: -3.0,
+        ]
+        let sz = (label as NSString).size(withAttributes: attrs)
+        let lx = ax - dx * (24 * hudScale) - sz.width / 2
+        let ly = ay - dy * (24 * hudScale) - sz.height / 2
+        (label as NSString).draw(at: NSPoint(x: lx, y: ly), withAttributes: attrs)
     }
 
     // ===== #42: Quest / progression log overlay =============================

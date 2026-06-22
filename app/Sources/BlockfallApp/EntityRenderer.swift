@@ -348,6 +348,11 @@ final class EntityRenderer {
             case 18: drawKind18(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             case 19: drawKind19(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             case 20: drawKind20(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            // kind 100 — REMOTE PLAYER (#13 multiplayer): render the connected
+            // peer as an upright PERSON, not an animal. Reuse the villager
+            // humanoid (drawKind20); it already tints clothing from e.color so
+            // each peer's per-peer color makes them distinguishable.
+            case 100: drawKind20(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             default: drawKind0(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             }
             // Clear so kind 6 (and the next iter before it sets) never inherit.

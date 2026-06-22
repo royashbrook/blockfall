@@ -156,7 +156,9 @@ private:
             bf_entity_draw e{};
             e.position = bf_vec3{rp.x, rp.y - 1.0f, rp.z};
             e.yaw = rp.yaw; e.color = bf_vec3{0.95f, 0.75f, 0.85f};
-            e.scale = 1.2f; e.kind = 0; e.sat = 1.0f;
+            // kind 100 = REMOTE PLAYER: the renderer draws a humanoid avatar and the
+            // HUD compass (#13) points to it (distinct from animals/villagers).
+            e.scale = 1.2f; e.kind = 100; e.sat = 1.0f;
             av.push_back(e);
         }
         world_.set_remote_avatars(av);

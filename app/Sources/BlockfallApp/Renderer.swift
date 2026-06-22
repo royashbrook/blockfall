@@ -754,6 +754,23 @@ final class Renderer: NSObject, MTKViewDelegate {
             -(viewM.columns.0.z * vt.x + viewM.columns.1.z * vt.y + viewM.columns.2.z * vt.z),
             0)
 
+        // ---- #13: Multiplayer compass — find other connected players --------
+        // Scan the render frame for remote-player entities (kind == 100) and,
+        // for each, work out an on-screen marker point or an off-screen edge
+        // arrow direction + distance + the peer's tint colour, then push the
+        // list to the HUD which draws the compass. Pure read + forward; touches
+        // no Metal pipeline / frame-lifecycle state. The HUD overlay is laid out
+        // in the GameView's POINT space (it shares the MTKView frame), so we
+        // project NDC into points using the view's bounds size, not the (Retina)
+        // drawable pixel size.
+        if let hud = hud {
+            buildPeerCompass(hud: hud, frame: frame, viewProj: viewProj,
+                             camPos: SIMD3<Float>(frame.camera.position.x,
+                                                  frame.camera.position.y,
+                                                  frame.camera.position.z),
+                             camFwd: camFwd, camRight: camRight, camUp: camUp)
+        }
+
         // 4) Build sun light-space matrix for shadow pass
         let lightViewProj = Renderer.buildLightMatrix(
             sunDir: SIMD3<Float>(sun.x, sun.y, sun.z),
@@ -1079,6 +1096,99 @@ final class Renderer: NSObject, MTKViewDelegate {
         hud?.update(from: frame.hud)
         bf_frame_end(e)
         registry.collect()
+    }
+
+    // ---- #13: Multiplayer compass builder -----------------------------------
+    // Scans frame.entities for remote players (kind == 100). For each it decides
+    // whether the peer is on-screen-and-in-front (project through view*proj and
+    // test clip.w > 0 with |ndc| < 1) → a screen point; otherwise it computes a
+    // stable off-screen arrow direction from the peer's offset projected onto the
+    // camera right/up axes. The behind-camera case (forwardDot <= 0) keeps the
+    // arrow from flipping: we point it outward along the (right,up) components.
+    // Results are pushed to the HUD which draws the markers/arrows.
+    //
+    // The HUD draws in the GameView's point coordinate space (origin bottom-left,
+    // y-up, same as the non-flipped NSView). NDC is x∈[-1,1] right, y∈[-1,1] up,
+    // so the point conversion is a straightforward remap with no y-flip needed.
+    private func buildPeerCompass(hud: HUDView,
+                                  frame: bf_render_frame,
+                                  viewProj: simd_float4x4,
+                                  camPos: SIMD3<Float>,
+                                  camFwd: SIMD3<Float>,
+                                  camRight: SIMD3<Float>,
+                                  camUp: SIMD3<Float>) {
+        let n = Int(frame.entity_count)
+        guard n > 0, let ents = frame.entities else {
+            hud.setPeers([])
+            return
+        }
+
+        // View size in POINTS (HUD overlay shares this frame). Fall back to the
+        // capped scene size only if the view isn't available yet.
+        let vb = gameView?.bounds.size ?? sceneSize
+        let vw = CGFloat(max(1, vb.width))
+        let vh = CGFloat(max(1, vb.height))
+
+        var markers: [HUDView.PeerMarker] = []
+        for i in 0..<n {
+            let e = ents[i]
+            guard e.kind == 100 else { continue }
+
+            let peerPos = SIMD3<Float>(e.position.x, e.position.y + e.scale * 0.9,
+                                       e.position.z)   // aim at roughly head height
+            let toPeer  = peerPos - camPos
+            let distM   = Int(simd_length(SIMD3<Float>(e.position.x - camPos.x,
+                                                       e.position.y - camPos.y,
+                                                       e.position.z - camPos.z)).rounded())
+
+            let color = NSColor(srgbRed: CGFloat(max(0, min(1, e.color.x))),
+                                green:   CGFloat(max(0, min(1, e.color.y))),
+                                blue:    CGFloat(max(0, min(1, e.color.z))),
+                                alpha:   1)
+
+            // Project the peer's world position through view*proj.
+            let clip = viewProj * SIMD4<Float>(peerPos.x, peerPos.y, peerPos.z, 1)
+            let inFront = clip.w > 0.0001
+            var onScreen = false
+            var screenPt = CGPoint.zero
+            if inFront {
+                let ndcX = clip.x / clip.w
+                let ndcY = clip.y / clip.w
+                if abs(ndcX) <= 1 && abs(ndcY) <= 1 {
+                    onScreen = true
+                    screenPt = CGPoint(x: (CGFloat(ndcX) * 0.5 + 0.5) * vw,
+                                       y: (CGFloat(ndcY) * 0.5 + 0.5) * vh)
+                }
+            }
+
+            var edgeDir = CGVector(dx: 0, dy: 1)
+            if !onScreen {
+                // Off-screen or behind: build an arrow direction from the peer
+                // offset's components on the camera right/up axes. This stays
+                // stable when the peer is behind the camera (forwardDot <= 0):
+                // we don't divide by w (which flips sign), we use the raw dot
+                // products so the arrow always points the natural way.
+                let rightDot = simd_dot(toPeer, camRight)
+                let upDot    = simd_dot(toPeer, camUp)
+                var dx = CGFloat(rightDot)
+                var dy = CGFloat(upDot)
+                let len = (dx * dx + dy * dy).squareRoot()
+                if len < 1e-5 {
+                    // Directly ahead/behind with no lateral offset — point up.
+                    dx = 0; dy = 1
+                } else {
+                    dx /= len; dy /= len
+                }
+                edgeDir = CGVector(dx: dx, dy: dy)
+            }
+
+            markers.append(HUDView.PeerMarker(onScreen: onScreen,
+                                              screenPt: screenPt,
+                                              edgeDir: edgeDir,
+                                              distM: distM,
+                                              color: color))
+        }
+        hud.setPeers(markers)
     }
 
     // Helper: fullscreen triangle pass with one input + one output texture.
