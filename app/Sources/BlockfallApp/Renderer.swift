@@ -228,12 +228,6 @@ final class Renderer: NSObject, MTKViewDelegate {
 #endif
     // True when the scaler was successfully created and can be used this frame.
     private var metalFXEnabled: Bool = false
-    // Debug toggles for bisecting the "washout when turning" report (#33). Flipped
-    // live from GameView (keys B / N) so the user can identify which subsystem causes
-    // it. Defaults: everything on (normal rendering).
-    static var dbgBloom = true       // 'B' — bloom on/off
-    static var dbgMetalFX = true     // 'N' — MetalFX spatial upscaler on/off
-    static var dbgGrey = true        // 'G' — "The Grey" desaturation on/off (washout bisect #33)
 
     // ---- Shadow map (fixed 1536×1536) ----------------------------------------
     private let kShadowRes = 1536
@@ -841,7 +835,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                     chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime:    SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
                     lightViewProj: lightViewProj,
-                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, Renderer.dbgGrey ? 1.0 : 0.0))
+                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
                 enc.setVertexBuffer(vbuf, offset: Int(d.vertex_offset), index: 0)
                 enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
@@ -902,7 +896,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                     chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime:    SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
                     lightViewProj: lightViewProj,
-                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, Renderer.dbgGrey ? 1.0 : 0.0))
+                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
                 enc.setVertexBuffer(vbuf, offset: Int(d.vertex_offset), index: 0)
                 enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
@@ -977,7 +971,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         case 2:  precipPacked = -1.0   // snow
         default: precipPacked =  0.0   // clear
         }
-        var pu = PostUniforms(bloomStrength: Renderer.dbgBloom ? 0.08 : 0.0, vignetteStr: 0.22, satBoost: 1.18,
+        var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.18,
                               rainStrength: precipPacked, wallClockSecs: wallClock)
 
         // =====================================================================
@@ -988,7 +982,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 #if canImport(MetalFX)
         let useMetalFX: Bool
         if #available(macOS 13.0, *) {
-            useMetalFX = Renderer.dbgMetalFX && metalFXEnabled && _spatialScaler != nil && compositeLowRes != nil
+            useMetalFX = metalFXEnabled && _spatialScaler != nil && compositeLowRes != nil
         } else {
             useMetalFX = false
         }
@@ -2041,7 +2035,6 @@ final class Renderer: NSObject, MTKViewDelegate {
             float fz = clamp(z / float(16), 0.0, 1.0);
             float s00 = u.chunkOrigin.w, s10 = u.dimSatN.x, s01 = u.dimSatN.y, s11 = u.dimSatN.z;
             o.sat = mix(mix(s00, s10, fx), mix(s01, s11, fx), fz);
-            if (u.dimSatN.w < 0.5) o.sat = 1.0;   // debug: force full colour ('G' grey toggle, #33 bisect)
         }
         o.worldPos = swayedWorld;
         o.faceNorm = n;
