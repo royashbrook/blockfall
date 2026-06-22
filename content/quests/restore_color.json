@@ -164,8 +164,8 @@
       {
         "trigger": "collect_item",
         "target": "color_dust",
-        "count": 16,
-        "objective_text": "Gather 16 color dust from color crystals and bees."
+        "count": 8,
+        "objective_text": "Mine 8 color dust from glowing color crystals in caves."
       }
     ],
     "rewards": [

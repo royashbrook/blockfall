@@ -50,6 +50,7 @@
     "hardness": 12,
     "required_tier": 1,
     "preferred_tool": "pickaxe",
+    "drop_item": "color_dust",
     "light_emit": 8,
     "light_color": [
       255,

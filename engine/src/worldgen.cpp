@@ -161,6 +161,7 @@ static constexpr BlockId FLOWER_RED    = 36;
 static constexpr BlockId FLOWER_YELLOW = 37;
 static constexpr BlockId TALL_GRASS    = 38;
 static constexpr BlockId MUSHROOM      = 39;
+static constexpr BlockId COLOR_CRYSTAL = 40;   // glowing cave crystal; drops color_dust (#41 quest)
 
 static constexpr int SEA_LEVEL = 6;
 
@@ -2970,8 +2971,11 @@ static void place_cave_features(ChunkCoord c, IChunk& chunk, std::uint64_t seed)
                     }
                     case CFEAT_CRYSTALS: {
                         if (!anchor_air) break;
-                        // Crystal pocket: embed a few crystal_ore in the
-                        // surrounding rock walls + a crystal lamp glowing in air.
+                        // Crystal pocket: embed a few glowing COLOR crystals in the
+                        // surrounding rock walls + a crystal lamp glowing in air. Mining
+                        // a color crystal drops color_dust — the "Collect the Colors"
+                        // quest's source (it was unreachable: color_dust was craft-only
+                        // and color_crystal didn't generate). (#41)
                         put(ax, ay, az, CRYSTAL_LAMP, true);
                         int n = 3 + static_cast<int>((h2 >> 32u) % 4u);  // 3..6
                         for (int i = 0; i < n; ++i) {
@@ -2982,7 +2986,7 @@ static void place_cave_features(ChunkCoord c, IChunk& chunk, std::uint64_t seed)
                             if (dx == 0 && dy == 0 && dz == 0) continue;
                             // Only convert solid rock into crystal (wall pocket).
                             if (cave_voxel_is_solid(ax + dx, ay + dy, az + dz, seed)) {
-                                put(ax + dx, ay + dy, az + dz, CRYSTAL_ORE, false);
+                                put(ax + dx, ay + dy, az + dz, COLOR_CRYSTAL, false);
                             }
                         }
                         break;
