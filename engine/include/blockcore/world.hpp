@@ -687,6 +687,15 @@ public:
             weather_ = storm ? (cold ? 2 : 1) : 0;
             out.camera.weather = float(weather_);
         }
+        // How far below the terrain surface the eye sits (0 at/above surface, 1 deep).
+        // The renderer darkens the sky by this so that when surface-priority streaming
+        // hasn't loaded the far underground, the gaps read as dark cave — not as the
+        // bright, sun-directional daytime sky bleeding in. (#33)
+        {
+            int surf = worldgen_surface_height(ifloor(eye.x), ifloor(eye.z), seed_);
+            float depth = float(surf - ifloor(eye.y));
+            out.camera.underground = std::clamp((depth - 3.0f) / 8.0f, 0.0f, 1.0f);
+        }
         out.interp_alpha = 0.0f;
         out.draws = draws.data();
         out.draw_count = std::uint32_t(draws.size());

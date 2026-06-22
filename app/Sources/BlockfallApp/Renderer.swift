@@ -805,7 +805,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                     sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
                     camRight:   SIMD4<Float>(camRight.x, camRight.y, camRight.z, tanHalfFov),
                     camUp:      SIMD4<Float>(camUp.x,    camUp.y,    camUp.z,    aspect),
-                    camFwd:     SIMD4<Float>(camFwd.x,   camFwd.y,   camFwd.z,   0))
+                    camFwd:     SIMD4<Float>(camFwd.x,   camFwd.y,   camFwd.z,   frame.camera.underground))
                 enc.setVertexBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
                 enc.setFragmentBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
                 var wuSky = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater,
@@ -2674,6 +2674,14 @@ final class Renderer: NSObject, MTKViewDelegate {
             skyCol = mix(skyCol, cloudCol, cloudD * cloudVis * 0.90);
         }
 
+        // FIX (#33): when the eye is underground (su.camFwd.w = underground 0..1),
+        // fade the whole sky to a near-black cave colour. Surface-priority streaming
+        // doesn't load the far underground, so without this the bright, sun-directional
+        // daytime sky shows through those gaps — reading as a bluish "wash" that
+        // brightened toward E/W (the sun) and went black at N/S as the player turned.
+        float underground = clamp(su.camFwd.w, 0.0, 1.0);
+        skyCol = mix(skyCol, float3(0.015, 0.016, 0.020), underground);
+
         return float4(skyCol, 1.0);
     }
 
@@ -3668,10 +3676,67 @@ func runWashoutTest() -> Bool {
             if frac > worstWash { worstWash = frac; worstAt = "\(label)@yaw\(Int(phi*180/Float.pi))°" }
         }
     }
-    let thresh = 0.30
-    let pass = worstWash < thresh
-    print(String(format: "%@ washout test — worst washed %.1f%% (%@), facing-away ref %.1f%%, threshold %.0f%%",
-                 pass ? "OK:" : "FAIL:", worstWash*100, worstAt, awayWash*100, thresh*100))
+    // #33 cave-darkness: when the eye is underground (camFwd.w = 1), the sky must be
+    // dark in EVERY direction. Surface-priority streaming doesn't load the far
+    // underground, so the sky shows through those gaps; without the underground fade
+    // it bled the bright, sun-directional daytime sky into a "pitch black" cave —
+    // bright toward E/W, dark at N/S, as the player turned. Render sky-only (the gap)
+    // underground at a low, bright sun and assert it stays dark at all yaws.
+    var caveMaxLuma = 0.0
+    do {
+        let E = 12 * Float.pi / 180
+        let sd = -SIMD3<Float>(cos(E), sin(E), 0)        // bright low sun toward +X
+        for yi in 0..<yawSteps {
+            let phi = 2 * Float.pi * Float(yi) / Float(yawSteps)
+            let fwd = normalize(SIMD3<Float>(cos(phi), 0, sin(phi)))
+            let view = lookView(camEye, fwd, SIMD3<Float>(0, 1, 0))
+            let cr = SIMD3<Float>(view.columns.0.x, view.columns.1.x, view.columns.2.x)
+            let cu = SIMD3<Float>(view.columns.0.y, view.columns.1.y, view.columns.2.y)
+            guard let cmd = queue.makeCommandBuffer() else { continue }
+            let rp = MTLRenderPassDescriptor()
+            rp.colorAttachments[0].texture = hdrColor
+            rp.colorAttachments[0].loadAction = .clear
+            rp.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+            rp.colorAttachments[0].storeAction = .store
+            rp.depthAttachment.texture = hdrDepth
+            rp.depthAttachment.loadAction = .clear; rp.depthAttachment.clearDepth = 1.0; rp.depthAttachment.storeAction = .dontCare
+            if let enc = cmd.makeRenderCommandEncoder(descriptor: rp) {
+                enc.setRenderPipelineState(skyPipe); enc.setDepthStencilState(skyDepthState); enc.setCullMode(.none)
+                var su = SkyUniforms(
+                    sunDirTime: SIMD4<Float>(sd.x, sd.y, sd.z, 0.10),
+                    camRight: SIMD4<Float>(cr.x, cr.y, cr.z, tanHalf),
+                    camUp:    SIMD4<Float>(cu.x, cu.y, cu.z, Float(W)/Float(H)),
+                    camFwd:   SIMD4<Float>(fwd.x, fwd.y, fwd.z, 1.0))   // underground = 1
+                enc.setVertexBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
+                enc.setFragmentBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
+                var wuSky = WaterUniforms(wallClockSecs: 0, underwater: 0)
+                enc.setFragmentBytes(&wuSky, length: MemoryLayout<WaterUniforms>.stride, index: 1)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3); enc.endEncoding()
+            }
+            let crp = MTLRenderPassDescriptor()
+            crp.colorAttachments[0].texture = output; crp.colorAttachments[0].loadAction = .dontCare; crp.colorAttachments[0].storeAction = .store
+            if let enc = cmd.makeRenderCommandEncoder(descriptor: crp) {
+                enc.setRenderPipelineState(compPipe); enc.setDepthStencilState(noDepthState); enc.setCullMode(.none)
+                enc.setFragmentTexture(hdrColor, index: 0); enc.setFragmentTexture(hdrColor, index: 1)
+                var pu = PostUniforms(bloomStrength: 0.0, vignetteStr: 0.22, satBoost: 1.18, rainStrength: 0, wallClockSecs: 0)
+                enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3); enc.endEncoding()
+            }
+            cmd.commit(); cmd.waitUntilCompleted()
+            var px = [UInt8](repeating: 0, count: W*H*4)
+            output.getBytes(&px, bytesPerRow: W*4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
+            for p in stride(from: 0, to: px.count, by: 4) {
+                let b = Double(px[p])/255, g = Double(px[p+1])/255, r = Double(px[p+2])/255
+                let luma = 0.2126*r + 0.7152*g + 0.0722*b
+                if luma > caveMaxLuma { caveMaxLuma = luma }
+            }
+        }
+    }
+
+    let thresh = 0.30, caveThresh = 0.30
+    let pass = worstWash < thresh && caveMaxLuma < caveThresh
+    print(String(format: "%@ washout test — worst washed %.1f%% (%@), away ref %.1f%%; underground sky max-luma %.0f%% (cave must stay dark, threshold %.0f%%)",
+                 pass ? "OK:" : "FAIL:", worstWash*100, worstAt, awayWash*100, caveMaxLuma*100, caveThresh*100))
     return pass
 }
 

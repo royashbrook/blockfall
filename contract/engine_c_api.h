@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 10u  /* v10: HUD in_dim flag (Grey-region indicator) */
+#define BF_ABI_VERSION 11u  /* v11: bf_camera.underground (dark caves: no sky leak) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -238,6 +238,9 @@ typedef struct bf_camera {
     bf_vec3 sun_dir;
     float   underwater;       /* 1 when the eye is submerged (for water tint)  */
     float   weather;          /* 0=clear, 1=rain, 2=snow (drives the overlay)  */
+    float   underground;      /* 0..1: how deep below the surface the eye is;   */
+                              /* 1 = deep cave. Darkens the sky so unstreamed   */
+                              /* far-underground doesn't show as bright daylight */
 } bf_camera;
 
 /* ---- HUD state (read-only snapshot for the SwiftUI/Metal overlay) ------- */
