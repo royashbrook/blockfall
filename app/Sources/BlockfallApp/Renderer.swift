@@ -2550,8 +2550,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         // tighter than before so the visible sun is a small dot, not a wide blob.
         //   sunDisc:  smoothstep(0.9988,1.0) → ~2.8° half-angle (was 0.9975 / ~4°)
         //   sunInner: smoothstep(0.9996,1.0) → ~1.6° half-angle (was 0.9992 / ~2.3°)
-        float sunDisc  = smoothstep(0.9988, 1.0000, sunDot);
-        float sunInner = smoothstep(0.9996, 1.0000, sunDot);
+        float sunDisc  = smoothstep(0.9965, 0.9990, sunDot);   // BIGGER, distinct disc (#33: sun/moon size)
+        float sunInner = smoothstep(0.9986, 0.9994, sunDot);   // bright warm core (feeds discHDR)
         // FIX (#33): The washout when turning was direction-dependent — it only
         // happened when the view looked toward the sun's azimuth (E/W/diagonal,
         // since the sun arcs East-West). Facing N/S kept the sun off-frame so the
@@ -2570,15 +2570,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         // — a small bright sun that does NOT bloom; (4) keep the hard 0.92 cap on the
         // entire broad sky. Net: no sunDot-gated term can flood the frame, and the
         // disc no longer crosses the bright-pass threshold.
-        float sunGlow1 = smoothstep(0.994,  1.0000, sunDot) * 0.035 * max(dayT, sunsetT * 0.5);  // dimmer + tighter (was 0.992/0.05)
-        float sunGlow2 = smoothstep(0.998,  1.0000, sunDot) * 0.05  * max(dayT, sunsetT * 0.5);  // dimmer + tighter (was 0.997/0.08)
-        float3 sunColor  = mix(float3(1.0, 0.72, 0.35), float3(1.0, 0.98, 0.85), dayT);
-        float3 sunCorona = sunColor;
-        float sunVis = max(dayT, sunsetT * 0.6);
-        skyCol += sunGlow1 * sunCorona;
-        skyCol += sunGlow2 * sunCorona;
-        skyCol = mix(skyCol, sunColor,          sunDisc  * sunVis);
-        skyCol = mix(skyCol, float3(1.0, 1.0, 0.96), sunInner * sunVis);
+        // The broad directional glow cones were removed (the 0.92 broad-sky cap below
+        // clamped them anyway). The real dusk "light thing" toward E/W is the LOW SUN
+        // reading as a bright glaring orb. Fix: fade the white-hot core + HDR boost out
+        // as the sun nears the horizon, so a setting sun is a soft orange orb — still a
+        // clear, distinct disc, but it no longer brightens the E/W view. (#33)
+        float3 sunColor  = mix(float3(1.0, 0.50, 0.16), float3(1.0, 0.95, 0.80), dayT);  // orange low, warm-white high
+        float sunVis  = max(dayT, sunsetT * 0.6);
+        float sunHigh = smoothstep(-0.02, 0.28, sunDir3.y);   // 0 at/below horizon → 1 when well up
+        skyCol = mix(skyCol, sunColor,             sunDisc  * sunVis);
+        skyCol = mix(skyCol, float3(1.0, 0.99, 0.92), sunInner * sunVis * mix(0.25, 1.0, sunHigh));
 
         // HDR: a SMALL boost on the tight inner disc so the sun reads as a crisp
         // bright dot — but kept BELOW the bloom bright-pass floor (1.60). Under
@@ -2586,7 +2587,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // 0.22 gives a disc peak of ~1.22 HDR < 1.60, so the disc no longer feeds
         // bloom. discHDR is gated on the TIGHT sunInner disc only, so this never
         // touches the broad sky.
-        float3 discHDR = sunColor * 0.22 * sunInner * sunVis;   // was *0.5 (peaked ~1.5, fed bloom)
+        float3 discHDR = sunColor * 0.22 * sunInner * sunVis * mix(0.15, 1.0, sunHigh);   // no HDR glare when low
         skyCol += discHDR;
 
         // FIX (#33): Hard-cap EVERYTHING — including the disc HDR — to ≤1.25. This
@@ -2597,10 +2598,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         skyCol = clamp(skyCol - discHDR, 0.0, 0.92) + discHDR;
         skyCol = min(skyCol, float3(1.25));
 
+        // Moon: BIGGER and clearly distinct from the sun — cool blue-white with darker
+        // "maria" blotches, vs the sun's warm plain disc. (#33: they looked identical.)
         float3 moonDir3 = -sunDir3;
         float moonDot  = dot(ray, moonDir3);
-        float moonDisc = smoothstep(0.9990, 1.000, moonDot) * (1.0 - dayT) * 0.9;
-        skyCol = mix(skyCol, float3(0.90, 0.92, 1.00), moonDisc);
+        float moonBody = smoothstep(0.9965, 0.9992, moonDot) * (1.0 - dayT);
+        if (moonBody > 0.001) {
+            float2 mlocal = float2(ray.x - moonDir3.x, ray.z - moonDir3.z) * 140.0;
+            float mare = smoothstep(0.40, 0.72, noise2(mlocal));
+            float3 moonCol = mix(float3(0.88, 0.91, 0.99), float3(0.58, 0.63, 0.76), mare * 0.7);
+            skyCol = mix(skyCol, moonCol, moonBody);
+        }
 
         if (dayT < 0.5) {
             float starFade = 1.0 - smoothstep(0.05, 0.35, dayT);
@@ -3544,21 +3552,31 @@ func runWashoutTest() -> Bool {
 
     // Scenarios: (label, sun elevation°, time_of_day). The sun sits toward +X
     // (azimuth 0); the yaw sweep therefore faces it at yaw≈0.
+    // tod is chosen so the dawn/dusk cases land on the sunset PEAK (t≈0.25 / 0.78),
+    // where the orange haze + sun glow terms are strongest — that's the user's "as
+    // night came in" directional brightening, which earlier low-but-not-sunset times
+    // (0.06/0.10) never exercised.
     let scenarios: [(String, Float, Float)] = [
         ("noon",      70, 0.50),
-        ("afternoon", 35, 0.30),
-        ("golden",    12, 0.10),
-        ("lowsun",     6, 0.06),
+        ("afternoon", 35, 0.32),
+        ("dawn",      10, 0.25),
+        ("dusk",       7, 0.78),
+        ("lowsun",     4, 0.80),
     ]
     let yawSteps = 24
     var worstWash: Double = 0, worstAt = ""
     var awayWash: Double = 0   // reference: wash when facing AWAY from the sun
+    // Directional brightening ("the light thing"): the scene's overall brightness
+    // must not jump when you turn toward the sun's azimuth — this catches a COLOURED
+    // glow (e.g. the orange dusk cone) that the bright+desaturated metric misses.
+    var maxLumaDelta: Double = 0, maxLumaDeltaAt = ""
 
     for (label, elevDeg, tod) in scenarios {
         let E = elevDeg * Float.pi / 180
         let toward = SIMD3<Float>(cos(E), sin(E), 0)     // direction toward the sun
         let sd = -toward                                  // sun_dir: from sun into scene
         let lookP = min(E, 18 * Float.pi / 180)           // pitch up toward the sun a bit
+        var scMinLuma = 2.0, scMaxLuma = 0.0              // mean-luma spread across yaws
         for yi in 0..<yawSteps {
             let phi = 2 * Float.pi * Float(yi) / Float(yawSteps)
             let fwd = normalize(SIMD3<Float>(cos(phi) * cos(lookP), sin(lookP), sin(phi) * cos(lookP)))
@@ -3647,14 +3665,19 @@ func runWashoutTest() -> Bool {
             var px = [UInt8](repeating: 0, count: W*H*4)
             output.getBytes(&px, bytesPerRow: W*4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
             var washed = 0
+            var lumaSum = 0.0
             for p in stride(from: 0, to: px.count, by: 4) {
                 let b = Double(px[p])/255, g = Double(px[p+1])/255, r = Double(px[p+2])/255
                 let luma = 0.2126*r + 0.7152*g + 0.0722*b
+                lumaSum += luma
                 let mx = max(r, max(g, b)), mn = min(r, min(g, b))
                 let sat = mx > 0.001 ? (mx - mn) / mx : 0
                 if luma > 0.82 && sat < 0.18 { washed += 1 }
             }
             let frac = Double(washed) / Double(W*H)
+            let meanLuma = lumaSum / Double(W*H)
+            if meanLuma < scMinLuma { scMinLuma = meanLuma }
+            if meanLuma > scMaxLuma { scMaxLuma = meanLuma }
             // yaw≈0 faces the sun; yaw≈π faces away (reference).
             if yi == 0 {
                 print(String(format: "  %@: sun-facing washed %.1f%%", label, frac*100))
@@ -3675,6 +3698,8 @@ func runWashoutTest() -> Bool {
             if yi == yawSteps/2 { awayWash = max(awayWash, frac) }
             if frac > worstWash { worstWash = frac; worstAt = "\(label)@yaw\(Int(phi*180/Float.pi))°" }
         }
+        let delta = scMaxLuma - scMinLuma
+        if delta > maxLumaDelta { maxLumaDelta = delta; maxLumaDeltaAt = label }
     }
     // #33 cave-darkness: when the eye is underground (camFwd.w = 1), the sky must be
     // dark in EVERY direction. Surface-priority streaming doesn't load the far
@@ -3733,10 +3758,10 @@ func runWashoutTest() -> Bool {
         }
     }
 
-    let thresh = 0.30, caveThresh = 0.30
-    let pass = worstWash < thresh && caveMaxLuma < caveThresh
-    print(String(format: "%@ washout test — worst washed %.1f%% (%@), away ref %.1f%%; underground sky max-luma %.0f%% (cave must stay dark, threshold %.0f%%)",
-                 pass ? "OK:" : "FAIL:", worstWash*100, worstAt, awayWash*100, caveMaxLuma*100, caveThresh*100))
+    let thresh = 0.30, caveThresh = 0.30, deltaThresh = 0.12
+    let pass = worstWash < thresh && caveMaxLuma < caveThresh && maxLumaDelta < deltaThresh
+    print(String(format: "%@ washout test — worst washed %.1f%% (%@); turn-brightening Δluma %.1f%% (%@, max %.0f%%); cave sky max-luma %.0f%%",
+                 pass ? "OK:" : "FAIL:", worstWash*100, worstAt, maxLumaDelta*100, maxLumaDeltaAt, deltaThresh*100, caveMaxLuma*100))
     return pass
 }
 
