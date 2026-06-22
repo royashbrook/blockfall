@@ -37,7 +37,6 @@
 #include <string>
 #include <fstream>
 #include <filesystem>
-#include <cstdio>
 #include <optional>
 #include <functional>
 
@@ -135,7 +134,6 @@ public:
     void set_mode(bf_game_mode m) { mode_ = m; }
     // Horizontal streaming radius in chunks (from the render-distance config).
     void set_render_distance(int chunks) { stream_r_ = std::clamp(chunks, 4, 28); }
-    void set_worldgen(IWorldGen* g) { gen_ = g; }
 
     // ---- co-op hooks (Track H) -------------------------------------------
     // Fired on every LOCAL player edit (place/mine) so the net session can
@@ -750,7 +748,6 @@ public:
     void    debug_set_sync_streaming(bool s) { sync_stream_ = s; }   // tests: deterministic inline gen
     bool    debug_has_target() const { return has_target_; }
     void    debug_set_selected(std::uint8_t s) { selected_ = s; }
-    std::size_t debug_resident_chunks() const { return store_.resident_count(); }
     float   debug_region_sat(int cx, int cz) const { return region_sat(ChunkCoord{cx, 0, cz}); }
     ItemId  debug_item_id(const char* n) const { return item_id_by_name(n); }
     int     debug_item_count(ItemId id) const { return inv_ ? int(inv_->count_item(id)) : 0; }
@@ -763,8 +760,6 @@ public:
         int n = 0; for (auto& c : creatures_) if (c.hostile) ++n; return n;
     }
     float   debug_health() const { return health_; }
-    int     debug_falling_count() const { return int(falling_.size()); }
-    void    debug_break_at(int x, int y, int z) { break_block(IVec3{x, y, z}); }
     float   debug_day_time() const { return day_time(world_clock_); }
     int     debug_quests_completed() const { return quests_completed_; }
     std::uint32_t debug_active_quest() const {

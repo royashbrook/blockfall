@@ -5,7 +5,6 @@
 #include "blockcore/net.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <cstring>
 
 // ---------------------------------------------------------------------------
@@ -209,12 +208,10 @@ void ReliableEndpoint::process_acks(std::uint32_t remote_ack,
 
 // ---------------------------------------------------------------------------
 // already_received / mark_received — dedup for ReliableUnordered.
-// Uses a sliding bitmask window of 64 around received_unord_max_.
-// ---------------------------------------------------------------------------
-// already_received / mark_received — dedup for ReliableUnordered.
 // Uses an unordered_map as a sliding set, pruned when entries fall more than
 // kUnordDedupWindow behind the current max.  This handles burst sends of any
 // size without a fixed bitmask-window limit.
+// ---------------------------------------------------------------------------
 bool ReliableEndpoint::already_received(std::uint32_t seq) const
 {
     if (received_unord_max_ != 0) {

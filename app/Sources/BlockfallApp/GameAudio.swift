@@ -6,7 +6,7 @@
 // the engine failed to initialize (headless / no-audio environment).
 //
 // PUBLIC API ADDITIONS vs original:
-//   Sfx: + splash, pickup, openInventory, placeFail
+//   Sfx: + splash, pickup, hurt
 //   func setAmbienceEnabled(_ on: Bool)
 //   func setTimeOfDay(_ t: Float)   // 0.0 = midnight, 0.5 = noon, 1.0 = midnight
 //   func playBreak(materialClass: Int)
@@ -37,8 +37,6 @@ final class GameAudio {
         // --- new ---
         case splash         // water entry — fizzy bubble whoosh
         case pickup         // item collected — bright sparkle ding
-        case openInventory  // soft wooden drawer slide
-        case placeFail      // dull thud — can't place here
         case hurt           // sharp descending impact — player took damage
     }
 
@@ -164,19 +162,8 @@ final class GameAudio {
 
         let node = idleSfxNode()
 
-        // Apply a tiny random pitch shift by adjusting the playback rate.
-        // AVAudioPlayerNode doesn't expose rate directly; we accomplish it by
-        // scheduling at a slightly varied sample-rate offset using a per-play
-        // AVAudioPCMBuffer pitch-shift via a rate-scaled copy only for cases
-        // where variation matters. We keep it simple: use a thin AVAudioUnitTimePitch
-        // node per voice — BUT that would require re-wiring; instead we use a
-        // lightweight approach: vary volume slightly + pitch via pitch node chain.
-        // Simplest compile-correct approach: use the node's `rate` setter via
-        // AVAudioPlayerNode scheduling with a slightly different format pitch.
-        //
-        // Actually the cleanest no-extra-node approach: build +/-5% pitch variants
-        // for the frequently-repeated sounds at startup, then pick one at random.
-
+        // Pitch variety without an extra node: pick a pre-rendered +/- pitch
+        // variant (built at startup) for the frequently-repeated sounds.
         let key = SfxVariantKey(sfx: sfx, variant: variantIndex(for: sfx))
         if let variantBuf = sfxVariantBuffers[key] {
             node.scheduleBuffer(variantBuf, completionHandler: nil)
@@ -3443,8 +3430,6 @@ final class GameAudio {
         // New
         sfxBuffers[.splash]        = makeSplashBuffer()
         sfxBuffers[.pickup]        = makePickupBuffer()
-        sfxBuffers[.openInventory] = makeOpenInventoryBuffer()
-        sfxBuffers[.placeFail]     = makePlaceFailBuffer()
         sfxBuffers[.hurt]          = makeHurtBuffer()
         // Build per-material break buffers
         buildBreakMaterialBuffers()
@@ -3652,40 +3637,8 @@ final class GameAudio {
         }
     }
 
-    /// openInventory — soft wooden drawer slide: low filtered noise sweep, ~220 ms
-    private func makeOpenInventoryBuffer() -> AVAudioPCMBuffer? {
-        let dur: Float = 0.22
-        var prevLow: Float = 0
-        return synthesize(duration: dur) { i, sr in
-            let t    = Float(i) / sr
-            // Envelope: quick attack, long release (slide in)
-            let env  = self.envelope(t, a: 0.01, d: 0.05, s: 0.6, sLen: 0.05, r: 0.10, total: dur)
-            // Cutoff sweeps from low to mid as drawer opens
-            let alpha = 0.005 + 0.04 * (t / dur)
-            let x    = self.whitenoise()
-            prevLow  = alpha * x + (1 - alpha) * prevLow
-            // Mix with a very low resonant tone for the "thump" of contact
-            let tone = 0.3 * sin(2 * .pi * 160 * t) * max(0, 1 - t * 10)
-            return env * (0.8 * prevLow * 3.5 + tone)
-        }
-    }
-
-    /// placeFail — dull thud: low, short, dampened — like bumping against something solid, ~150 ms
-    private func makePlaceFailBuffer() -> AVAudioPCMBuffer? {
-        let dur: Float = 0.15
-        return synthesize(duration: dur) { i, sr in
-            let t   = Float(i) / sr
-            let env = self.envelope(t, a: 0.004, d: 0.06, s: 0.15, sLen: 0.02, r: 0.06, total: dur)
-            // Low fundamental with heavy decay
-            let hz  = Float(80) * pow(0.3, t * 6)
-            let tone  = 0.55 * sin(2 * .pi * hz * t)
-            let noise = 0.20 * self.whitenoise()
-            return env * (tone + noise) * 0.85
-        }
-    }
-
     /// hurt — sharp impact when player takes damage: descending sine sweep 440→200 Hz
-    /// with a short noise transient, ~180 ms. Clearly distinct from placeFail/mine.
+    /// with a short noise transient, ~180 ms. Clearly distinct from mine.
     private func makeHurtBuffer() -> AVAudioPCMBuffer? {
         let dur: Float = 0.18
         var phase: Float = 0

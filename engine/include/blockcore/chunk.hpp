@@ -17,7 +17,6 @@
 #include <memory>
 #include <span>
 #include <cstring>
-#include <algorithm>
 
 namespace bf {
 
@@ -59,11 +58,7 @@ public:
         if (light_.empty()) light_.assign(kChunkVol, 0);
         light_[voxel(lx, ly, lz)] = std::uint8_t((sky << 4) | (block & 0x0F));
     }
-    void clear_light() { if (!light_.empty()) std::fill(light_.begin(), light_.end(), std::uint8_t(0)); }
-    bool has_light() const { return !light_.empty(); }
-
     ChunkCoord coord() const { return coord_; }
-    std::uint32_t palette_size() const { return std::uint32_t(palette_.size()); }
     std::uint8_t  bits_per_index() const { return bits_; }
 
     // Deep copy (for async meshing snapshots — a worker meshes from isolated

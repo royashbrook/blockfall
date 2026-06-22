@@ -948,25 +948,20 @@ final class Renderer: NSObject, MTKViewDelegate {
                              inTexture: hdrColor, outTexture: bloomBright,
                              uniforms: nil, uniformsSize: 0)
 
-        // Two iterations of separable Gaussian blur (H then V, ping-pong)
-        for _ in 0..<2 {
-            encodeFullscreenPass(cmd: cmd, pipeline: bloomBlurHPipeline,
-                                 inTexture: bloomBright, outTexture: bloomBlurA,
-                                 uniforms: nil, uniformsSize: 0)
-            encodeFullscreenPass(cmd: cmd, pipeline: bloomBlurVPipeline,
-                                 inTexture: bloomBlurA, outTexture: bloomBlurB,
-                                 uniforms: nil, uniformsSize: 0)
-            // bloomBlurB now holds one full pass; copy back into bloomBright for
-            // next iteration by swapping the logical roles (can't alias in Metal,
-            // so we just re-source from bloomBlurB on the 2nd iteration's H pass).
-            encodeFullscreenPass(cmd: cmd, pipeline: bloomBlurHPipeline,
-                                 inTexture: bloomBlurB, outTexture: bloomBlurA,
-                                 uniforms: nil, uniformsSize: 0)
-            encodeFullscreenPass(cmd: cmd, pipeline: bloomBlurVPipeline,
-                                 inTexture: bloomBlurA, outTexture: bloomBright,
-                                 uniforms: nil, uniformsSize: 0)
-            break  // one iteration = 2 passes H+V (loop kept for easy tuning)
-        }
+        // Separable Gaussian blur, two H+V sweeps (ping-pong; can't alias in Metal).
+        // Final result lands back in bloomBright for the composite pass.
+        encodeFullscreenPass(cmd: cmd, pipeline: bloomBlurHPipeline,
+                             inTexture: bloomBright, outTexture: bloomBlurA,
+                             uniforms: nil, uniformsSize: 0)
+        encodeFullscreenPass(cmd: cmd, pipeline: bloomBlurVPipeline,
+                             inTexture: bloomBlurA, outTexture: bloomBlurB,
+                             uniforms: nil, uniformsSize: 0)
+        encodeFullscreenPass(cmd: cmd, pipeline: bloomBlurHPipeline,
+                             inTexture: bloomBlurB, outTexture: bloomBlurA,
+                             uniforms: nil, uniformsSize: 0)
+        encodeFullscreenPass(cmd: cmd, pipeline: bloomBlurVPipeline,
+                             inTexture: bloomBlurA, outTexture: bloomBright,
+                             uniforms: nil, uniformsSize: 0)
 
         // Precipitation driven entirely by engine weather field (0=clear, 1=rain, 2=snow).
         // Pack: >0 = rain (strength), <0 = snow (abs = strength), 0 = clear.

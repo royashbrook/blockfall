@@ -563,9 +563,8 @@ final class MenuController: NSObject {
 
     private var worlds: [WorldInfo] = []
 
-    /// Scroll view + stack that holds world rows.
+    /// Stack that holds world rows.
     private var worldListStack: NSStackView!
-    private var scrollView: NSScrollView!
 
     /// Panel shown when creating a new world.
     private var newWorldPanel: NewWorldPanel!
@@ -775,7 +774,7 @@ final class MenuController: NSObject {
         worldListStack.spacing = 8
         worldListStack.translatesAutoresizingMaskIntoConstraints = false
 
-        scrollView = NSScrollView()
+        let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.drawsBackground = false

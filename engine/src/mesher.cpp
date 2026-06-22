@@ -34,7 +34,6 @@
 #include "blockcore/mesher.hpp"
 #include "blockcore/vertex.hpp"
 #include <cstring>
-#include <cstdio>  // only for debug; unused in final build
 
 namespace bf {
 

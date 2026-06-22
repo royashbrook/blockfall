@@ -24,10 +24,6 @@ inline V3 normalize(V3 v) {
     return l > 1e-6f ? v * (1.0f / l) : V3{0,0,0};
 }
 
-inline M4 identity() {
-    M4 r; r.m[0] = r.m[5] = r.m[10] = r.m[15] = 1.0f; return r;
-}
-
 // Right-handed look-at, column-major.
 inline M4 look_at(V3 eye, V3 center, V3 up) {
     V3 f = normalize(center - eye);
@@ -51,15 +47,6 @@ inline M4 perspective(float fovy_rad, float aspect, float znear, float zfar) {
     r.m[11] = -1.0f;
     r.m[14] = (zfar * znear) / (znear - zfar);
     return r;
-}
-
-// Forward direction from yaw (around +Y) and pitch.
-inline V3 forward_from(float yaw, float pitch) {
-    return normalize(V3{
-        std::cos(pitch) * std::sin(yaw),
-        std::sin(pitch),
-        std::cos(pitch) * std::cos(yaw)   // note: -Z forward handled in look_at
-    });
 }
 
 } // namespace bf

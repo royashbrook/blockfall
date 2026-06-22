@@ -48,7 +48,6 @@ final class GameView: MTKView {
     private enum K {
         static let w: UInt16 = 13, a: UInt16 = 0, s: UInt16 = 1, d: UInt16 = 2
         static let space: UInt16 = 49, esc: UInt16 = 53
-        static let one: UInt16 = 18  // 1..6 are 18,19,20,21,23,22
     }
 
     // ---- per-frame snapshot ------------------------------------------------
