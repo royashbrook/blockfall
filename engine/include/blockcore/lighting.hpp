@@ -60,9 +60,13 @@ public:
     // removal BFS (Minecraft's two-queue add/remove) that crosses chunk
     // boundaries — deliberately deferred as a careful, separately-tested change
     // rather than a risky rewrite of the core propagation here.
-    static bool light_chunk(ChunkCoord cc, IChunkStore& store) {
+    // Returns a 6-bit mask of which BOUNDARY FACES changed (bit order matches the
+    // {+x,-x,+y,-y,+z,-z} neighbour dirs). The caller re-dirties only the neighbours
+    // across changed faces — re-dirtying all 6 on any change caused a 6x churn that
+    // never let the light wave settle. (#5)
+    static std::uint8_t light_chunk(ChunkCoord cc, IChunkStore& store) {
         IChunk* chunk = store.get(cc);
-        if (!chunk) return false;
+        if (!chunk) return 0;
         constexpr int N = kChunkDim;
 
         std::array<std::uint8_t, kChunkVol> sky{};   // 0-init
@@ -93,16 +97,22 @@ public:
         bfs(chunk, blk, q, idx);
 
         // ---- write back, detect boundary change -----------------------------
-        bool boundary_changed = false;
+        std::uint8_t changedFaces = 0;
         for (int x = 0; x < N; ++x) for (int y = 0; y < N; ++y) for (int z = 0; z < N; ++z) {
             std::size_t i = std::size_t(idx(x, y, z));
             if (on_boundary(x, y, z)) {
-                if (chunk->sky_light(x, y, z) != sky[i] || chunk->block_light(x, y, z) != blk[i])
-                    boundary_changed = true;
+                if (chunk->sky_light(x, y, z) != sky[i] || chunk->block_light(x, y, z) != blk[i]) {
+                    if (x == N-1) changedFaces |= std::uint8_t(1u << 0);   // +x
+                    if (x == 0)   changedFaces |= std::uint8_t(1u << 1);   // -x
+                    if (y == N-1) changedFaces |= std::uint8_t(1u << 2);   // +y
+                    if (y == 0)   changedFaces |= std::uint8_t(1u << 3);   // -y
+                    if (z == N-1) changedFaces |= std::uint8_t(1u << 4);   // +z
+                    if (z == 0)   changedFaces |= std::uint8_t(1u << 5);   // -z
+                }
             }
             chunk->set_light(x, y, z, sky[i], blk[i]);
         }
-        return boundary_changed;
+        return changedFaces;
     }
 
 private:

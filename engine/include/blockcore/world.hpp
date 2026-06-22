@@ -1908,28 +1908,42 @@ private:
             // Prioritise by 3D distance (not horizontal): a surface chunk at eye
             // level meshes before a cave chunk directly under it, so you don't see
             // through a mountain to the caves below it. Behind-camera deprioritised.
-            return double(d2) * (facing > 0.2f ? 1.0 : 4.0);
+            double s = double(d2) * (facing > 0.2f ? 1.0 : 4.0);
+            // CRITICAL (#5 swiss-cheese): a NEVER-meshed chunk always beats a re-mesh.
+            // The lighting re-dirty cascade re-queues already-drawn chunks faster than
+            // the far backlog can fill; without this, ~98% of the mesh budget was spent
+            // re-meshing visible chunks while the far field stayed full of holes.
+            if (meshes_.find(a) != meshes_.end()) s += 1e15;   // already meshed -> last
+            return s;
         };
         const std::size_t meshBudget      = bulk ? 36 : std::size_t(MESH_BUDGET);
         const std::size_t meshInflightCap = bulk ? 192 : 64;
         std::size_t k = std::min<std::size_t>(meshBudget, todo.size());
         std::partial_sort(todo.begin(), todo.begin() + std::ptrdiff_t(k), todo.end(),
                           [&](ChunkCoord a, ChunkCoord b){ return score(a) < score(b); });
-        std::size_t done = 0;
+        // Re-meshes (already-drawn chunks re-queued by the lighting cascade) are capped
+        // so the light-settle churn can't consume the whole budget and tank FPS; fresh
+        // (never-meshed) chunks are uncapped so the world always fills first. (#5)
+        std::size_t done = 0, remeshes = 0;
+        const std::size_t kRemeshCap = bulk ? 12 : 4;
         for (ChunkCoord cc : todo) {
             if (done >= meshBudget) break;
             if (async && (mesh_inflight_.count(cc) || mesh_inflight_.size() >= meshInflightCap)) continue;
+            const bool fresh = (meshes_.find(cc) == meshes_.end());
+            if (!fresh && remeshes >= kRemeshCap) continue;   // throttle lighting-churn re-meshes
             if (!store_.is_resident(cc)) { dirty_.erase(cc); continue; }
             dirty_.erase(cc);
+            if (!fresh) ++remeshes;
             ++done;
-            // Light before meshing (the mesher reads per-voxel light). If a
-            // boundary value changed, re-dirty neighbours so light bleeds across
-            // chunk seams and settles over the next few frames (Track F).
-            bool changed = FloodLighting::light_chunk(cc, store_);
-            if (changed) {
+            // Light before meshing (the mesher reads per-voxel light). Re-dirty ONLY
+            // the neighbours across faces whose boundary light actually changed, so
+            // light bleeds across seams and SETTLES — re-dirtying all 6 on any change
+            // was a 6x churn that never converged (perpetual re-mesh of the world). (#5)
+            std::uint8_t faces = FloodLighting::light_chunk(cc, store_);
+            if (faces) {
                 const IVec3 dirs[6] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
-                for (auto d : dirs) {
-                    ChunkCoord nc{cc.x + d.x, cc.y + d.y, cc.z + d.z};
+                for (int f = 0; f < 6; ++f) if (faces & (1u << f)) {
+                    ChunkCoord nc{cc.x + dirs[f].x, cc.y + dirs[f].y, cc.z + dirs[f].z};
                     if (store_.is_resident(nc)) dirty_.insert(nc);
                 }
             }
