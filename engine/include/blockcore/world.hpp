@@ -782,6 +782,7 @@ public:
     }
     int     debug_creature_count() const { return int(creatures_.size()); }
     int     debug_villager_count() const { int n=0; for (auto& c : creatures_) if (c.model == 20) ++n; return n; }   // #39
+    int     debug_resident_count() const { return int(store_.resident_count()); }   // streaming probe
     int     debug_hostile_count() const {
         int n = 0; for (auto& c : creatures_) if (c.hostile) ++n; return n;
     }
@@ -1687,8 +1688,16 @@ private:
                     surf_cy_cache_[key] = surfCy;
                 }
             }
+            // Stream the full VISIBLE vertical span of this far column: from the
+            // player's level (or the surface, if the player is above it) up to just
+            // over the surface. The old band (surfCy±1) streamed only the top ~48
+            // blocks, so a tall mountain beyond the near-radius rendered only its cap
+            // and its whole body was a hole. We still skip everything BELOW the player
+            // far away, so deep caves stay unstreamed (memory + the dark-cave fix). (#5)
+            int lo = std::min(playerCy, surfCy) - 1;
+            int hi = surfCy + 1;
             for (int cy = CY_MIN; cy <= CY_MAX; ++cy) {
-                bool want = near || (cy >= surfCy - 1 && cy <= surfCy + 1) || cy == playerCy;
+                bool want = near || (cy >= lo && cy <= hi);
                 if (!want) continue;
                 ChunkCoord cc{c.x + dx, cy, c.z + dz};
                 if (!store_.is_resident(cc)) gen_queue_.push_back(cc);
