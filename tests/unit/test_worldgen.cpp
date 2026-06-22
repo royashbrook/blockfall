@@ -2319,7 +2319,28 @@ static void test_cave_interior_features() {
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
+// #10 regression: biome-specific creature spawning keys off worldgen_dominant_biome
+// (0..6). The old block-sniffing heuristic could only ever name 5 of the 7 biomes,
+// so mountain + swamp animals never spawned. Guard that ALL seven biome ids actually
+// occur in the world, otherwise those creatures are unreachable again.
+static void test_all_biomes_present() {
+    bool seen[7] = { false, false, false, false, false, false, false };
+    for (int x = -600; x <= 600; x += 12)
+        for (int z = -600; z <= 600; z += 12) {
+            int b = bf::worldgen_dominant_biome(x, z, 7);
+            if (b >= 0 && b < 7) seen[b] = true;
+        }
+    CHECK(seen[0], "biome present for spawning (#10): Plains");
+    CHECK(seen[1], "biome present for spawning (#10): Forest");
+    CHECK(seen[2], "biome present for spawning (#10): Mountains");
+    CHECK(seen[3], "biome present for spawning (#10): Desert");
+    CHECK(seen[4], "biome present for spawning (#10): Snowy");
+    CHECK(seen[5], "biome present for spawning (#10): Swamp");
+    CHECK(seen[6], "biome present for spawning (#10): Beach");
+}
+
 int main() {
+    test_all_biomes_present();
     test_determinism();
     test_seed_sensitivity();
     test_no_seams();

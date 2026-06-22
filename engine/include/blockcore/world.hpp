@@ -746,6 +746,15 @@ public:
     }
     void    debug_edit(int x, int y, int z, BlockId b) { set_block_internal(IVec3{x, y, z}, b); }
     void    debug_set_sync_streaming(bool s) { sync_stream_ = s; }   // tests: deterministic inline gen
+    // #36 regression: stream_tick pops gen_queue_.back() first, so the back MUST be
+    // the nearest pending chunk or the world fills from the horizon inward on spawn.
+    // Rebuilds the stream set and reports whether the next-to-generate chunk (back)
+    // is the closest to the player. Returns true if there's nothing to compare.
+    bool    debug_stream_back_is_nearest() {
+        recompute_stream_set();
+        if (gen_queue_.size() < 2) return true;
+        return dist2(gen_queue_.back(), last_center_) <= dist2(gen_queue_.front(), last_center_);
+    }
     bool    debug_has_target() const { return has_target_; }
     void    debug_set_selected(std::uint8_t s) { selected_ = s; }
     float   debug_region_sat(int cx, int cz) const { return region_sat(ChunkCoord{cx, 0, cz}); }
@@ -767,6 +776,7 @@ public:
              ? extra_->quests()[active_quest_].id : 0u;
     }
     void    debug_notify(const char* trig, const char* target) { notify_quest(trig, target); }
+    void    debug_force_quest_done() { quests_completed_ = 1; }   // tests: lift the first-quest monster gate
     bool    debug_aim_at_creature0() {
         if (creatures_.empty()) return false;
         V3 cp = creatures_[0].pos + V3{0, 0.5f, 0};
@@ -1609,9 +1619,12 @@ private:
                 if (!store_.is_resident(cc)) gen_queue_.push_back(cc);
             }
         }
-        // nearest-first so the world fills in around the player
+        // Sort FARTHEST-first so the nearest chunk is at the back — stream_tick pops
+        // from the back, so the world fills in from the player OUTWARD. (#36: this was
+        // ascending, which popped the farthest chunk first and made spawn-in visibly
+        // backfill the surface from the horizon inward.)
         std::sort(gen_queue_.begin(), gen_queue_.end(), [&](ChunkCoord a, ChunkCoord b) {
-            return dist2(a, c) < dist2(b, c);
+            return dist2(a, c) > dist2(b, c);
         });
         evict_far();
     }

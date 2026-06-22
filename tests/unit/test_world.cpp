@@ -79,6 +79,13 @@ int main() {
     world.build_frame(f, draws, 0.0);
     CHECK(f.draw_count > 0 && total_indices(f) > 0, "world still meshes after place");
 
+    // #36 regression: spawn-in must fill from the player OUTWARD. stream_tick pops
+    // gen_queue_.back() first, so the back must be the NEAREST pending chunk. With
+    // the old ascending sort the back was the FARTHEST, so the surface backfilled
+    // from the horizon inward. Fails on that bug; passes with farthest-first sort.
+    CHECK(world.debug_stream_back_is_nearest(),
+          "stream gen order is nearest-first (#36: world fills outward from player)");
+
     if (fails == 0) std::printf("OK: M1 mine/place loop (mesh idx %u -> %u)\n", idx0, idx1);
     return fails == 0 ? 0 : 1;
 }

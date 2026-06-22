@@ -78,6 +78,32 @@ int main() {
     }
     CHECK(cw.debug_creature_count() == before - 1, "defeating an aimed animal removes it");
 
+    // --- #7 regression: monsters spawn when deep underground (in a cave) ---
+    // The old "dark = solid block within a short overhead scan" test missed tall
+    // cave chambers; the fix keys off depth below the worldgen surface. Deep
+    // underground (depth > 6) MUST count as a cave so hostiles spawn there.
+    {
+        bf::GreedyMesher m3; bf::TerrainGen g3; bf::World cave(m3, &g3);
+        cave.debug_set_sync_streaming(true);
+        cave.set_allocator(alloc); cave.set_content(&content);
+        cave.set_mode(BF_MODE_SURVIVAL); cave.init_world(5);
+        cave.debug_force_quest_done();                 // lift the first-quest monster gate
+        const int cx = 200, cz = 200;
+        const int surf = bf::worldgen_surface_height(cx, cz, 5);
+        const int cy = surf - 20;                      // deep underground (depth 20 > 6)
+        // Move there and pump so the underground chunks stream in (sync gen).
+        cave.debug_set_camera(float(cx) + 0.5f, float(cy) + 0.5f, float(cz) + 0.5f, 0.0f, 0.0f);
+        for (int i = 0; i < 30; ++i) cave.update(zero, 0.05);
+        // Carve a small air room with a stone floor so a hostile has somewhere to stand.
+        for (int dx = -3; dx <= 3; ++dx) for (int dz = -3; dz <= 3; ++dz) {
+            cave.debug_edit(cx + dx, cy - 1, cz + dz, bf::STONE);
+            for (int dy = 0; dy <= 3; ++dy) cave.debug_edit(cx + dx, cy + dy, cz + dz, bf::AIR);
+        }
+        cave.debug_set_camera(float(cx) + 0.5f, float(cy) + 0.5f, float(cz) + 0.5f, 0.0f, 0.0f);
+        for (int i = 0; i < 400 && cave.debug_hostile_count() == 0; ++i) cave.update(zero, 0.05);
+        CHECK(cave.debug_hostile_count() > 0, "hostiles spawn when deep underground / in a cave (#7)");
+    }
+
     if (fails == 0) std::printf("OK: M3 gameplay (drops + crafting + creatures)\n");
     return fails == 0 ? 0 : 1;
 }

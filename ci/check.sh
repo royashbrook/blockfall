@@ -29,6 +29,12 @@ BIN="$ROOT/build/Blockfall.app/Contents/MacOS/Blockfall"
 if "$BIN" --rendertest; then :; else
   echo "   (render test failed or no Metal device — non-fatal in headless CI)"
 fi
+# Washout regression (#33): sweep yaw × sun elevation; FAIL if any direction blows
+# out the frame (bright + desaturated). Guards the sun-disc / bloom tuning so a
+# future shader change can't silently reintroduce the turn-toward-sun washout.
+if "$BIN" --washouttest; then :; else
+  FAIL=1; echo "   (WASHOUT regression — sun shading washes out the frame)"
+fi
 # Perf smoke: a short measured run (the full gate is a 10-min M1 Air run).
 if "$BIN" --perftest 5; then :; else
   echo "   (perf smoke failed or no Metal device — non-fatal in headless CI)"
