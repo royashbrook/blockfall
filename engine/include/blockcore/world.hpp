@@ -782,6 +782,8 @@ public:
     }
     int     debug_creature_count() const { return int(creatures_.size()); }
     int     debug_villager_count() const { int n=0; for (auto& c : creatures_) if (c.model == 20) ++n; return n; }   // #39
+    int     debug_boss_count() const { int n=0; for (auto& c : creatures_) if (c.is_boss) ++n; return n; }
+    int     debug_count_named(const char* nm) const { int n=0; for (auto& c : creatures_) if (c.name == nm) ++n; return n; }
     int     debug_resident_count() const { return int(store_.resident_count()); }   // streaming probe
     int     debug_hostile_count() const {
         int n = 0; for (auto& c : creatures_) if (c.hostile) ++n; return n;
@@ -1130,19 +1132,21 @@ private:
             for (auto& d : extra_->creatures()) {
                 if ((d.disposition == "boss") != boss) continue;
                 if (d.model == 20) continue;   // villagers (#39) spawn only at structures
-                if (!boss) {
-                    // Day-animal ring: peaceful land animals only — hostiles and fish
-                    // have their own spawn paths; biome-gate the rest.
-                    if (d.disposition == "hostile" || d.disposition == "aquatic") continue;
-                    if (!(d.biome.empty() || d.biome == "any" || d.biome == bk)) continue;
-                }
+                if (!boss && (d.disposition == "hostile" || d.disposition == "aquatic")) continue;
+                // Biome-gate BOTH animals and bosses so each appears where its quest
+                // expects it (e.g. stone_basilisk in mountains) instead of any boss
+                // anywhere — which let you calm the wrong boss for the active quest. (#41)
+                if (!(d.biome.empty() || d.biome == "any" || d.biome == bk)) continue;
                 pool.push_back(&d);
             }
-            // Never fail to spawn: if the biome filter emptied the pool, use all peaceful.
-            if (pool.empty() && !boss)
-                for (auto& d : extra_->creatures())
-                    if (d.disposition != "boss" && d.disposition != "hostile" && d.disposition != "aquatic" && d.model != 20)
-                        pool.push_back(&d);
+            // Never fail to spawn: if the biome filter emptied the pool, drop the gate.
+            if (pool.empty())
+                for (auto& d : extra_->creatures()) {
+                    if ((d.disposition == "boss") != boss) continue;
+                    if (d.model == 20) continue;
+                    if (!boss && (d.disposition == "hostile" || d.disposition == "aquatic")) continue;
+                    pool.push_back(&d);
+                }
             if (!pool.empty()) {
                 const CreatureDefX* d = pool[std::size_t(rand01() * float(pool.size())) % pool.size()];
                 c.name = std::string(d->name);
