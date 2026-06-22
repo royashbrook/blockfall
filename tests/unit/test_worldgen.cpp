@@ -150,6 +150,13 @@ static void test_no_seams() {
         std::int32_t wzc = static_cast<std::int32_t>(lz);
         if (worldgen_structure_footprint(15, wzc, SEED) ||
             worldgen_structure_footprint(16, wzc, SEED)) continue;
+        // Cave-entrance mouths (#37) are deliberate surface openings (sinkholes,
+        // ravines, potholes) that carve terrain down, so a carved column's top
+        // solid legitimately drops relative to its uncarved neighbour — exactly
+        // like a structure footprint.  Exempt entrance columns from the TERRAIN
+        // seam check (the no-holes test exempts them the same way).
+        if (worldgen_is_cave_entrance(15, wzc, SEED) ||
+            worldgen_is_cave_entrance(16, wzc, SEED)) continue;
 
         std::int32_t h_left  = top_solid(c0_y0, c0_yn, 15, lz);  // world x=15
         std::int32_t h_right = top_solid(c1_y0, c1_yn,  0, lz);  // world x=16
@@ -224,6 +231,10 @@ static void test_no_seams_biome_transition() {
                 std::int32_t wz_c = static_cast<std::int32_t>(cz)   * kChunkDim + lz;
                 if (worldgen_structure_footprint(wx_l, wz_c, SEED) ||
                     worldgen_structure_footprint(wx_r, wz_c, SEED)) continue;
+                // Cave-entrance mouths (#37) carve the surface down — exempt them
+                // from the TERRAIN seam check exactly like structure footprints.
+                if (worldgen_is_cave_entrance(wx_l, wz_c, SEED) ||
+                    worldgen_is_cave_entrance(wx_r, wz_c, SEED)) continue;
 
                 std::int32_t hl = top_solid(a_slices, 15, lz);
                 std::int32_t hr = top_solid(b_slices,  0, lz);
@@ -1483,14 +1494,19 @@ static void test_new_tree_variety() {
 }
 
 // ---------------------------------------------------------------------------
-// 20. CAVE ENTRANCES (#11)
-//     Verify that at least one surface-connected cave entrance exists in a
-//     scanned region.  A cave entrance is a column where:
-//       a) The worldgen_is_cave_entrance() helper returns true (i.e., the
-//          worldgen placed a shaft there), AND
-//       b) There are AIR blocks in the first several blocks below the top
-//          solid block (confirming the shaft was actually carved).
-//     We also verify that entrance density is not excessive (< 5% of columns).
+// 20. CAVE ENTRANCES (#11 / #37 — varied, discoverable, connected mouths)
+//     Verify that:
+//       a) Surface-connected cave entrances exist and are now DENSER than the
+//          old 32-cell/25%/2×2-shaft scheme (so players reliably find one).
+//       b) A cave mouth is reliably findable within a short walk of spawn
+//          (nearest entrance to origin is close).
+//       c) Entrances actually CONNECT downward to open cave space: a carved
+//          mouth column has a continuous run of AIR from the surface down into
+//          the cave-noise region (well below the surface margin).
+//       d) Entrance footprints are VARIED in size — both small (pothole) and
+//          large (sinkhole/ravine) mouths appear, not one uniform shaft.
+//       e) Entrances remain special: they cover only a small fraction of the
+//          surface (well under 8% of columns).
 // ---------------------------------------------------------------------------
 static void test_cave_entrances() {
     constexpr std::uint64_t SEED = 0xCA4EF00D5EED9A11ull;
@@ -1509,6 +1525,7 @@ static void test_cave_entrances() {
 
     int entrance_cols_found = 0;
     int entrance_with_air   = 0;
+    int entrance_connected  = 0;   // continuous AIR from surface into cave depth
     int total_columns_scanned = 0;
 
     for (int cz = -SCAN_R; cz <= SCAN_R; ++cz) {
@@ -1565,26 +1582,82 @@ static void test_cave_entrances() {
                         }
                     }
                     if (has_shaft_air) ++entrance_with_air;
+
+                    // CONNECTIVITY (#37): the mouth must drop continuously into
+                    // cave territory.  Walk straight down from the surface; if we
+                    // find an unbroken AIR run reaching at least CAVE_SURFACE_MARGIN
+                    // (6) blocks below the surface, the shaft has met the carved
+                    // region adjacent to the cave-noise zone (it "connects").
+                    int air_run = 0;
+                    int deepest_air = 0;
+                    for (int depth = 1; depth <= 20; ++depth) {
+                        if (block_at_wy(lx, lz, top_wy - depth) == 0) {
+                            ++air_run;
+                            deepest_air = depth;
+                        } else {
+                            break;
+                        }
+                    }
+                    (void)air_run;
+                    if (deepest_air >= 7) ++entrance_connected;
                 }
             }
         }
     }
 
-    // Entrance density should be substantially higher than the old 1/48² ~15% scheme.
-    // New: 32×32 cell, 25% probability, 2×2 shaft = ~4 columns per ~1024 block area.
-    // In a ±16 chunk (512-block) scan ≈ 1024 cells × 25% × 4 shaft blocks = ~1024 cols.
-    // We require at minimum >100 entrance columns to confirm denser coverage.
-    CHECK(entrance_cols_found > 100,
-          "cave entrances: at least 100 entrance columns in scan (denser with 32-cell 25% 2x2)");
-    // The carved shafts must actually have AIR below the surface.
+    // Denser than the old scheme (old test required >100; the new 24-cell/45%/
+    // shaped mouths give thousands of entrance columns in this scan).
+    CHECK(entrance_cols_found > 500,
+          "cave entrances: many entrance columns in scan (denser, varied mouths) — #37");
+    // The carved mouths must actually have AIR below the surface.
     CHECK(entrance_with_air > 0,
-          "cave entrances: entrance column(s) have AIR below the surface (shaft carved)");
-    // Entrances should still be sparse enough to feel special — less than 1% of columns.
-    // (4 shaft blocks / 1024 cell blocks = 0.39%, safely under 1%.)
+          "cave entrances: entrance column(s) have AIR below the surface (mouth carved)");
+    // Mouths connect downward to open cave space.
+    CHECK(entrance_connected > 0,
+          "cave entrances: mouth columns connect downward into cave depth (#37)");
+
+    // A mouth is reliably findable within a short walk of EVERY spawn.
+    int worst_nearest = 0;
+    for (std::uint64_t s : {0xCA4EF00D5EED9A11ull, 1ull, 2ull, 3ull, 7ull}) {
+        int nearest = 1 << 30;
+        for (int rad = 1; rad <= 200 && nearest == (1 << 30); ++rad) {
+            for (int z = -rad; z <= rad && nearest == (1 << 30); ++z)
+                for (int x = -rad; x <= rad && nearest == (1 << 30); ++x) {
+                    if (z > -rad && z < rad && x > -rad && x < rad) continue;  // ring
+                    if (worldgen_is_cave_entrance(x, z, s)) nearest = rad;
+                }
+        }
+        if (nearest > worst_nearest) worst_nearest = nearest;
+    }
+    CHECK(worst_nearest <= 64,
+          "cave entrances: a mouth is findable within ~64 blocks of every spawn — #37");
+
+    // Footprint VARIETY: scan entrance cells and record their footprint column
+    // counts; both small (pothole, ~4 cols) and large (sinkhole/ravine, >=12
+    // cols) mouths must appear.
+    bool found_small_mouth = false;   // <= 6 columns
+    bool found_large_mouth = false;   // >= 12 columns
+    for (int ez = -8; ez <= 8; ++ez) {
+        for (int ex = -8; ex <= 8; ++ex) {
+            // Count entrance columns in a 24x24 patch anchored on a cell.
+            int cnt = 0;
+            for (int z = 0; z < 24; ++z)
+                for (int x = 0; x < 24; ++x)
+                    if (worldgen_is_cave_entrance(ex * 24 + x, ez * 24 + z, SEED)) ++cnt;
+            if (cnt > 0 && cnt <= 6)  found_small_mouth = true;
+            if (cnt >= 12)            found_large_mouth = true;
+        }
+    }
+    CHECK(found_small_mouth,
+          "cave entrances: small (pothole) mouths appear — #37");
+    CHECK(found_large_mouth,
+          "cave entrances: large (sinkhole/ravine) mouths appear — #37");
+
+    // Entrances stay special — a small fraction of all columns.
     int pct_times_1000 = (total_columns_scanned > 0)
         ? (entrance_cols_found * 1000) / total_columns_scanned : 0;
-    CHECK(pct_times_1000 < 10,  // < 1% of columns
-          "cave entrances: entrance columns are sparse (< 1% of all columns)");
+    CHECK(pct_times_1000 < 80,  // < 8% of columns
+          "cave entrances: entrance columns remain sparse (< 8% of all columns) — #37");
 }
 
 // ---------------------------------------------------------------------------
@@ -2119,6 +2192,112 @@ static void test_structure_variety_and_marker() {
 }
 
 // ---------------------------------------------------------------------------
+// 30. CAVE INTERIOR FEATURES (#37 — caves feel like a place, not a void)
+//     Scan a large underground volume and confirm the cave-dressing pass placed
+//     a VARIETY of features into the carved cave space:
+//       a) Glowing mushroom clumps (mushroom on a cave floor, lit by glow).
+//       b) Crystal pockets (crystal_lamp glowing in air + crystal_ore in walls).
+//       c) Underground pools (water sitting on a cave floor, deep underground).
+//       d) Ore knots (extra coal/iron clusters in cave walls).
+//       e) A rare "abandoned camp" touch (a chest deep underground).
+//     We also confirm caves stay MOSTLY natural rock (features are a small
+//     fraction of cave voxels) and that the whole pass is deterministic.
+// ---------------------------------------------------------------------------
+static void test_cave_interior_features() {
+    constexpr BlockId GLOW_BLOCK_ID  = 7;
+    constexpr BlockId WATER_ID2      = 9;
+    constexpr BlockId COBBLE_ID3     = 10;
+    constexpr BlockId CRYSTAL_ORE_ID = 20;
+    constexpr BlockId CHEST_ID2      = 31;
+    constexpr BlockId CRYSTAL_LAMP_ID= 35;
+    constexpr BlockId MUSHROOM_ID    = 39;
+
+    // Counts aggregated across a few seeds (camp is rare, so widen the net).
+    long mushroom = 0, crystal_ore = 0, crystal_lamp = 0, glow = 0,
+         deep_water = 0, deep_cobble = 0, deep_chest = 0;
+    long cave_air = 0, feature_voxels = 0;
+
+    const std::uint64_t seeds[] = {
+        0xCA4EF00D5EEDull, 0xCA4EF00D5EED9A11ull, 1ull, 2ull, 3ull, 7ull
+    };
+
+    for (std::uint64_t s : seeds) {
+        TerrainGen g; g.seed(s);
+        // Underground band: y-chunks -1..-5 (world y -16..-95), ±6 chunks XZ.
+        for (int cz = -6; cz <= 6; ++cz) {
+            for (int cx = -6; cx <= 6; ++cx) {
+                for (int cy = -1; cy >= -5; --cy) {
+                    PaletteChunk ch({cx, cy, cz}, 0);
+                    g.generate({cx, cy, cz}, ch);
+                    for (int lz = 0; lz < kChunkDim; ++lz)
+                        for (int ly = 0; ly < kChunkDim; ++ly)
+                            for (int lx = 0; lx < kChunkDim; ++lx) {
+                                BlockId b = ch.get(lx, ly, lz);
+                                if (b == 0u) { ++cave_air; continue; }
+                                switch (b) {
+                                    case MUSHROOM_ID:     ++mushroom;     ++feature_voxels; break;
+                                    case CRYSTAL_ORE_ID:  ++crystal_ore;  ++feature_voxels; break;
+                                    case CRYSTAL_LAMP_ID: ++crystal_lamp; ++feature_voxels; break;
+                                    case GLOW_BLOCK_ID:   ++glow;         ++feature_voxels; break;
+                                    case WATER_ID2:       ++deep_water;   ++feature_voxels; break;
+                                    case COBBLE_ID3:      ++deep_cobble;  ++feature_voxels; break;
+                                    case CHEST_ID2:       ++deep_chest;   ++feature_voxels; break;
+                                    default: break;
+                                }
+                            }
+                }
+            }
+        }
+    }
+
+    std::printf("  [cave features] mush=%ld crys_ore=%ld lamp=%ld glow=%ld water=%ld cobble=%ld chest=%ld (cave_air=%ld)\n",
+                mushroom, crystal_ore, crystal_lamp, glow, deep_water, deep_cobble, deep_chest, cave_air);
+
+    // Feature variety — each kind must appear somewhere underground.
+    CHECK(mushroom > 0,
+          "cave features: glowing mushroom clumps appear in caves (#37)");
+    CHECK(crystal_ore > 0 && crystal_lamp > 0,
+          "cave features: crystal pockets (crystal_ore + crystal_lamp) appear in caves (#37)");
+    CHECK(deep_water > 0,
+          "cave features: underground pools (deep water) appear in caves (#37)");
+    CHECK(glow > 0,
+          "cave features: glow sources light cave features (#37)");
+    // The rare abandoned camp leaves a chest + cobble deep underground.
+    CHECK(deep_chest > 0,
+          "cave features: rare abandoned camp (deep chest) appears in caves (#37)");
+    CHECK(deep_cobble > 0,
+          "cave features: abandoned-camp cobble appears in caves (#37)");
+
+    // At least 3 distinct feature KINDS present (variety, not one repeated thing).
+    int kinds = (mushroom > 0) + (crystal_ore > 0 || crystal_lamp > 0)
+              + (deep_water > 0) + (deep_chest > 0);
+    CHECK(kinds >= 3,
+          "cave features: at least 3 distinct cave-interior feature kinds (#37)");
+
+    // Caves stay MOSTLY natural rock: feature voxels are a small fraction of the
+    // open cave volume (well under 25%).
+    CHECK(cave_air > 1000,
+          "cave features: scanned a meaningful cave volume (sanity)");
+    CHECK(feature_voxels * 100 < cave_air * 25,
+          "cave features: features are sparse — caves stay mostly natural rock (#37)");
+
+    // Determinism: regenerating an underground chunk yields identical blocks.
+    {
+        TerrainGen ga, gb; ga.seed(7ull); gb.seed(7ull);
+        constexpr ChunkCoord UC = {2, -3, -1};
+        PaletteChunk a(UC, 0), b(UC, 0);
+        ga.generate(UC, a); gb.generate(UC, b);
+        int mism = 0;
+        for (int lz = 0; lz < kChunkDim; ++lz)
+            for (int ly = 0; ly < kChunkDim; ++ly)
+                for (int lx = 0; lx < kChunkDim; ++lx)
+                    if (a.get(lx, ly, lz) != b.get(lx, ly, lz)) ++mism;
+        CHECK(mism == 0,
+              "cave features: underground chunk generation is deterministic (#37)");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -2153,6 +2332,7 @@ int main() {
     test_deadwood();
     test_biomes_contiguous();
     test_structure_variety_and_marker();
+    test_cave_interior_features();
 
     if (fails == 0) {
         std::printf("OK: worldgen tests\n");

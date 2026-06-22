@@ -329,38 +329,75 @@ static float fbm3(float wx, float wy, float wz, std::uint64_t seed, int octaves,
 }
 
 // ---------------------------------------------------------------------------
-// Cave entrance system (#11 — surface-connected cave openings)
+// Cave entrance system (#11 / #37 — surface-connected, VISUALLY VARIED openings)
 // ---------------------------------------------------------------------------
 // A sparse grid (ENTRANCE_CELL_SIZE blocks per cell) places deliberate cave
-// mouth shafts where a vertical tunnel is carved from the surface down to a
-// depth where normal caves exist.  Each cell has one candidate entrance;
-// ~15% of cells spawn one.  The shaft is 1 block wide and 10-14 blocks deep,
-// centred at a chosen world (wx, wz) derived deterministically from the cell.
+// MOUTHS the player can discover from the surface and climb/drop into.  Issue
+// #37: instead of a single plain 2×2 vertical shaft, each cell rolls one of
+// three deterministic entrance SHAPES, all of which carve down far enough to
+// meet the cave-noise region below so they are genuinely enterable:
 //
-// Seam safety: the entrance position is derived purely from cell integer coords
-// × cell size, so any chunk that overlaps the shaft generates it identically.
+//   ENTR_SINKHOLE — a roughly circular funnel pit: wide at the surface (radius
+//                   ~R) and narrowing as it descends (deepest at the centre,
+//                   shallow at the rim) so it reads as a collapsed sink.
+//   ENTR_RAVINE   — a long narrow crack a few blocks wide running along X or Z
+//                   for a dozen-ish blocks, dropping straight down to a floor.
+//   ENTR_POTHOLE  — the classic compact 2×2 (occasionally 3×3) vertical shaft,
+//                   kept for variety as a small "pothole" mouth.
 //
-// The no-surface-holes test must exempt entrance columns because by design the
-// surface block IS the top of the shaft opening and the blocks below are AIR.
-// We expose is_cave_entrance() via the header as worldgen_is_cave_entrance()
-// so the test can identify and skip those columns.
+// Determinism / seam-safety: the entrance position, shape, size and orientation
+// are ALL pure functions of the cell integer coords × cell size (a global hash),
+// so any chunk overlapping the mouth computes the identical footprint and the
+// identical per-column carve depth.  Carving happens per column in the terrain
+// fill, using cave_entrance_depth(wx,wz) — the depth a given column is carved to
+// (0 if the column is not part of any mouth).
+//
+// The no-surface-holes test exempts these columns (worldgen_is_cave_entrance):
+// by design the surface block IS the lip of the opening and the blocks below it
+// are AIR.  is_cave_entrance() and cave_entrance_depth() share the SAME
+// footprint logic so the exemption and the carve always agree.
 // ---------------------------------------------------------------------------
-static constexpr int  ENTRANCE_CELL_SIZE  = 32;    // one candidate per 32×32 region (was 48)
+static constexpr int  ENTRANCE_CELL_SIZE  = 24;    // one candidate per 24×24 region (denser, was 32)
 static constexpr std::uint64_t ENTRANCE_SEED_MIX = 0xCA4E5EE7E57A4CE5ull;
 
-// Probability threshold: ~25% of cells spawn an entrance (out of 256).
-// Raised from 38/256 (~15%) to 64/256 (~25%) so entrances are easier to find.
-static constexpr std::uint64_t ENTRANCE_PROB_THRESH = 64u;  // 64/256 ≈ 25%
+// Probability threshold: ~45% of cells spawn an entrance (out of 256).  Smaller
+// cells + higher probability => a player reliably finds a mouth within a short
+// walk (#37 "discover caves via interesting surface entrances").
+static constexpr std::uint64_t ENTRANCE_PROB_THRESH = 115u;  // 115/256 ≈ 45%
 
-// Depth of the carved shaft: how many blocks below the surface are turned to AIR.
-// Chosen so the shaft always reaches the depth where normal cave noise kicks in.
-static constexpr int ENTRANCE_SHAFT_DEPTH_MIN = 10;
-static constexpr int ENTRANCE_SHAFT_DEPTH_MAX = 14;
+// Entrance shape codes.
+static constexpr int ENTR_POTHOLE  = 0;
+static constexpr int ENTR_SINKHOLE = 1;
+static constexpr int ENTR_RAVINE   = 2;
+
+// Carve-floor depth below surface: every mouth carves AT LEAST this far so it
+// reaches past CAVE_SURFACE_MARGIN into the cave-noise region (connecting it to
+// the cave system below).  Deepest columns of a mouth reach this; rim/edge
+// columns carve shallower to give funnels/ravines their shape.
+static constexpr int ENTRANCE_FLOOR_MIN = 12;
+static constexpr int ENTRANCE_FLOOR_MAX = 18;
+
+// Sinkhole radius (top opening half-width) and ravine half-width / length.
+static constexpr int SINKHOLE_R_MIN = 3;
+static constexpr int SINKHOLE_R_MAX = 5;
+static constexpr int RAVINE_HALF_W  = 1;   // width = 2*half+1 (3 blocks)
+static constexpr int RAVINE_LEN_MIN = 8;
+static constexpr int RAVINE_LEN_MAX = 14;
+
+// Max XZ reach of any mouth from its anchor (conservative bound for the
+// neighbour-cell scan in is_cave_entrance / cave_entrance_depth).  The widest
+// shape is a ravine of half-length up to 7 plus the +X cell offset slack.
+static constexpr int ENTRANCE_MAX_REACH = SINKHOLE_R_MAX > (RAVINE_LEN_MAX / 2 + RAVINE_HALF_W)
+                                        ? SINKHOLE_R_MAX : (RAVINE_LEN_MAX / 2 + RAVINE_HALF_W);
 
 struct EntranceDesc {
-    std::int32_t wx;   // world X of shaft centre
-    std::int32_t wz;   // world Z of shaft centre
-    int          shaft_depth;  // how many blocks below surface are carved
+    std::int32_t wx;       // world X of mouth anchor (centre)
+    std::int32_t wz;       // world Z of mouth anchor (centre)
+    int          shape;    // ENTR_* code
+    int          floor;    // deepest carve depth below surface (centre/floor)
+    int          radius;   // sinkhole radius
+    int          half_len; // ravine half-length (along its axis)
+    bool         ravine_x; // ravine runs along X (else Z)
     bool         present;
 };
 
@@ -376,65 +413,117 @@ static EntranceDesc entrance_for_cell(std::int32_t ecx, std::int32_t ecz,
 
     // Probability gate.
     if ((h & 0xFFu) >= ENTRANCE_PROB_THRESH) {
-        return EntranceDesc{0, 0, 0, false};
+        return EntranceDesc{0, 0, 0, 0, 0, 0, false, false};
     }
 
     std::uint64_t h2 = fmix64(h ^ 0xE57A4CE5CA4EF00Dull);
 
-    // Offset within cell: keep away from cell edges so shaft stays inside.
-    std::int32_t off_x = 4 + static_cast<std::int32_t>(
-        (h2 >> 0u)  % static_cast<std::uint64_t>(ENTRANCE_CELL_SIZE - 8));
-    std::int32_t off_z = 4 + static_cast<std::int32_t>(
-        (h2 >> 16u) % static_cast<std::uint64_t>(ENTRANCE_CELL_SIZE - 8));
+    // Anchor offset within the cell — kept away from cell edges so the widest
+    // shape (sinkhole radius / ravine half-length) plus its reach never escapes
+    // the neighbour scan window.  Margin = ENTRANCE_MAX_REACH.
+    int span = ENTRANCE_CELL_SIZE - 2 * ENTRANCE_MAX_REACH;
+    if (span < 1) span = 1;
+    std::int32_t off_x = ENTRANCE_MAX_REACH + static_cast<std::int32_t>(
+        (h2 >> 0u)  % static_cast<std::uint64_t>(span));
+    std::int32_t off_z = ENTRANCE_MAX_REACH + static_cast<std::int32_t>(
+        (h2 >> 16u) % static_cast<std::uint64_t>(span));
 
-    // Shaft depth.
-    int depth = ENTRANCE_SHAFT_DEPTH_MIN
-              + static_cast<int>((h2 >> 32u) % static_cast<std::uint64_t>(
-                    ENTRANCE_SHAFT_DEPTH_MAX - ENTRANCE_SHAFT_DEPTH_MIN + 1));
+    // Shape: ~40% sinkhole, ~35% ravine, ~25% pothole.
+    std::uint64_t shape_roll = (h2 >> 32u) & 0xFFu;
+    int shape = (shape_roll < 102u) ? ENTR_SINKHOLE
+              : (shape_roll < 191u) ? ENTR_RAVINE
+              :                       ENTR_POTHOLE;
+
+    int floor = ENTRANCE_FLOOR_MIN
+              + static_cast<int>((h2 >> 40u) % static_cast<std::uint64_t>(
+                    ENTRANCE_FLOOR_MAX - ENTRANCE_FLOOR_MIN + 1));
+
+    int radius = SINKHOLE_R_MIN
+               + static_cast<int>((h2 >> 44u) % static_cast<std::uint64_t>(
+                     SINKHOLE_R_MAX - SINKHOLE_R_MIN + 1));
+
+    int half_len = (RAVINE_LEN_MIN
+               + static_cast<int>((h2 >> 48u) % static_cast<std::uint64_t>(
+                     RAVINE_LEN_MAX - RAVINE_LEN_MIN + 1))) / 2;
+
+    bool ravine_x = ((h2 >> 52u) & 1u) != 0u;
 
     return EntranceDesc{
         ecx * ENTRANCE_CELL_SIZE + off_x,
         ecz * ENTRANCE_CELL_SIZE + off_z,
-        depth,
+        shape, floor, radius, half_len, ravine_x,
         true
     };
 }
 
-// Returns true if the world column (wx, wz) is part of a 2×2 cave entrance shaft.
-// The shaft centre is at (ed.wx, ed.wz); the shaft covers (ed.wx, ed.wz),
-// (ed.wx+1, ed.wz), (ed.wx, ed.wz+1), (ed.wx+1, ed.wz+1) — all four blocks.
-// Used by terrain fill (to carve the shaft) and the public wrapper (for tests).
-static bool is_cave_entrance(std::int32_t wx, std::int32_t wz, std::uint64_t seed) noexcept {
-    std::int32_t ecx = entrance_floordiv(wx, ENTRANCE_CELL_SIZE);
-    std::int32_t ecz = entrance_floordiv(wz, ENTRANCE_CELL_SIZE);
-
-    // Check the owning cell and immediate neighbours (shaft spans at most 2 cells).
-    for (std::int32_t dce = -1; dce <= 1; ++dce) {
-        for (std::int32_t dcf = -1; dcf <= 1; ++dcf) {
-            EntranceDesc ed = entrance_for_cell(ecx + dce, ecz + dcf, seed);
-            if (!ed.present) continue;
-            // Shaft is 2×2: covers (ed.wx..ed.wx+1) × (ed.wz..ed.wz+1).
-            if (wx >= ed.wx && wx <= ed.wx + 1 &&
-                wz >= ed.wz && wz <= ed.wz + 1) return true;
+// Per-column carve depth for one mouth: how many blocks below this column's own
+// surface should be AIR (0 if the column is outside this mouth's footprint).
+// Shape-dependent so sinkholes funnel and ravines form a slot.  PURE function of
+// (column, EntranceDesc) — identical from every chunk that overlaps the mouth.
+static int entrance_depth_in(const EntranceDesc& ed,
+                             std::int32_t wx, std::int32_t wz) noexcept {
+    std::int32_t dx = wx - ed.wx;
+    std::int32_t dz = wz - ed.wz;
+    switch (ed.shape) {
+        case ENTR_SINKHOLE: {
+            // Circular footprint of radius `radius`; depth ramps from a shallow
+            // rim to the full floor at the centre (funnel).
+            int r2   = static_cast<int>(dx * dx + dz * dz);
+            int rad  = ed.radius;
+            if (r2 > rad * rad) return 0;
+            // dist 0..rad  ->  depth floor..(floor - rim_drop), min 1.
+            // Use the radial distance to scale: centre deepest, rim shallow but
+            // still open (so the rim is a visible lip, not flush ground).
+            double dist = std::sqrt(static_cast<double>(r2));
+            double t    = dist / static_cast<double>(rad);          // 0 centre .. 1 rim
+            int depth = static_cast<int>(static_cast<double>(ed.floor) * (1.0 - 0.55 * t));
+            if (depth < 4) depth = 4;     // rim still clearly open
+            return depth;
+        }
+        case ENTR_RAVINE: {
+            // A slot of half-width RAVINE_HALF_W running ±half_len along its axis.
+            std::int32_t along = ed.ravine_x ? dx : dz;
+            std::int32_t across = ed.ravine_x ? dz : dx;
+            if (across < -RAVINE_HALF_W || across > RAVINE_HALF_W) return 0;
+            if (along < -ed.half_len || along > ed.half_len)       return 0;
+            // Floor slopes a little toward the centre of the run for character;
+            // ends are a touch shallower so you can scramble in.
+            std::int32_t a = along < 0 ? -along : along;
+            int taper = static_cast<int>(a) / 3;   // 0 near centre, grows toward ends
+            int depth = ed.floor - taper;
+            if (depth < 6) depth = 6;
+            return depth;
+        }
+        default: {  // ENTR_POTHOLE — compact 2×2 (or 3×3) vertical shaft.
+            if (dx < 0 || dx > 1 || dz < 0 || dz > 1) return 0;
+            return ed.floor;
         }
     }
-    return false;
 }
 
-// Get the shaft depth for a cave entrance column (0 if not an entrance).
-// Matches the 2×2 shaft footprint used by is_cave_entrance().
+// Sum of the entrance footprint across the owning cell and its neighbours.
+// Returns the deepest carve depth at (wx,wz) over all overlapping mouths (0 if
+// none).  is_cave_entrance() is just (depth > 0).
 static int cave_entrance_depth(std::int32_t wx, std::int32_t wz, std::uint64_t seed) noexcept {
     std::int32_t ecx = entrance_floordiv(wx, ENTRANCE_CELL_SIZE);
     std::int32_t ecz = entrance_floordiv(wz, ENTRANCE_CELL_SIZE);
+    int best = 0;
     for (std::int32_t dce = -1; dce <= 1; ++dce) {
         for (std::int32_t dcf = -1; dcf <= 1; ++dcf) {
             EntranceDesc ed = entrance_for_cell(ecx + dce, ecz + dcf, seed);
             if (!ed.present) continue;
-            if (wx >= ed.wx && wx <= ed.wx + 1 &&
-                wz >= ed.wz && wz <= ed.wz + 1) return ed.shaft_depth;
+            int d = entrance_depth_in(ed, wx, wz);
+            if (d > best) best = d;
         }
     }
-    return 0;
+    return best;
+}
+
+// Returns true if the world column (wx, wz) is part of any cave entrance mouth.
+// Used by the public wrapper (tests) to exempt these columns from the no-holes
+// check.  Shares entrance_depth_in()'s footprint exactly with the carver.
+static bool is_cave_entrance(std::int32_t wx, std::int32_t wz, std::uint64_t seed) noexcept {
+    return cave_entrance_depth(wx, wz, seed) > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -2388,6 +2477,238 @@ static DeadwoodDesc deadwood_for_cell(std::int32_t dcx, std::int32_t dcz,
 }
 
 // ---------------------------------------------------------------------------
+// Cave interior features (#37 — make caves feel like a PLACE, not a void)
+// ---------------------------------------------------------------------------
+// Once the cave system is carved, this pass dresses the open space near
+// entrances/underground with deterministic, bounds-clipped, CHEAP touches so a
+// cave reads as a place: glowing mushroom clumps and crystal pockets that light
+// the dark, the occasional small underground pool, an ore knot, and — rarely —
+// an "abandoned" camp (a few cobble/plank blocks + a chest marker).
+//
+// Determinism / seam-safety: every feature is keyed to a coarse 3D world cell
+// grid (CAVE_FEAT_CELL).  A cell's anchor world position, type and contents are
+// pure functions of the cell hash, so any chunk overlapping a feature computes
+// the same thing.  Whether a target voxel is OPEN cave or SOLID rock is decided
+// by a POSITION-PURE helper (cave_voxel_is_air / _solid) that re-derives the
+// exact terrain+cave-carve decision the column loop made — never by peeking at
+// neighbour chunks — so a feature straddling a chunk border resolves identically
+// from either side.  All writes go through the chunk's own range check.
+//
+// Density is deliberately low (caves stay mostly natural rock): only a fraction
+// of cells host a feature and each footprint is tiny.
+// ---------------------------------------------------------------------------
+
+// Position-pure: surface height at a column (memoized cone), reused so the cave
+// helpers agree byte-for-byte with the column loop.
+static int cave_surface_h(std::int32_t wx, std::int32_t wz, std::uint64_t seed) noexcept {
+    float w[NUM_BIOMES];
+    biome_weights(wx, wz, seed, w);
+    return surface_height(wx, wz, seed, w);
+}
+
+// Is the world voxel (wx,wy,wz) an UNDERGROUND CAVE VOID (carved to AIR by the
+// cave system)?  Re-derives the exact rule generate() uses: the voxel must be
+// below the protected sub-surface shell (so this is genuine cave, never open
+// sky), above the world floor, and the cave noise must exceed the threshold.
+// Open sky (wy > H) and the surface shell are explicitly NOT cave voids, so cave
+// features can never end up floating above ground or poking through the surface.
+static bool cave_voxel_is_air(std::int32_t wx, std::int32_t wy, std::int32_t wz,
+                              std::uint64_t seed) noexcept {
+    int H = cave_surface_h(wx, wz, seed);
+    if (wy >= H - CAVE_SURFACE_MARGIN) return false;  // open sky or protected shell
+    if (wy <= kColumnMinY + 4) return false;          // near world floor: solid
+    float cave = fbm3(static_cast<float>(wx), static_cast<float>(wy),
+                      static_cast<float>(wz),
+                      fmix64(seed ^ 0xCA4E5EED1234ull), /*octaves=*/3,
+                      /*base_freq=*/1.0f / 16.0f);
+    return cave > CAVE_THRESH;
+}
+
+// Solid underground rock (the complement, restricted to below-surface so it does
+// not report open sky as "solid").
+static bool cave_voxel_is_solid(std::int32_t wx, std::int32_t wy, std::int32_t wz,
+                                std::uint64_t seed) noexcept {
+    int H = cave_surface_h(wx, wz, seed);
+    if (wy > H) return false;
+    return !cave_voxel_is_air(wx, wy, wz, seed);
+}
+
+static constexpr int CAVE_FEAT_CELL = 9;   // one feature candidate per 9³ region
+static constexpr std::uint64_t CAVE_FEAT_SEED_MIX = 0xCA7EFEA70FEA7C00ull;
+
+// Feature kinds.  (0 reserved for "none"; selection below never yields it.)
+static constexpr int CFEAT_MUSHROOMS = 1;  // glowing mushroom clump on a floor
+static constexpr int CFEAT_CRYSTALS  = 2;  // crystal pocket in walls + a lamp
+static constexpr int CFEAT_POOL      = 3;  // small water pool in a floor dip
+static constexpr int CFEAT_ORE_KNOT  = 4;  // tight ore cluster on a wall
+static constexpr int CFEAT_CAMP      = 5;  // rare abandoned camp (cobble/planks/chest)
+
+// Place all cave features overlapping this chunk.  Mirrors the ore pass: scan
+// the 3D feature cells whose extent could overlap the chunk (+ margin), resolve
+// each deterministically, and emit clipped voxels.
+static void place_cave_features(ChunkCoord c, IChunk& chunk, std::uint64_t seed) noexcept {
+    std::int32_t wx_min = c.x * kChunkDim;
+    std::int32_t wy_min = c.y * kChunkDim;
+    std::int32_t wz_min = c.z * kChunkDim;
+    std::int32_t wx_max = wx_min + kChunkDim - 1;
+    std::int32_t wy_max = wy_min + kChunkDim - 1;
+    std::int32_t wz_max = wz_min + kChunkDim - 1;
+
+    // Features only ever live underground; if this whole chunk is above the
+    // shallowest possible cave voxel, skip (cheap reject for surface chunks).
+    if (wy_min > 0) return;
+
+    constexpr int FEAT_REACH = 3;   // max footprint radius (camp/pool)
+    std::uint64_t fseed = fmix64(seed ^ CAVE_FEAT_SEED_MIX);
+
+    auto fdiv = [](std::int32_t a, int b) noexcept -> std::int32_t {
+        return a / b - (a % b != 0 && (a ^ b) < 0 ? 1 : 0);
+    };
+
+    std::int32_t cx0 = fdiv(wx_min - FEAT_REACH, CAVE_FEAT_CELL);
+    std::int32_t cx1 = fdiv(wx_max + FEAT_REACH, CAVE_FEAT_CELL);
+    std::int32_t cy0 = fdiv(wy_min - FEAT_REACH, CAVE_FEAT_CELL);
+    std::int32_t cy1 = fdiv(wy_max + FEAT_REACH, CAVE_FEAT_CELL);
+    std::int32_t cz0 = fdiv(wz_min - FEAT_REACH, CAVE_FEAT_CELL);
+    std::int32_t cz1 = fdiv(wz_max + FEAT_REACH, CAVE_FEAT_CELL);
+
+    // Clipped writer: only set if the target column index is inside this chunk.
+    auto put = [&](std::int32_t wx, std::int32_t wy, std::int32_t wz,
+                   BlockId b, bool only_into_air) -> void {
+        if (wx < wx_min || wx > wx_max) return;
+        if (wy < wy_min || wy > wy_max) return;
+        if (wz < wz_min || wz > wz_max) return;
+        int lx = static_cast<int>(wx - wx_min);
+        int ly = static_cast<int>(wy - wy_min);
+        int lz = static_cast<int>(wz - wz_min);
+        BlockId cur = chunk.get(lx, ly, lz);
+        if (only_into_air) {
+            if (cur != AIR) return;
+        }
+        chunk.set(lx, ly, lz, b);
+    };
+
+    for (std::int32_t cy = cy0; cy <= cy1; ++cy) {
+        for (std::int32_t cz = cz0; cz <= cz1; ++cz) {
+            for (std::int32_t cx = cx0; cx <= cx1; ++cx) {
+                std::uint64_t h = hash3(cx, cy, cz, fseed);
+                std::uint64_t roll = h & 0xFFu;
+                // ~22% of underground cells host a feature; the rest stay bare
+                // rock so caves remain mostly natural.
+                if (roll >= 56u) continue;
+
+                // Anchor inside the cell.
+                std::uint64_t h2 = fmix64(h ^ 0x0FEA7C0DECA7EFEAull);
+                std::int32_t ax = cx * CAVE_FEAT_CELL
+                    + static_cast<std::int32_t>((h2 >> 0u)  % CAVE_FEAT_CELL);
+                std::int32_t ay = cy * CAVE_FEAT_CELL
+                    + static_cast<std::int32_t>((h2 >> 8u)  % CAVE_FEAT_CELL);
+                std::int32_t az = cz * CAVE_FEAT_CELL
+                    + static_cast<std::int32_t>((h2 >> 16u) % CAVE_FEAT_CELL);
+
+                // Feature type weights (camp is rare).
+                std::uint64_t tsel = (h2 >> 24u) & 0xFFu;
+                int ftype = (tsel < 88u)  ? CFEAT_MUSHROOMS :   // ~34%
+                            (tsel < 150u) ? CFEAT_CRYSTALS  :   // ~24%
+                            (tsel < 198u) ? CFEAT_ORE_KNOT  :   // ~19%
+                            (tsel < 244u) ? CFEAT_POOL      :   // ~18%
+                                            CFEAT_CAMP;         // ~5%
+
+                // The anchor must sit in OPEN cave air with SOLID rock beneath
+                // (a cave floor) for floor features; crystals/ore want the anchor
+                // in air next to rock.  This is the position-pure gate that keeps
+                // features inside real caves and seam-consistent.
+                bool anchor_air   = cave_voxel_is_air(ax, ay, az, seed);
+                bool floor_below  = cave_voxel_is_solid(ax, ay - 1, az, seed);
+
+                switch (ftype) {
+                    case CFEAT_MUSHROOMS: {
+                        if (!anchor_air || !floor_below) break;
+                        // A small clump of glowing mushrooms on the floor, plus a
+                        // glow block tucked under one to read as bioluminescent.
+                        int n = 2 + static_cast<int>((h2 >> 32u) % 4u);  // 2..5
+                        for (int i = 0; i < n; ++i) {
+                            std::uint64_t bh = fmix64(h2 ^ (static_cast<std::uint64_t>(i) * 0x9E37u));
+                            std::int32_t dx = static_cast<std::int32_t>((bh >> 0u) % 3u) - 1;
+                            std::int32_t dz = static_cast<std::int32_t>((bh >> 8u) % 3u) - 1;
+                            if (cave_voxel_is_air(ax + dx, ay, az + dz, seed) &&
+                                cave_voxel_is_solid(ax + dx, ay - 1, az + dz, seed)) {
+                                put(ax + dx, ay, az + dz, MUSHROOM, true);
+                            }
+                        }
+                        // A faint glow source seated in the floor at the centre.
+                        if (cave_voxel_is_solid(ax, ay - 1, az, seed))
+                            put(ax, ay - 1, az, GLOW_BLOCK, false);
+                        break;
+                    }
+                    case CFEAT_CRYSTALS: {
+                        if (!anchor_air) break;
+                        // Crystal pocket: embed a few crystal_ore in the
+                        // surrounding rock walls + a crystal lamp glowing in air.
+                        put(ax, ay, az, CRYSTAL_LAMP, true);
+                        int n = 3 + static_cast<int>((h2 >> 32u) % 4u);  // 3..6
+                        for (int i = 0; i < n; ++i) {
+                            std::uint64_t bh = fmix64(h2 ^ (static_cast<std::uint64_t>(i) * 0xC713u));
+                            std::int32_t dx = static_cast<std::int32_t>((bh >> 0u)  % 3u) - 1;
+                            std::int32_t dy = static_cast<std::int32_t>((bh >> 8u)  % 3u) - 1;
+                            std::int32_t dz = static_cast<std::int32_t>((bh >> 16u) % 3u) - 1;
+                            if (dx == 0 && dy == 0 && dz == 0) continue;
+                            // Only convert solid rock into crystal (wall pocket).
+                            if (cave_voxel_is_solid(ax + dx, ay + dy, az + dz, seed)) {
+                                put(ax + dx, ay + dy, az + dz, CRYSTAL_ORE, false);
+                            }
+                        }
+                        break;
+                    }
+                    case CFEAT_ORE_KNOT: {
+                        if (!anchor_air) break;
+                        // A tight knot of ore on a cave wall — coal or iron.
+                        BlockId ore = ((h2 >> 40u) & 1u) ? IRON_ORE : COAL_ORE;
+                        int n = 3 + static_cast<int>((h2 >> 32u) % 4u);  // 3..6
+                        for (int i = 0; i < n; ++i) {
+                            std::uint64_t bh = fmix64(h2 ^ (static_cast<std::uint64_t>(i) * 0xA113u));
+                            std::int32_t dx = static_cast<std::int32_t>((bh >> 0u)  % 3u) - 1;
+                            std::int32_t dy = static_cast<std::int32_t>((bh >> 8u)  % 3u) - 1;
+                            std::int32_t dz = static_cast<std::int32_t>((bh >> 16u) % 3u) - 1;
+                            if (cave_voxel_is_solid(ax + dx, ay + dy, az + dz, seed)) {
+                                put(ax + dx, ay + dy, az + dz, ore, false);
+                            }
+                        }
+                        break;
+                    }
+                    case CFEAT_POOL: {
+                        if (!anchor_air || !floor_below) break;
+                        // A shallow water pool: fill the floor voxel and any open
+                        // floor voxels immediately around it with water.
+                        for (std::int32_t dz = -1; dz <= 1; ++dz) {
+                            for (std::int32_t dx = -1; dx <= 1; ++dx) {
+                                if (cave_voxel_is_air(ax + dx, ay, az + dz, seed) &&
+                                    cave_voxel_is_solid(ax + dx, ay - 1, az + dz, seed)) {
+                                    put(ax + dx, ay, az + dz, WATER, true);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    default: {  // CFEAT_CAMP — rare abandoned touch.
+                        if (!anchor_air || !floor_below) break;
+                        // A couple of cobble/plank blocks forming a low remnant and
+                        // a chest marker — a hint someone was here.
+                        put(ax, ay, az, CHEST, true);            // the find
+                        put(ax + 1, ay, az, COBBLESTONE, true);  // toppled wall
+                        put(ax - 1, ay, az, OAK_PLANKS, true);   // broken plank
+                        // A torch-ish glow so the camp is noticeable in the dark.
+                        if (cave_voxel_is_air(ax, ay + 1, az, seed))
+                            put(ax, ay + 1, az, GLOW_BLOCK, true);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Decoration pass — seam-aware, biome-aware
 // ---------------------------------------------------------------------------
 static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
@@ -3534,6 +3855,12 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
             }
         }
     }
+
+    // Cave interior features (#37): dress the carved cave space with mushrooms,
+    // crystals, pools, ore knots and the rare abandoned camp.  Runs after the
+    // terrain/cave carve (so cave AIR exists) and is position-pure + clipped, so
+    // it stays seam-safe and never touches the surface shell.
+    place_cave_features(c, chunk, seed_);
 
     // Decoration pass — seam-aware tree and plant scatter.
     place_decorations(c, chunk, seed_, anchor_cache, col_cache);
