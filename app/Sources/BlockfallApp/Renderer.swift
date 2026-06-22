@@ -228,6 +228,11 @@ final class Renderer: NSObject, MTKViewDelegate {
 #endif
     // True when the scaler was successfully created and can be used this frame.
     private var metalFXEnabled: Bool = false
+    // Debug toggles for bisecting the "washout when turning" report (#33). Flipped
+    // live from GameView (keys B / N) so the user can identify which subsystem causes
+    // it. Defaults: everything on (normal rendering).
+    static var dbgBloom = true       // 'B' — bloom on/off
+    static var dbgMetalFX = true     // 'N' — MetalFX spatial upscaler on/off
 
     // ---- Shadow map (fixed 1536×1536) ----------------------------------------
     private let kShadowRes = 1536
@@ -971,7 +976,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         case 2:  precipPacked = -1.0   // snow
         default: precipPacked =  0.0   // clear
         }
-        var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.18,
+        var pu = PostUniforms(bloomStrength: Renderer.dbgBloom ? 0.08 : 0.0, vignetteStr: 0.22, satBoost: 1.18,
                               rainStrength: precipPacked, wallClockSecs: wallClock)
 
         // =====================================================================
@@ -982,7 +987,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 #if canImport(MetalFX)
         let useMetalFX: Bool
         if #available(macOS 13.0, *) {
-            useMetalFX = metalFXEnabled && _spatialScaler != nil && compositeLowRes != nil
+            useMetalFX = Renderer.dbgMetalFX && metalFXEnabled && _spatialScaler != nil && compositeLowRes != nil
         } else {
             useMetalFX = false
         }

@@ -104,6 +104,10 @@ final class GameView: MTKView {
             NSLog("Blockfall: invert X (left/right) = \(invertX)"); return }
         if e.keyCode == 31 { invertY.toggle()                    // 'O' — invert up/down
             NSLog("Blockfall: invert Y (up/down) = \(invertY)"); return }
+        if e.keyCode == 11 { Renderer.dbgBloom.toggle()          // 'B' — bloom on/off (washout bisect #33)
+            NSLog("Blockfall: bloom = \(Renderer.dbgBloom)"); return }
+        if e.keyCode == 45 { Renderer.dbgMetalFX.toggle()        // 'N' — MetalFX upscaler on/off (washout bisect #33)
+            NSLog("Blockfall: MetalFX = \(Renderer.dbgMetalFX)"); return }
         if e.keyCode == 4  { onHost?(); return }                // 'H' — host LAN co-op
         if e.keyCode == 38 { onJoin?(); return }                // 'J' — join a LAN host
         // Number keys: craft the Nth craftable recipe when the inventory is
