@@ -25,6 +25,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var gameView: GameView?
     var gameContainer: NSView?
     var pauseOverlay: NSView?
+    // #: pause-menu HUD-option controls (held so the action handlers can update
+    // the live value label). Rebuilt each time the pause overlay opens.
+    private weak var hudScaleSlider: NSSlider?
+    private weak var hudScaleValueLabel: NSTextField?
+
+    // ---- HUD option persistence (#: text size + visibility) ----
+    // UserDefaults keys. Loaded at startup (startGame) and written on change.
+    static let kHUDScaleKey = "hudScale"
+    static let kHUDVisibleKey = "hudVisible"
+    static func loadHUDScale() -> CGFloat {
+        let d = UserDefaults.standard
+        // Absent key -> default 1.0; clamp to the supported 1.0–2.0 range.
+        guard d.object(forKey: kHUDScaleKey) != nil else { return 1.0 }
+        return min(2.0, max(1.0, CGFloat(d.double(forKey: kHUDScaleKey))))
+    }
+    static func loadHUDVisible() -> Bool {
+        let d = UserDefaults.standard
+        guard d.object(forKey: kHUDVisibleKey) != nil else { return true }  // default ON
+        return d.bool(forKey: kHUDVisibleKey)
+    }
 
     func applicationDidFinishLaunching(_: Notification) {
         guard bf_abi_version() == BF_ABI_VERSION else {
@@ -96,6 +116,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         h.onDestroy = { [weak mtkView] slot in
             mtkView?.enqueueDestroy(slot)
         }
+        // #42: 'L' in GameView flips the quest-log overlay in the HUD.
+        mtkView.onToggleQuestLog = { [weak h] in h?.toggleQuestLog() }
+        // #: apply the persisted HUD options (text size + visibility) so they
+        // stick between sessions.
+        h.hudScale = AppDelegate.loadHUDScale()
+        h.hudVisible = AppDelegate.loadHUDVisible()
         r.hud = h
 
         let container = NSView(frame: frame)
@@ -125,7 +151,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let resume = pauseButton("Keep Playing", #selector(resumeGame))
         let menuBtn = pauseButton("Save & Go to Menu", #selector(quitToMenu))
-        let stack = NSStackView(views: [title, resume, menuBtn])
+
+        // ---- HUD options (#: text size + visibility) ----
+        // Text Size: a slider 1.0–2.0 with a live label. Show HUD: a checkbox.
+        // Both write through to the live HUDView immediately and persist to
+        // UserDefaults so they stick between sessions.
+        let textLabel = NSTextField(labelWithString: "Text Size")
+        textLabel.font = .boldSystemFont(ofSize: 16); textLabel.textColor = .white
+
+        let slider = NSSlider(value: Double(hud?.hudScale ?? AppDelegate.loadHUDScale()),
+                              minValue: 1.0, maxValue: 2.0,
+                              target: self, action: #selector(hudScaleChanged(_:)))
+        slider.translatesAutoresizingMaskIntoConstraints = false
+        slider.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        hudScaleSlider = slider
+
+        let valueLabel = NSTextField(labelWithString: "")
+        valueLabel.font = .systemFont(ofSize: 14); valueLabel.textColor = .white
+        valueLabel.alignment = .center
+        hudScaleValueLabel = valueLabel
+
+        let sliderRow = NSStackView(views: [textLabel, slider, valueLabel])
+        sliderRow.orientation = .horizontal; sliderRow.spacing = 12; sliderRow.alignment = .centerY
+
+        let showHUD = NSButton(checkboxWithTitle: "Show HUD",
+                               target: self, action: #selector(hudVisibleChanged(_:)))
+        showHUD.state = (hud?.hudVisible ?? AppDelegate.loadHUDVisible()) ? .on : .off
+        showHUD.contentTintColor = .white
+        showHUD.attributedTitle = NSAttributedString(string: "Show HUD", attributes: [
+            .font: NSFont.boldSystemFont(ofSize: 16), .foregroundColor: NSColor.white,
+        ])
+
+        updateHUDScaleLabel()   // fill the live value label now that it exists
+
+        let stack = NSStackView(views: [title, sliderRow, showHUD, resume, menuBtn])
         stack.orientation = .vertical; stack.spacing = 18; stack.alignment = .centerX
         stack.translatesAutoresizingMaskIntoConstraints = false
         ov.addSubview(stack)
@@ -158,6 +217,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         gameView?.setPaused(false)
         gameView?.grabMouse()
         if let gv = gameView { window.makeFirstResponder(gv) }
+    }
+
+    // #: HUD Text Size slider → live HUD + persisted.
+    @objc private func hudScaleChanged(_ sender: NSSlider) {
+        let v = min(2.0, max(1.0, CGFloat(sender.doubleValue)))
+        hud?.hudScale = v
+        UserDefaults.standard.set(Double(v), forKey: AppDelegate.kHUDScaleKey)
+        updateHUDScaleLabel()
+    }
+    // #: Show HUD checkbox → live HUD + persisted.
+    @objc private func hudVisibleChanged(_ sender: NSButton) {
+        let on = (sender.state == .on)
+        hud?.hudVisible = on
+        UserDefaults.standard.set(on, forKey: AppDelegate.kHUDVisibleKey)
+    }
+    private func updateHUDScaleLabel() {
+        let v = hud?.hudScale ?? AppDelegate.loadHUDScale()
+        hudScaleValueLabel?.stringValue = String(format: "%.1f×", Double(v))
     }
     @objc private func quitToMenu() {
         pauseOverlay?.removeFromSuperview(); pauseOverlay = nil

@@ -23,6 +23,9 @@ final class GameView: MTKView {
     var onHost: (() -> Void)?
     var onJoin: (() -> Void)?
     var onPause: (() -> Void)?
+    // #42: quest-log overlay hook (wired to HUDView). Flips the log open/closed.
+    // GameView tracks its own questLogOpen so Esc can close it before pausing.
+    var onToggleQuestLog: (() -> Void)?
 
     private var gamePaused = false
     func releaseMouse() { releasePointer() }
@@ -93,10 +96,17 @@ final class GameView: MTKView {
 
     // ---- keyboard ----------------------------------------------------------
     override func keyDown(with e: NSEvent) {
-        if e.keyCode == K.esc { if invOpen { toggleInventory() } else { onPause?() }; return }
+        if e.keyCode == K.esc {
+            // Esc priority: close the quest log, then the inventory, else pause.
+            if questLogOpen { toggleQuestLog() }
+            else if invOpen { toggleInventory() }
+            else { onPause?() }
+            return
+        }
         // While paused, no game key should act — 'E' especially would re-capture the
         // mouse and make the pause overlay buttons unclickable.
         guard !gamePaused else { return }
+        if e.keyCode == 37 { toggleQuestLog(); return }    // 'L' — quest log (#42)
         if e.keyCode == 14 { toggleInventory(); return }   // 'E' — inventory
         if e.keyCode == 8 { queue(BF_ACT_MODE_TOGGLE); return } // 'C' — creative/survival
         if e.keyCode == 12 { queue(BF_ACT_CRAFT); return }      // 'Q' — craft first available
@@ -130,6 +140,16 @@ final class GameView: MTKView {
         invOpen.toggle()
         queue(invOpen ? BF_ACT_INV_OPEN : BF_ACT_INV_CLOSE)
         if invOpen { releasePointer() } else { capturePointer() }
+    }
+
+    // #42: quest-log toggle. The overlay is purely cosmetic (the game keeps
+    // running — no engine pause action), but we release the pointer while it's
+    // open so the player can read/scroll, mirroring the inventory.
+    private var questLogOpen = false
+    private func toggleQuestLog() {
+        questLogOpen.toggle()
+        onToggleQuestLog?()
+        if questLogOpen { releasePointer() } else if !invOpen { capturePointer() }
     }
     override func keyUp(with e: NSEvent) { pressed.remove(e.keyCode) }
     override func flagsChanged(with e: NSEvent) {

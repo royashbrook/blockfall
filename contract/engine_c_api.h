@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 11u  /* v11: bf_camera.underground (dark caves: no sky leak) */
+#define BF_ABI_VERSION 12u  /* v12: bf_quest_list + bf_quest_entry (progression screen) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -287,6 +287,20 @@ typedef struct bf_hud_state {
     uint8_t      in_dim;           /* 1 = standing in an unrestored "Grey" region   */
 } bf_hud_state;
 
+/* One quest in the full progression list (for the quest/achievement screen). */
+typedef enum bf_quest_state {
+    BF_QUEST_UPCOMING = 0,   /* not yet started (locked behind earlier quests) */
+    BF_QUEST_ACTIVE   = 1,   /* currently tracked                              */
+    BF_QUEST_DONE     = 2,   /* completed                                      */
+} bf_quest_state;
+
+typedef struct bf_quest_entry {
+    char     title[64];       /* UTF-8, NUL-terminated                         */
+    char     objective[96];   /* current/next objective text                   */
+    uint8_t  state;           /* bf_quest_state                                */
+    float    progress;        /* 0..1 (meaningful for the active quest)        */
+} bf_quest_entry;
+
 /* The whole frame, borrowed from the engine between acquire/end. */
 typedef struct bf_render_frame {
     bf_camera             camera;
@@ -306,6 +320,12 @@ BF_API bf_result bf_frame_begin(bf_engine e, const bf_frame_input* in, double re
 /* [MAIN] Fill `out` with a borrowed view of this frame's render data.
  * Pointers inside remain valid until bf_frame_end(). DO NOT free.           */
 BF_API bf_result bf_frame_acquire_render(bf_engine e, bf_render_frame* out);
+
+/* Fill `out` (capacity `cap`) with the FULL quest progression list and return the
+ * total quest count (may exceed cap; only min(count,cap) are written). Powers the
+ * quest/achievement overview screen. Order = the quest chain; states reflect what's
+ * done / active / upcoming. */
+BF_API uint32_t bf_quest_list(bf_engine e, bf_quest_entry* out, uint32_t cap);
 /* [MAIN] Release the borrow. After this, pointers from acquire are invalid. */
 BF_API void      bf_frame_end(bf_engine e);
 

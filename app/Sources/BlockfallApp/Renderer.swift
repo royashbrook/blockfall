@@ -709,6 +709,30 @@ final class Renderer: NSObject, MTKViewDelegate {
         // added by another agent; guarded so it's a no-op until then).
         hud?.setTimeOfDay(frame.camera.time_of_day)
 
+        // #42: when the quest log overlay is open, fetch the FULL quest chain
+        // from the engine and forward it to the HUD. Done only while open so the
+        // closed-log path stays free of the extra ABI call. This is the only
+        // Renderer touchpoint for the quest log — fetch + forward, nothing more.
+        if let hud = hud, hud.isQuestLogOpen {
+            let cap = 32
+            var buf = [bf_quest_entry](repeating: bf_quest_entry(), count: cap)
+            let total = Int(bf_quest_list(e, &buf, UInt32(cap)))
+            let count = min(total, cap)
+            var rows: [HUDView.QuestRow] = []
+            rows.reserveCapacity(count)
+            for i in 0..<count {
+                let title = withUnsafeBytes(of: buf[i].title) {
+                    String(cString: $0.bindMemory(to: CChar.self).baseAddress!)
+                }
+                let objective = withUnsafeBytes(of: buf[i].objective) {
+                    String(cString: $0.bindMemory(to: CChar.self).baseAddress!)
+                }
+                rows.append(HUDView.QuestRow(title: title, objective: objective,
+                                             state: buf[i].state, progress: buf[i].progress))
+            }
+            hud.setQuests(rows)
+        }
+
         // Weather is now fully engine-owned: frame.camera.weather = 0=clear, 1=rain, 2=snow.
         // Map that to a rain strength for wind/wet-darkening (0 when clear or snow, 1 when rain).
         let engineWeather = Int(frame.camera.weather)   // 0, 1, or 2

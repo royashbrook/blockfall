@@ -795,6 +795,41 @@ public:
     }
     void    debug_notify(const char* trig, const char* target) { notify_quest(trig, target); }
     void    debug_force_quest_done() { quests_completed_ = 1; }   // tests: lift the first-quest monster gate
+
+    // Fill the FULL quest progression list (for the #42 overview screen). Returns the
+    // total quest count; writes min(count, cap) entries. Mirrors the active-quest HUD
+    // fill so the screen and the top-left tracker agree.
+    std::uint32_t fill_quest_list(bf_quest_entry* out, std::uint32_t cap) const {
+        if (!extra_) return 0;
+        const auto& qs = extra_->quests();
+        std::uint32_t n = std::uint32_t(qs.size());
+        for (std::uint32_t i = 0; i < n && i < cap; ++i) {
+            const QuestDefX& q = qs[i];
+            bf_quest_entry& e = out[i];
+            std::memset(&e, 0, sizeof(e));
+            std::strncpy(e.title, q.title.c_str(), sizeof(e.title) - 1);
+            const bool done   = all_quests_done_ || i < std::uint32_t(active_quest_);
+            const bool active = !all_quests_done_ && std::size_t(i) == active_quest_;
+            e.state = done ? std::uint8_t(BF_QUEST_DONE)
+                           : (active ? std::uint8_t(BF_QUEST_ACTIVE) : std::uint8_t(BF_QUEST_UPCOMING));
+            if (active && obj_progress_.size() == q.objectives.size()) {
+                std::uint32_t cdone = 0, total = 0; const char* objtext = "";
+                for (std::size_t k = 0; k < q.objectives.size(); ++k) {
+                    total += q.objectives[k].count;
+                    cdone += std::min(obj_progress_[k], q.objectives[k].count);
+                    if (obj_progress_[k] < q.objectives[k].count && objtext[0] == 0)
+                        objtext = q.objectives[k].text.c_str();
+                }
+                std::strncpy(e.objective, objtext[0] ? objtext : "...", sizeof(e.objective) - 1);
+                e.progress = total ? float(cdone) / float(total) : 0.0f;
+            } else {
+                e.progress = done ? 1.0f : 0.0f;
+                if (!q.objectives.empty())
+                    std::strncpy(e.objective, q.objectives.front().text.c_str(), sizeof(e.objective) - 1);
+            }
+        }
+        return n;
+    }
     bool    debug_aim_at_creature0() {
         if (creatures_.empty()) return false;
         V3 cp = creatures_[0].pos + V3{0, 0.5f, 0};

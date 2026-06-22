@@ -243,12 +243,51 @@ final class HUDView: NSView {
     // Sorted list of every known item id (built once from kItemTable).
     private static let kAllItemIds: [UInt16] = kItemTable.keys.sorted()
 
+    // --- HUD options (#: text size + visibility) ---
+    // Global multiplier applied to EVERY HUD font size (and the paddings that
+    // depend on text height). 1.0 = the original sizes (the smallest acceptable);
+    // up to ~2.0 for kids who want big text. Set from the pause-menu options and
+    // persisted via UserDefaults by the app shell.
+    var hudScale: CGFloat = 1.0 {
+        didSet { if hudScale != oldValue { needsDisplay = true } }
+    }
+    // When false, the in-world gameplay HUD overlays are hidden. The inventory
+    // and quest-log screens (explicitly opened) still draw so they remain usable.
+    var hudVisible: Bool = true {
+        didSet { if hudVisible != oldValue { needsDisplay = true } }
+    }
+    // Scale a base font size by the current HUD scale. Single funnel so every
+    // text element honours the option.
+    private func fs(_ base: CGFloat) -> CGFloat { base * hudScale }
+
+    // --- #42: Quest/progression log overlay ---
+    // Full quest chain, fetched by the Renderer (which owns the engine handle)
+    // and pushed in via setQuests while the log is open. Toggled by 'L' in
+    // GameView; closable with Esc. Drawn as a translucent panel listing every
+    // quest with done / active / upcoming styling.
+    private var questLogOpen = false
+    private var quests: [QuestRow] = []
+    private var questLogScroll: CGFloat = 0
+    private var maxQuestLogScroll: CGFloat = 0
+    private var questLogViewport: NSRect = .zero
+    struct QuestRow { let title: String; let objective: String; let state: UInt8; let progress: Float }
+
+    // True when the renderer should fetch + forward the quest list this frame.
+    var isQuestLogOpen: Bool { questLogOpen }
+    // Toggle the quest log (bound to 'L' in GameView). Returns the new open
+    // state. GameView mirrors this state so Esc can close the log before pausing.
+    @discardableResult
+    func toggleQuestLog() -> Bool { questLogOpen.toggle(); needsDisplay = true; return questLogOpen }
+    // Renderer pushes the freshly-fetched quest list each frame while open.
+    func setQuests(_ rows: [QuestRow]) { quests = rows; if questLogOpen { needsDisplay = true } }
+
     override var isFlipped: Bool { false }
     override var isOpaque: Bool { false }
 
-    // Click-through during play; capture clicks only when the inventory is open.
+    // Click-through during play; capture clicks only when an overlay (inventory
+    // or quest log) is open so its scroll/close interactions work.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        hud.inventory_open != 0 ? self : nil
+        (hud.inventory_open != 0 || questLogOpen) ? self : nil
     }
     // Never take key focus — the GameView must keep receiving Esc/E so the
     // inventory can always be closed (clicking a slot was stealing first
@@ -418,6 +457,15 @@ final class HUDView: NSView {
     // the inventory is closed we ignore the wheel entirely (pass it through is
     // unnecessary since hitTest already returns nil during play).
     override func scrollWheel(with event: NSEvent) {
+        // Quest log scrolls independently of the inventory.
+        if questLogOpen {
+            let p = convert(event.locationInWindow, from: nil)
+            if questLogViewport.contains(p) && maxQuestLogScroll > 0 {
+                questLogScroll = min(max(0, questLogScroll + event.scrollingDeltaY), maxQuestLogScroll)
+                needsDisplay = true
+            }
+            return
+        }
         guard hud.inventory_open != 0 else { super.scrollWheel(with: event); return }
         let p = convert(event.locationInWindow, from: nil)
         // scrollingDeltaY: +up / -down in AppKit. Scrolling "down" should reveal
@@ -465,6 +513,27 @@ final class HUDView: NSView {
         // When the inventory is open it replaces the in-world HUD.
         if hud.inventory_open != 0 { drawInventory(in: b); return }
 
+        // #42: the quest log overlay draws over the world (game keeps running).
+        // It's an explicit screen, so it shows even when the gameplay HUD is
+        // hidden via the visibility option.
+        if questLogOpen { drawQuestLog(in: b); return }
+
+        // #: HUD visibility toggle — when off, hide all the in-world info
+        // overlays (hotbar, hearts, quest, status box, hints, toasts, etc.).
+        // The crosshair stays so the player can still aim.
+        if !hudVisible {
+            if crosshair {
+                let cx = b.midX, cy = b.midY, s: CGFloat = 8
+                NSColor.white.withAlphaComponent(0.85).setStroke()
+                let path = NSBezierPath()
+                path.lineWidth = 2
+                path.move(to: NSPoint(x: cx - s, y: cy)); path.line(to: NSPoint(x: cx + s, y: cy))
+                path.move(to: NSPoint(x: cx, y: cy - s)); path.line(to: NSPoint(x: cx, y: cy + s))
+                path.stroke()
+            }
+            return
+        }
+
         // --- Death banner (fades over 2s) ---
         let now = Date().timeIntervalSinceReferenceDate
         if now < deathFlashUntil {
@@ -473,7 +542,7 @@ final class HUDView: NSView {
             b.fill()
             let msg = "Oh no! You ran out of hearts!"
             let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.boldSystemFont(ofSize: 34),
+                .font: NSFont.boldSystemFont(ofSize: fs(34)),
                 .foregroundColor: NSColor.white.withAlphaComponent(a),
                 .strokeColor: NSColor.black.withAlphaComponent(a), .strokeWidth: -3.0,
             ]
@@ -499,16 +568,18 @@ final class HUDView: NSView {
         }
         if !lookName.isEmpty {
             let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.boldSystemFont(ofSize: 14), .foregroundColor: NSColor.white,
+                .font: NSFont.boldSystemFont(ofSize: fs(14)), .foregroundColor: NSColor.white,
                 .strokeColor: NSColor.black, .strokeWidth: -3.0,
             ]
             let sz = (lookName as NSString).size(withAttributes: attrs)
-            (lookName as NSString).draw(at: NSPoint(x: b.midX - sz.width / 2, y: b.midY - 28),
+            (lookName as NSString).draw(at: NSPoint(x: b.midX - sz.width / 2, y: b.midY - 28 * hudScale),
                                         withAttributes: attrs)
         }
 
         // --- Hotbar (9 slots, centered along the bottom) ---
-        let slot: CGFloat = 48, gap: CGFloat = 6
+        // Scale the slot size with the HUD scale so larger count badges / item
+        // icons stay proportionate and the hearts/quest anchors above it follow.
+        let slot: CGFloat = 48 * hudScale, gap: CGFloat = 6 * hudScale
         let total = CGFloat(BF_HOTBAR_SLOTS) * slot + CGFloat(BF_HOTBAR_SLOTS - 1) * gap
         var x = b.midX - total / 2
         let y: CGFloat = 24
@@ -541,42 +612,82 @@ final class HUDView: NSView {
         }
         if !heldName.isEmpty {
             let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.boldSystemFont(ofSize: 15), .foregroundColor: NSColor.white,
+                .font: NSFont.boldSystemFont(ofSize: fs(15)), .foregroundColor: NSColor.white,
                 .strokeColor: NSColor.black, .strokeWidth: -3.0,
             ]
             let sz = (heldName as NSString).size(withAttributes: attrs)
-            (heldName as NSString).draw(at: NSPoint(x: b.midX - sz.width / 2, y: y + slot + 8), withAttributes: attrs)
+            (heldName as NSString).draw(at: NSPoint(x: b.midX - sz.width / 2, y: y + slot + 8 * hudScale), withAttributes: attrs)
         }
 
         // --- Health hearts (survival) ---
         if hud.mode == BF_MODE_SURVIVAL {
-            let heartsY = y + slot + 34
+            let heartsY = y + slot + 34 * hudScale
             drawHearts(value: hud.health, max: 20, at: NSPoint(x: b.midX - total / 2, y: heartsY))
             // Oxygen bubbles above the hearts, only while underwater (not full).
             if hud.oxygen < 0.999 {
-                drawBubbles(value: hud.oxygen, at: NSPoint(x: b.midX - total / 2, y: heartsY + 18))
+                drawBubbles(value: hud.oxygen, at: NSPoint(x: b.midX - total / 2, y: heartsY + 18 * hudScale))
             }
         }
 
-        // --- Active quest (top-left) ---
+        // --- #42/#: Active quest (top-left), now wrapped in a rounded
+        // translucent dark panel matching the top-right status box so it reads
+        // clearly on any terrain. Keeps the ★ title, objective, and the green
+        // progress bar. Sized to its content + scaled with the HUD scale.
+        // questPanelBottom carries the panel's bottom edge so the coords readout
+        // below can anchor under it at any size.
+        var questPanelBottom = b.maxY - 24    // default top-left when no quest
         if hud.active_quest_id != 0 {
             let title = withUnsafeBytes(of: hud.quest_title) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
             let obj = withUnsafeBytes(of: hud.quest_objective) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
-            drawText("★ " + title, at: NSPoint(x: 20, y: b.maxY - 36), size: 16, color: .systemYellow, bold: true)
-            drawText(obj, at: NSPoint(x: 20, y: b.maxY - 58), size: 13, color: .white, bold: false)
-            // progress bar
-            let barRect = NSRect(x: 20, y: b.maxY - 70, width: 200, height: 6)
+            let titleStr = "★ " + title
+
+            let titleAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: fs(16)), .foregroundColor: NSColor.systemYellow,
+                .strokeColor: NSColor.black, .strokeWidth: -2.0,
+            ]
+            let objAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: fs(13)), .foregroundColor: NSColor.white,
+                .strokeColor: NSColor.black, .strokeWidth: -2.0,
+            ]
+            let tSz = (titleStr as NSString).size(withAttributes: titleAttrs)
+            let oSz = (obj as NSString).size(withAttributes: objAttrs)
+
+            let pad: CGFloat = 8 * hudScale
+            let lineGap: CGFloat = 3 * hudScale
+            let barH: CGFloat = 6 * hudScale
+            let barGap: CGFloat = 5 * hudScale
+            let contentW = max(max(tSz.width, oSz.width), 200 * hudScale)
+            let boxW = contentW + pad * 2
+            let boxH = tSz.height + oSz.height + barH + lineGap + barGap + pad * 2
+            let margin: CGFloat = 16
+            let box = NSRect(x: margin, y: b.maxY - margin - boxH, width: boxW, height: boxH)
+
+            // Panel: same look as the status box (dark fill + subtle border).
+            NSColor.black.withAlphaComponent(0.45).setFill()
+            let rr = NSBezierPath(roundedRect: box, xRadius: 8, yRadius: 8)
+            rr.fill()
+            NSColor.white.withAlphaComponent(0.20).setStroke()
+            rr.lineWidth = 1; rr.stroke()
+
+            // Title, objective, then the progress bar — stacked top-to-bottom.
+            var ly = box.maxY - pad - tSz.height
+            (titleStr as NSString).draw(at: NSPoint(x: box.minX + pad, y: ly), withAttributes: titleAttrs)
+            ly -= oSz.height + lineGap
+            (obj as NSString).draw(at: NSPoint(x: box.minX + pad, y: ly), withAttributes: objAttrs)
+            ly -= barGap + barH
+            let barRect = NSRect(x: box.minX + pad, y: ly, width: contentW, height: barH)
             NSColor.black.withAlphaComponent(0.5).setFill()
-            NSBezierPath(roundedRect: barRect, xRadius: 3, yRadius: 3).fill()
+            NSBezierPath(roundedRect: barRect, xRadius: barH / 2, yRadius: barH / 2).fill()
             let p = CGFloat(max(0, min(1, hud.quest_progress)))
             NSColor.systemGreen.setFill()
             NSBezierPath(roundedRect: NSRect(x: barRect.minX, y: barRect.minY,
                                              width: barRect.width * p, height: barRect.height),
-                         xRadius: 3, yRadius: 3).fill()
+                         xRadius: barH / 2, yRadius: barH / 2).fill()
+            questPanelBottom = box.minY
         }
 
         // --- #12: Coordinates + facing readout (top-left, always visible) ---
-        // Sits under the quest block when a quest is active so they don't
+        // Sits under the quest panel when a quest is active so they don't
         // overlap; otherwise tucks into the top-left corner. Compact: a coord
         // line + a cardinal direction badge.
         do {
@@ -586,17 +697,16 @@ final class HUDView: NSView {
             let dir = cardinal(from: playerFacing)
             let coordStr = "X: \(xi)   Y: \(yi)   Z: \(zi)"
             let facingStr = "Facing: \(dir)"
-            // Anchor below the quest panel if present (progress bar bottom is
-            // b.maxY - 70), else top-left corner.
-            let topY = (hud.active_quest_id != 0) ? (b.maxY - 92) : (b.maxY - 24)
+            // Anchor just below the quest panel (its bottom edge), else top-left.
+            let topY = (hud.active_quest_id != 0) ? (questPanelBottom - 8) : (b.maxY - 24)
             let coAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold),
+                .font: NSFont.monospacedDigitSystemFont(ofSize: fs(13), weight: .semibold),
                 .foregroundColor: NSColor.white,
                 .strokeColor: NSColor.black, .strokeWidth: -3.0,
             ]
             let cSz = (coordStr as NSString).size(withAttributes: coAttrs)
             let fSz = (facingStr as NSString).size(withAttributes: coAttrs)
-            let pad: CGFloat = 6
+            let pad: CGFloat = 6 * hudScale
             let boxW = max(cSz.width, fSz.width) + pad * 2
             let boxH = cSz.height + fSz.height + pad * 2 + 2
             let box = NSRect(x: 16, y: topY - boxH + cSz.height, width: boxW, height: boxH)
@@ -615,15 +725,20 @@ final class HUDView: NSView {
         // top-right with a margin so it never overlaps the top-left quest panel.
         drawStatusBox(in: b)
 
-        // Always-visible Guide hint (bottom-right) so kids discover the helper.
-        let guideHint = "❓ Stuck? Press G for the Guide"
-        let ghAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.boldSystemFont(ofSize: 12),
+        // Always-visible hints (bottom-right) so kids discover the helpers:
+        // the Guide companion (G) and the new quest log (#42, L). Stacked.
+        let hintAttrsFor: (CGFloat) -> [NSAttributedString.Key: Any] = { size in [
+            .font: NSFont.boldSystemFont(ofSize: size),
             .foregroundColor: NSColor.white.withAlphaComponent(0.8),
             .strokeColor: NSColor.black.withAlphaComponent(0.8), .strokeWidth: -3.0,
-        ]
+        ] }
+        let ghAttrs = hintAttrsFor(fs(12))
+        let guideHint = "❓ Stuck? Press G for the Guide"
+        let questHint = "📜 Press L for the Quest Log"
         let ghSz = (guideHint as NSString).size(withAttributes: ghAttrs)
-        (guideHint as NSString).draw(at: NSPoint(x: b.maxX - ghSz.width - 14, y: 14), withAttributes: ghAttrs)
+        let qhSz = (questHint as NSString).size(withAttributes: ghAttrs)
+        (questHint as NSString).draw(at: NSPoint(x: b.maxX - qhSz.width - 14, y: 14), withAttributes: ghAttrs)
+        (guideHint as NSString).draw(at: NSPoint(x: b.maxX - ghSz.width - 14, y: 14 + qhSz.height + 4), withAttributes: ghAttrs)
 
         // Achievement toast (top-center banner) when one was just unlocked.
         let toast = withUnsafeBytes(of: hud.achievement_toast) { raw -> String in
@@ -631,7 +746,7 @@ final class HUDView: NSView {
         }
         if !toast.isEmpty {
             let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.boldSystemFont(ofSize: 20),
+                .font: NSFont.boldSystemFont(ofSize: fs(20)),
                 .foregroundColor: NSColor(red: 1.0, green: 0.86, blue: 0.30, alpha: 1),
                 .strokeColor: NSColor.black, .strokeWidth: -3.0,
             ]
@@ -715,10 +830,10 @@ final class HUDView: NSView {
 
         // Layout: measure every line, size the box to the widest, stack them
         // with consistent padding + line spacing.
-        let fontSize: CGFloat = 13
-        let pad: CGFloat = 8           // inner padding
-        let lineGap: CGFloat = 3       // gap between lines
-        let margin: CGFloat = 16       // distance from the top-right corner
+        let fontSize: CGFloat = fs(13)
+        let pad: CGFloat = 8 * hudScale    // inner padding
+        let lineGap: CGFloat = 3 * hudScale // gap between lines
+        let margin: CGFloat = 16           // distance from the top-right corner
 
         func attrs(_ l: StatusLine) -> [NSAttributedString.Key: Any] {
             [
@@ -772,6 +887,143 @@ final class HUDView: NSView {
                              xRadius: 1.5, yRadius: 1.5).fill()
             }
             ly -= lineH + lineGap
+        }
+    }
+
+    // ===== #42: Quest / progression log overlay =============================
+    // A toggleable panel (L) listing the FULL quest chain so the player can see
+    // their progress. Done quests show a green check and are dimmed; the active
+    // quest is highlighted with its objective + a green progress bar (same look
+    // as the top-left quest bar); upcoming quests look locked with their
+    // objective shown as a faint hint. Scrollable for ~15 rows. Matches the
+    // translucent-dark rounded-panel HUD aesthetic. Honours the HUD text scale.
+    private func drawQuestLog(in b: NSRect) {
+        // Dim the world behind the overlay so the list reads clearly.
+        NSColor.black.withAlphaComponent(0.55).setFill()
+        b.fill()
+
+        // Outer panel, centered, sized as a comfortable fraction of the window.
+        let panelW = min(b.width - 80, 560 * hudScale)
+        let panelH = min(b.height - 100, 620 * hudScale)
+        let panel = NSRect(x: b.midX - panelW / 2, y: b.midY - panelH / 2,
+                           width: panelW, height: panelH)
+        NSColor.black.withAlphaComponent(0.55).setFill()
+        let pp = NSBezierPath(roundedRect: panel, xRadius: 12, yRadius: 12); pp.fill()
+        NSColor.white.withAlphaComponent(0.20).setStroke()
+        pp.lineWidth = 1.5; pp.stroke()
+
+        let pad: CGFloat = 16 * hudScale
+
+        // Title strip.
+        let titleH = fs(24)
+        drawText("📜 Quest Log", at: NSPoint(x: panel.minX + pad, y: panel.maxY - pad - titleH),
+                 size: fs(22), color: .systemYellow, bold: true)
+        drawText("Press L or Esc to close", at: NSPoint(x: panel.minX + pad, y: panel.maxY - pad - titleH - fs(16)),
+                 size: fs(12), color: NSColor.white.withAlphaComponent(0.7), bold: false)
+
+        // Empty-state message if the engine hasn't reported any quests yet.
+        if quests.isEmpty {
+            drawText("No quests yet — start exploring!",
+                     at: NSPoint(x: panel.minX + pad, y: panel.midY),
+                     size: fs(14), color: NSColor.white.withAlphaComponent(0.8), bold: false)
+            questLogViewport = .zero; maxQuestLogScroll = 0
+            return
+        }
+
+        // Scrollable rows region below the header.
+        let viewTop = panel.maxY - pad - titleH - fs(16) - 12 * hudScale
+        let viewBottom = panel.minY + pad
+        let viewport = NSRect(x: panel.minX + pad, y: viewBottom,
+                              width: panelW - pad * 2, height: max(40, viewTop - viewBottom))
+        questLogViewport = viewport
+
+        let rowH: CGFloat = 64 * hudScale
+        let rowGap: CGFloat = 8 * hudScale
+        let n = quests.count
+        let contentH = CGFloat(n) * (rowH + rowGap) - rowGap
+        maxQuestLogScroll = max(0, contentH - viewport.height)
+        questLogScroll = min(max(0, questLogScroll), maxQuestLogScroll)
+
+        clipped(to: [NSPoint(x: viewport.minX, y: viewport.minY),
+                     NSPoint(x: viewport.maxX, y: viewport.minY),
+                     NSPoint(x: viewport.maxX, y: viewport.maxY),
+                     NSPoint(x: viewport.minX, y: viewport.maxY)]) {
+            for (i, q) in quests.enumerated() {
+                // Row 0 at the top of the viewport; scroll moves rows up.
+                let ry = viewport.maxY - rowH - CGFloat(i) * (rowH + rowGap) + questLogScroll
+                let rowRect = NSRect(x: viewport.minX, y: ry, width: viewport.width, height: rowH)
+                if rowRect.maxY < viewport.minY || rowRect.minY > viewport.maxY { continue }
+                drawQuestRow(rowRect, quest: q)
+            }
+        }
+
+        if maxQuestLogScroll > 0 {
+            drawScrollbar(in: viewport, contentH: contentH, scroll: questLogScroll)
+        }
+    }
+
+    // One quest row: state-styled. DONE = green check + dimmed; ACTIVE =
+    // highlighted with objective + progress bar; UPCOMING = locked/dimmed hint.
+    private func drawQuestRow(_ rowRect: NSRect, quest q: QuestRow) {
+        let active = (q.state == UInt8(BF_QUEST_ACTIVE.rawValue))
+        let done   = (q.state == UInt8(BF_QUEST_DONE.rawValue))
+        let pad: CGFloat = 10 * hudScale
+
+        // Row background — the active quest is highlighted; others are subtle.
+        (active ? NSColor.systemGreen.withAlphaComponent(0.18)
+                : NSColor.black.withAlphaComponent(0.45)).setFill()
+        let rr = NSBezierPath(roundedRect: rowRect, xRadius: 6, yRadius: 6); rr.fill()
+        (active ? NSColor.systemGreen.withAlphaComponent(0.80)
+                : NSColor.white.withAlphaComponent(0.18)).setStroke()
+        rr.lineWidth = active ? 2 : 1; rr.stroke()
+
+        // Leading status glyph.
+        let glyph = done ? "✅" : (active ? "⭐️" : "🔒")
+        let glyphAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: fs(20))]
+        let gSz = (glyph as NSString).size(withAttributes: glyphAttrs)
+        (glyph as NSString).draw(at: NSPoint(x: rowRect.minX + pad, y: rowRect.maxY - pad - gSz.height),
+                                 withAttributes: glyphAttrs)
+
+        let textX = rowRect.minX + pad + gSz.width + 8 * hudScale
+        let textW = rowRect.maxX - pad - textX
+
+        // Title — dimmed for done/upcoming, bright for active.
+        let titleColor: NSColor = active ? .systemYellow
+            : (done ? NSColor.systemGreen.withAlphaComponent(0.85)
+                    : NSColor.white.withAlphaComponent(0.45))
+        let titleAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: fs(15)), .foregroundColor: titleColor,
+        ]
+        let title = truncated(q.title, to: textW, attrs: titleAttrs)
+        let tSz = (title as NSString).size(withAttributes: titleAttrs)
+        (title as NSString).draw(at: NSPoint(x: textX, y: rowRect.maxY - pad - tSz.height),
+                                 withAttributes: titleAttrs)
+
+        // Objective line — shown for active (its current goal) and upcoming (as a
+        // faint hint). Done quests skip it to read as "completed".
+        if !done {
+            let objColor = active ? NSColor.white.withAlphaComponent(0.9)
+                                  : NSColor.white.withAlphaComponent(0.40)
+            let objAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: fs(12)), .foregroundColor: objColor,
+            ]
+            let obj = truncated(q.objective, to: textW, attrs: objAttrs)
+            (obj as NSString).draw(at: NSPoint(x: textX, y: rowRect.maxY - pad - tSz.height - fs(12) - 4 * hudScale),
+                                   withAttributes: objAttrs)
+        }
+
+        // Progress bar for the active quest — same green-bar look as the
+        // top-left quest panel.
+        if active {
+            let barH: CGFloat = 6 * hudScale
+            let barRect = NSRect(x: textX, y: rowRect.minY + pad, width: textW, height: barH)
+            NSColor.black.withAlphaComponent(0.5).setFill()
+            NSBezierPath(roundedRect: barRect, xRadius: barH / 2, yRadius: barH / 2).fill()
+            let p = CGFloat(max(0, min(1, q.progress)))
+            NSColor.systemGreen.setFill()
+            NSBezierPath(roundedRect: NSRect(x: barRect.minX, y: barRect.minY,
+                                             width: barRect.width * p, height: barRect.height),
+                         xRadius: barH / 2, yRadius: barH / 2).fill()
         }
     }
 
@@ -838,7 +1090,7 @@ final class HUDView: NSView {
         // Title sits just above the top inventory row (rects[9] is the top-left
         // main slot). Keeps the header anchored to the grid at any window size.
         let invTop = rects[9].maxY
-        drawText("Inventory", at: NSPoint(x: originX, y: invTop + 14), size: 20, color: .white, bold: true)
+        drawText("Inventory", at: NSPoint(x: originX, y: invTop + 14), size: fs(20), color: .white, bold: true)
 
         withUnsafeBytes(of: hud.inventory) { raw in
             let inv = raw.bindMemory(to: bf_hud_slot.self)
@@ -877,7 +1129,7 @@ final class HUDView: NSView {
                                                   y: trash.midY - tgSz.height / 2),
                                       withAttributes: tgAttrs)
         drawText("Trash", at: NSPoint(x: trash.minX, y: trash.minY - 15),
-                 size: 11, color: NSColor(srgbRed: 1.0, green: 0.55, blue: 0.55, alpha: 1),
+                 size: fs(11), color: NSColor(srgbRed: 1.0, green: 0.55, blue: 0.55, alpha: 1),
                  bold: true)
 
         // --- #16: Craftable recipes — a SINGLE-column scrollable list BELOW the
@@ -924,7 +1176,7 @@ final class HUDView: NSView {
         // Title strip.
         drawText(n == 0 ? "Nothing craftable yet — gather wood and stone!"
                         : "Crafting  (click a row to craft  •  1–9 = number key)",
-                 at: NSPoint(x: originX, y: titleY), size: 12, color: .systemYellow, bold: true)
+                 at: NSPoint(x: originX, y: titleY), size: fs(12), color: .systemYellow, bold: true)
 
         // Total content height & scroll clamp. Top row sits at the top of the
         // viewport; subsequent rows below it. scroll moves the content UP.
@@ -977,7 +1229,7 @@ final class HUDView: NSView {
 
         // Bottom hint — sits at the very bottom of the screen.
         drawText("Esc / E to close   •   click a stack to pick it up, click a slot to place it",
-                 at: NSPoint(x: originX, y: 18), size: 12, color: .white, bold: false)
+                 at: NSPoint(x: originX, y: 18), size: fs(12), color: .white, bold: false)
 
         // --- Hover tooltips (only when not carrying a stack, so the tooltip
         //     doesn't fight the ghost). A craftable row under the cursor takes
@@ -1086,10 +1338,10 @@ final class HUDView: NSView {
             let nameStr = itemName(s.item)
             let countStr = "×\(s.count)"
             let nameAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.boldSystemFont(ofSize: 12), .foregroundColor: NSColor.white,
+                .font: NSFont.boldSystemFont(ofSize: fs(12)), .foregroundColor: NSColor.white,
             ]
             let cntAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 11),
+                .font: NSFont.systemFont(ofSize: fs(11)),
                 .foregroundColor: NSColor.white.withAlphaComponent(0.75),
             ]
             let nameSz = (nameStr as NSString).size(withAttributes: nameAttrs)
@@ -1162,9 +1414,9 @@ final class HUDView: NSView {
         pp.lineWidth = 1.5; pp.stroke()
 
         drawText("Creative Items", at: NSPoint(x: panel.minX + 12, y: panel.maxY - titleH),
-                 size: 14, color: .systemTeal, bold: true)
+                 size: fs(14), color: .systemTeal, bold: true)
         drawText("click to get one", at: NSPoint(x: panel.minX + 12, y: panel.maxY - titleH - 15),
-                 size: 10, color: NSColor.white.withAlphaComponent(0.7), bold: false)
+                 size: fs(10), color: NSColor.white.withAlphaComponent(0.7), bold: false)
 
         // Grid geometry inside the panel.
         let pad: CGFloat = 10
@@ -1235,15 +1487,15 @@ final class HUDView: NSView {
         let desc = itemId != 0 ? itemDescription(id: itemId) : ""
 
         let titleAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.boldSystemFont(ofSize: 13), .foregroundColor: NSColor.white,
+            .font: NSFont.boldSystemFont(ofSize: fs(13)), .foregroundColor: NSColor.white,
         ]
         let descAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11),
+            .font: NSFont.systemFont(ofSize: fs(11)),
             .foregroundColor: NSColor.white.withAlphaComponent(0.75),
         ]
 
         // Maximum tooltip width so long descriptions wrap neatly.
-        let maxW: CGFloat = 260
+        let maxW: CGFloat = 260 * hudScale
         let pad: CGFloat = 7
         let titleSz = (titleLine as NSString).size(withAttributes: titleAttrs)
 
@@ -1265,7 +1517,7 @@ final class HUDView: NSView {
             if !current.isEmpty { descLines.append(current) }
         }
 
-        let lineH: CGFloat = 14
+        let lineH: CGFloat = 14 * hudScale
         let totalH = titleSz.height + (descLines.isEmpty ? 0 : CGFloat(descLines.count) * lineH + 4) + pad
         let boxW = min(maxW, max(titleSz.width + pad * 2,
                                  descLines.map { ($0 as NSString).size(withAttributes: descAttrs).width }.max().map { $0 + pad * 2 } ?? 0))
@@ -1330,8 +1582,11 @@ final class HUDView: NSView {
             drawItemIcon(id: id, in: chip, base: base)
         }
         if count > 1 {
-            drawText("\(count)", at: NSPoint(x: rect.maxX - 18, y: rect.minY + 3),
-                     size: 12, color: .white, bold: true)
+            // Badge font tracks the cell size so it stays legible when the HUD
+            // (and thus the hotbar/inventory cells) are scaled up.
+            let badgeSize = max(10, min(16, rect.height * 0.26))
+            drawText("\(count)", at: NSPoint(x: rect.maxX - badgeSize * 1.5, y: rect.minY + 3),
+                     size: badgeSize, color: .white, bold: true)
         }
     }
 
@@ -2135,10 +2390,11 @@ final class HUDView: NSView {
 
     private func drawHearts(value: Float, max: Int, at origin: NSPoint) {
         let full = Int(value.rounded())
+        let step = 16 * hudScale, sz = 12 * hudScale
         for i in 0..<max / 2 {
             let filled = (i * 2) < full
             (filled ? NSColor.systemRed : NSColor.black.withAlphaComponent(0.4)).setFill()
-            let r = NSRect(x: origin.x + CGFloat(i) * 16, y: origin.y, width: 12, height: 12)
+            let r = NSRect(x: origin.x + CGFloat(i) * step, y: origin.y, width: sz, height: sz)
             NSBezierPath(ovalIn: r).fill()
         }
     }
@@ -2146,9 +2402,10 @@ final class HUDView: NSView {
     private func drawBubbles(value: Float, at origin: NSPoint) {
         // 10 air bubbles; fill count tracks remaining oxygen (1 = full).
         let count = 10
+        let step = 16 * hudScale, sz = 12 * hudScale
         let filled = Int((max(0, min(1, value)) * Float(count)).rounded())
         for i in 0..<count {
-            let r = NSRect(x: origin.x + CGFloat(i) * 16, y: origin.y, width: 12, height: 12)
+            let r = NSRect(x: origin.x + CGFloat(i) * step, y: origin.y, width: sz, height: sz)
             if i < filled {
                 NSColor.systemBlue.setFill(); NSBezierPath(ovalIn: r).fill()
                 NSColor.white.withAlphaComponent(0.6).setStroke()
