@@ -536,6 +536,7 @@ public:
         // footstep to re-trigger instantly and sound jittery on bumpy ground.)
 
         maintain_creatures(float(dt));   // spawn near the player, despawn far away
+        maintain_villagers(float(dt));   // #39: friendly people at structures
         update_creatures(float(dt));
         update_falling(float(dt));        // sand/gravel + felled-tree logs in mid-air
     }
@@ -780,6 +781,7 @@ public:
         if (inv_) for (int i = 0; i < BF_INVENTORY_SLOTS; ++i) inv_->set(std::size_t(i), ItemStack{});
     }
     int     debug_creature_count() const { return int(creatures_.size()); }
+    int     debug_villager_count() const { int n=0; for (auto& c : creatures_) if (c.model == 20) ++n; return n; }   // #39
     int     debug_hostile_count() const {
         int n = 0; for (auto& c : creatures_) if (c.hostile) ++n; return n;
     }
@@ -1091,6 +1093,7 @@ private:
             const char* bk = biome_key();
             for (auto& d : extra_->creatures()) {
                 if ((d.disposition == "boss") != boss) continue;
+                if (d.model == 20) continue;   // villagers (#39) spawn only at structures
                 if (!boss) {
                     // Day-animal ring: peaceful land animals only — hostiles and fish
                     // have their own spawn paths; biome-gate the rest.
@@ -1102,7 +1105,7 @@ private:
             // Never fail to spawn: if the biome filter emptied the pool, use all peaceful.
             if (pool.empty() && !boss)
                 for (auto& d : extra_->creatures())
-                    if (d.disposition != "boss" && d.disposition != "hostile" && d.disposition != "aquatic")
+                    if (d.disposition != "boss" && d.disposition != "hostile" && d.disposition != "aquatic" && d.model != 20)
                         pool.push_back(&d);
             if (!pool.empty()) {
                 const CreatureDefX* d = pool[std::size_t(rand01() * float(pool.size())) % pool.size()];
@@ -1461,7 +1464,9 @@ private:
             creatures_.erase(std::remove_if(creatures_.begin(), creatures_.end(),
                 [](const Creature& c){ return c.hostile; }), creatures_.end());
         int ambient = 0, bosses = 0, hostiles = 0;
-        for (auto& c : creatures_) { if (c.hostile) ++hostiles; else if (c.is_boss) ++bosses; else ++ambient; }
+        // Villagers (model 20) are structure-spawned (#39), not part of the ambient
+        // day-animal budget — don't let them block animal spawns.
+        for (auto& c : creatures_) { if (c.hostile) ++hostiles; else if (c.is_boss) ++bosses; else if (c.model != 20) ++ambient; }
         creature_timer_ = 1.0f;   // default cadence when nothing needs spawning
         if (monstersActive) {
             // Pace hostile spawns so caves/night are challenging but explorable (#7):
@@ -1478,6 +1483,61 @@ private:
         // Fish swim in nearby water, independent of the land-spawn chain (#20).
         int fish = 0; for (auto& c : creatures_) if (c.aquatic) ++fish;
         if (fish < 4 && rand01() < 0.5f) spawn_fish(6.0f, 22.0f);
+    }
+
+    // #39: put friendly PEOPLE at structures. Sample the structure grid around the
+    // player; for each structure within range that has no villager yet, spawn one.
+    // Keyed on presence (not a persistent set) so villagers respawn if you leave and
+    // return. Villagers are content creatures with model 20 (the humanoid).
+    void maintain_villagers(float dt) {
+        if (!gen_ || !extra_ || store_.resident_count() < 20) return;
+        villager_timer_ -= dt;
+        if (villager_timer_ > 0) return;
+        villager_timer_ = 2.0f;
+        // Cap nearby people so dense structure clusters don't mob the player.
+        constexpr int kVillagerCap = 6;
+        int have = 0; for (auto& c : creatures_) if (c.model == 20) ++have;
+        if (have >= kVillagerCap) return;
+        int px = ifloor(pos_.x), pz = ifloor(pos_.z);
+        for (int dz = -128; dz <= 128; dz += 64)
+        for (int dx = -128; dx <= 128; dx += 64) {
+            if (have >= kVillagerCap) return;
+            std::int32_t ax = 0, az = 0; int ay = 0;
+            if (worldgen_structure_near(px + dx, pz + dz, seed_, &ax, &az, &ay) == 0) continue;
+            float ddx = float(ax) - pos_.x, ddz = float(az) - pos_.z;
+            if (ddx*ddx + ddz*ddz > 80.0f * 80.0f) continue;          // only nearby ones
+            if (!store_.is_resident(to_chunk(IVec3{ax, ay, az}))) continue;
+            bool present = false;
+            for (auto& c : creatures_)
+                if (c.model == 20 && std::abs(c.pos.x - float(ax)) < 10 && std::abs(c.pos.z - float(az)) < 10) { present = true; break; }
+            if (present) continue;
+            have += spawn_villager_at(ax, ay, az, kVillagerCap - have);
+        }
+    }
+    int spawn_villager_at(int ax, int ay, int az, int budget) {
+        std::vector<const CreatureDefX*> pool;
+        for (auto& d : extra_->creatures()) if (d.model == 20) pool.push_back(&d);
+        if (pool.empty() || budget <= 0) return 0;
+        int n = std::min(budget, 1 + (rand01() < 0.5f ? 1 : 0));      // 1-2 people per structure
+        int made = 0;
+        for (int i = 0; i < n; ++i) {
+            float ox = float(ax) + (rand01() * 5.0f - 2.5f);
+            float oz = float(az) + (rand01() * 5.0f - 2.5f);
+            int gy = floor_below(ifloor(ox), ay + 4, ifloor(oz));
+            if (gy == kNoFloor) continue;
+            if (block_at(IVec3{ifloor(ox), gy + 1, ifloor(oz)}) == WATER) continue;
+            const CreatureDefX* d = pool[std::size_t(rand01() * float(pool.size())) % pool.size()];
+            Creature c;
+            c.pos = V3{ox, float(gy), oz}; c.yaw = rand01() * 6.2831853f;
+            c.model = d->model;                                      // 20 = humanoid villager
+            c.name = std::string(d->name);
+            c.speed = (d->move_speed > 0) ? d->move_speed * 0.5f : 0.8f;   // amble slowly
+            c.hp = (d->max_health > 0) ? int(d->max_health) : 20;
+            c.scale = 0.95f; c.color = color_for("passive", d->id);
+            c.wander = 1.0f + rand01() * 2.0f;
+            creatures_.push_back(c); ++made;
+        }
+        return made;
     }
 
     void update_creatures(float dt) {
@@ -2050,6 +2110,7 @@ private:
     std::vector<FallingBlock>     falling_;
     std::vector<bf_entity_draw>   entities_;
     float                         creature_timer_{0.0f};
+    float                         villager_timer_{0.0f};   // #39: structure NPC spawn cadence
     std::uint32_t                 rng_{0x1234567u};
     int                           regions_restored_{0};
     int                           creatures_befriended_{0};

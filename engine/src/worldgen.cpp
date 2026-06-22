@@ -1941,20 +1941,25 @@ static constexpr BlockId MARKER_BLOCK = 34;  // beacon_block
 // diagnostic probe (worldgen_count_structures) and tests stay in sync.
 static constexpr std::uint64_t STRUCT_PROB_THRESH = 128u;
 
-// Structure type codes (#17).
+// Structure type codes (#17, extended #39).  Engine-visible — the STRUCT_*
+// int->name table is mirrored in worldgen.hpp for worldgen_structure_near().
 static constexpr int STRUCT_NONE         = 0;
-static constexpr int STRUCT_CABIN        = 1;   // walled cabin w/ roof+door+windows
+static constexpr int STRUCT_CABIN        = 1;   // walled cabin w/ roof+door+windows+chimney
 static constexpr int STRUCT_OBELISK      = 2;   // tapering monolith + lamp capstone
-static constexpr int STRUCT_CAMP         = 3;   // campfire + wool tents
+static constexpr int STRUCT_CAMP         = 3;   // campfire + wool tents + log fence
 static constexpr int STRUCT_WATCHTOWER   = 4;   // multi-storey tower w/ stairs
-static constexpr int STRUCT_TEMPLE       = 5;   // ruined stone-brick shrine + chest
-static constexpr int STRUCT_CAIRN        = 6;   // stacked rock pile
-static constexpr int STRUCT_WELL         = 7;   // stone-brick well w/ roof
+static constexpr int STRUCT_TEMPLE       = 5;   // ruined stone-brick shrine + columns + steps + chest
+static constexpr int STRUCT_CAIRN        = 6;   // stacked rock pile w/ broad base
+static constexpr int STRUCT_WELL         = 7;   // stone-brick well w/ canopy roof + bucket
+static constexpr int STRUCT_VILLAGE      = 8;   // #39 cluster of 2-3 tiny huts + shared fire
+static constexpr int STRUCT_SHRINE       = 9;   // #39 ring of standing stones + lit altar
 
 // Max XZ reach from anchor for seam-safe cell scan (conservative).  The widest
-// build (cabin/temple footprint, or camp tents pitched beside the fire) reaches
-// ±4 from the anchor; we scan ±6 so every overlapping chunk iterates the cell.
-static constexpr int STRUCT_MAX_REACH_XZ = 6;
+// builds (#39 village huts and the shrine standing-stone ring, plus the camp's
+// log fence) reach ±5 from the anchor; we scan ±7 so every overlapping chunk
+// iterates the cell and emits identical clipped voxels.  Anchor offset is kept in
+// [7, 56] (below) so a build never reaches outside its own 64×64 cell.
+static constexpr int STRUCT_MAX_REACH_XZ = 7;
 
 struct StructDesc {
     std::int32_t anchor_wx;    // world X of structure anchor
@@ -1986,10 +1991,13 @@ static StructDesc struct_for_cell(std::int32_t scx, std::int32_t scz,
         return StructDesc{0, 0, STRUCT_NONE, 0, false};
     }
 
-    // Anchor position: offset within cell so it is not always at corner.
+    // Anchor position: offset within cell so it is not always at corner.  Kept in
+    // [7, 56] so even the widest build (reach ±7, #39 village/shrine) stays inside
+    // its own 64×64 cell — no build ever crosses a cell boundary, which keeps the
+    // per-cell resolution (footprint / structure_near) unambiguous and seam-safe.
     std::uint64_t h2s = fmix64(h ^ 0xFACEBEEF0BABULL);
-    std::int32_t off_x = 4 + static_cast<std::int32_t>((h2s >>  0u) & 0x37u);  // 4..59
-    std::int32_t off_z = 4 + static_cast<std::int32_t>((h2s >> 16u) & 0x37u);  // 4..59
+    std::int32_t off_x = 7 + static_cast<std::int32_t>((h2s >>  0u) % 50u);  // 7..56
+    std::int32_t off_z = 7 + static_cast<std::int32_t>((h2s >> 16u) % 50u);  // 7..56
 
     std::int32_t ax = scx * STRUCT_CELL_SIZE + off_x;
     std::int32_t az = scz * STRUCT_CELL_SIZE + off_z;
@@ -2004,45 +2012,56 @@ static StructDesc struct_for_cell(std::int32_t scx, std::int32_t scz,
         return StructDesc{0, 0, STRUCT_NONE, 0, false};
     }
 
-    // Choose structure type based on biome and hash bits (#17 — every biome gets
-    // a varied, recognizable mix of builds rather than one repeated box).
+    // Choose structure type based on biome and hash bits (#17/#39 — every biome
+    // gets a varied, recognizable mix of builds rather than one repeated box).
+    // Distribution is balanced per biome: each biome offers 4-5 distinct types
+    // with no single type taking more than ~40% of its cells, and the prominent
+    // WATCHTOWER is now ONE option among many (not the default) so the world no
+    // longer "reads as mostly towers".  type_bits is 0..7 (8 equal buckets).
     std::uint64_t type_bits = (h2s >> 32u) & 0x7u;  // 0..7
     int stype;
 
     switch (dom) {
         case Biome::Mountains:
-            // Mountains: cairns, obelisks, the occasional watchtower keep.
-            stype = (type_bits <= 2u) ? STRUCT_CAIRN     :
-                    (type_bits <= 4u) ? STRUCT_OBELISK   :
-                    (type_bits <= 6u) ? STRUCT_WATCHTOWER: STRUCT_TEMPLE;
+            // Mountains: cairns, obelisks, hillside shrines, a lone keep.
+            stype = (type_bits <= 1u) ? STRUCT_CAIRN      :
+                    (type_bits <= 3u) ? STRUCT_OBELISK    :
+                    (type_bits <= 5u) ? STRUCT_SHRINE     :
+                    (type_bits == 6u) ? STRUCT_WATCHTOWER : STRUCT_TEMPLE;
             break;
         case Biome::Desert:
-            // Desert: ruined temples, obelisks, and the odd well/oasis.
-            stype = (type_bits <= 3u) ? STRUCT_TEMPLE   :
-                    (type_bits <= 5u) ? STRUCT_OBELISK  : STRUCT_WELL;
+            // Desert: ruined temples, obelisks, shrines, the odd oasis well.
+            stype = (type_bits <= 2u) ? STRUCT_TEMPLE  :
+                    (type_bits <= 4u) ? STRUCT_OBELISK :
+                    (type_bits <= 6u) ? STRUCT_SHRINE  : STRUCT_WELL;
             break;
         case Biome::Forest:
-            // Forest: cabins, camps, and hidden temples.
-            stype = (type_bits <= 3u) ? STRUCT_CABIN  :
-                    (type_bits <= 5u) ? STRUCT_CAMP   : STRUCT_TEMPLE;
+            // Forest: cabins, camps, hidden temples, the occasional hamlet.
+            stype = (type_bits <= 2u) ? STRUCT_CABIN   :
+                    (type_bits <= 4u) ? STRUCT_CAMP    :
+                    (type_bits <= 5u) ? STRUCT_VILLAGE :
+                    (type_bits == 6u) ? STRUCT_TEMPLE  : STRUCT_SHRINE;
             break;
         case Biome::Plains:
-            // Plains: the full settlement spread — cabins, wells, towers, camps.
-            stype = (type_bits == 0u) ? STRUCT_CABIN      :
-                    (type_bits <= 2u) ? STRUCT_CAMP       :
-                    (type_bits <= 4u) ? STRUCT_WATCHTOWER :
-                    (type_bits <= 5u) ? STRUCT_WELL       : STRUCT_TEMPLE;
+            // Plains: the full settlement spread — villages, cabins, wells,
+            // camps, the occasional lookout tower.
+            stype = (type_bits <= 1u) ? STRUCT_VILLAGE    :
+                    (type_bits <= 3u) ? STRUCT_CABIN      :
+                    (type_bits == 4u) ? STRUCT_WELL       :
+                    (type_bits == 5u) ? STRUCT_CAMP       :
+                    (type_bits == 6u) ? STRUCT_WATCHTOWER : STRUCT_SHRINE;
             break;
         case Biome::Snowy:
-            // Snowy: cabins (shelter), cairns (trail markers), obelisks.
+            // Snowy: cabins (shelter), cairns (trail markers), obelisks, shrines.
             stype = (type_bits <= 2u) ? STRUCT_CABIN   :
                     (type_bits <= 4u) ? STRUCT_CAIRN   :
-                    (type_bits <= 6u) ? STRUCT_OBELISK : STRUCT_WATCHTOWER;
+                    (type_bits <= 6u) ? STRUCT_OBELISK : STRUCT_SHRINE;
             break;
         case Biome::Swamp:
-            // Swamp: stilted watchtowers, camps, sunken wells.
-            stype = (type_bits <= 3u) ? STRUCT_WATCHTOWER :
-                    (type_bits <= 5u) ? STRUCT_CAMP       : STRUCT_WELL;
+            // Swamp: stilted watchtowers, camps, sunken wells, lonely shrines.
+            stype = (type_bits <= 2u) ? STRUCT_WATCHTOWER :
+                    (type_bits <= 4u) ? STRUCT_CAMP       :
+                    (type_bits <= 6u) ? STRUCT_WELL       : STRUCT_SHRINE;
             break;
         default:
             stype = STRUCT_CAIRN;
@@ -2223,6 +2242,22 @@ static void place_cabin(std::int32_t ax, std::int32_t az,
     struct_set(chunk, ax + door_dx, floor_h + 3, az, wx_min, wy_min, wz_min, TORCH);
     struct_set(chunk, ax, floor_h + 1, az, wx_min, wy_min, wz_min, GLOW_BLOCK);
 
+    // Signature feature (#39): a cobblestone CHIMNEY on the back wall corner,
+    // rising 2 blocks above the roof ridge with a glowing hearth at its base, so
+    // a cabin reads unmistakably as a cabin (not a generic box) from a distance.
+    {
+        int chim_dx = -door_dx;                 // back side, opposite the door
+        int chim_x  = ax + chim_dx;
+        int chim_z  = az + (((h >> 7u) & 1u) ? hz : -hz);
+        int ridge_top = wall_top + 1 + (hz + 1);   // y of the gable ridge
+        int chim_top  = ridge_top + 2;
+        struct_fill_col(chunk, chim_x, chim_z, chim_top, seed,
+                        wx_min, wy_min, wz_min, COBBLESTONE);
+        // Hearth fire glimpsed at the chimney base inside the wall line.
+        struct_set(chunk, chim_x, floor_h + 1, chim_z,
+                   wx_min, wy_min, wz_min, GLOW_BLOCK);
+    }
+
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
 
@@ -2234,23 +2269,34 @@ static void place_obelisk(std::int32_t ax, std::int32_t az,
                           IChunk& chunk,
                           std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
     int H = struct_surface(ax, az, seed);
-    int shaft = 5 + static_cast<int>((h >> 4u) % 3u);   // 5..7
+    int shaft = 7 + static_cast<int>((h >> 4u) % 4u);   // 7..10 (taller, #39)
 
-    // Plinth: a 3×3 step of stone_brick at the base, each column filled to H+1.
+    // Stepped two-tier PLINTH for a stronger, recognizable silhouette (#39):
+    // a wide 3×3 base course (H+1) and a 1×1 raised pedestal (H+2) the shaft
+    // springs from.  Each column filled from its own surface (supported).
     for (int dz = -1; dz <= 1; ++dz)
         for (int dx = -1; dx <= 1; ++dx) {
             int top = struct_surface(ax + dx, az + dz, seed) + 1;
             struct_fill_col(chunk, ax + dx, az + dz, top, seed,
                             wx_min, wy_min, wz_min, STONE_BRICK);
         }
+    struct_set(chunk, ax, H + 2, az, wx_min, wy_min, wz_min, STONE_BRICK);   // pedestal
 
-    // Tapering shaft on the centre: stone with mossy banding.
-    for (int dy = 2; dy <= shaft + 1; ++dy) {
+    // Four small corner markers ring the plinth so the base reads as deliberate.
+    int marks[4][2] = {{2,2},{-2,2},{2,-2},{-2,-2}};
+    for (int i = 0; i < 4; ++i) {
+        int mh = struct_surface(ax + marks[i][0], az + marks[i][1], seed) + 1;
+        struct_fill_col(chunk, ax + marks[i][0], az + marks[i][1], mh, seed,
+                        wx_min, wy_min, wz_min, MOSSY_STONE);
+    }
+
+    // Tapering shaft on the centre (springs from the pedestal): stone w/ banding.
+    for (int dy = 3; dy <= shaft + 2; ++dy) {
         BlockId b = ((h >> static_cast<unsigned>(dy)) & 1u) ? MOSSY_STONE : STONE;
         struct_set(chunk, ax, H + dy, az, wx_min, wy_min, wz_min, b);
     }
     // Crystal-lamp capstone glints on top.
-    struct_set(chunk, ax, H + shaft + 2, az, wx_min, wy_min, wz_min, CRYSTAL_LAMP);
+    struct_set(chunk, ax, H + shaft + 3, az, wx_min, wy_min, wz_min, CRYSTAL_LAMP);
 
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
@@ -2289,6 +2335,25 @@ static void place_camp(std::int32_t ax, std::int32_t az,
     };
     pitch_tent(ax - 3);
     if (((h >> 8u) & 1u)) pitch_tent(ax + 3);   // sometimes a second tent
+
+    // Signature feature (#39): a low oak-log FENCE enclosing the camp (a 9×9
+    // ring at radius 4, 1 block high, with a gap for an entrance), so the camp
+    // reads as a deliberate, settled enclosure rather than a stray fire.  Each
+    // post sits on its own column surface (supported, no floating, hole-safe).
+    {
+        constexpr int R = 4;
+        int gap_dz = ((h >> 9u) & 1u) ? R : -R;   // entrance on a +Z or -Z post
+        for (int dx = -R; dx <= R; ++dx) {
+            for (int dz = -R; dz <= R; ++dz) {
+                bool ring = (dx == -R || dx == R || dz == -R || dz == R);
+                if (!ring) continue;
+                if (dx == 0 && dz == gap_dz) continue;   // entrance gap
+                int post_h = struct_surface(ax + dx, az + dz, seed) + 1;
+                struct_fill_col(chunk, ax + dx, az + dz, post_h, seed,
+                                wx_min, wy_min, wz_min, OAK_LOG);
+            }
+        }
+    }
 
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
@@ -2375,16 +2440,33 @@ static void place_temple(std::int32_t ax, std::int32_t az,
                             wx_min, wy_min, wz_min, STONE_BRICK);
 
     int pil_h = 3 + static_cast<int>((h >> 4u) & 1u);   // 3..4 pillar height
-    int corners[4][2] = {{-2,-2},{2,-2},{-2,2},{2,2}};
-    for (int i = 0; i < 4; ++i) {
-        int px = ax + corners[i][0], pz = az + corners[i][1];
-        // Some pillars are "collapsed" (shorter) for a ruined look.
+    // A full COLONNADE (#39): pillars at the 4 corners AND the 4 edge midpoints
+    // (8 columns), so the temple reads as a clear pillared shrine rather than a
+    // bare platform.  Some are "collapsed" (short) for a ruined look.
+    int pillars[8][2] = {
+        {-2,-2},{2,-2},{-2,2},{2,2},        // corners
+        { 0,-2},{0, 2},{-2, 0},{2, 0},      // edge midpoints
+    };
+    for (int i = 0; i < 8; ++i) {
+        int px = ax + pillars[i][0], pz = az + pillars[i][1];
         std::uint64_t ph = fmix64(h ^ (static_cast<std::uint64_t>(i) * 0x9E37u + 11u));
         int this_h = (ph & 0x3u) == 0u ? 1 + static_cast<int>(ph & 1u) : pil_h;
         for (int dy = 2; dy <= 1 + this_h; ++dy) {
             BlockId b = ((ph >> static_cast<unsigned>(dy)) & 1u) ? MOSSY_STONE : STONE_BRICK;
             struct_set(chunk, px, plat + dy, pz, wx_min, wy_min, wz_min, b);
         }
+    }
+
+    // Entrance STEPS (#39): a flight of stone-brick steps descending from the
+    // front (−Z) edge of the platform down to ground level, giving the temple a
+    // grand approach.  Each step column is filled to its tread height from its
+    // own surface (supported, hole-safe).
+    for (int s = 1; s <= 2; ++s) {
+        int sz = az - 2 - s;                    // one step further out each time
+        int tread = plat + 1 - s;               // descending tread height
+        for (int dx = -1; dx <= 1; ++dx)
+            struct_fill_col(chunk, ax + dx, sz, tread, seed,
+                            wx_min, wy_min, wz_min, STONE_BRICK);
     }
 
     // Partial roof lintels: stone-brick beams connecting the two FRONT pillars'
@@ -2424,17 +2506,32 @@ static void place_well(std::int32_t ax, std::int32_t az,
     // Water at the centre, sitting in the rim (surface level).
     struct_set(chunk, ax, H, az, wx_min, wy_min, wz_min, WATER);
 
-    // Two posts on opposite rim corners + a beam roof over the shaft.
+    // Signature feature (#39): a proper roofed CANOPY over the shaft — four oak
+    // posts on the rim corners carrying a pitched 3×3 plank roof, with a wooden
+    // "bucket" (oak_log) hanging on a beam over the water and a torch for light.
+    // Posts are supported (filled from their own surface); the roof sits on the
+    // posts; the open well shaft is inside the hole-exempt footprint.
     int post_h = 3;
-    int beam_y = H + post_h;
-    struct_fill_col(chunk, ax - 1, az - 1, beam_y - 1, seed, wx_min, wy_min, wz_min, OAK_LOG);
-    struct_fill_col(chunk, ax + 1, az + 1, beam_y - 1, seed, wx_min, wy_min, wz_min, OAK_LOG);
-    // Roof beam (planks) spanning over the shaft at beam_y (supported by posts at
-    // the diagonal corners; the centre roof block sits 1 above the rim air, but is
-    // inside the hole-exempt footprint).
-    for (int d = -1; d <= 1; ++d) {
-        struct_set(chunk, ax + d, beam_y, az + d, wx_min, wy_min, wz_min, OAK_PLANKS);
+    int post_top = H + post_h;                       // y of the post tops
+    int corner[4][2] = {{-1,-1},{1,-1},{-1,1},{1,1}};
+    for (int i = 0; i < 4; ++i)
+        struct_fill_col(chunk, ax + corner[i][0], az + corner[i][1], post_top,
+                        seed, wx_min, wy_min, wz_min, OAK_LOG);
+
+    // Pitched plank roof: ridge along X one block above the post tops; eaves at
+    // the post tops, so the roof clearly peaks (a recognizable little house roof).
+    int roof_base = post_top + 1;
+    for (int dz = -1; dz <= 1; ++dz) {
+        int ry = roof_base + (dz == 0 ? 1 : 0);      // ridge centre is higher
+        for (int dx = -1; dx <= 1; ++dx)
+            struct_set(chunk, ax + dx, ry, az + dz,
+                       wx_min, wy_min, wz_min, OAK_PLANKS);
     }
+    // Cross-beam + hanging bucket over the shaft, and a torch on a post top.
+    struct_set(chunk, ax, post_top, az, wx_min, wy_min, wz_min, OAK_LOG);   // winch beam
+    struct_set(chunk, ax, H + 1, az,    wx_min, wy_min, wz_min, OAK_LOG);   // bucket on the rope
+    struct_set(chunk, ax - 1, post_top, az - 1,
+               wx_min, wy_min, wz_min, TORCH);
     (void)h;
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
@@ -2446,24 +2543,147 @@ static void place_cairn(std::int32_t ax, std::int32_t az,
                         IChunk& chunk,
                         std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
     int H = struct_surface(ax, az, seed);
-    int cairn_h = 2 + static_cast<int>((h >> 4u) & 0x3u);  // 2..5
+    int cairn_h = 3 + static_cast<int>((h >> 4u) & 0x3u);  // 3..6 (taller, #39)
 
-    for (int dy = 1; dy <= cairn_h; ++dy) {
+    // Stepped conical PILE (#39): a broad 3×3 base course, a 1-block-inset middle
+    // course, then a 1×1 capstone tower — a clear pyramid silhouette so the cairn
+    // is recognizable at a glance rather than a single stray block.  All solid ⇒
+    // hole-safe; each base column filled from its own surface (supported).
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx) {
+            std::uint64_t bh = fmix64(h ^ static_cast<std::uint64_t>((dx + 2) * 7 + (dz + 2) * 31));
+            BlockId b = (bh & 1u) ? MOSSY_STONE : STONE;
+            int base_top = struct_surface(ax + dx, az + dz, seed) + 1;  // broad base ring
+            struct_fill_col(chunk, ax + dx, az + dz, base_top, seed,
+                            wx_min, wy_min, wz_min, b);
+        }
+    // Central capstone tower rising above the base.
+    for (int dy = 2; dy <= cairn_h; ++dy) {
         BlockId b = ((h >> (static_cast<unsigned>(dy) + 8u)) & 1u) ? MOSSY_STONE : STONE;
         struct_set(chunk, ax, H + dy, az, wx_min, wy_min, wz_min, b);
     }
 
-    int scatter[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
-    for (int si = 0; si < 4; ++si) {
-        std::uint64_t sh = fmix64(h ^ static_cast<std::uint64_t>(si + 200));
-        if ((sh & 0x3u) >= 2u) continue;  // ~50% chance per side
-        int sdx = scatter[si][0];
-        int sdz = scatter[si][1];
-        int sH = struct_surface(ax + sdx, az + sdz, seed);
-        BlockId sb = ((sh >> 2u) & 1u) ? MOSSY_STONE : STONE;
-        struct_set(chunk, ax + sdx, sH + 1, az + sdz,
-                   wx_min, wy_min, wz_min, sb);
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
+}
+
+// Place a tiny HUT (#39 village building block): a 3×3 walled box with a flat
+// roof, one door, and one glass window — small but unmistakably a dwelling.  Used
+// by place_village.  Solid floor + footprint-exempt hollow interior (hole-safe).
+static void place_hut(std::int32_t cx, std::int32_t cz, std::uint64_t hh,
+                      std::uint64_t seed, IChunk& chunk,
+                      std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    // Floor level = max surface over the 3×3 so the hut sits flat.
+    int floor_h = -1000000;
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx) {
+            int sh = struct_surface(cx + dx, cz + dz, seed);
+            if (sh > floor_h) floor_h = sh;
+        }
+    bool cobble = (hh & 1u) != 0u;
+    BlockId wall = cobble ? COBBLESTONE : OAK_PLANKS;
+    constexpr int WALL_H = 2;
+    int wall_top = floor_h + WALL_H;
+
+    // Solid plank floor (supported down to each column surface).
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx)
+            struct_fill_col(chunk, cx + dx, cz + dz, floor_h, seed,
+                            wx_min, wy_min, wz_min, OAK_PLANKS);
+
+    // Door direction (one of the 4 cardinal walls) and a window opposite.
+    int dir = static_cast<int>((hh >> 1u) & 0x3u);
+    int door_dx = (dir == 0) ? 1 : (dir == 1) ? -1 : 0;
+    int door_dz = (dir == 2) ? 1 : (dir == 3) ? -1 : 0;
+
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx) {
+            bool ring = (dx == -1 || dx == 1 || dz == -1 || dz == 1);
+            if (!ring) continue;                       // hollow interior
+            if (dx == door_dx && dz == door_dz) {      // doorway
+                struct_set(chunk, cx + dx, floor_h + 1, cz + dz,
+                           wx_min, wy_min, wz_min, OAK_DOOR);
+                continue;
+            }
+            bool window = (dx == -door_dx && dz == -door_dz);  // window opposite door
+            for (int wy = floor_h + 1; wy <= wall_top; ++wy) {
+                BlockId b = (window && wy == floor_h + 1) ? GLASS_PANE : wall;
+                struct_set(chunk, cx + dx, wy, cz + dz, wx_min, wy_min, wz_min, b);
+            }
+        }
+    // Flat roof + a glow inside.
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx)
+            struct_set(chunk, cx + dx, wall_top + 1, cz + dz,
+                       wx_min, wy_min, wz_min, cobble ? STONE_BRICK : BIRCH_PLANKS);
+    struct_set(chunk, cx, floor_h + 1, cz, wx_min, wy_min, wz_min, GLOW_BLOCK);
+}
+
+// Place a VILLAGE (#39): a small hamlet — 2-3 tiny huts arranged around a shared
+// central campfire, with a connecting cobble path.  The cluster of dwellings is
+// instantly recognizable as a settlement and gives the engine a rich NPC anchor.
+static void place_village(std::int32_t ax, std::int32_t az,
+                          std::uint64_t h, std::uint64_t seed,
+                          IChunk& chunk,
+                          std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    // Shared campfire at the centre (cobble hearth ring + glow).
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx) {
+            int col_h  = struct_surface(ax + dx, az + dz, seed);
+            bool centre = (dx == 0 && dz == 0);
+            struct_set(chunk, ax + dx, col_h + (centre ? 1 : 0), az + dz,
+                       wx_min, wy_min, wz_min, centre ? GLOW_BLOCK : COBBLESTONE);
+        }
+
+    // Huts placed at fixed offsets around the fire (within the ±7 cell reach).
+    // The third hut appears only sometimes so villages vary between 2 and 3 huts.
+    struct HutPos { int dx, dz; };
+    HutPos huts[3] = {{-5, -4}, {5, 4}, {0, 5}};
+    int n_huts = ((h >> 10u) & 1u) ? 3 : 2;
+    for (int i = 0; i < n_huts; ++i) {
+        std::uint64_t hh = fmix64(h ^ (static_cast<std::uint64_t>(i) * 0x2545F4914F6CDD1Dull + 71u));
+        place_hut(ax + huts[i].dx, az + huts[i].dz, hh, seed,
+                  chunk, wx_min, wy_min, wz_min);
+        // A cobble path block stepping from the fire toward each hut.
+        int pdx = huts[i].dx > 0 ? 2 : (huts[i].dx < 0 ? -2 : 0);
+        int pdz = huts[i].dz > 0 ? 2 : (huts[i].dz < 0 ? -2 : 0);
+        int ph = struct_surface(ax + pdx, az + pdz, seed);
+        struct_set(chunk, ax + pdx, ph, az + pdz,
+                   wx_min, wy_min, wz_min, COBBLESTONE);
     }
+
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
+}
+
+// Place a SHRINE (#39): a ring of standing stones (a small henge) around a raised,
+// lit offering altar — a distinctive sacred-site silhouette.  Standing stones are
+// solid columns of varied height; the altar is a mossy block topped with a
+// crystal_lamp.  All solid / supported ⇒ hole-safe.
+static void place_shrine(std::int32_t ax, std::int32_t az,
+                         std::uint64_t h, std::uint64_t seed,
+                         IChunk& chunk,
+                         std::int32_t wx_min, std::int32_t wy_min, std::int32_t wz_min) noexcept {
+    // Eight standing stones in a ring at radius 3 (a clear henge circle).
+    int ring[8][2] = {
+        {-3, 0},{3, 0},{0,-3},{0, 3},
+        {-3,-3},{3,-3},{-3, 3},{3, 3},
+    };
+    for (int i = 0; i < 8; ++i) {
+        std::uint64_t sh = fmix64(h ^ (static_cast<std::uint64_t>(i) * 0x9E3779B97F4A7C15ull + 17u));
+        int stone_h = 2 + static_cast<int>(sh & 1u);   // 2..3 tall standing stone
+        int sx = ax + ring[i][0], sz = az + ring[i][1];
+        int top = struct_surface(sx, sz, seed) + stone_h;
+        BlockId b = (sh & 2u) ? MOSSY_STONE : STONE;
+        struct_fill_col(chunk, sx, sz, top, seed, wx_min, wy_min, wz_min, b);
+        // Some stones carry a stone-brick lintel cap for a megalith look.
+        if ((sh & 0x3u) == 0u)
+            struct_set(chunk, sx, top + 1, sz, wx_min, wy_min, wz_min, STONE_BRICK);
+    }
+
+    // Central offering altar: a stone-brick base, a mossy slab, a crystal lamp.
+    int H = struct_surface(ax, az, seed);
+    struct_fill_col(chunk, ax, az, H + 1, seed, wx_min, wy_min, wz_min, STONE_BRICK);
+    struct_set(chunk, ax, H + 2, az, wx_min, wy_min, wz_min, MOSSY_STONE);
+    struct_set(chunk, ax, H + 3, az, wx_min, wy_min, wz_min, CRYSTAL_LAMP);
 
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
@@ -2500,6 +2720,14 @@ static void place_structure(const StructDesc& sd, std::uint64_t seed,
         case STRUCT_CAIRN:
             place_cairn(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
                         chunk, wx_min, wy_min, wz_min);
+            break;
+        case STRUCT_VILLAGE:
+            place_village(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
+                          chunk, wx_min, wy_min, wz_min);
+            break;
+        case STRUCT_SHRINE:
+            place_shrine(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed,
+                         chunk, wx_min, wy_min, wz_min);
             break;
         default: break;
     }
@@ -3668,6 +3896,26 @@ bool worldgen_structure_marker_at(std::int32_t wx, std::int32_t wz,
             }
         }
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// #39 engine hook: which structure cell CONTAINS this column (for NPC spawning).
+// ---------------------------------------------------------------------------
+// Returns the STRUCT_* type of the structure occupying the 64×64 cell that holds
+// (wx,wz), writing the anchor column + anchor surface Y into the out-params.  See
+// the header for the full int->name table.  Pure / deterministic — reuses the
+// same struct_for_cell() the generator uses, so the answer matches the world.
+int worldgen_structure_near(std::int32_t wx, std::int32_t wz, std::uint64_t seed,
+                            std::int32_t* out_ax, std::int32_t* out_az,
+                            int* out_y) noexcept {
+    std::int32_t scx = struct_floordiv(wx, STRUCT_CELL_SIZE);
+    std::int32_t scz = struct_floordiv(wz, STRUCT_CELL_SIZE);
+    StructDesc sd = struct_for_cell(scx, scz, seed);
+    if (!sd.present || sd.type == STRUCT_NONE) return STRUCT_NONE;
+    if (out_ax) *out_ax = sd.anchor_wx;
+    if (out_az) *out_az = sd.anchor_wz;
+    if (out_y)  *out_y  = struct_surface(sd.anchor_wx, sd.anchor_wz, seed);
+    return sd.type;
 }
 
 // Returns true if (wx,wz) lies within the footprint of any structure for this

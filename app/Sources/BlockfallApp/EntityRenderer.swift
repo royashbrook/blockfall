@@ -347,6 +347,7 @@ final class EntityRenderer {
             case 17: drawKind17(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             case 18: drawKind18(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             case 19: drawKind19(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 20: drawKind20(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             default: drawKind0(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             }
             // Clear so kind 6 (and the next iter before it sets) never inherit.
@@ -3905,6 +3906,202 @@ final class EntityRenderer {
             * EntityRenderer.scaleM(SIMD3<Float>(side, side, side))
 
         drawCube(enc: enc, viewProj: viewProj, model: model, rgb: blockCol, sat: sat)
+    }
+
+    // =========================================================================
+    // KIND 20 — VILLAGER / NPC PERSON (friendly, cute, kid-game humanoid)
+    //
+    // Issue #39 (people at structures). A clearly FRIENDLY upright blocky person,
+    // unmistakably distinct from the animals (quadrupeds) and from the scary
+    // humanoid monsters (kind 5 / kind 11): bright skin tone, a colored tunic
+    // (clothing accent from the entity tint), soft round head with two big
+    // friendly eyes + a happy smile, simple hair cap, and a gentle idle — a slow
+    // breathing bob plus a soft side-to-side arm sway. No glowing eyes, no fangs,
+    // no menace. Reads as a cheerful villager you'd walk up to and talk to.
+    //
+    // Silhouette: short, slightly stocky upright figure — round head, boxy tunic
+    // torso, two short arms, two short legs. Friendlier proportions than the
+    // lurker (bigger head, rounder, no scowl).
+    //
+    // PALETTE:
+    //   skinCol     — warm friendly skin tone (fixed, not tinted, so faces always
+    //                 read as a person regardless of clothing color)
+    //   tunicCol    — clothing color, derived from the entity tint so variants
+    //                 (villager / elder / trader) wear different colors
+    //   tunicTrim   — lighter band/collar on the tunic
+    //   pantsCol    — muted brown trousers
+    //   hairCol     — brown hair cap
+    //   eyeCol      — soft dark eyes (sclera + pupil via drawEye)
+    //   mouthCol    — gentle warm smile
+    //
+    // Parts: legs(2) feet(2) torso(1) tunic-trim(1) belt(1) arms(2) hands(2)
+    //        neck(1) head(1) hair(1) eyes(2) cheeks(2) smile(1) = 19
+    // =========================================================================
+    private func drawKind20(enc: MTLRenderCommandEncoder,
+                            viewProj: simd_float4x4,
+                            e: bf_entity_draw,
+                            pos: SIMD3<Float>,
+                            phase: Float,
+                            hash: Float,
+                            squash: SIMD3<Float>) {
+        let s   = e.scale
+        let sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let tint = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+
+        // ---- PALETTE ----
+        // Warm friendly skin — fixed so the villager always reads as a person.
+        let skinCol  = SIMD3<Float>(0.93, 0.76, 0.62)
+        // Clothing comes from the entity tint so villager/elder/trader differ.
+        // Keep it bright and cheerful (lift toward a vivid mid-tone).
+        let tunicCol = SIMD3<Float>(min(1, tint.x * 0.60 + 0.22),
+                                    min(1, tint.y * 0.60 + 0.30),
+                                    min(1, tint.z * 0.60 + 0.34))
+        // Lighter collar/trim band.
+        let tunicTrim = SIMD3<Float>(min(1, tunicCol.x + 0.20),
+                                     min(1, tunicCol.y + 0.20),
+                                     min(1, tunicCol.z + 0.20))
+        let beltCol  = SIMD3<Float>(0.40, 0.28, 0.16)   // brown belt
+        let pantsCol = SIMD3<Float>(0.34, 0.27, 0.20)   // muted brown trousers
+        let shoeCol  = SIMD3<Float>(0.22, 0.16, 0.12)   // dark shoes
+        let hairCol  = SIMD3<Float>(0.32, 0.20, 0.10)   // brown hair
+        let eyeCol   = SIMD3<Float>(0.10, 0.08, 0.10)   // soft dark eyes
+        let mouthCol = SIMD3<Float>(0.62, 0.30, 0.28)   // gentle warm smile
+        let cheekCol = SIMD3<Float>(0.96, 0.62, 0.56)   // rosy cheeks
+
+        // ---- ANIMATION PHASES ----
+        let blinkPhase  = phase + hash * 4.7
+        let breathPhase = phase * 0.40 + hash * 1.6
+        // Gentle idle: slow arm sway + tiny weight shift. No walk cycle needed —
+        // a friendly NPC that stands and chats.
+        let swaySpeed: Float = 1.1
+        let armSway   = sin(phase * swaySpeed + hash * 2.0) * 0.16   // soft arm swing
+        let leanAngle = sin(phase * swaySpeed * 0.5 + hash) * 0.025  // tiny body lean
+
+        let breatheY   = breatheYOffset(breathPhase, scale: s)
+        let eyeBlinkSY = blinkScale(blinkPhase)
+        let bodyLean   = EntityRenderer.rotZ(leanAngle)
+
+        // ---- PROPORTIONS (cute, slightly stocky person) ----
+        let legW = s * 0.18; let legH = s * 0.34; let legD = s * 0.18
+        let footW = s * 0.20; let footH = s * 0.09; let footD = s * 0.26
+        let legTotalH = legH + footH
+
+        // Torso: boxy tunic, a touch wider than the lurker for a softer look.
+        let tW = s * 0.50;  let tH = s * 0.46;  let tD = s * 0.30
+        // Neck: short connector.
+        let nkW = s * 0.16; let nkH = s * 0.08; let nkD = s * 0.16
+        // Head: big and round (cute — bigger relative to body than the monster).
+        let hW = s * 0.46;  let hH = s * 0.44;  let hD = s * 0.42
+        // Arms: short single-segment limbs.
+        let armW = s * 0.14; let armH = s * 0.40; let armD = s * 0.14
+        let handW = s * 0.17; let handH = s * 0.12; let handD = s * 0.17
+
+        // ---- WORLD CENTRE (at torso mid) ----
+        let groundY = pos.y
+        let bodyY   = groundY + legTotalH + tH * 0.5 + breatheY
+        let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
+
+        // Part-world closure: trans(wc) * R * bodyLean * trans(local) * scale.
+        // bodyLean gives the whole figure a soft idle rock.
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * bodyLean * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+
+        // ---- LEGS + FEET ----
+        let hipY = -tH * 0.5
+        func legM(_ hip: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * bodyLean * EntityRenderer.trans(hip)
+                * EntityRenderer.trans(SIMD3(0, -legH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(legW, legH, legD))
+        }
+        func footM(_ hip: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * bodyLean * EntityRenderer.trans(hip)
+                * EntityRenderer.trans(SIMD3(0, -legH - footH * 0.5, footD * 0.12))
+                * EntityRenderer.scaleM(SIMD3(footW, footH, footD))
+        }
+        let hipL = SIMD3<Float>(-tW * 0.24, hipY, 0)
+        let hipR = SIMD3<Float>( tW * 0.24, hipY, 0)
+        drawCube(enc: enc, viewProj: viewProj, model: legM(hipL),  rgb: pantsCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: legM(hipR),  rgb: pantsCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: footM(hipL), rgb: shoeCol,  sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: footM(hipR), rgb: shoeCol,  sat: sat)
+
+        // ---- TORSO (tunic) ----
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, 0, 0), SIMD3(tW, tH, tD)), rgb: tunicCol, sat: sat)
+        // Collar/trim — lighter band across the top of the tunic.
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, tH * 0.40, tD * 0.02), SIMD3(tW * 1.02, tH * 0.16, tD * 1.02)),
+                 rgb: tunicTrim, sat: sat)
+        // Belt — brown band across the bottom of the tunic.
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, -tH * 0.40, 0), SIMD3(tW * 1.04, tH * 0.14, tD * 1.04)),
+                 rgb: beltCol, sat: sat)
+
+        // ---- ARMS + HANDS ---- (gentle opposite sway, hands are bare skin)
+        let shoulderY  = tH * 0.40
+        let shoulderXL = -(tW * 0.50 + armW * 0.45)
+        let shoulderXR =  (tW * 0.50 + armW * 0.45)
+        func armM(_ shoulderX: Float, _ swingAng: Float) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * bodyLean
+                * EntityRenderer.trans(SIMD3(shoulderX, shoulderY, 0))
+                * EntityRenderer.rotX(swingAng)
+                * EntityRenderer.trans(SIMD3(0, -armH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(armW, armH, armD))
+        }
+        func handM(_ shoulderX: Float, _ swingAng: Float) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * bodyLean
+                * EntityRenderer.trans(SIMD3(shoulderX, shoulderY, 0))
+                * EntityRenderer.rotX(swingAng)
+                * EntityRenderer.trans(SIMD3(0, -armH - handH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(handW, handH, handD))
+        }
+        // Sleeves match the tunic, hands are skin.
+        drawCube(enc: enc, viewProj: viewProj, model: armM(shoulderXL,  armSway), rgb: tunicCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: armM(shoulderXR, -armSway), rgb: tunicCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: handM(shoulderXL,  armSway), rgb: skinCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: handM(shoulderXR, -armSway), rgb: skinCol, sat: sat)
+
+        // ---- NECK + HEAD ----
+        let neckY = tH * 0.50 + nkH * 0.5
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, neckY, 0), SIMD3(nkW, nkH, nkD)), rgb: skinCol, sat: sat)
+
+        let headY: Float = tH * 0.50 + nkH + hH * 0.50
+        let headZ: Float = 0
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, headY, headZ), SIMD3(hW, hH, hD)), rgb: skinCol, sat: sat)
+
+        // Hair — brown cap over the top/back of the head.
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, headY + hH * 0.34, -hD * 0.06), SIMD3(hW * 1.04, hH * 0.36, hD * 1.04)),
+                 rgb: hairCol, sat: sat)
+
+        // ---- FACE (on the +Z front of the head, so it faces the heading dir) ----
+        let hFaceZ: Float = headZ + hD * 0.50 + s * 0.01
+        // Two big friendly eyes (white sclera + soft dark pupil + catchlight).
+        let eyeW = s * 0.10; let eyeH = s * 0.12 * eyeBlinkSY; let eyeD = s * 0.04
+        let eyeY = headY + hH * 0.08
+        let scleraCol = SIMD3<Float>(0.98, 0.98, 0.98)
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3(-hW * 0.22, eyeY, hFaceZ), r: SIMD3(eyeW, eyeH, eyeD),
+                sat: sat, scleraCol: scleraCol, pupilCol: eyeCol)
+        drawEye(enc: enc, viewProj: viewProj, pw: pw,
+                c: SIMD3( hW * 0.22, eyeY, hFaceZ), r: SIMD3(eyeW, eyeH, eyeD),
+                sat: sat, scleraCol: scleraCol, pupilCol: eyeCol)
+        // Rosy cheeks — soft friendly blush dots below the eyes.
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(-hW * 0.32, headY - hH * 0.14, hFaceZ), SIMD3(s * 0.09, s * 0.06, s * 0.02)),
+                 rgb: cheekCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3( hW * 0.32, headY - hH * 0.14, hFaceZ), SIMD3(s * 0.09, s * 0.06, s * 0.02)),
+                 rgb: cheekCol, sat: sat)
+        // Gentle smile — a small warm horizontal mouth below the eyes.
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, headY - hH * 0.26, hFaceZ), SIMD3(hW * 0.34, s * 0.05, s * 0.03)),
+                 rgb: mouthCol, sat: sat)
     }
 
     // -----------------------------------------------------------------------

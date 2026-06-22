@@ -78,6 +78,38 @@ int worldgen_count_structures(std::int32_t wx0, std::int32_t wz0,
 bool worldgen_structure_marker_at(std::int32_t wx, std::int32_t wz,
                                   std::uint64_t seed, int& out_y) noexcept;
 
+// ---------------------------------------------------------------------------
+// #39 ENGINE HOOK — NPC spawning: find the structure that CONTAINS a column.
+// ---------------------------------------------------------------------------
+// Returns the structure TYPE (STRUCT_* int below; 0 = none) of the structure
+// cell that contains world column (wx, wz) for `seed`, writing the structure's
+// anchor column into (*out_ax, *out_az) and its anchor surface Y into *out_y.
+// Unlike worldgen_structure_marker_at() (which only fires when (wx,wz) IS the
+// anchor), this resolves the WHOLE 64×64 cell: any column in a cell that holds a
+// structure returns that structure's type + anchor, so the engine can iterate
+// nearby cells (e.g. step by STRUCT_CELL_SIZE = 64) and spawn a villager/NPC at
+// each anchor (ax, *out_y + 1, az).  Cells with no structure (empty land, ocean,
+// submerged anchors) return 0 and leave the out-params untouched.
+//
+// Pure function of (wx, wz, seed) — no global state, thread-safe, deterministic;
+// it reuses the exact same per-cell resolution the generator uses, so the answer
+// always agrees with the built world.  Any out_* pointer may be null.
+//
+// STRUCT_* return value -> name table (mirrors the engine-visible codes):
+//   0  STRUCT_NONE        no structure in this cell
+//   1  STRUCT_CABIN       walled cabin: roof, door, windows, chimney
+//   2  STRUCT_OBELISK     tapering monolith on a plinth + lamp capstone
+//   3  STRUCT_CAMP        campfire + wool tents + a log fence
+//   4  STRUCT_WATCHTOWER  multi-storey cobble tower w/ external stair + beacon
+//   5  STRUCT_TEMPLE      ruined stone-brick shrine: columns, steps, altar, chest
+//   6  STRUCT_CAIRN       stacked rock pile with a broad base silhouette
+//   7  STRUCT_WELL        stone-brick well: rim, roofed canopy, bucket
+//   8  STRUCT_VILLAGE     cluster of 2-3 tiny huts around a shared campfire
+//   9  STRUCT_SHRINE      ring of standing stones around a lit offering altar
+int worldgen_structure_near(std::int32_t wx, std::int32_t wz, std::uint64_t seed,
+                            std::int32_t* out_ax, std::int32_t* out_az,
+                            int* out_y) noexcept;
+
 // Returns true if (wx, wz) lies within the footprint of any structure for `seed`.
 // Exposed so the no-surface-holes probe can exempt structure columns (a roofed or
 // hollow build legitimately has interior air beneath its topmost solid), exactly

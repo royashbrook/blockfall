@@ -1,0 +1,32 @@
+[
+  {
+    "id": 28,
+    "name": "villager",
+    "display_name": "Villager",
+    "disposition": "passive",
+    "max_health": 20,
+    "move_speed": 1.6,
+    "biome": "any",
+    "model": 20
+  },
+  {
+    "id": 29,
+    "name": "elder",
+    "display_name": "Elder",
+    "disposition": "passive",
+    "max_health": 16,
+    "move_speed": 1.2,
+    "biome": "any",
+    "model": 20
+  },
+  {
+    "id": 30,
+    "name": "trader",
+    "display_name": "Trader",
+    "disposition": "passive",
+    "max_health": 22,
+    "move_speed": 1.8,
+    "biome": "any",
+    "model": 20
+  }
+]

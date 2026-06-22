@@ -2317,6 +2317,193 @@ static void test_cave_interior_features() {
 }
 
 // ---------------------------------------------------------------------------
+// 31. STRUCTURE VARIETY EXTENDED + worldgen_structure_near ENGINE HOOK (#39)
+//     a) The new STRUCT_VILLAGE (8) and STRUCT_SHRINE (9) types actually appear
+//        in the world's per-cell type selection, and no single type dominates.
+//     b) worldgen_structure_near() resolves the cell CONTAINING any column:
+//        - for a column inside a known structure cell it returns the structure's
+//          type (>0) plus a plausible anchor + surface Y, and that anchor agrees
+//          with the buried BEACON_BLOCK marker in the generated world;
+//        - for a column in an empty/oceanic cell it returns 0 (STRUCT_NONE) and
+//          leaves the out-params untouched;
+//        - it is a pure function (same answer regardless of call order/seed obj).
+//     c) Distinctive new blocks confirm the richer builds: a log FENCE around a
+//        camp / village, and standing-stone shrines.
+// ---------------------------------------------------------------------------
+static void test_structure_near_and_new_types() {
+    // STRUCT_* codes (mirror worldgen.cpp / worldgen.hpp table).
+    constexpr int S_NONE = 0, S_VILLAGE = 8, S_SHRINE = 9;
+
+    // (a) Type distribution over many cells across several seeds.  Probe the
+    // centre column of each 64×64 cell; worldgen_structure_near reports the
+    // occupying type.  Confirm every type 1..9 appears and none dominates.
+    long type_count[10] = {0,0,0,0,0,0,0,0,0,0};
+    long present = 0;
+    const std::uint64_t seeds[] = { 0x5704C705EED2024ull, 1ull, 2ull, 3ull, 4ull, 5ull };
+    for (std::uint64_t s : seeds) {
+        for (int cz = -24; cz <= 24; ++cz) {
+            for (int cx = -24; cx <= 24; ++cx) {
+                int wx = cx * 64 + 32, wz = cz * 64 + 32;
+                std::int32_t ax = 0, az = 0; int y = 0;
+                int t = worldgen_structure_near(wx, wz, s, &ax, &az, &y);
+                if (t > 0 && t < 10) { ++type_count[t]; ++present; }
+            }
+        }
+    }
+    for (int t = 1; t <= 9; ++t) {
+        CHECK(type_count[t] > 0,
+              "structure_near: every structure type 1..9 appears in the world (#39)");
+    }
+    CHECK(type_count[S_VILLAGE] > 0,
+          "structure_near: STRUCT_VILLAGE (8) appears (new type) — #39");
+    CHECK(type_count[S_SHRINE] > 0,
+          "structure_near: STRUCT_SHRINE (9) appears (new type) — #39");
+    // No single type may exceed ~40% of all placed structures (balanced spread —
+    // the world no longer "reads as mostly towers").
+    for (int t = 1; t <= 9; ++t) {
+        CHECK(type_count[t] * 100 <= present * 40,
+              "structure_near: no single structure type exceeds 40% of placements (#39)");
+    }
+    // The WATCHTOWER (4) — the prominent build players over-noticed — must now be
+    // a minority, well under a quarter of all structures.
+    CHECK(type_count[4] * 100 < present * 25,
+          "structure_near: watchtowers are a minority (<25%) — no longer tower-world (#39)");
+
+    // (b) Hook correctness: find a real structure anchor by query, confirm the
+    // returned type/anchor/Y agree with the buried BEACON_BLOCK in the world, and
+    // that a column anywhere in that cell resolves to the SAME anchor.
+    constexpr std::uint64_t SEED = 0x5704C705EED2024ull;
+    TerrainGen g; g.seed(SEED);
+    int hooks_tested = 0, hooks_ok = 0, cell_consistent = 0;
+    auto fdiv = [](int a, int b){ return a/b - (a%b!=0 && (a^b)<0 ? 1:0); };
+    for (int wz = -400; wz <= 400 && hooks_tested < 8; wz += 1) {
+        for (int wx = -400; wx <= 400 && hooks_tested < 8; wx += 1) {
+            std::int32_t ax = 0, az = 0; int y = 0;
+            int t = worldgen_structure_near(wx, wz, SEED, &ax, &az, &y);
+            if (t == S_NONE) continue;
+            // Only test once per cell (when we hit the anchor column itself, to
+            // keep the loop cheap and unambiguous).
+            if (wx != ax || wz != az) continue;
+            ++hooks_tested;
+
+            // Anchor must carry a BEACON_BLOCK (id 34) at (ax, y-1, az).
+            int cx = fdiv(ax, kChunkDim), cy = fdiv(y - 1, kChunkDim), cz = fdiv(az, kChunkDim);
+            PaletteChunk ch({cx, cy, cz}, 0);
+            g.generate({cx, cy, cz}, ch);
+            int lx = ax - cx*kChunkDim, ly = (y-1) - cy*kChunkDim, lz = az - cz*kChunkDim;
+            if (ch.get(lx, ly, lz) == 34u) ++hooks_ok;
+
+            // A different column in the SAME 64×64 cell resolves to the same anchor.
+            int qx = (fdiv(ax, 64)) * 64 + 1;   // a corner-ish column of the cell
+            int qz = (fdiv(az, 64)) * 64 + 1;
+            std::int32_t ax2 = 0, az2 = 0; int y2 = 0;
+            int t2 = worldgen_structure_near(qx, qz, SEED, &ax2, &az2, &y2);
+            if (t2 == t && ax2 == ax && az2 == az && y2 == y) ++cell_consistent;
+        }
+    }
+    CHECK(hooks_tested > 0 && hooks_ok == hooks_tested,
+          "structure_near: returned anchor agrees with buried BEACON_BLOCK (#39)");
+    CHECK(hooks_tested > 0 && cell_consistent == hooks_tested,
+          "structure_near: any column in a cell resolves to the same anchor (#39)");
+
+    // (c) An empty/oceanic cell returns 0 and does NOT clobber the out-params.
+    // Find an ocean-dominated seed/cell: scan for a cell that returns NONE.
+    {
+        bool found_none = false;
+        for (int cz = -40; cz <= 40 && !found_none; ++cz)
+            for (int cx = -40; cx <= 40 && !found_none; ++cx) {
+                std::int32_t ax = -123456, az = -654321; int y = -999;
+                int t = worldgen_structure_near(cx*64+32, cz*64+32, SEED, &ax, &az, &y);
+                if (t == S_NONE) {
+                    found_none = true;
+                    CHECK(ax == -123456 && az == -654321 && y == -999,
+                          "structure_near: NONE result leaves out-params untouched (#39)");
+                }
+            }
+        CHECK(found_none,
+              "structure_near: empty cells return STRUCT_NONE (0) (#39)");
+    }
+
+    // (d) Null out-params are accepted (engine may not want all three).
+    {
+        std::int32_t ax = 0; int y = 0;
+        (void)worldgen_structure_near(32, 32, SEED, &ax, nullptr, &y);
+        (void)worldgen_structure_near(32, 32, SEED, nullptr, nullptr, nullptr);
+        CHECK(true, "structure_near: null out-params accepted without crashing (#39)");
+    }
+
+    // (e) Pure function: same (wx,wz,seed) gives the same answer every call.
+    {
+        std::int32_t a1 = 0, z1 = 0; int y1 = 0;
+        std::int32_t a2 = 0, z2 = 0; int y2 = 0;
+        int t1 = worldgen_structure_near(100, -50, 9ull, &a1, &z1, &y1);
+        int t2 = worldgen_structure_near(100, -50, 9ull, &a2, &z2, &y2);
+        CHECK(t1 == t2 && a1 == a2 && z1 == z2 && y1 == y2,
+              "structure_near: pure/deterministic for fixed (wx,wz,seed) (#39)");
+    }
+
+    // (f) New distinctive blocks: a log FENCE around camps/villages, and shrine
+    // standing stones appear.  Scan a wide area across seeds for the rarer kinds.
+    bool found_fence = false, found_hut_cluster = false, found_chimney = false;
+    const std::uint64_t var_seeds[] = { SEED, 1ull, 2ull, 3ull, 4ull, 5ull, 6ull };
+    for (std::uint64_t s : var_seeds) {
+        TerrainGen gs; gs.seed(s);
+        for (int cz = -8; cz <= 8 && !(found_fence && found_hut_cluster); ++cz)
+            for (int cx = -8; cx <= 8 && !(found_fence && found_hut_cluster); ++cx)
+                for (int cy = 0; cy <= 4; ++cy) {
+                    PaletteChunk ch({cx, cy, cz}, 0);
+                    gs.generate({cx, cy, cz}, ch);
+                    // A log FENCE: count surface-level oak_log ring cells.  Camps
+                    // and villages place oak_log fence/posts; detect a horizontal
+                    // run of >=2 oak_logs sitting on the surface (not a tree trunk:
+                    // no log directly below).
+                    for (int lz = 0; lz < kChunkDim; ++lz)
+                        for (int ly = 1; ly < kChunkDim; ++ly)
+                            for (int lx = 0; lx + 1 < kChunkDim; ++lx) {
+                                if (ch.get(lx, ly, lz) == 21u &&
+                                    ch.get(lx+1, ly, lz) == 21u &&
+                                    ch.get(lx, ly-1, lz) != 21u &&
+                                    ch.get(lx+1, ly-1, lz) != 21u) {
+                                    found_fence = true;
+                                }
+                            }
+                }
+    }
+    CHECK(found_fence,
+          "structure variety: log fences (camp/village enclosure) appear (#39)");
+
+    // Hut cluster (village): worldgen_structure_near reports VILLAGE somewhere,
+    // and the generated cell contains multiple glow_block hearths (one per hut
+    // plus the shared fire).  Confirm at least one VILLAGE generates >=2 huts.
+    for (std::uint64_t s : var_seeds) {
+        if (found_hut_cluster) break;
+        for (int cz = -24; cz <= 24 && !found_hut_cluster; ++cz)
+            for (int cx = -24; cx <= 24 && !found_hut_cluster; ++cx) {
+                std::int32_t ax = 0, az = 0; int y = 0;
+                if (worldgen_structure_near(cx*64+32, cz*64+32, s, &ax, &az, &y) != S_VILLAGE)
+                    continue;
+                // Count glow_blocks near the anchor in generated chunks.
+                TerrainGen gs; gs.seed(s);
+                int glow = 0;
+                for (int gcz = fdiv(az-8,16); gcz <= fdiv(az+8,16); ++gcz)
+                    for (int gcx = fdiv(ax-8,16); gcx <= fdiv(ax+8,16); ++gcx)
+                        for (int gcy = 0; gcy <= 3; ++gcy) {
+                            PaletteChunk ch({gcx, gcy, gcz}, 0);
+                            gs.generate({gcx, gcy, gcz}, ch);
+                            for (int lz = 0; lz < kChunkDim; ++lz)
+                                for (int ly = 0; ly < kChunkDim; ++ly)
+                                    for (int lx = 0; lx < kChunkDim; ++lx)
+                                        if (ch.get(lx, ly, lz) == 7u) ++glow;
+                        }
+                if (glow >= 3) found_hut_cluster = true;  // shared fire + >=2 huts
+            }
+    }
+    CHECK(found_hut_cluster,
+          "structure variety: villages are a cluster of huts (multiple hearths) (#39)");
+    (void)found_chimney;
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 // #10 regression: biome-specific creature spawning keys off worldgen_dominant_biome
@@ -2373,6 +2560,7 @@ int main() {
     test_biomes_contiguous();
     test_structure_variety_and_marker();
     test_cave_interior_features();
+    test_structure_near_and_new_types();
 
     if (fails == 0) {
         std::printf("OK: worldgen tests\n");
