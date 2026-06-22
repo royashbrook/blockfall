@@ -134,7 +134,7 @@ public:
     void set_allocator(const bf_gpu_allocator& a) { alloc_ = a; has_alloc_ = true; }
     void set_mode(bf_game_mode m) { mode_ = m; }
     // Horizontal streaming radius in chunks (from the render-distance config).
-    void set_render_distance(int chunks) { stream_r_ = std::clamp(chunks, 4, 20); }
+    void set_render_distance(int chunks) { stream_r_ = std::clamp(chunks, 4, 28); }
     void set_worldgen(IWorldGen* g) { gen_ = g; }
 
     // ---- co-op hooks (Track H) -------------------------------------------
@@ -1600,9 +1600,20 @@ private:
             const bool near = creative || (std::abs(dx) <= nearR && std::abs(dz) <= nearR);
             int surfCy = playerCy;
             if (!near) {
-                int sy = worldgen_surface_height((c.x + dx) * kChunkDim + kChunkDim/2,
-                                                 (c.z + dz) * kChunkDim + kChunkDim/2, seed_);
-                surfCy = floordiv(sy, kChunkDim);
+                // Cache surface chunk-y per column — recompute_stream_set runs on every
+                // chunk-boundary cross over (2*stream_r+1)^2 columns, and the height
+                // query isn't free; without the cache this spiked the 1%-low at large
+                // radius. worldgen_surface_height is pure, so caching is exact.
+                std::int64_t key = (std::int64_t(c.x + dx) << 32) | std::uint32_t(c.z + dz);
+                auto it = surf_cy_cache_.find(key);
+                if (it != surf_cy_cache_.end()) surfCy = it->second;
+                else {
+                    int sy = worldgen_surface_height((c.x + dx) * kChunkDim + kChunkDim/2,
+                                                     (c.z + dz) * kChunkDim + kChunkDim/2, seed_);
+                    surfCy = floordiv(sy, kChunkDim);
+                    if (surf_cy_cache_.size() > 200000) surf_cy_cache_.clear();   // bound memory
+                    surf_cy_cache_[key] = surfCy;
+                }
             }
             for (int cy = CY_MIN; cy <= CY_MAX; ++cy) {
                 bool want = near || (cy >= surfCy - 1 && cy <= surfCy + 1) || cy == playerCy;
@@ -2036,6 +2047,7 @@ private:
     // declared LAST so it is destroyed FIRST — its dtor joins workers before the
     // members those jobs touch (gen_done_/gen_mtx_) are destroyed.
     int                                                             stream_r_{6};         // horizontal radius (chunks)
+    std::unordered_map<std::int64_t, int>                           surf_cy_cache_;       // per-column surface chunk-y (streaming)
     bool                                                            sync_stream_{false};  // tests: inline gen+mesh
     std::mutex                                                       gen_mtx_;
     std::vector<std::pair<ChunkCoord, std::unique_ptr<PaletteChunk>>> gen_done_;

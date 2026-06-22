@@ -182,7 +182,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var precipPipeline: MTLRenderPipelineState!
     private var precipDepthState: MTLDepthStencilState!
     private var precipBuffer: MTLBuffer!           // PrecipParticlePod array (filled once at init)
-    private let kPrecipCount = 3000                // a few thousand instanced quads, recycled in-shader
+    private let kPrecipCount = 6000                // #32: doubled (was 3000) — denser rain/snow; recycled in-shader
     private let kPrecipBox: Float = 48.0           // edge length of the spawn cube around the camera
     // Water translucency pass — re-draws chunks with alpha blend, water-only
     private var waterPipeline: MTLRenderPipelineState!
@@ -559,7 +559,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         cfg.abi_version = BF_ABI_VERSION
         cfg.role = BF_ROLE_SINGLEPLAYER
         cfg.start_mode = BF_MODE_SURVIVAL
-        cfg.render_distance_chunks = 12   // streaming radius (chunks); surface-priority makes it affordable (#25) + view-cone culling keep this affordable (#5)
+        cfg.render_distance_chunks = 24   // streaming radius (chunks); surface-priority makes it affordable (#25) + view-cone culling keep this affordable (#5)
         cfg.memory_budget_bytes = 10 * 1024 * 1024 * 1024
         // Content is bundled at Resources/content (build.sh copies it there).
         // The registry loads <dir>/blocks, <dir>/items, … so point at that folder,
@@ -2546,46 +2546,56 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         float3 sunDir3 = normalize(-sd);
         float sunDot = dot(ray, sunDir3);
-        float sunDisc  = smoothstep(0.9975, 1.0000, sunDot);
-        float sunInner = smoothstep(0.9992, 1.0000, sunDot);
+        // FIX (#33, 2nd pass): SHRINK the disc. sunDisc/sunInner are now both
+        // tighter than before so the visible sun is a small dot, not a wide blob.
+        //   sunDisc:  smoothstep(0.9988,1.0) → ~2.8° half-angle (was 0.9975 / ~4°)
+        //   sunInner: smoothstep(0.9996,1.0) → ~1.6° half-angle (was 0.9992 / ~2.3°)
+        float sunDisc  = smoothstep(0.9988, 1.0000, sunDot);
+        float sunInner = smoothstep(0.9996, 1.0000, sunDot);
         // FIX (#33): The washout when turning was direction-dependent — it only
         // happened when the view looked toward the sun's azimuth (E/W/diagonal,
         // since the sun arcs East-West). Facing N/S kept the sun off-frame so the
-        // glow terms were ~0 and the scene looked fine. The culprits were the broad
-        // sun-glow cones: sunGlow1 started at sunDot=0.978 (~12° half-angle), which
-        // fills a large central patch of the screen when facing the sun. Even though
-        // the broad sky was capped to 1.1, a 1.1 blob covering most of the frame is
-        // bright enough that ACES + warm tint + saturation read it as a full-frame
-        // wash. The fix tightens BOTH glow cones to a much smaller angle around the
-        // disc, dims their intensity + the corona, and lowers the broad-sky cap from
-        // 1.1 to 0.92 so no view direction can blow out. The visible sun disc (tight
-        // sunInner/sunDisc) is preserved, so the sky still looks nice.
-        float sunGlow1 = smoothstep(0.992,  1.0000, sunDot) * 0.05 * max(dayT, sunsetT * 0.5);  // tighter (was 0.978/0.09)
-        float sunGlow2 = smoothstep(0.997,  1.0000, sunDot) * 0.08 * max(dayT, sunsetT * 0.5);  // tighter (was 0.992/0.15)
+        // glow terms were ~0 and the scene looked fine.
+        //
+        // The remaining culprit after the 1st pass (capping broad sky to 0.92) was
+        // the SUN DISC HDR: `discHDR` was ADDED AFTER the 0.92 cap and reached ~1.5
+        // HDR — sitting right at the bloom bright-pass foot (smoothstep 1.60..2.80),
+        // so when the sun was in frame its disc fed the bloom blur and smeared a
+        // bright halo across the screen = washout. Facing N/S the disc was off-frame
+        // so nothing bloomed.
+        //
+        // This pass: (1) shrink the disc (above); (2) DIM the glow cones further so
+        // even the near-disc region stays modest; (3) lower the disc HDR so its peak
+        // stays comfortably BELOW the bloom threshold (target ≤ ~1.25 vs 1.60 floor)
+        // — a small bright sun that does NOT bloom; (4) keep the hard 0.92 cap on the
+        // entire broad sky. Net: no sunDot-gated term can flood the frame, and the
+        // disc no longer crosses the bright-pass threshold.
+        float sunGlow1 = smoothstep(0.994,  1.0000, sunDot) * 0.035 * max(dayT, sunsetT * 0.5);  // dimmer + tighter (was 0.992/0.05)
+        float sunGlow2 = smoothstep(0.998,  1.0000, sunDot) * 0.05  * max(dayT, sunsetT * 0.5);  // dimmer + tighter (was 0.997/0.08)
         float3 sunColor  = mix(float3(1.0, 0.72, 0.35), float3(1.0, 0.98, 0.85), dayT);
-        float3 sunCorona = sunColor;                                                            // dimmer (was *1.15)
+        float3 sunCorona = sunColor;
         float sunVis = max(dayT, sunsetT * 0.6);
         skyCol += sunGlow1 * sunCorona;
         skyCol += sunGlow2 * sunCorona;
         skyCol = mix(skyCol, sunColor,          sunDisc  * sunVis);
         skyCol = mix(skyCol, float3(1.0, 1.0, 0.96), sunInner * sunVis);
 
-        // HDR: sun disc pushed just above the bloom threshold (1.6) so it glows
-        // but does NOT flood the frame. The multiplier of 0.5 keeps the peak at
-        // ~1.5 * sunVis; combined with the 1.0 base the disc reaches ~1.5–1.7 HDR,
-        // which is near the bright-pass floor (1.6) — gives a tight local glow
-        // without smearing bloom across the whole screen when you face the sun.
-        // discHDR is gated on the TIGHT sunInner disc only, so only the small sun
-        // disc itself feeds bloom — never the broad sky.
-        float3 discHDR = sunColor * 0.5 * sunInner * sunVis;
+        // HDR: a SMALL boost on the tight inner disc so the sun reads as a crisp
+        // bright dot — but kept BELOW the bloom bright-pass floor (1.60). Under
+        // sunInner=1 the skyCol is already ~1.0 (mixed to near-white above); adding
+        // 0.22 gives a disc peak of ~1.22 HDR < 1.60, so the disc no longer feeds
+        // bloom. discHDR is gated on the TIGHT sunInner disc only, so this never
+        // touches the broad sky.
+        float3 discHDR = sunColor * 0.22 * sunInner * sunVis;   // was *0.5 (peaked ~1.5, fed bloom)
         skyCol += discHDR;
 
-        // FIX (#33): Cap everything except the tiny inner disc to ≤0.92 (was 1.1).
-        // This is the hard guarantee that no broad sky/haze/glow region — in ANY
-        // view direction, including straight at the sun's azimuth — can exceed 0.92
-        // HDR, so it stays well below the bloom threshold (1.6) AND can never reach
-        // the ACES white point, eliminating the full-frame wash when turning.
+        // FIX (#33): Hard-cap EVERYTHING — including the disc HDR — to ≤1.25. This
+        // guarantees no view direction (broad sky capped to 0.92 below; disc capped
+        // to 1.25 here) can ever cross the 1.60 bloom threshold or reach the ACES
+        // white point, so facing the sun reads the same exposure as facing N/S.
+        // The broad sky (everything except the tight disc) is still pinned at ≤0.92.
         skyCol = clamp(skyCol - discHDR, 0.0, 0.92) + discHDR;
+        skyCol = min(skyCol, float3(1.25));
 
         float3 moonDir3 = -sunDir3;
         float moonDot  = dot(ray, moonDir3);

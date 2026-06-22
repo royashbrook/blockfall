@@ -74,7 +74,7 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
     // ---- Engine ------------------------------------------------------------
     var cfg = bf_engine_config()
     cfg.abi_version = BF_ABI_VERSION; cfg.role = BF_ROLE_SINGLEPLAYER; cfg.start_mode = BF_MODE_SURVIVAL
-    cfg.render_distance_chunks = 12                      // match the game (async gen + culling, #25/#5)
+    cfg.render_distance_chunks = 24                      // match the game (async gen + culling, #25/#5)
     cfg.content_dir = persistentCString("."); cfg.save_dir = persistentCString(NSTemporaryDirectory() + "bf_perf")
     cfg.player_name = persistentCString("perf")
     var err = BF_OK
