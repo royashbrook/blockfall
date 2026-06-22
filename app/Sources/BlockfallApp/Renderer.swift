@@ -233,6 +233,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // it. Defaults: everything on (normal rendering).
     static var dbgBloom = true       // 'B' — bloom on/off
     static var dbgMetalFX = true     // 'N' — MetalFX spatial upscaler on/off
+    static var dbgGrey = true        // 'G' — "The Grey" desaturation on/off (washout bisect #33)
 
     // ---- Shadow map (fixed 1536×1536) ----------------------------------------
     private let kShadowRes = 1536
@@ -840,7 +841,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                     chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime:    SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
                     lightViewProj: lightViewProj,
-                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
+                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, Renderer.dbgGrey ? 1.0 : 0.0))
                 enc.setVertexBuffer(vbuf, offset: Int(d.vertex_offset), index: 0)
                 enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
@@ -901,7 +902,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                     chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime:    SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
                     lightViewProj: lightViewProj,
-                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
+                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, Renderer.dbgGrey ? 1.0 : 0.0))
                 enc.setVertexBuffer(vbuf, offset: Int(d.vertex_offset), index: 0)
                 enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
@@ -2040,6 +2041,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             float fz = clamp(z / float(16), 0.0, 1.0);
             float s00 = u.chunkOrigin.w, s10 = u.dimSatN.x, s01 = u.dimSatN.y, s11 = u.dimSatN.z;
             o.sat = mix(mix(s00, s10, fx), mix(s01, s11, fx), fz);
+            if (u.dimSatN.w < 0.5) o.sat = 1.0;   // debug: force full colour ('G' grey toggle, #33 bisect)
         }
         o.worldPos = swayedWorld;
         o.faceNorm = n;
@@ -2279,7 +2281,9 @@ final class Renderer: NSObject, MTKViewDelegate {
 
             // Dim desaturation (match normal block path)
             float lumP = dot(plantCol, float3(0.299, 0.587, 0.114));
-            plantCol = mix(float3(lumP), plantCol, clamp(in.sat, 0.0, 1.0));
+            float satP = clamp(in.sat, 0.0, 1.0);
+            float3 drainedP = float3(0.22, 0.25, 0.32) * (0.45 + lumP * 0.85);
+            plantCol = mix(drainedP, plantCol, satP);
             return float4(plantCol, 1.0);
         }
 
@@ -2325,9 +2329,18 @@ final class Renderer: NSObject, MTKViewDelegate {
             col *= 1.6;   // HDR overbright → bloom
         }
 
-        // Dim desaturation
+        // "The Grey": unrestored regions drain toward a DIM, cold grey — not a bright
+        // greyscale. FIX (#33, the real "washout"): the old mix(lum, col, sat) kept full
+        // brightness, so over bright sand/snow a drained region read as a near-white
+        // glare ("washout when not facing N/S" = looking into the unrestored Grey). Now
+        // drained = darker + slightly cold, so it reads as a lifeless zone, not a wash.
         float lum = dot(col, float3(0.299, 0.587, 0.114));
-        col = mix(float3(lum), col, clamp(in.sat, 0.0, 1.0));
+        float sat = clamp(in.sat, 0.0, 1.0);
+        // Drained = a dim COLD SLATE, brightness-capped by lum so form still reads but
+        // it can NEVER wash to white over bright sand/snow (that bright-greyscale was
+        // the "washout"). Restores smoothly to full colour as the region is healed.
+        float3 drained = float3(0.22, 0.25, 0.32) * (0.45 + lum * 0.85);
+        col = mix(drained, col, sat);
 
         // --- Rain wet-darkening: top faces darken + desaturate slightly in rain ---
         if (wind.rainStrength > 0.01 && !isEmissive) {
@@ -2383,19 +2396,18 @@ final class Renderer: NSObject, MTKViewDelegate {
             // submerged-solid tint and the water volume read as one body of water.
             col = mix(WATER_FOG_COL, col, fogFactor);
         } else {
-            // Atmospheric distance fog: fade distant terrain toward the horizon sky colour
-            // so the far edge of the render distance (16 chunks = 256 blocks) reads as
-            // haze rather than a hard pop-in cut. Nearby terrain (< ~40 blocks) is clear.
-            // Exponential fog: fogFactor = exp(-k * dist). k = 0.010 gives:
-            //   20 blocks → ~82% scene, 80 blocks → ~45%, 180 blocks → ~16%.
-            // The horizon sky colour approximates a mid-morning blue-grey haze.
-            // Only the FAR EDGE hazes (hides pop-in); the visible field stays clear
-            // so open/flat biomes like desert don't wash to white. Capped at 0.5
-            // so it can never fully white out, ever.
+            // Atmospheric distance fog — ONLY the far edge, to hide chunk pop-in.
+            // FIX (#33, the real washout): this range was tuned for the old ~256-block
+            // render distance (fog 150→270). Render distance is now 24 chunks = 384
+            // blocks, so 150→270 fogged the far 2/3 of every open vista — looking E/W
+            // across open beach/desert you saw far and the whole mid-field washed pale,
+            // while N/S was blocked by hills so it stayed clear. THAT was the directional
+            // "washout when not facing N/S." Pushed the start out to ~290 and capped at
+            // 0.32 so only the last ~25% of the view hazes; the field stays clear.
             float3 camPos3 = UW_CAM_POS(wu);
             float dist = length(in.worldPos - camPos3);
-            float fog = smoothstep(150.0, 270.0, dist) * 0.5;
-            float3 horizFogColor = float3(0.42, 0.55, 0.72);   // muted blue haze
+            float fog = smoothstep(295.0, 400.0, dist) * 0.32;
+            float3 horizFogColor = float3(0.46, 0.56, 0.70);   // muted blue haze
             col = mix(col, horizFogColor, fog);
         }
 
@@ -2460,9 +2472,12 @@ final class Renderer: NSObject, MTKViewDelegate {
             col += float3(1.0, 0.98, 0.88) * spec * 0.45 * in.shade;
         }
 
-        // Saturation
+        // Saturation — drained water matches terrain: a dim cold slate, not bright
+        // greyscale (which read as washout). (#33)
         float lum = dot(col, float3(0.299, 0.587, 0.114));
-        col = mix(float3(lum), col, clamp(in.sat, 0.0, 1.0));
+        float sat = clamp(in.sat, 0.0, 1.0);
+        float3 drained = float3(0.22, 0.25, 0.32) * (0.45 + lum * 0.85);
+        col = mix(drained, col, sat);
         col = clamp(col, 0.0, 1.0);
 
         // Alpha is constant per face orientation only (never view-angle dependent),
@@ -3556,12 +3571,16 @@ func runWashoutTest() -> Bool {
     // where the orange haze + sun glow terms are strongest — that's the user's "as
     // night came in" directional brightening, which earlier low-but-not-sunset times
     // (0.06/0.10) never exercised.
+    // NOTE: the gameplay sun arcs LOW — sun_dir.y = -sin(ang)-0.25 peaks at only ~20°
+    // elevation at noon, so the sun sits in-frame at eye level all day when you face
+    // its azimuth. Earlier scenarios used a 70° "noon" (overhead, out of frame) and
+    // never reproduced the daytime washout. These match the real arc.
     let scenarios: [(String, Float, Float)] = [
-        ("noon",      70, 0.50),
-        ("afternoon", 35, 0.32),
+        ("midday",    20, 0.50),
+        ("morning",   16, 0.36),
+        ("afternoon", 14, 0.64),
         ("dawn",      10, 0.25),
         ("dusk",       7, 0.78),
-        ("lowsun",     4, 0.80),
     ]
     let yawSteps = 24
     var worstWash: Double = 0, worstAt = ""
