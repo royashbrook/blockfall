@@ -192,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             gfxCheckbox("Water Reflections", tag: 1, on: renderer?.gfxWater   ?? true),
             gfxCheckbox("God Rays",          tag: 2, on: renderer?.gfxGodRays ?? true),
             gfxCheckbox("Pollen Motes",      tag: 3, on: renderer?.gfxPollen  ?? true),
-            gfxCheckbox("Soft Shadows",      tag: 4, on: renderer?.gfxShadows ?? true),
+            gfxCheckbox("Soft Shadows",      tag: 4, on: renderer?.gfxShadows ?? false),
         ])
         fxStack.orientation = .vertical; fxStack.spacing = 8; fxStack.alignment = .leading
 

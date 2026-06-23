@@ -124,7 +124,7 @@ struct PostUniforms {
     var sunColorR:      Float = 1
     var sunColorG:      Float = 0.9
     var sunColorB:      Float = 0.7
-    var pad0:           Float = 0
+    var greyHaze:       Float = 0   // #: 0..1 The-Grey screen wash (0 in test paths)
 }
 
 /// Wind + weather uniforms passed to terrain vertex shaders (both vmain and shadowVmain).
@@ -182,7 +182,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var ambientLifePipeline: MTLRenderPipelineState!
     private var ambientLifeDepthState: MTLDepthStencilState!
     private var ambientLifeBuffer: MTLBuffer!   // AmbientSprite array (CPU-updated each frame)
-    private let kMaxAmbientSprites = 80
+    private let kMaxAmbientSprites = 120   // birds + fireflies + pollen + grey ash motes
 
     // ---- Graphics effect toggles (pause-menu Options) ------------------------
     // Each effect can be switched on/off live. Persisted in UserDefaults; loaded
@@ -192,7 +192,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     var gfxWater   = UserDefaults.standard.object(forKey: "gfxWater")   as? Bool ?? true
     var gfxGodRays = UserDefaults.standard.object(forKey: "gfxGodRays") as? Bool ?? true
     var gfxPollen  = UserDefaults.standard.object(forKey: "gfxPollen")  as? Bool ?? true
-    var gfxShadows = UserDefaults.standard.object(forKey: "gfxShadows") as? Bool ?? true
+    var gfxShadows = UserDefaults.standard.object(forKey: "gfxShadows") as? Bool ?? false  // default OFF (residual sun-angle bug; kids prefer it off)
     // World-space precipitation (rain streaks / snow flakes) — renderer-owned,
     // instanced billboards in a volume around the camera. Drives off frame.camera.weather.
     private var precipPipeline: MTLRenderPipelineState!
@@ -932,7 +932,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             let spriteCount = updateAmbientSprites(
                 wallClock: wallClock,
                 timeOfDay: frame.camera.time_of_day,
-                camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z))
+                camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z),
+                greyAmt: max(0, 1 - frame.camera.local_sat))   // #: Grey ash density
             if spriteCount > 0 {
                 enc.setRenderPipelineState(ambientLifePipeline)
                 enc.setDepthStencilState(ambientLifeDepthState)
@@ -1067,7 +1068,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.18,
                               rainStrength: precipPacked, wallClockSecs: wallClock,
                               godrayStrength: grStrength, sunScreenX: sunSX, sunScreenY: sunSY,
-                              sunColorR: 1.0, sunColorG: 0.6 + 0.35 * dayT, sunColorB: 0.3 + 0.5 * dayT)
+                              sunColorR: 1.0, sunColorG: 0.6 + 0.35 * dayT, sunColorB: 0.3 + 0.5 * dayT,
+                              greyHaze: max(0, 1 - frame.camera.local_sat))   // #: The Grey wash
 
         // =====================================================================
         // PASS 4a: Composite (ACES + colour grade + vignette)
@@ -1274,7 +1276,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// Fills ambientLifeBuffer with this frame's bird/firefly sprites.
     /// Returns the sprite count written (may be 0 when completely faded).
     @discardableResult
-    private func updateAmbientSprites(wallClock: Float, timeOfDay: Float, camPos: SIMD3<Float>) -> Int {
+    private func updateAmbientSprites(wallClock: Float, timeOfDay: Float, camPos: SIMD3<Float>,
+                                      greyAmt: Float = 0) -> Int {
         // dayT: 0=night, 1=noon
         let dayT  = max(0, sin(timeOfDay * .pi))
         // nightT: inverse
@@ -1284,7 +1287,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         let birdCount: Int     = Int((dayT * dayT * 12).rounded())    // 0..12 birds by day
         let fireflyCount: Int  = Int((nightT * nightT * 40).rounded()) // 0..40 fireflies by night
         let pollenCount: Int   = gfxPollen ? Int((dayT * 16).rounded()) : 0   // 0..16 motes by day (#45, toggle)
-        let totalSprites = min(birdCount + fireflyCount + pollenCount, kMaxAmbientSprites)
+        // Grey ash motes: density scales with how drained the player's region is, so
+        // walking into The Grey is viscerally obvious (dust/ash thickening in the air).
+        let g = max(0, min(1, greyAmt))
+        let ashCount: Int      = Int((g * g * 42).rounded())          // 0..42 motes, ramps in the Grey
+        let totalSprites = min(birdCount + fireflyCount + pollenCount + ashCount, kMaxAmbientSprites)
         guard totalSprites > 0 else { return 0 }
 
         let ptr = ambientLifeBuffer.contents().bindMemory(to: AmbientSpritePod.self, capacity: kMaxAmbientSprites)
@@ -1347,6 +1354,30 @@ final class Renderer: NSObject, MTKViewDelegate {
             ptr[idx] = AmbientSpritePod(
                 posW:  SIMD4<Float>(px, py, pz, 0.09),          // w=size (very tiny)
                 color: SIMD4<Float>(1.0, 0.97, 0.80, pAlpha))  // pale warm gold
+        }
+
+        // --- Grey ash / dust motes (The Grey ambience) ---
+        // Cold grey flecks that drift and slowly sink around the player, thickening
+        // the more drained the region is — so being in The Grey feels like ash in the
+        // air, not just desaturated terrain. Cover a wider/taller volume than pollen.
+        for i in 0..<ashCount {
+            let idx = birdCount + fireflyCount + pollenCount + i
+            if idx >= kMaxAmbientSprites { break }              // defensive cap
+            let fi = Float(i)
+            let angle  = wallClock * 0.015 + fi * 2.399
+            let radius = 2.0 + Float(fmod(Double(fi) * 3.37, 22.0))      // out to ~24 blocks
+            // Slow downward drift that wraps, plus lateral sway → ash settling.
+            let fall   = Float(fmod(Double(wallClock * 0.6 + fi * 1.3), 9.0))   // 0..9 wrap
+            let px = camPos.x + cos(angle) * radius + sin(wallClock * 0.2 + fi) * 1.2
+            let pz = camPos.z + sin(angle) * radius + cos(wallClock * 0.18 + fi) * 1.2
+            let py = camPos.y + 4.5 - fall + sin(fi * 0.5 + wallClock * 0.3) * 0.6
+            let twinkle = 0.6 + 0.4 * sin(wallClock * 0.5 + fi * 2.1)
+            let aAlpha  = g * (0.12 + twinkle * 0.14)           // fade in with greyness
+            // Cold ashen grey, faintly blue, slight value variation per mote.
+            let v = 0.40 + 0.18 * Float(fmod(Double(fi) * 0.61, 1.0))
+            ptr[idx] = AmbientSpritePod(
+                posW:  SIMD4<Float>(px, py, pz, 0.11),          // w=size (small)
+                color: SIMD4<Float>(v, v * 1.02, v * 1.08, aAlpha))   // ashen grey
         }
 
         return totalSprites
@@ -1504,7 +1535,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         float sunColorR;
         float sunColorG;
         float sunColorB;
-        float pad0;
+        float greyHaze;   // #: The-Grey screen wash
     };
 
     // ShadowVertUniforms (80 bytes): light VP + chunk origin.
@@ -3163,6 +3194,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         // falls through the 3D world around the camera with real parallax.
         // pu.rainStrength is still passed (kept for struct-layout stability and
         // the rain wet-darkening of terrain) but no longer composited here.
+
+        // The Grey (#: drained-region wash). When the player is in a drained region,
+        // pull the WHOLE frame toward a cold desaturated grey + darken slightly, so
+        // being in The Grey is unmistakable (not just guessable) instead of blending
+        // with other dull areas. Only darkens/desaturates, so it can't wash out.
+        if (pu.greyHaze > 0.001) {
+            float gl = dot(tonemapped, float3(0.2126, 0.7152, 0.0722));
+            float3 cold = float3(gl) * float3(0.84, 0.88, 0.97);   // cool slate grey
+            tonemapped = mix(tonemapped, cold, clamp(pu.greyHaze, 0.0, 1.0) * 0.55);
+            tonemapped *= (1.0 - clamp(pu.greyHaze, 0.0, 1.0) * 0.12);
+        }
 
         // Gamma: drawable is bgra8Unorm (no hardware sRGB), apply manual gamma 2.2.
         tonemapped = pow(clamp(tonemapped, 0.0, 1.0), float3(1.0 / 2.2));

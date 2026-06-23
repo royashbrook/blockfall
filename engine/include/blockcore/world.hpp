@@ -704,6 +704,9 @@ public:
             float depth = float(surf - ifloor(eye.y));
             out.camera.underground = std::clamp((depth - 3.0f) / 8.0f, 0.0f, 1.0f);
         }
+        // Player's region saturation (1=full colour, <1 = The Grey) → drives the
+        // grey ash-mote ambience so being in the Grey is viscerally obvious.
+        out.camera.local_sat = region_sat(to_chunk(IVec3{ifloor(pos_.x), ifloor(pos_.y), ifloor(pos_.z)}));
         out.interp_alpha = 0.0f;
         out.draws = draws.data();
         out.draw_count = std::uint32_t(draws.size());

@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 14u  /* v14: bf_render_frame.shadow_draws (un-culled shadow occluders) */
+#define BF_ABI_VERSION 15u  /* v15: bf_camera.local_sat (player region saturation → Grey ambience) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -241,6 +241,10 @@ typedef struct bf_camera {
     float   underground;      /* 0..1: how deep below the surface the eye is;   */
                               /* 1 = deep cave. Darkens the sky so unstreamed   */
                               /* far-underground doesn't show as bright daylight */
+    float   local_sat;        /* 0..1 saturation of the player's region: 1=full */
+                              /* colour, <1 = drained (The Grey). Drives the     */
+                              /* grey ash-mote ambience so being in the Grey     */
+                              /* reads viscerally, not just by guesswork. (v15)  */
 } bf_camera;
 
 /* ---- HUD state (read-only snapshot for the SwiftUI/Metal overlay) ------- */
