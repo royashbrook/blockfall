@@ -1484,24 +1484,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
     }
 
-    // Build all visible props' geometry (world space) into propVerts. Returns vertex count.
-    private func buildPropGeometry(_ frame: bf_render_frame) -> Int {
+    // Build all visible props' world-space geometry into `out` (shared by the live
+    // renderer AND the headless harness so they render identically). #51/#52
+    static func appendPropVertices(_ frame: bf_render_frame, into out: inout [PropVertex], cap: Int) {
         let n = Int(frame.prop_instance_count)
-        guard n > 0, let insts = frame.prop_instances else {
-            lastPropHash = 0; lastPropVertCount = 0; return 0
-        }
-        // Order-independent hash of the prop set (seeds are position-derived). If it's
-        // unchanged since last frame, the existing propBuffer is still valid — skip the
-        // CPU rebuild + upload entirely (props are static; this is the perf win).
-        var h: UInt64 = UInt64(n) &* 2654435761
-        for i in 0..<n { var s = UInt64(insts[i].seed); s = s &* 0x9E3779B97F4A7C15; h ^= s }
-        if h == lastPropHash { return lastPropVertCount }
-        lastPropHash = h
-
-        propVerts.removeAll(keepingCapacity: true)
+        guard n > 0, let insts = frame.prop_instances else { return }
         for i in 0..<n {
             let inst = insts[i]
-            let model = Self.propModel(inst.type)
+            let model = propModel(inst.type)
             if model.isEmpty { continue }
             let base = SIMD3<Float>(inst.position.x, inst.position.y, inst.position.z)
             let sat  = max(0, min(1, inst.sat))
@@ -1511,7 +1501,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 let lum = simd_dot(cu.2, SIMD3<Float>(0.30, 0.59, 0.11))
                 let drained = SIMD3<Float>(0.22, 0.25, 0.32) * (0.45 + lum * 0.85)
                 let col = drained + (cu.2 - drained) * sat       // desaturate in the Grey
-                for t in Self.unitCube {
+                for t in unitCube {
                     var lp = cu.0 + t.0 * (2 * cu.1)             // local pos in block space
                     let dx = lp.x - 0.5, dz = lp.z - 0.5         // yaw about block centre
                     lp.x = 0.5 + dx * cy - dz * sy
@@ -1520,13 +1510,28 @@ final class Renderer: NSObject, MTKViewDelegate {
                     let nx = nm.x, nz = nm.z
                     nm.x = nx * cy - nz * sy
                     nm.z = nx * sy + nz * cy
-                    propVerts.append(PropVertex(pos: base + lp, nrm: nm, col: col))
+                    out.append(PropVertex(pos: base + lp, nrm: nm, col: col))
                 }
-                if propVerts.count >= kMaxPropVerts { lastPropVertCount = propVerts.count; return propVerts.count }
+                if out.count >= cap { return }
             }
         }
+    }
+
+    // Live wrapper: caches the geometry, skipping the rebuild when the prop set is
+    // unchanged (order-independent hash; props are static). Returns vertex count.
+    private func buildPropGeometry(_ frame: bf_render_frame) -> Int {
+        let n = Int(frame.prop_instance_count)
+        guard n > 0, let insts = frame.prop_instances else {
+            lastPropHash = 0; lastPropVertCount = 0; return 0
+        }
+        var h: UInt64 = UInt64(n) &* 2654435761
+        for i in 0..<n { var s = UInt64(insts[i].seed); s = s &* 0x9E3779B97F4A7C15; h ^= s }
+        if h == lastPropHash { return lastPropVertCount }
+        lastPropHash = h
+        propVerts.removeAll(keepingCapacity: true)
+        Self.appendPropVertices(frame, into: &propVerts, cap: kMaxPropVerts)
         lastPropVertCount = propVerts.count
-        return propVerts.count
+        return lastPropVertCount
     }
 
     // MARK: Sky colour (clear colour tint — sky pass renders on top)

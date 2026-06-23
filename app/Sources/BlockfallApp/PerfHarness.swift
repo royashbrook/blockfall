@@ -14,6 +14,28 @@ import MetalKit
 import simd
 import CBlockcore
 import Darwin
+import ImageIO
+import CoreGraphics
+
+// Write a (shared-storage) bgra8 texture to a PNG. Used by the headless --shot mode
+// so visuals can be verified from the terminal without taking over the desktop. (#52)
+private func writeTexturePNG(_ tex: MTLTexture, to path: String) {
+    let w = tex.width, h = tex.height
+    var data = [UInt8](repeating: 0, count: w * h * 4)
+    tex.getBytes(&data, bytesPerRow: w * 4, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
+    let cs = CGColorSpaceCreateDeviceRGB()
+    let bi = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+    guard let ctx = CGContext(data: &data, width: w, height: h, bitsPerComponent: 8,
+                              bytesPerRow: w * 4, space: cs, bitmapInfo: bi.rawValue),
+          let img = ctx.makeImage(),
+          let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL,
+                                                     "public.png" as CFString, 1, nil) else {
+        print("shot: failed to encode PNG"); return
+    }
+    CGImageDestinationAddImage(dest, img, nil)
+    CGImageDestinationFinalize(dest)
+    print("wrote shot: \(path)")
+}
 
 private func residentFootprintMB() -> Double {
     var info = task_vm_info_data_t()
@@ -26,7 +48,7 @@ private func residentFootprintMB() -> Double {
     return kr == KERN_SUCCESS ? Double(info.phys_footprint) / 1_048_576.0 : 0
 }
 
-func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
+func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) -> Bool {
     guard let device = MTLCreateSystemDefaultDevice() else { print("no Metal device"); return false }
     let queue = device.makeCommandQueue()!
     let registry = BufferRegistry(device: device)
@@ -53,6 +75,17 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
     shadowDesc.fragmentFunction = nil
     shadowDesc.depthAttachmentPixelFormat = .depth32Float
     let shadowPipeline = try? device.makeRenderPipelineState(descriptor: shadowDesc)
+
+    // Prop pipeline (#52: render props offscreen so the shot + perf reflect them).
+    let propPipeline: MTLRenderPipelineState? = {
+        let d = MTLRenderPipelineDescriptor()
+        d.vertexFunction   = lib.makeFunction(name: "propVmain")
+        d.fragmentFunction = lib.makeFunction(name: "propFmain")
+        d.colorAttachments[0].pixelFormat = .rgba16Float
+        d.depthAttachmentPixelFormat = .depth32Float
+        return try? device.makeRenderPipelineState(descriptor: d)
+    }()
+    var propBuf: MTLBuffer? = nil
 
     let dsd = MTLDepthStencilDescriptor(); dsd.depthCompareFunction = .less; dsd.isDepthWriteEnabled = true
     let depthState = device.makeDepthStencilState(descriptor: dsd)
@@ -108,11 +141,12 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
     let start = CACurrentMediaTime()
     var lastDt = CACurrentMediaTime()
 
-    func renderOneFrame() {
+    func renderOneFrame(pitch: Float = 0) {
         frameIdx += 1; registry.currentFrame = frameIdx
         let now = CACurrentMediaTime(); let dt = now - lastDt; lastDt = now
         // Keep the player slowly orbiting so chunks stream continuously (worst case).
         var input = bf_frame_input(); input.move_forward = 1; input.look_yaw_delta = 0.004
+        input.look_pitch_delta = pitch   // #52 shot mode tilts down to frame ground props
         _ = bf_frame_begin(e, &input, dt)
         var f = bf_render_frame(); _ = bf_frame_acquire_render(e, &f)
 
@@ -208,6 +242,28 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
                                           indexType: .uint32, indexBuffer: ib, indexBufferOffset: Int(d.index_offset))
             }
+            // Props (#52): build + draw the same toy models as the live renderer.
+            var pv: [PropVertex] = []
+            Renderer.appendPropVertices(f, into: &pv, cap: 240_000)
+            if !pv.isEmpty, let pp = propPipeline {
+                let need = pv.count * MemoryLayout<PropVertex>.stride
+                if propBuf == nil || propBuf!.length < need {
+                    propBuf = device.makeBuffer(length: max(need, 65536), options: .storageModeShared)
+                }
+                if let pb = propBuf {
+                    pb.contents().withMemoryRebound(to: PropVertex.self, capacity: pv.count) { dst in
+                        pv.withUnsafeBufferPointer { src in dst.update(from: src.baseAddress!, count: pv.count) }
+                    }
+                    let dayBright = 0.30 + 0.70 * max(0, sin(f.camera.time_of_day * Float.pi))
+                    var pu2 = PropUniforms(viewProj: viewProj, params: SIMD4<Float>(dayBright, 0, 0, 0))
+                    enc.setRenderPipelineState(pp); enc.setDepthStencilState(depthState); enc.setCullMode(.none)
+                    enc.setVertexBuffer(pb, offset: 0, index: 0)
+                    enc.setVertexBytes(&pu2, length: MemoryLayout<PropUniforms>.stride, index: 1)
+                    enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: pv.count)
+                }
+            }
+
+            enc.setRenderPipelineState(terrainPipeline)
             enc.setDepthStencilState(depthState)
             entR.encode(enc, viewProj: viewProj, entities: f.entities, count: Int(f.entity_count))
             enc.endEncoding()
@@ -253,6 +309,16 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
 
     // Warm up: stream the world in for ~3 s before measuring.
     while CACurrentMediaTime() - start < 3.0 { renderOneFrame() }
+
+    // #52 headless screenshot: tilt the camera down to frame ground props, let the
+    // chunks/lighting settle, then capture the composited frame to a PNG. No desktop.
+    if let shot = shotPath {
+        for _ in 0..<240 { renderOneFrame() }               // travel across biomes to find grass/props
+        for _ in 0..<26  { renderOneFrame(pitch: -0.020) }  // angle down toward the ground
+        for _ in 0..<24  { renderOneFrame() }               // settle (stream + dirty converge)
+        writeTexturePNG(output, to: shot)
+        return true
+    }
 
     let measureStart = CACurrentMediaTime()
     while CACurrentMediaTime() - measureStart < seconds {
