@@ -1984,12 +1984,14 @@ private:
     // per (re)mesh, not per frame.
     void scan_chunk_props(ChunkCoord cc, MeshRec& rec) {
         rec.props.clear();
+        IChunk* ch = store_.get(cc);          // fetch the chunk ONCE, not per cell
+        if (!ch) return;
         float sat = region_sat(cc);
         int bx = cc.x * kChunkDim, by = cc.y * kChunkDim, bz = cc.z * kChunkDim;
         for (int lz = 0; lz < kChunkDim; ++lz)
         for (int ly = 0; ly < kChunkDim; ++ly)
         for (int lx = 0; lx < kChunkDim; ++lx) {
-            BlockId id = block_at(IVec3{bx + lx, by + ly, bz + lz});
+            BlockId id = ch->get(lx, ly, lz);   // direct read, no store lookup
             if (!is_prop_block(id)) continue;
             std::uint32_t h = std::uint32_t((bx + lx) * 73856093 ^ (by + ly) * 19349663 ^ (bz + lz) * 83492791);
             bf_prop_instance p{};

@@ -202,6 +202,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var propBuffer: MTLBuffer?          // world-space PropVertex geometry, rebuilt each frame
     private var propVerts: [PropVertex] = []    // CPU scratch
     private let kMaxPropVerts = 240_000         // ~grow cap (≈11 MB)
+    private var lastPropHash: UInt64 = 0        // skip rebuild when the prop set is unchanged
+    private var lastPropVertCount = 0
 
     // ---- Graphics effect toggles (pause-menu Options) ------------------------
     // Each effect can be switched on/off live. Persisted in UserDefaults; loaded
@@ -1484,9 +1486,19 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // Build all visible props' geometry (world space) into propVerts. Returns vertex count.
     private func buildPropGeometry(_ frame: bf_render_frame) -> Int {
-        propVerts.removeAll(keepingCapacity: true)
         let n = Int(frame.prop_instance_count)
-        guard n > 0, let insts = frame.prop_instances else { return 0 }
+        guard n > 0, let insts = frame.prop_instances else {
+            lastPropHash = 0; lastPropVertCount = 0; return 0
+        }
+        // Order-independent hash of the prop set (seeds are position-derived). If it's
+        // unchanged since last frame, the existing propBuffer is still valid — skip the
+        // CPU rebuild + upload entirely (props are static; this is the perf win).
+        var h: UInt64 = UInt64(n) &* 2654435761
+        for i in 0..<n { var s = UInt64(insts[i].seed); s = s &* 0x9E3779B97F4A7C15; h ^= s }
+        if h == lastPropHash { return lastPropVertCount }
+        lastPropHash = h
+
+        propVerts.removeAll(keepingCapacity: true)
         for i in 0..<n {
             let inst = insts[i]
             let model = Self.propModel(inst.type)
@@ -1510,9 +1522,10 @@ final class Renderer: NSObject, MTKViewDelegate {
                     nm.z = nx * sy + nz * cy
                     propVerts.append(PropVertex(pos: base + lp, nrm: nm, col: col))
                 }
-                if propVerts.count >= kMaxPropVerts { return propVerts.count }
+                if propVerts.count >= kMaxPropVerts { lastPropVertCount = propVerts.count; return propVerts.count }
             }
         }
+        lastPropVertCount = propVerts.count
         return propVerts.count
     }
 
