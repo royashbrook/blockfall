@@ -151,8 +151,16 @@ inline void neighbour_light(IChunk* current_chunk, ChunkCoord cc, IChunkStore& s
 // Plants are non-opaque (like air/water) for face culling purposes: a solid block
 // next to a plant must still emit its face.  Plants are also non-occluders for AO.
 // They emit cross-billboard geometry instead of cube faces.
+// Sub-voxel props (#51): flower_red(36), flower_yellow(37), mushroom(39),
+// color_crystal(40). The RENDERER draws these as detailed little models, so the
+// mesher emits NO geometry for them — but they stay non-opaque / non-occluding so
+// neighbours still show their faces and AO isn't darkened around them.
+inline bool is_subvoxel_prop(BlockId id) {
+    return id == 36 || id == 37 || id == 39 || id == 40;
+}
+// Only tall_grass(38) still emits a cross-billboard from the mesher.
 inline bool is_cross_plant(BlockId id) {
-    return id == 36 || id == 37 || id == 38 || id == 39;
+    return id == 38;
 }
 
 // Torch block id (32): a thin sub-cell prop, not a full cube.  Like cross-plants
@@ -165,7 +173,7 @@ inline bool is_torch(BlockId id) {
 // A "billboard"/prop block emits custom geometry in the prop pass instead of
 // greedy cube faces: cross-plants (36-39) and torches (32).
 inline bool is_prop(BlockId id) {
-    return is_cross_plant(id) || is_torch(id);
+    return is_cross_plant(id) || is_torch(id) || is_subvoxel_prop(id);
 }
 
 // ---- opacity / transparency helpers -----------------------------------------
@@ -769,6 +777,7 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
             for (int z = 0; z < kChunkDim; ++z) {
                 BlockId here = chunk_get(chunk, x, y, z);
                 if (!is_prop(here)) continue;
+                if (is_subvoxel_prop(here)) continue;   // #51 drawn by the prop renderer, no mesh geometry
 
                 // Sample light from the prop cell itself (not an adjacent air face).
                 std::uint8_t sky = chunk->sky_light(x, y, z);

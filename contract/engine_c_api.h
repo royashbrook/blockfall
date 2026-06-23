@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 15u  /* v15: bf_camera.local_sat (player region saturation → Grey ambience) */
+#define BF_ABI_VERSION 16u  /* v16: bf_prop_instance + frame.prop_instances (sub-voxel props) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -228,6 +228,16 @@ typedef struct bf_entity_draw {
     uint32_t _pad;
 } bf_entity_draw;
 
+/* One decorative prop the renderer draws as a detailed small-cuboid toy model
+ * (#51 sub-voxel detail). The engine emits one per prop block in view; the
+ * renderer looks `type` up in its model table and builds the geometry. */
+typedef struct bf_prop_instance {
+    bf_vec3  position;    /* world position of the block's min corner          */
+    uint32_t type;        /* prop block id (e.g. flower 36/37, mushroom 39…)   */
+    uint32_t seed;        /* per-prop hash → small rotation/colour variation   */
+    float    sat;         /* region saturation here (drains prop colour in Grey)*/
+} bf_prop_instance;
+
 typedef struct bf_camera {
     bf_mat4 view;
     bf_mat4 proj;
@@ -334,6 +344,12 @@ typedef struct bf_render_frame {
      * Bounded to the shadow cascades' radius. (ABI v14) */
     const bf_draw_item*   shadow_draws;
     uint32_t              shadow_draw_count;
+    /* Sub-voxel props (#51): decorative blocks the renderer draws as detailed
+     * small-cuboid toy models instead of cubes. The engine emits one instance per
+     * prop block within view; the renderer builds the geometry from a model table.
+     * (ABI v16) */
+    const bf_prop_instance* prop_instances;
+    uint32_t                prop_instance_count;
 } bf_render_frame;
 
 /* ---- Frame-tick functions (defined here so bf_render_frame is complete) -- */

@@ -137,6 +137,19 @@ struct WindUniforms {
     var pad1:          Float = 0
 }
 
+/// One vertex of a sub-voxel prop model (#51). 48 bytes; matches MSL PropVertex
+/// (three 16-byte-aligned float3s). Built CPU-side each frame in world space.
+struct PropVertex {
+    var pos: SIMD3<Float>
+    var nrm: SIMD3<Float>
+    var col: SIMD3<Float>
+}
+/// Uniforms for the prop pass. 80 bytes; matches MSL PropUniforms.
+struct PropUniforms {
+    var viewProj: simd_float4x4
+    var params:   SIMD4<Float>   // x = day brightness
+}
+
 /// Uniforms for the world-space precipitation pass (rain streaks / snow flakes).
 /// Swift layout: viewProj(64) + camPosW(16) + params(16) = 96 bytes. Must match MSL PrecipUniforms.
 struct PrecipUniforms {
@@ -183,6 +196,12 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var ambientLifeDepthState: MTLDepthStencilState!
     private var ambientLifeBuffer: MTLBuffer!   // AmbientSprite array (CPU-updated each frame)
     private let kMaxAmbientSprites = 120   // birds + fireflies + pollen + grey ash motes
+
+    // ---- Sub-voxel props (#51) ----------------------------------------------
+    private var propPipeline: MTLRenderPipelineState!
+    private var propBuffer: MTLBuffer?          // world-space PropVertex geometry, rebuilt each frame
+    private var propVerts: [PropVertex] = []    // CPU scratch
+    private let kMaxPropVerts = 240_000         // ~grow cap (≈11 MB)
 
     // ---- Graphics effect toggles (pause-menu Options) ------------------------
     // Each effect can be switched on/off live. Persisted in UserDefaults; loaded
@@ -425,6 +444,15 @@ final class Renderer: NSObject, MTKViewDelegate {
         ald.depthAttachmentPixelFormat = .depth32Float
         do { ambientLifePipeline = try device.makeRenderPipelineState(descriptor: ald) }
         catch { fatalError("ambient life pipeline failed: \(error)") }
+
+        // ---- Sub-voxel props (#51): opaque toy models, depth test + write -------
+        let propd = MTLRenderPipelineDescriptor()
+        propd.vertexFunction   = lib.makeFunction(name: "propVmain")
+        propd.fragmentFunction = lib.makeFunction(name: "propFmain")
+        propd.colorAttachments[0].pixelFormat = .rgba16Float
+        propd.depthAttachmentPixelFormat = .depth32Float
+        do { propPipeline = try device.makeRenderPipelineState(descriptor: propd) }
+        catch { fatalError("prop pipeline failed: \(error)") }
 
         // Birds: no depth test (sky sprites). Fireflies: less-equal depth test.
         // We handle both in one pipeline; fireflies use depth, birds skip via discard logic.
@@ -922,7 +950,32 @@ final class Renderer: NSObject, MTKViewDelegate {
                                           indexBufferOffset: Int(d.index_offset))
             }
 
+            // --- Sub-voxel props (#51): detailed toy models for flowers/mushrooms/crystals ---
+            let propVertCount = buildPropGeometry(frame)
+            if propVertCount > 0 {
+                let needBytes = propVertCount * MemoryLayout<PropVertex>.stride
+                if propBuffer == nil || propBuffer!.length < needBytes {
+                    propBuffer = device.makeBuffer(length: max(needBytes, 64 * 1024), options: .storageModeShared)
+                }
+                if let pb = propBuffer {
+                    pb.contents().withMemoryRebound(to: PropVertex.self, capacity: propVertCount) { dst in
+                        propVerts.withUnsafeBufferPointer { src in
+                            dst.update(from: src.baseAddress!, count: propVertCount)
+                        }
+                    }
+                    let dayBright = 0.30 + 0.70 * max(0, sin(frame.camera.time_of_day * Float.pi))
+                    var pu2 = PropUniforms(viewProj: viewProj, params: SIMD4<Float>(dayBright, 0, 0, 0))
+                    enc.setRenderPipelineState(propPipeline)
+                    enc.setDepthStencilState(depthState)
+                    enc.setCullMode(.none)   // small opaque cuboids; skip winding concerns
+                    enc.setVertexBuffer(pb, offset: 0, index: 0)
+                    enc.setVertexBytes(&pu2, length: MemoryLayout<PropUniforms>.stride, index: 1)
+                    enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: propVertCount)
+                }
+            }
+
             // Entities + particles
+            enc.setRenderPipelineState(pipeline)
             enc.setDepthStencilState(depthState)
             entityRenderer.encode(enc, viewProj: viewProj, entities: frame.entities, count: Int(frame.entity_count))
             particles.update(Float(dt))
@@ -1381,6 +1434,86 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         return totalSprites
+    }
+
+    // MARK: Sub-voxel props (#51)
+    // A unit cube centred at the origin (±0.5), expanded to 36 (pos, normal) verts.
+    private static let unitCube: [(SIMD3<Float>, SIMD3<Float>)] = {
+        let faces: [(SIMD3<Float>, [SIMD3<Float>])] = [
+            (SIMD3( 1,0,0), [SIMD3( 0.5,-0.5,-0.5),SIMD3( 0.5,-0.5, 0.5),SIMD3( 0.5, 0.5, 0.5),SIMD3( 0.5, 0.5,-0.5)]),
+            (SIMD3(-1,0,0), [SIMD3(-0.5,-0.5, 0.5),SIMD3(-0.5,-0.5,-0.5),SIMD3(-0.5, 0.5,-0.5),SIMD3(-0.5, 0.5, 0.5)]),
+            (SIMD3(0, 1,0), [SIMD3(-0.5, 0.5,-0.5),SIMD3( 0.5, 0.5,-0.5),SIMD3( 0.5, 0.5, 0.5),SIMD3(-0.5, 0.5, 0.5)]),
+            (SIMD3(0,-1,0), [SIMD3(-0.5,-0.5, 0.5),SIMD3( 0.5,-0.5, 0.5),SIMD3( 0.5,-0.5,-0.5),SIMD3(-0.5,-0.5,-0.5)]),
+            (SIMD3(0,0, 1), [SIMD3( 0.5,-0.5, 0.5),SIMD3(-0.5,-0.5, 0.5),SIMD3(-0.5, 0.5, 0.5),SIMD3( 0.5, 0.5, 0.5)]),
+            (SIMD3(0,0,-1), [SIMD3(-0.5,-0.5,-0.5),SIMD3( 0.5,-0.5,-0.5),SIMD3( 0.5, 0.5,-0.5),SIMD3(-0.5, 0.5,-0.5)]),
+        ]
+        var out: [(SIMD3<Float>, SIMD3<Float>)] = []
+        out.reserveCapacity(36)
+        for (n, c) in faces {
+            for idx in [0,1,2, 0,2,3] { out.append((c[idx], n)) }
+        }
+        return out
+    }()
+
+    // Prop model = a few coloured cuboids (centre, half-extent, colour) in 0..1
+    // block space. Bold flat toy colours.
+    private static func propModel(_ type: UInt32) -> [(SIMD3<Float>, SIMD3<Float>, SIMD3<Float>)] {
+        let green = SIMD3<Float>(0.27, 0.62, 0.20)
+        switch type {
+        case 36, 37:   // flowers (red / yellow)
+            let bloom: SIMD3<Float> = (type == 36) ? SIMD3(0.90, 0.20, 0.22) : SIMD3(0.97, 0.82, 0.16)
+            return [
+                (SIMD3(0.5, 0.28, 0.5), SIMD3(0.05, 0.28, 0.05), green),               // stem
+                (SIMD3(0.5, 0.66, 0.5), SIMD3(0.20, 0.10, 0.20), bloom),               // bloom
+                (SIMD3(0.5, 0.70, 0.5), SIMD3(0.09, 0.11, 0.09), SIMD3(0.98,0.80,0.22)),// center
+            ]
+        case 39:       // mushroom
+            return [
+                (SIMD3(0.5, 0.22, 0.5), SIMD3(0.09, 0.22, 0.09), SIMD3(0.92,0.88,0.78)),// stem
+                (SIMD3(0.5, 0.52, 0.5), SIMD3(0.24, 0.12, 0.24), SIMD3(0.85,0.16,0.14)),// cap
+            ]
+        case 40:       // color crystal (pink, matches its light)
+            return [
+                (SIMD3(0.5,  0.40, 0.5),  SIMD3(0.11, 0.40, 0.11), SIMD3(0.96,0.42,0.86)),
+                (SIMD3(0.33, 0.22, 0.52), SIMD3(0.07, 0.22, 0.07), SIMD3(0.82,0.52,0.96)),
+                (SIMD3(0.66, 0.26, 0.43), SIMD3(0.06, 0.26, 0.06), SIMD3(0.92,0.46,0.92)),
+            ]
+        default: return []
+        }
+    }
+
+    // Build all visible props' geometry (world space) into propVerts. Returns vertex count.
+    private func buildPropGeometry(_ frame: bf_render_frame) -> Int {
+        propVerts.removeAll(keepingCapacity: true)
+        let n = Int(frame.prop_instance_count)
+        guard n > 0, let insts = frame.prop_instances else { return 0 }
+        for i in 0..<n {
+            let inst = insts[i]
+            let model = Self.propModel(inst.type)
+            if model.isEmpty { continue }
+            let base = SIMD3<Float>(inst.position.x, inst.position.y, inst.position.z)
+            let sat  = max(0, min(1, inst.sat))
+            let yaw  = Float(inst.seed & 1023) / 1023.0 * 6.2831853
+            let cy = cos(yaw), sy = sin(yaw)
+            for cu in model {
+                let lum = simd_dot(cu.2, SIMD3<Float>(0.30, 0.59, 0.11))
+                let drained = SIMD3<Float>(0.22, 0.25, 0.32) * (0.45 + lum * 0.85)
+                let col = drained + (cu.2 - drained) * sat       // desaturate in the Grey
+                for t in Self.unitCube {
+                    var lp = cu.0 + t.0 * (2 * cu.1)             // local pos in block space
+                    let dx = lp.x - 0.5, dz = lp.z - 0.5         // yaw about block centre
+                    lp.x = 0.5 + dx * cy - dz * sy
+                    lp.z = 0.5 + dx * sy + dz * cy
+                    var nm = t.1
+                    let nx = nm.x, nz = nm.z
+                    nm.x = nx * cy - nz * sy
+                    nm.z = nx * sy + nz * cy
+                    propVerts.append(PropVertex(pos: base + lp, nrm: nm, col: col))
+                }
+                if propVerts.count >= kMaxPropVerts { return propVerts.count }
+            }
+        }
+        return propVerts.count
     }
 
     // MARK: Sky colour (clear colour tint — sky pass renders on top)
@@ -3408,6 +3541,32 @@ final class Renderer: NSObject, MTKViewDelegate {
             float total = glow + halo;
             return float4(in.color.rgb * total, alpha * total);
         }
+    }
+
+    // =========================================================
+    // SUB-VOXEL PROPS (#51) — detailed toy models for flowers / mushrooms /
+    // crystals. Geometry is CPU-built each frame into a world-space vertex buffer;
+    // this just transforms + flat-shades it in the bold toy style.
+    // =========================================================
+    struct PropVertex { float3 pos; float3 nrm; float3 col; };
+    struct PropUniforms { float4x4 viewProj; float4 params; };  // params.x = day brightness
+    struct PropVOut { float4 position [[position]]; float3 nrm; float3 col; };
+
+    vertex PropVOut propVmain(uint vid [[vertex_id]],
+                              const device PropVertex* verts [[buffer(0)]],
+                              constant PropUniforms& u [[buffer(1)]]) {
+        PropVertex v = verts[vid];
+        PropVOut o;
+        o.position = u.viewProj * float4(v.pos, 1.0);
+        o.nrm = v.nrm;
+        o.col = v.col * u.params.x;     // day/night brightness baked per frame
+        return o;
+    }
+    fragment float4 propFmain(PropVOut in [[stage_in]]) {
+        // Flat toy shading: up-faces brighter, down-faces a touch darker.
+        float up = clamp(in.nrm.y, -1.0, 1.0);
+        float shade = 0.80 + 0.20 * max(0.0, up) - 0.12 * max(0.0, -up);
+        return float4(clamp(in.col * shade, 0.0, 1.0), 1.0);
     }
     """
 }

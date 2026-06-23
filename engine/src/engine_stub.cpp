@@ -37,6 +37,7 @@ struct bf_engine_s {
     void*            evt_user = nullptr;
     std::vector<bf_draw_item> draws;        // backing store for the borrowed frame
     std::vector<bf_draw_item> shadow_draws; // un-culled shadow occluders (#46)
+    std::vector<bf_prop_instance> prop_instances; // sub-voxel props (#51)
     bf_render_frame  frame{};
     bool             borrowed = false;
     std::optional<bf::UdpTransport> transport;   // co-op (Track H)
@@ -138,7 +139,7 @@ bf_result bf_frame_acquire_render(bf_engine e, bf_render_frame* out) {
     // HUD (black-through-ground + a false "you died"). So: return the live frame.
     if (e->borrowed) { *out = e->frame; return BF_OK; }
     e->frame = bf_render_frame{};
-    e->world.build_frame(e->frame, e->draws, e->shadow_draws, e->clock);
+    e->world.build_frame(e->frame, e->draws, e->shadow_draws, e->prop_instances, e->clock);
     e->borrowed = true;
     *out = e->frame;
     return BF_OK;

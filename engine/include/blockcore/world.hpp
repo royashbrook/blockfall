@@ -89,6 +89,7 @@ struct MeshRec {
     bf_gpu_buffer ibuf{};
     std::uint32_t index_count{0};
     bool          has_buffers{false};
+    std::vector<bf_prop_instance> props;   // #51 sub-voxel props in this chunk (cached at mesh time)
 };
 
 // Read-only chunk store holding owned COPIES of a chunk + its neighbours, so a
@@ -627,9 +628,11 @@ public:
     }
 
     void build_frame(bf_render_frame& out, std::vector<bf_draw_item>& draws,
-                     std::vector<bf_draw_item>& shadow_draws, double clock) {
+                     std::vector<bf_draw_item>& shadow_draws,
+                     std::vector<bf_prop_instance>& prop_instances, double clock) {
         remesh_dirty();
         draws.clear();
+        prop_instances.clear();
         std::vector<bf_region_dim> regions; // built lazily below
         // View-cone cull: skip chunks well outside the camera's forward cone so
         // draw cost scales with what's visible, not with render distance (#5).
@@ -657,6 +660,9 @@ public:
             d.dim_sat_pz  = region_sat(ChunkCoord{cc.x, cc.y, cc.z + 1});
             d.dim_sat_pxz = region_sat(ChunkCoord{cc.x + 1, cc.y, cc.z + 1});
             draws.push_back(d);
+            // #51 — emit this chunk's props for the prop renderer (near chunks only).
+            if (dist < 80.0f && !rec.props.empty())
+                prop_instances.insert(prop_instances.end(), rec.props.begin(), rec.props.end());
         }
 
         V3 fwd = forward_dir();
@@ -732,6 +738,8 @@ public:
         }
         out.shadow_draws = shadow_draws.data();
         out.shadow_draw_count = std::uint32_t(shadow_draws.size());
+        out.prop_instances = prop_instances.data();
+        out.prop_instance_count = std::uint32_t(prop_instances.size());
 
         // Creatures (ABI v2 entity draws).
         entities_.clear();
@@ -1968,9 +1976,32 @@ private:
         // a big load rushes in instead of trickling on the E-cores alone. (#5 fill)
         sched_->submit(&World::mesh_trampoline, t.release(), terrain_qos());
     }
+    // #51 — is this block id drawn as a detailed sub-voxel prop (not a cube)?
+    static bool is_prop_block(BlockId id) {
+        return id == 36u || id == 37u || id == 39u || id == 40u;  // flowers, mushroom, color crystal
+    }
+    // Cache the chunk's prop blocks as instances for the prop renderer. Runs once
+    // per (re)mesh, not per frame.
+    void scan_chunk_props(ChunkCoord cc, MeshRec& rec) {
+        rec.props.clear();
+        float sat = region_sat(cc);
+        int bx = cc.x * kChunkDim, by = cc.y * kChunkDim, bz = cc.z * kChunkDim;
+        for (int lz = 0; lz < kChunkDim; ++lz)
+        for (int ly = 0; ly < kChunkDim; ++ly)
+        for (int lx = 0; lx < kChunkDim; ++lx) {
+            BlockId id = block_at(IVec3{bx + lx, by + ly, bz + lz});
+            if (!is_prop_block(id)) continue;
+            std::uint32_t h = std::uint32_t((bx + lx) * 73856093 ^ (by + ly) * 19349663 ^ (bz + lz) * 83492791);
+            bf_prop_instance p{};
+            p.position = bf_vec3{float(bx + lx), float(by + ly), float(bz + lz)};
+            p.type = std::uint32_t(id); p.seed = h; p.sat = sat;
+            rec.props.push_back(p);
+        }
+    }
     void upload_mesh(ChunkCoord cc, MeshTask& t) {
         if (!store_.is_resident(cc)) return;          // evicted while meshing — drop
         MeshRec& rec = meshes_[cc];
+        scan_chunk_props(cc, rec);                    // #51 refresh prop cache
         if (rec.has_buffers) {
             alloc_.free_(alloc_.user, rec.vbuf.handle);
             alloc_.free_(alloc_.user, rec.ibuf.handle);
@@ -2063,6 +2094,7 @@ private:
     }
     void remesh_one(ChunkCoord cc) {
         MeshRec& rec = meshes_[cc];
+        scan_chunk_props(cc, rec);                    // #51 refresh prop cache
         std::span<std::byte> vs(vscratch_.data(), vscratch_.size());
         std::span<std::byte> is(iscratch_.data(), iscratch_.size());
         MeshResult mr = mesher_.mesh(cc, store_, vs, is, false);
