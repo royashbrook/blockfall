@@ -380,6 +380,7 @@ final class HUDView: NSView {
         let edgeDir:  CGVector  // unit-ish direction to point the arrow (off-screen)
         let distM:    Int       // distance to the peer, metres (rounded)
         let color:    NSColor   // the peer's per-peer tint
+        let label:    String    // "Player" (peer) or "Boss" (#41 quest target)
     }
     private var peers: [PeerMarker] = []
 
@@ -979,8 +980,8 @@ final class HUDView: NSView {
         stem.lineWidth = 2 * hudScale
         stem.stroke()
 
-        // Label: "Player" + distance, centered above the marker.
-        let label = "Player  \(peer.distM)m"
+        // Label: "Player"/"Boss" + distance, centered above the marker.
+        let label = "\(peer.label)  \(peer.distM)m"
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.boldSystemFont(ofSize: fs(12)),
             .foregroundColor: NSColor.white,
@@ -1033,8 +1034,8 @@ final class HUDView: NSView {
         arrow.lineWidth = 2 * hudScale
         arrow.stroke()
 
-        // Distance label, placed just inward of the arrow (toward the centre).
-        let label = "\(peer.distM)m"
+        // Label + distance, placed just inward of the arrow (toward the centre).
+        let label = "\(peer.label)  \(peer.distM)m"
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.boldSystemFont(ofSize: fs(12)),
             .foregroundColor: NSColor.white,

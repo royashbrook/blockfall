@@ -1132,7 +1132,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         var markers: [HUDView.PeerMarker] = []
         for i in 0..<n {
             let e = ents[i]
-            guard e.kind == 100 else { continue }
+            // kind 100 = remote player (#13); kind 4 = boss (#41 quest target).
+            // Both get a compass marker so kids can find the peer / the Colossus.
+            let isBoss = (e.kind == 4)
+            guard e.kind == 100 || isBoss else { continue }
 
             let peerPos = SIMD3<Float>(e.position.x, e.position.y + e.scale * 0.9,
                                        e.position.z)   // aim at roughly head height
@@ -1141,10 +1144,14 @@ final class Renderer: NSObject, MTKViewDelegate {
                                                        e.position.y - camPos.y,
                                                        e.position.z - camPos.z)).rounded())
 
-            let color = NSColor(srgbRed: CGFloat(max(0, min(1, e.color.x))),
-                                green:   CGFloat(max(0, min(1, e.color.y))),
-                                blue:    CGFloat(max(0, min(1, e.color.z))),
-                                alpha:   1)
+            // Bosses get a fixed warning red so they read as "danger / go here";
+            // players keep their per-peer tint.
+            let color = isBoss
+                ? NSColor(srgbRed: 0.95, green: 0.25, blue: 0.20, alpha: 1)
+                : NSColor(srgbRed: CGFloat(max(0, min(1, e.color.x))),
+                          green:   CGFloat(max(0, min(1, e.color.y))),
+                          blue:    CGFloat(max(0, min(1, e.color.z))),
+                          alpha:   1)
 
             // Project the peer's world position through view*proj.
             let clip = viewProj * SIMD4<Float>(peerPos.x, peerPos.y, peerPos.z, 1)
@@ -1186,7 +1193,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                                               screenPt: screenPt,
                                               edgeDir: edgeDir,
                                               distM: distM,
-                                              color: color))
+                                              color: color,
+                                              label: isBoss ? "Boss" : "Player"))
         }
         hud.setPeers(markers)
     }
