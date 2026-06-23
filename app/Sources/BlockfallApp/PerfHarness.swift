@@ -134,7 +134,7 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
         let tanHalfFov = tan(fovy*0.5)
         let lightViewProj = Renderer.buildLightMatrix(
             sunDir: SIMD3<Float>(sun.x, sun.y, sun.z),
-            camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z), camFwd: camFwd)
+            camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z), radius: 90, res: 1536)
 
         var windU = WindUniforms(wallClockSecs: wallClock, rainStrength: 0)
         let cmd = queue.makeCommandBuffer()!
@@ -191,6 +191,7 @@ func runPerfTest(seconds: Double, jsonPath: String?) -> Bool {
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
             enc.setFragmentBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)
             enc.setFragmentTexture(shadowTex, index: 0)
+            enc.setFragmentTexture(shadowTex, index: 1)   // #46 far cascade (same map in perf harness)
             enc.setFragmentSamplerState(shadowSampler, index: 0)
             for i in 0..<Int(f.draw_count) {
                 let d = f.draws[i]
