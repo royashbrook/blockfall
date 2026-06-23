@@ -497,27 +497,24 @@ static void test_water_transparency() {
 }
 
 // ----------------------------------------------------------------------------
-// Test 9: cross-plant billboard geometry.
+// Test 9: sub-voxel prop block emits NO mesher geometry but stays non-occluding.
 //
-// A single tall_grass block (id=38) at (4,4,4) in an otherwise-air chunk.
-//
-// Expected: 4 quads (2 diagonals × 2 windings) = 16 verts, 48 indices.
-// No cube faces must appear for the plant itself.
+// A single tall_grass block (id=38) at (4,4,4) in an otherwise-air chunk. Grass
+// is now a sub-voxel prop (#52): the renderer draws it as an instanced 3D tuft,
+// so the MESHER emits nothing for the plant cell itself.
 //
 // A solid block at (5,4,4) adjacent to the plant must still emit its -X face
-// (the face toward x=4 where the plant is).  The solid block with no other
-// neighbours emits 6 cube faces, so total quads = 6 (solid) + 4 (plant) = 10
-// quads, 60 indices, 40 vertices.
+// (the face toward x=4 where the plant is), because the prop is non-opaque. The
+// solid block with no other neighbours emits 6 cube faces, so total = 6 quads
+// (solid) + 0 (plant) = 36 indices, 24 vertices.
 //
-// AO: the plant must NOT occlude the AO of its solid neighbour.  The solid
-// block at (5,4,4) has its -X face pointing toward (4,4,4).  In the tangent
-// plane (Y,Z) one step at x=4, the only voxel is the plant itself — which
-// does not occlude.  So all 4 AO corners of the solid -X face must be 3.
+// AO: the plant must NOT occlude the AO of its solid neighbour. All 4 AO corners
+// of the solid -X face must be 3.
 // ----------------------------------------------------------------------------
 static void test_cross_plant() {
     bf::GreedyMesher gm;
     FakeChunk chunk;
-    chunk.set(4, 4, 4, 38);  // tall_grass
+    chunk.set(4, 4, 4, 38);  // tall_grass (now a sub-voxel prop)
     chunk.set(5, 4, 4, 1);   // solid block adjacent in +X direction
 
     FakeStore store;
@@ -527,22 +524,18 @@ static void test_cross_plant() {
     auto r = do_mesh(gm, {0,0,0}, store);
     CHECK(!r.empty, "plant: mesh not empty");
 
-    // 6 solid cube quads + 4 plant cross quads = 10 quads.
-    CHECK(r.index_count == 60, "plant: 60 indices (6 solid + 4 plant cross quads * 6 idx each)");
+    // 6 solid cube quads + 0 plant quads (prop emits no mesher geometry).
+    CHECK(r.index_count == 36, "plant: 36 indices (6 solid quads * 6 idx each)");
     std::uint32_t nv = r.vertex_bytes / static_cast<std::uint32_t>(sizeof(bf::BFVertex));
-    CHECK(nv == 40, "plant: 40 vertices (10 quads * 4 verts)");
+    CHECK(nv == 24, "plant: 24 vertices (6 quads * 4 verts)");
 
-    // Verify: plant cell emits cross geometry, not cube faces.
-    // Plant cross verts will have material_id == 38.
-    // Cube quads from plant itself (if wrongly emitted) would have mat==38 AND
-    // axis-aligned normals that form the 6 cube face directions.
-    // We check that material_id==38 vertices come in exactly 16 (4 quads × 4 verts).
+    // Verify: the prop cell emits NO geometry — zero verts carry material_id 38.
     auto* V = reinterpret_cast<const bf::BFVertex*>(g_vtx_buf.data());
     int plant_verts = 0;
     for (std::uint32_t i = 0; i < nv; ++i) {
         if (V[i].material_id == 38) ++plant_verts;
     }
-    CHECK(plant_verts == 16, "plant: exactly 16 verts with mat_id=38 (4 cross quads)");
+    CHECK(plant_verts == 0, "plant: prop block emits no mesher geometry (0 verts mat_id=38)");
 
     // Verify: solid block still emits a face toward the plant.
     // The -X face of solid(5,4,4) has face_d=5 (x=5), normal BF_NX_NEG(=1),

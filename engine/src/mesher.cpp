@@ -151,16 +151,17 @@ inline void neighbour_light(IChunk* current_chunk, ChunkCoord cc, IChunkStore& s
 // Plants are non-opaque (like air/water) for face culling purposes: a solid block
 // next to a plant must still emit its face.  Plants are also non-occluders for AO.
 // They emit cross-billboard geometry instead of cube faces.
-// Sub-voxel props (#51): flower_red(36), flower_yellow(37), mushroom(39),
-// color_crystal(40). The RENDERER draws these as detailed little models, so the
-// mesher emits NO geometry for them — but they stay non-opaque / non-occluding so
-// neighbours still show their faces and AO isn't darkened around them.
+// Sub-voxel props (#51/#52): flower_red(36), flower_yellow(37), tall_grass(38),
+// mushroom(39), color_crystal(40). The RENDERER draws these as detailed little
+// instanced models, so the mesher emits NO geometry for them — but they stay
+// non-opaque / non-occluding so neighbours still show their faces and AO isn't
+// darkened around them.
 inline bool is_subvoxel_prop(BlockId id) {
-    return id == 36 || id == 37 || id == 39 || id == 40;
+    return id == 36 || id == 37 || id == 38 || id == 39 || id == 40;
 }
-// Only tall_grass(38) still emits a cross-billboard from the mesher.
-inline bool is_cross_plant(BlockId id) {
-    return id == 38;
+// No cross-billboard plants remain in the mesher (all are sub-voxel props now).
+inline bool is_cross_plant(BlockId) {
+    return false;
 }
 
 // Torch block id (32): a thin sub-cell prop, not a full cube.  Like cross-plants

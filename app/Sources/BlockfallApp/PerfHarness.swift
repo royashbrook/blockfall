@@ -316,7 +316,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     // chunks/lighting settle, then capture the composited frame to a PNG. No desktop.
     if let shot = shotPath {
         for _ in 0..<700 { renderOneFrame(yaw: 0) }          // travel STRAIGHT far to cross into grass
-        for _ in 0..<26  { renderOneFrame(pitch: -0.020, yaw: 0) }  // angle down toward the ground
+        for _ in 0..<10  { renderOneFrame(pitch: -0.006, yaw: 0) }  // look slightly down at the ground ahead
         for _ in 0..<24  { renderOneFrame(yaw: 0) }          // settle (stream + dirty converge)
         print("shot: prop instances in final frame = \(lastShotPropN)")
         writeTexturePNG(output, to: shot)
