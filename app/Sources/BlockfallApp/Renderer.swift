@@ -110,16 +110,20 @@ struct WaterUniforms {
     var sunDirTime:    SIMD4<Float> = .zero   // xyz = sun dir, w = time_of_day (#43 water sky reflection)
 }
 
-/// Uniforms for the HDR composite / tonemap pass (32 bytes).
+/// Uniforms for the HDR composite / tonemap pass (48 bytes).
 struct PostUniforms {
     var bloomStrength:  Float   // fraction of bloom added
     var vignetteStr:    Float   // vignette strength
     var satBoost:       Float   // colour grade saturation multiplier
     var rainStrength:   Float   // 0..1 — drives precipitation overlay
     var wallClockSecs:  Float   // animation time for precipitation
+    var godrayStrength: Float = 0   // #44 — 0 = god rays off (sun not visible)
+    var sunScreenX:     Float = 0   // #44 — sun screen-space uv (matches fullscreenVert)
+    var sunScreenY:     Float = 0
+    var sunColorR:      Float = 1
+    var sunColorG:      Float = 0.9
+    var sunColorB:      Float = 0.7
     var pad0:           Float = 0
-    var pad1:           Float = 0
-    var pad2:           Float = 0
 }
 
 /// Wind + weather uniforms passed to terrain vertex shaders (both vmain and shadowVmain).
@@ -1014,8 +1018,23 @@ final class Renderer: NSObject, MTKViewDelegate {
         case 2:  precipPacked = -1.0   // snow
         default: precipPacked =  0.0   // clear
         }
+        // God rays (#44): project the sun to screen space; the composite marches
+        // toward it to scatter light shafts. Gated to daytime above ground.
+        let dayT  = max(0, sin(frame.camera.time_of_day * Float.pi))
+        let toSun = simd_normalize(SIMD3<Float>(-sun.x, -sun.y, -sun.z))
+        let sunClip = viewProj * SIMD4<Float>(camPosW.x + toSun.x * 2000,
+                                              camPosW.y + toSun.y * 2000,
+                                              camPosW.z + toSun.z * 2000, 1)
+        var grStrength: Float = 0, sunSX: Float = 0, sunSY: Float = 0
+        if sunClip.w > 0.001 {
+            sunSX = (sunClip.x / sunClip.w) * 0.5 + 0.5
+            sunSY = 0.5 - (sunClip.y / sunClip.w) * 0.5   // Metal top-left uv (matches fullscreenVert)
+            grStrength = dayT * (1 - frame.camera.underground) * 0.6
+        }
         var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.18,
-                              rainStrength: precipPacked, wallClockSecs: wallClock)
+                              rainStrength: precipPacked, wallClockSecs: wallClock,
+                              godrayStrength: grStrength, sunScreenX: sunSX, sunScreenY: sunSY,
+                              sunColorR: 1.0, sunColorG: 0.6 + 0.35 * dayT, sunColorB: 0.3 + 0.5 * dayT)
 
         // =====================================================================
         // PASS 4a: Composite (ACES + colour grade + vignette)
@@ -1415,7 +1434,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     constant float3 WATER_SURFACE_COL = float3(0.11, 0.38, 0.78);
     constant float3 WATER_FOG_COL     = float3(0.10, 0.34, 0.62);
 
-    // PostUniforms (32 bytes) — composite pass.
+    // PostUniforms (48 bytes) — composite pass.
     // >0 rainStrength = rain, <0 = snow, 0 = clear.
     struct PostUniforms {
         float bloomStrength;
@@ -1423,9 +1442,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         float satBoost;
         float rainStrength;
         float wallClockSecs;
+        float godrayStrength;   // #44
+        float sunScreenX;
+        float sunScreenY;
+        float sunColorR;
+        float sunColorG;
+        float sunColorB;
         float pad0;
-        float pad1;
-        float pad2;
     };
 
     // ShadowVertUniforms (80 bytes): light VP + chunk origin.
@@ -3005,6 +3028,27 @@ final class Renderer: NSObject, MTKViewDelegate {
         // hdrTex is at the capped internal resolution; bilinear upscale is free here.
         float3 hdr   = hdrTex.sample(s, in.uv).rgb;
         float3 bloom = bloomTex.sample(s, in.uv).rgb;
+
+        // God rays (#44): scatter the sun into light shafts. March from this pixel
+        // toward the sun's screen position; bright (sky/sun) samples accumulate while
+        // geometry occludes them. Added in HDR so ACES keeps it from blowing out;
+        // gated to daytime-above-ground (godrayStrength) and faded near the edge.
+        if (pu.godrayStrength > 0.001) {
+            float2 sunUV = float2(pu.sunScreenX, pu.sunScreenY);
+            float2 delta = (sunUV - in.uv) * (1.0 / 24.0) * 0.9;
+            float2 p = in.uv;
+            float decay = 1.0, illum = 0.0;
+            for (int i = 0; i < 24; ++i) {
+                p += delta;
+                float3 c = hdrTex.sample(s, clamp(p, 0.0, 1.0)).rgb;
+                illum += max(0.0, dot(c, float3(0.2126, 0.7152, 0.0722)) - 0.55) * decay;
+                decay *= 0.92;
+            }
+            illum *= (1.0 / 24.0);
+            float edge = 1.0 - smoothstep(0.5, 1.1, max(abs(sunUV.x - 0.5), abs(sunUV.y - 0.5)) * 2.0);
+            float3 sunCol = float3(pu.sunColorR, pu.sunColorG, pu.sunColorB);
+            hdr += sunCol * (illum * pu.godrayStrength * edge * 2.2);
+        }
 
         // Clamp the bloom contribution per-channel so a large bright region (sun disc,
         // emissive blocks) can never flood the frame and wash out directional shading.
