@@ -823,8 +823,14 @@ final class Renderer: NSObject, MTKViewDelegate {
             shadowEnc.setCullMode(.front)   // front-face culling reduces acne
             shadowEnc.setDepthBias(2.0, slopeScale: 2.0, clamp: 0.0)
             shadowEnc.setVertexBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 2)
-            for i in 0..<Int(frame.draw_count) {
-                let d = frame.draws[i]
+            // Use the UN-culled shadow occluder list (#46) so geometry behind/beside
+            // the camera still casts shadows; fall back to draws if it's empty.
+            let sCount = Int(frame.shadow_draw_count)
+            let sDraws = frame.shadow_draws
+            let useShadow = (sCount > 0 && sDraws != nil)
+            let n = useShadow ? sCount : Int(frame.draw_count)
+            for i in 0..<n {
+                let d = useShadow ? sDraws![i] : frame.draws[i]
                 guard d.index_count > 0,
                       let vbuf = bufs[d.vertex_buffer],
                       let ibuf = bufs[d.index_buffer] else { continue }

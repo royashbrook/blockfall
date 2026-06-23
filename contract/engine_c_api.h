@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 13u  /* v13: bf_quest_target (quest-target compass) */
+#define BF_ABI_VERSION 14u  /* v14: bf_render_frame.shadow_draws (un-culled shadow occluders) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -325,6 +325,11 @@ typedef struct bf_render_frame {
     const bf_entity_draw* entities;      /* engine-owned array (ABI v2)       */
     uint32_t              entity_count;
     bf_hud_state          hud;           /* value copy, always valid         */
+    /* Shadow occluders: like `draws` but WITHOUT the view-cone cull, so geometry
+     * behind/beside the camera still casts shadows into view (#46 turn-stability).
+     * Bounded to the shadow cascades' radius. (ABI v14) */
+    const bf_draw_item*   shadow_draws;
+    uint32_t              shadow_draw_count;
 } bf_render_frame;
 
 /* ---- Frame-tick functions (defined here so bf_render_frame is complete) -- */

@@ -626,7 +626,8 @@ public:
         }
     }
 
-    void build_frame(bf_render_frame& out, std::vector<bf_draw_item>& draws, double clock) {
+    void build_frame(bf_render_frame& out, std::vector<bf_draw_item>& draws,
+                     std::vector<bf_draw_item>& shadow_draws, double clock) {
         remesh_dirty();
         draws.clear();
         std::vector<bf_region_dim> regions; // built lazily below
@@ -707,6 +708,27 @@ public:
         out.draws = draws.data();
         out.draw_count = std::uint32_t(draws.size());
         out.regions = nullptr; out.region_count = 0;
+
+        // Shadow occluder list: same resident meshes, NO view-cone cull, bounded to
+        // the far shadow cascade's radius. Without this the shadow pass only saw the
+        // forward-cone chunks, so shadows from geometry behind/beside you popped away
+        // as you turned (#46). Depth-only + already-resident, so this is cheap.
+        shadow_draws.clear();
+        constexpr float kShadowR = 125.0f;
+        for (auto& [cc, rec] : meshes_) {
+            if (!rec.has_buffers || rec.index_count == 0) continue;
+            V3 sctr{(float(cc.x) + 0.5f) * kChunkDim, (float(cc.y) + 0.5f) * kChunkDim, (float(cc.z) + 0.5f) * kChunkDim};
+            V3 stoC{sctr.x - camPos.x, sctr.y - camPos.y, sctr.z - camPos.z};
+            if (dot(stoC, stoC) > kShadowR * kShadowR) continue;     // beyond the far cascade
+            bf_draw_item sd{};
+            sd.vertex_buffer = rec.vbuf.handle;
+            sd.index_buffer  = rec.ibuf.handle;
+            sd.index_count   = rec.index_count;
+            sd.chunk_origin  = bf_ivec3{cc.x * kChunkDim, cc.y * kChunkDim, cc.z * kChunkDim};
+            shadow_draws.push_back(sd);
+        }
+        out.shadow_draws = shadow_draws.data();
+        out.shadow_draw_count = std::uint32_t(shadow_draws.size());
 
         // Creatures (ABI v2 entity draws).
         entities_.clear();

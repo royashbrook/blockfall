@@ -50,8 +50,9 @@ int main() {
     CHECK(world.debug_block_at(8, 7, 8) == bf::GRASS, "ground top is grass");
 
     std::vector<bf_draw_item> draws;
+    std::vector<bf_draw_item> shadow_draws;
     bf_render_frame f{};
-    world.build_frame(f, draws, 0.0);
+    world.build_frame(f, draws, shadow_draws, 0.0);
     uint32_t idx0 = total_indices(f);
     CHECK(f.draw_count > 0 && idx0 > 0, "world meshed into draw list");
 
@@ -64,7 +65,7 @@ int main() {
     bf_action mineStop{}; mineStop.kind = BF_ACT_MINE_STOP;
     world.action(mineStop);
 
-    world.build_frame(f, draws, 0.0);
+    world.build_frame(f, draws, shadow_draws, 0.0);
     uint32_t idx1 = total_indices(f);
     CHECK(idx1 != idx0, "mesh changed after mining (remesh happened)");
 
@@ -76,7 +77,7 @@ int main() {
     world.action(place);
     CHECK(world.debug_block_at(8, 7, 8) == bf::GLOW, "placed block appears");
 
-    world.build_frame(f, draws, 0.0);
+    world.build_frame(f, draws, shadow_draws, 0.0);
     CHECK(f.draw_count > 0 && total_indices(f) > 0, "world still meshes after place");
 
     // #36 regression: spawn-in must fill from the player OUTWARD. stream_tick pops
