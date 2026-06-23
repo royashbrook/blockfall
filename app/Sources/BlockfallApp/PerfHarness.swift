@@ -76,16 +76,18 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     shadowDesc.depthAttachmentPixelFormat = .depth32Float
     let shadowPipeline = try? device.makeRenderPipelineState(descriptor: shadowDesc)
 
-    // Prop pipeline (#52: render props offscreen so the shot + perf reflect them).
+    // Prop pipeline (#52: GPU-instanced, same as the live renderer).
     let propPipeline: MTLRenderPipelineState? = {
         let d = MTLRenderPipelineDescriptor()
-        d.vertexFunction   = lib.makeFunction(name: "propVmain")
+        d.vertexFunction   = lib.makeFunction(name: "propInstVmain")
         d.fragmentFunction = lib.makeFunction(name: "propFmain")
         d.colorAttachments[0].pixelFormat = .rgba16Float
         d.depthAttachmentPixelFormat = .depth32Float
         return try? device.makeRenderPipelineState(descriptor: d)
     }()
-    var propBuf: MTLBuffer? = nil
+    let propModelTable = Renderer.makePropModelTable(device: device)
+    var propInstBuf: MTLBuffer? = nil
+    let kPropVertsPerInstance = 4 * 36
 
     let dsd = MTLDepthStencilDescriptor(); dsd.depthCompareFunction = .less; dsd.isDepthWriteEnabled = true
     let depthState = device.makeDepthStencilState(descriptor: dsd)
@@ -136,16 +138,17 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     let output     = makeTex(.bgra8Unorm,   W, H, [.renderTarget], false)
 
     var frameIdx = 0
+    var lastShotPropN = 0
     var fpsSamples: [Double] = []
     var peakMem = 0.0
     let start = CACurrentMediaTime()
     var lastDt = CACurrentMediaTime()
 
-    func renderOneFrame(pitch: Float = 0) {
+    func renderOneFrame(pitch: Float = 0, yaw: Float = 0.004) {
         frameIdx += 1; registry.currentFrame = frameIdx
         let now = CACurrentMediaTime(); let dt = now - lastDt; lastDt = now
         // Keep the player slowly orbiting so chunks stream continuously (worst case).
-        var input = bf_frame_input(); input.move_forward = 1; input.look_yaw_delta = 0.004
+        var input = bf_frame_input(); input.move_forward = 1; input.look_yaw_delta = yaw
         input.look_pitch_delta = pitch   // #52 shot mode tilts down to frame ground props
         _ = bf_frame_begin(e, &input, dt)
         var f = bf_render_frame(); _ = bf_frame_acquire_render(e, &f)
@@ -242,24 +245,23 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
                                           indexType: .uint32, indexBuffer: ib, indexBufferOffset: Int(d.index_offset))
             }
-            // Props (#52): build + draw the same toy models as the live renderer.
-            var pv: [PropVertex] = []
-            Renderer.appendPropVertices(f, into: &pv, cap: 240_000)
-            if !pv.isEmpty, let pp = propPipeline {
-                let need = pv.count * MemoryLayout<PropVertex>.stride
-                if propBuf == nil || propBuf!.length < need {
-                    propBuf = device.makeBuffer(length: max(need, 65536), options: .storageModeShared)
+            // Props (#52: GPU-instanced, identical to the live renderer).
+            let propN = Int(f.prop_instance_count)
+            lastShotPropN = propN
+            if propN > 0, let insts = f.prop_instances, let pp = propPipeline {
+                let need = propN * MemoryLayout<bf_prop_instance>.stride
+                if propInstBuf == nil || propInstBuf!.length < need {
+                    propInstBuf = device.makeBuffer(length: max(need, 65536), options: .storageModeShared)
                 }
-                if let pb = propBuf {
-                    pb.contents().withMemoryRebound(to: PropVertex.self, capacity: pv.count) { dst in
-                        pv.withUnsafeBufferPointer { src in dst.update(from: src.baseAddress!, count: pv.count) }
-                    }
+                if let ib = propInstBuf {
+                    memcpy(ib.contents(), insts, need)
                     let dayBright = 0.30 + 0.70 * max(0, sin(f.camera.time_of_day * Float.pi))
                     var pu2 = PropUniforms(viewProj: viewProj, params: SIMD4<Float>(dayBright, 0, 0, 0))
                     enc.setRenderPipelineState(pp); enc.setDepthStencilState(depthState); enc.setCullMode(.none)
-                    enc.setVertexBuffer(pb, offset: 0, index: 0)
+                    enc.setVertexBuffer(ib, offset: 0, index: 0)
                     enc.setVertexBytes(&pu2, length: MemoryLayout<PropUniforms>.stride, index: 1)
-                    enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: pv.count)
+                    enc.setVertexBuffer(propModelTable, offset: 0, index: 2)
+                    enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: kPropVertsPerInstance, instanceCount: propN)
                 }
             }
 
@@ -313,9 +315,10 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     // #52 headless screenshot: tilt the camera down to frame ground props, let the
     // chunks/lighting settle, then capture the composited frame to a PNG. No desktop.
     if let shot = shotPath {
-        for _ in 0..<240 { renderOneFrame() }               // travel across biomes to find grass/props
-        for _ in 0..<26  { renderOneFrame(pitch: -0.020) }  // angle down toward the ground
-        for _ in 0..<24  { renderOneFrame() }               // settle (stream + dirty converge)
+        for _ in 0..<700 { renderOneFrame(yaw: 0) }          // travel STRAIGHT far to cross into grass
+        for _ in 0..<26  { renderOneFrame(pitch: -0.020, yaw: 0) }  // angle down toward the ground
+        for _ in 0..<24  { renderOneFrame(yaw: 0) }          // settle (stream + dirty converge)
+        print("shot: prop instances in final frame = \(lastShotPropN)")
         writeTexturePNG(output, to: shot)
         return true
     }

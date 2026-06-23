@@ -137,12 +137,13 @@ struct WindUniforms {
     var pad1:          Float = 0
 }
 
-/// One vertex of a sub-voxel prop model (#51). 48 bytes; matches MSL PropVertex
-/// (three 16-byte-aligned float3s). Built CPU-side each frame in world space.
-struct PropVertex {
-    var pos: SIMD3<Float>
-    var nrm: SIMD3<Float>
-    var col: SIMD3<Float>
+/// One cuboid of a prop model for the GPU model table (#52). 36 bytes; matches MSL
+/// `struct PropCuboid { packed_float3 center, half_, color; }`. Plain Floats (NOT
+/// SIMD3, which pads to 16) so the layout matches packed_float3 exactly.
+struct PropCuboidGPU {
+    var cx: Float, cy: Float, cz: Float   // center
+    var hx: Float, hy: Float, hz: Float   // half-extent
+    var r: Float,  g: Float,  b: Float    // colour
 }
 /// Uniforms for the prop pass. 80 bytes; matches MSL PropUniforms.
 struct PropUniforms {
@@ -197,13 +198,12 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var ambientLifeBuffer: MTLBuffer!   // AmbientSprite array (CPU-updated each frame)
     private let kMaxAmbientSprites = 120   // birds + fireflies + pollen + grey ash motes
 
-    // ---- Sub-voxel props (#51) ----------------------------------------------
+    // ---- Sub-voxel props (#51/#52: GPU-instanced) ---------------------------
     private var propPipeline: MTLRenderPipelineState!
-    private var propBuffer: MTLBuffer?          // world-space PropVertex geometry, rebuilt each frame
-    private var propVerts: [PropVertex] = []    // CPU scratch
-    private let kMaxPropVerts = 240_000         // ~grow cap (≈11 MB)
-    private var lastPropHash: UInt64 = 0        // skip rebuild when the prop set is unchanged
-    private var lastPropVertCount = 0
+    private var propModelTable: MTLBuffer!       // static: 4 types × 4 cuboids (PropCuboidGPU)
+    private var propInstanceBuffer: MTLBuffer?   // per-frame: the bf_prop_instance list (tiny)
+    private let kPropMaxCuboids = 4
+    private let kPropVertsPerInstance = 4 * 36   // kPropMaxCuboids × 36
 
     // ---- Graphics effect toggles (pause-menu Options) ------------------------
     // Each effect can be switched on/off live. Persisted in UserDefaults; loaded
@@ -447,14 +447,15 @@ final class Renderer: NSObject, MTKViewDelegate {
         do { ambientLifePipeline = try device.makeRenderPipelineState(descriptor: ald) }
         catch { fatalError("ambient life pipeline failed: \(error)") }
 
-        // ---- Sub-voxel props (#51): opaque toy models, depth test + write -------
+        // ---- Sub-voxel props (#51/#52): GPU-instanced toy models ----------------
         let propd = MTLRenderPipelineDescriptor()
-        propd.vertexFunction   = lib.makeFunction(name: "propVmain")
+        propd.vertexFunction   = lib.makeFunction(name: "propInstVmain")
         propd.fragmentFunction = lib.makeFunction(name: "propFmain")
         propd.colorAttachments[0].pixelFormat = .rgba16Float
         propd.depthAttachmentPixelFormat = .depth32Float
         do { propPipeline = try device.makeRenderPipelineState(descriptor: propd) }
         catch { fatalError("prop pipeline failed: \(error)") }
+        propModelTable = Renderer.makePropModelTable(device: device)
 
         // Birds: no depth test (sky sprites). Fireflies: less-equal depth test.
         // We handle both in one pipeline; fireflies use depth, birds skip via discard logic.
@@ -952,27 +953,25 @@ final class Renderer: NSObject, MTKViewDelegate {
                                           indexBufferOffset: Int(d.index_offset))
             }
 
-            // --- Sub-voxel props (#51): detailed toy models for flowers/mushrooms/crystals ---
-            let propVertCount = buildPropGeometry(frame)
-            if propVertCount > 0 {
-                let needBytes = propVertCount * MemoryLayout<PropVertex>.stride
-                if propBuffer == nil || propBuffer!.length < needBytes {
-                    propBuffer = device.makeBuffer(length: max(needBytes, 64 * 1024), options: .storageModeShared)
+            // --- Sub-voxel props (#52: GPU-instanced) — upload the tiny instance
+            //     list and let the GPU expand the models. No per-frame CPU rebuild. ---
+            let propN = Int(frame.prop_instance_count)
+            if propN > 0, let insts = frame.prop_instances {
+                let need = propN * MemoryLayout<bf_prop_instance>.stride
+                if propInstanceBuffer == nil || propInstanceBuffer!.length < need {
+                    propInstanceBuffer = device.makeBuffer(length: max(need, 64 * 1024), options: .storageModeShared)
                 }
-                if let pb = propBuffer {
-                    pb.contents().withMemoryRebound(to: PropVertex.self, capacity: propVertCount) { dst in
-                        propVerts.withUnsafeBufferPointer { src in
-                            dst.update(from: src.baseAddress!, count: propVertCount)
-                        }
-                    }
+                if let ib = propInstanceBuffer {
+                    memcpy(ib.contents(), insts, need)
                     let dayBright = 0.30 + 0.70 * max(0, sin(frame.camera.time_of_day * Float.pi))
                     var pu2 = PropUniforms(viewProj: viewProj, params: SIMD4<Float>(dayBright, 0, 0, 0))
                     enc.setRenderPipelineState(propPipeline)
                     enc.setDepthStencilState(depthState)
                     enc.setCullMode(.none)   // small opaque cuboids; skip winding concerns
-                    enc.setVertexBuffer(pb, offset: 0, index: 0)
+                    enc.setVertexBuffer(ib, offset: 0, index: 0)
                     enc.setVertexBytes(&pu2, length: MemoryLayout<PropUniforms>.stride, index: 1)
-                    enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: propVertCount)
+                    enc.setVertexBuffer(propModelTable, offset: 0, index: 2)
+                    enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: kPropVertsPerInstance, instanceCount: propN)
                 }
             }
 
@@ -1438,25 +1437,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         return totalSprites
     }
 
-    // MARK: Sub-voxel props (#51)
-    // A unit cube centred at the origin (±0.5), expanded to 36 (pos, normal) verts.
-    private static let unitCube: [(SIMD3<Float>, SIMD3<Float>)] = {
-        let faces: [(SIMD3<Float>, [SIMD3<Float>])] = [
-            (SIMD3( 1,0,0), [SIMD3( 0.5,-0.5,-0.5),SIMD3( 0.5,-0.5, 0.5),SIMD3( 0.5, 0.5, 0.5),SIMD3( 0.5, 0.5,-0.5)]),
-            (SIMD3(-1,0,0), [SIMD3(-0.5,-0.5, 0.5),SIMD3(-0.5,-0.5,-0.5),SIMD3(-0.5, 0.5,-0.5),SIMD3(-0.5, 0.5, 0.5)]),
-            (SIMD3(0, 1,0), [SIMD3(-0.5, 0.5,-0.5),SIMD3( 0.5, 0.5,-0.5),SIMD3( 0.5, 0.5, 0.5),SIMD3(-0.5, 0.5, 0.5)]),
-            (SIMD3(0,-1,0), [SIMD3(-0.5,-0.5, 0.5),SIMD3( 0.5,-0.5, 0.5),SIMD3( 0.5,-0.5,-0.5),SIMD3(-0.5,-0.5,-0.5)]),
-            (SIMD3(0,0, 1), [SIMD3( 0.5,-0.5, 0.5),SIMD3(-0.5,-0.5, 0.5),SIMD3(-0.5, 0.5, 0.5),SIMD3( 0.5, 0.5, 0.5)]),
-            (SIMD3(0,0,-1), [SIMD3(-0.5,-0.5,-0.5),SIMD3( 0.5,-0.5,-0.5),SIMD3( 0.5, 0.5,-0.5),SIMD3(-0.5, 0.5,-0.5)]),
-        ]
-        var out: [(SIMD3<Float>, SIMD3<Float>)] = []
-        out.reserveCapacity(36)
-        for (n, c) in faces {
-            for idx in [0,1,2, 0,2,3] { out.append((c[idx], n)) }
-        }
-        return out
-    }()
-
+    // MARK: Sub-voxel props (#51/#52 GPU-instanced)
     // Prop model = a few coloured cuboids (centre, half-extent, colour) in 0..1
     // block space. Bold flat toy colours.
     private static func propModel(_ type: UInt32) -> [(SIMD3<Float>, SIMD3<Float>, SIMD3<Float>)] {
@@ -1485,53 +1466,24 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     // Build all visible props' world-space geometry into `out` (shared by the live
-    // renderer AND the headless harness so they render identically). #51/#52
-    static func appendPropVertices(_ frame: bf_render_frame, into out: inout [PropVertex], cap: Int) {
-        let n = Int(frame.prop_instance_count)
-        guard n > 0, let insts = frame.prop_instances else { return }
-        for i in 0..<n {
-            let inst = insts[i]
-            let model = propModel(inst.type)
-            if model.isEmpty { continue }
-            let base = SIMD3<Float>(inst.position.x, inst.position.y, inst.position.z)
-            let sat  = max(0, min(1, inst.sat))
-            let yaw  = Float(inst.seed & 1023) / 1023.0 * 6.2831853
-            let cy = cos(yaw), sy = sin(yaw)
-            for cu in model {
-                let lum = simd_dot(cu.2, SIMD3<Float>(0.30, 0.59, 0.11))
-                let drained = SIMD3<Float>(0.22, 0.25, 0.32) * (0.45 + lum * 0.85)
-                let col = drained + (cu.2 - drained) * sat       // desaturate in the Grey
-                for t in unitCube {
-                    var lp = cu.0 + t.0 * (2 * cu.1)             // local pos in block space
-                    let dx = lp.x - 0.5, dz = lp.z - 0.5         // yaw about block centre
-                    lp.x = 0.5 + dx * cy - dz * sy
-                    lp.z = 0.5 + dx * sy + dz * cy
-                    var nm = t.1
-                    let nx = nm.x, nz = nm.z
-                    nm.x = nx * cy - nz * sy
-                    nm.z = nx * sy + nz * cy
-                    out.append(PropVertex(pos: base + lp, nrm: nm, col: col))
-                }
-                if out.count >= cap { return }
+    // renderer). The GPU expands these per instance (#52) — no CPU geometry build.
+    // Build the static model table: 4 type-rows × 4 cuboid-slots of PropCuboidGPU.
+    // Unused slots are left zero (zero half-extent → the vertex shader skips them).
+    static func makePropModelTable(device: MTLDevice) -> MTLBuffer {
+        let rows = 4, slots = 4
+        var table = [PropCuboidGPU](repeating: PropCuboidGPU(cx:0,cy:0,cz:0, hx:0,hy:0,hz:0, r:0,g:0,b:0),
+                                    count: rows * slots)
+        let typeForRow: [UInt32] = [36, 37, 39, 40]
+        for row in 0..<rows {
+            let model = propModel(typeForRow[row])
+            for (s, cu) in model.prefix(slots).enumerated() {
+                table[row * slots + s] = PropCuboidGPU(cx: cu.0.x, cy: cu.0.y, cz: cu.0.z,
+                                                       hx: cu.1.x, hy: cu.1.y, hz: cu.1.z,
+                                                       r: cu.2.x, g: cu.2.y, b: cu.2.z)
             }
         }
-    }
-
-    // Live wrapper: caches the geometry, skipping the rebuild when the prop set is
-    // unchanged (order-independent hash; props are static). Returns vertex count.
-    private func buildPropGeometry(_ frame: bf_render_frame) -> Int {
-        let n = Int(frame.prop_instance_count)
-        guard n > 0, let insts = frame.prop_instances else {
-            lastPropHash = 0; lastPropVertCount = 0; return 0
-        }
-        var h: UInt64 = UInt64(n) &* 2654435761
-        for i in 0..<n { var s = UInt64(insts[i].seed); s = s &* 0x9E3779B97F4A7C15; h ^= s }
-        if h == lastPropHash { return lastPropVertCount }
-        lastPropHash = h
-        propVerts.removeAll(keepingCapacity: true)
-        Self.appendPropVertices(frame, into: &propVerts, cap: kMaxPropVerts)
-        lastPropVertCount = propVerts.count
-        return lastPropVertCount
+        return device.makeBuffer(bytes: table, length: table.count * MemoryLayout<PropCuboidGPU>.stride,
+                                 options: .storageModeShared)!
     }
 
     // MARK: Sky colour (clear colour tint — sky pass renders on top)
@@ -3562,22 +3514,66 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     // =========================================================
-    // SUB-VOXEL PROPS (#51) — detailed toy models for flowers / mushrooms /
-    // crystals. Geometry is CPU-built each frame into a world-space vertex buffer;
-    // this just transforms + flat-shades it in the bold toy style.
+    // SUB-VOXEL PROPS (#51/#52) — detailed toy models for flowers / mushrooms /
+    // crystals, GPU-INSTANCED: the CPU uploads only the tiny instance list and the
+    // vertex shader expands each instance's model from a model table. No per-frame
+    // geometry rebuild, so prop count is nearly free (scales to dense grass).
     // =========================================================
-    struct PropVertex { float3 pos; float3 nrm; float3 col; };
     struct PropUniforms { float4x4 viewProj; float4 params; };  // params.x = day brightness
     struct PropVOut { float4 position [[position]]; float3 nrm; float3 col; };
+    // Matches bf_prop_instance (24 bytes): position(12) + type(4) + seed(4) + sat(4).
+    struct PropInstanceGPU { packed_float3 position; uint type; uint seed; float sat; };
+    // One cuboid of a model: centre, half-extent, colour (all in 0..1 block space).
+    struct PropCuboid { packed_float3 center; packed_float3 half_; packed_float3 color; };
 
-    vertex PropVOut propVmain(uint vid [[vertex_id]],
-                              const device PropVertex* verts [[buffer(0)]],
-                              constant PropUniforms& u [[buffer(1)]]) {
-        PropVertex v = verts[vid];
+    constant float3 kFaceNrm[6] = {
+        float3(1,0,0), float3(-1,0,0), float3(0,1,0), float3(0,-1,0), float3(0,0,1), float3(0,0,-1)
+    };
+    constant float3 kFaceCorner[24] = {
+        float3(0.5,-0.5,-0.5), float3(0.5,-0.5,0.5), float3(0.5,0.5,0.5), float3(0.5,0.5,-0.5),     // +X
+        float3(-0.5,-0.5,0.5), float3(-0.5,-0.5,-0.5), float3(-0.5,0.5,-0.5), float3(-0.5,0.5,0.5),  // -X
+        float3(-0.5,0.5,-0.5), float3(0.5,0.5,-0.5), float3(0.5,0.5,0.5), float3(-0.5,0.5,0.5),       // +Y
+        float3(-0.5,-0.5,0.5), float3(0.5,-0.5,0.5), float3(0.5,-0.5,-0.5), float3(-0.5,-0.5,-0.5),  // -Y
+        float3(0.5,-0.5,0.5), float3(-0.5,-0.5,0.5), float3(-0.5,0.5,0.5), float3(0.5,0.5,0.5),       // +Z
+        float3(-0.5,-0.5,-0.5), float3(0.5,-0.5,-0.5), float3(0.5,0.5,-0.5), float3(-0.5,0.5,-0.5)    // -Z
+    };
+    constant uint kTriIdx[6] = { 0u,1u,2u, 0u,2u,3u };
+    constant uint kPropMaxCuboids = 4u;   // model table stride per type
+
+    vertex PropVOut propInstVmain(uint vid [[vertex_id]],
+                                  uint iid [[instance_id]],
+                                  const device PropInstanceGPU* insts  [[buffer(0)]],
+                                  constant PropUniforms& u             [[buffer(1)]],
+                                  const device PropCuboid* models      [[buffer(2)]]) {
         PropVOut o;
-        o.position = u.viewProj * float4(v.pos, 1.0);
-        o.nrm = v.nrm;
-        o.col = v.col * u.params.x;     // day/night brightness baked per frame
+        PropInstanceGPU inst = insts[iid];
+        // type id -> model-table row (36 flower_red, 37 flower_yellow, 39 mushroom, 40 crystal)
+        int row = (inst.type == 36u) ? 0 : (inst.type == 37u) ? 1 : (inst.type == 39u) ? 2 : (inst.type == 40u) ? 3 : -1;
+        uint cuboidIdx = vid / 36u;
+        if (row < 0 || cuboidIdx >= kPropMaxCuboids) { o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o; }
+        PropCuboid cu = models[uint(row) * kPropMaxCuboids + cuboidIdx];
+        float3 half_ = float3(cu.half_);
+        if (half_.x == 0.0 && half_.y == 0.0 && half_.z == 0.0) { o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o; } // unused slot
+
+        uint v = vid % 36u, face = v / 6u, corner = kTriIdx[v % 6u];
+        float3 cpos = kFaceCorner[face * 4u + corner];
+        float3 cnrm = kFaceNrm[face];
+        float3 lp = float3(cu.center) + cpos * (2.0 * half_);   // local pos in block space
+        // per-instance yaw about block centre
+        float yaw = float(inst.seed & 1023u) / 1023.0 * 6.2831853;
+        float cy = cos(yaw), sy = sin(yaw);
+        float dx = lp.x - 0.5, dz = lp.z - 0.5;
+        lp.x = 0.5 + dx * cy - dz * sy;
+        lp.z = 0.5 + dx * sy + dz * cy;
+        float3 nm = float3(cnrm.x * cy - cnrm.z * sy, cnrm.y, cnrm.x * sy + cnrm.z * cy);
+        float3 world = float3(inst.position) + lp;
+        o.position = u.viewProj * float4(world, 1.0);
+        o.nrm = nm;
+        // flat colour, drained by region saturation, scaled by day brightness
+        float3 base = float3(cu.color);
+        float lum = dot(base, float3(0.30, 0.59, 0.11));
+        float3 drained = float3(0.22, 0.25, 0.32) * (0.45 + lum * 0.85);
+        o.col = (drained + (base - drained) * clamp(inst.sat, 0.0, 1.0)) * u.params.x;
         return o;
     }
     fragment float4 propFmain(PropVOut in [[stage_in]]) {
