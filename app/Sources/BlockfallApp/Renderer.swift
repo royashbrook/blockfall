@@ -105,8 +105,8 @@ struct SkyUniforms {
 struct WaterUniforms {
     var wallClockSecs: Float
     var underwater:    Float
-    var pad0:          Float = 0
-    var pad1:          Float = 0
+    var reflectScale:  Float = 1   // #: water-reflection toggle (0=off)
+    var shadowScale:   Float = 1   // #: cast-shadow toggle (0=off)
     var cameraPosW:    SIMD4<Float> = .zero   // xyz = world-space camera pos, w unused
     var sunDirTime:    SIMD4<Float> = .zero   // xyz = sun dir, w = time_of_day (#43 water sky reflection)
 }
@@ -133,7 +133,7 @@ struct PostUniforms {
 struct WindUniforms {
     var wallClockSecs: Float    //  4 — wall-clock seconds for sway animation
     var rainStrength:  Float    //  4 — 0..1 how hard it's raining (scales sway amp)
-    var pad0:          Float = 0
+    var swayScale:     Float = 0  // #: foliage-sway toggle (0=off, default OFF)
     var pad1:          Float = 0
 }
 
@@ -183,6 +183,16 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var ambientLifeDepthState: MTLDepthStencilState!
     private var ambientLifeBuffer: MTLBuffer!   // AmbientSprite array (CPU-updated each frame)
     private let kMaxAmbientSprites = 80
+
+    // ---- Graphics effect toggles (pause-menu Options) ------------------------
+    // Each effect can be switched on/off live. Persisted in UserDefaults; loaded
+    // here so even the --playtest path picks them up. Waving foliage defaults OFF
+    // (too busy with dense plants); the rest default ON.
+    var gfxFoliage = UserDefaults.standard.object(forKey: "gfxFoliage") as? Bool ?? false
+    var gfxWater   = UserDefaults.standard.object(forKey: "gfxWater")   as? Bool ?? true
+    var gfxGodRays = UserDefaults.standard.object(forKey: "gfxGodRays") as? Bool ?? true
+    var gfxPollen  = UserDefaults.standard.object(forKey: "gfxPollen")  as? Bool ?? true
+    var gfxShadows = UserDefaults.standard.object(forKey: "gfxShadows") as? Bool ?? true
     // World-space precipitation (rain streaks / snow flakes) — renderer-owned,
     // instanced billboards in a volume around the camera. Drives off frame.camera.weather.
     private var precipPipeline: MTLRenderPipelineState!
@@ -752,7 +762,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         let rainStrength: Float = (engineWeather == 1) ? 1.0 : 0.0
 
         // Wind uniforms (index 3 on vertex shaders — new dedicated buffer)
-        var windU = WindUniforms(wallClockSecs: wallClock, rainStrength: rainStrength)
+        var windU = WindUniforms(wallClockSecs: wallClock, rainStrength: rainStrength,
+                                 swayScale: gfxFoliage ? 1 : 0)   // #: foliage toggle
 
         // Camera basis for sky dome
         let camRight = SIMD3<Float>(viewM.columns.0.x, viewM.columns.1.x, viewM.columns.2.x)
@@ -873,6 +884,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             enc.setFrontFacing(.counterClockwise)
 
             var wu = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater,
+                                   reflectScale: gfxWater ? 1 : 0,      // #: water-reflection toggle
+                                   shadowScale:  gfxShadows ? 1 : 0,    // #: shadow toggle
                                    cameraPosW: camPosW,
                                    sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day))
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
@@ -1040,7 +1053,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                                               camPosW.y + toSun.y * 2000,
                                               camPosW.z + toSun.z * 2000, 1)
         var grStrength: Float = 0, sunSX: Float = 0, sunSY: Float = 0
-        if sunClip.w > 0.001 {
+        if sunClip.w > 0.001 && gfxGodRays {              // #: god-ray toggle
             sunSX = (sunClip.x / sunClip.w) * 0.5 + 0.5
             sunSY = 0.5 - (sunClip.y / sunClip.w) * 0.5   // Metal top-left uv (matches fullscreenVert)
             grStrength = dayT * (1 - frame.camera.underground) * 0.6
@@ -1264,7 +1277,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Spawn budget
         let birdCount: Int     = Int((dayT * dayT * 12).rounded())    // 0..12 birds by day
         let fireflyCount: Int  = Int((nightT * nightT * 40).rounded()) // 0..40 fireflies by night
-        let pollenCount: Int   = Int((dayT * 16).rounded())           // 0..16 drifting motes by day (#45)
+        let pollenCount: Int   = gfxPollen ? Int((dayT * 16).rounded()) : 0   // 0..16 motes by day (#45, toggle)
         let totalSprites = min(birdCount + fireflyCount + pollenCount, kMaxAmbientSprites)
         guard totalSprites > 0 else { return 0 }
 
@@ -1453,8 +1466,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     struct WaterUniforms {
         float wallClockSecs;
         float underwater;
-        float pad0;
-        float pad1;
+        float reflectScale;  // #: water-reflection toggle (0=off)
+        float shadowScale;   // #: cast-shadow toggle (0=off)
         float4 cameraPosW;   // xyz = world pos, w = pad
         float4 sunDirTime;   // xyz = sun dir, w = time_of_day (#43)
     };
@@ -1498,7 +1511,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     struct WindUniforms {
         float wallClockSecs;
         float rainStrength;   // 0..1
-        float pad0;
+        float swayScale;      // #: foliage-sway toggle (0=off)
         float pad1;
     };
 
@@ -2191,7 +2204,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 world = su.chunkOrigin.xyz + float3(x, y, z);
         // Apply foliage sway — same formula as vmain so shadows track geometry.
         // p.material holds the block type id; p.block holds per-vertex light level.
-        float2 sway = windSway(world, uint(p.material), wu.wallClockSecs, wu.rainStrength);
+        float2 sway = windSway(world, uint(p.material), wu.wallClockSecs, wu.rainStrength) * wu.swayScale;
         world.x += sway.x;
         world.z += sway.y;
         return su.lightViewProj * float4(world, 1.0);
@@ -2213,7 +2226,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // --- Foliage wind sway ---
         // p.material = block type id, p.block = per-vertex block light (0..15).
-        float2 sway = windSway(world, uint(p.material), wu.wallClockSecs, wu.rainStrength);
+        float2 sway = windSway(world, uint(p.material), wu.wallClockSecs, wu.rainStrength) * wu.swayScale;
         float3 swayedWorld = world + float3(sway.x, 0.0, sway.y);
 
         // --- AO from bits [3:5] (0=fully occluded, 3=open) ---
@@ -2313,7 +2326,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // move — the wobble that got the earlier single-map shadows disabled. Kept
         // soft (strength 0.40) so it adds depth without the old harsh wash-out.
         float shadowFactor = 1.0;
-        if (!isEmissive) {
+        if (!isEmissive && wu.shadowScale > 0.5) {
             float dayFactor = clamp(in.shade * 1.5, 0.0, 1.0);
             float distToCam = length(in.worldPos - UW_CAM_POS(wu));
             float raw = (distToCam < 36.0)
@@ -2693,7 +2706,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                                           wu.sunDirTime.xyz, wu.sunDirTime.w, t);
             float ndv     = max(0.0, dot(-viewDir, perturbedN));
             float fres    = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);   // Schlick, F0≈0.02
-            float reflAmt = clamp(fres * 0.9 + 0.05, 0.0, 0.60);
+            float reflAmt = clamp(fres * 0.9 + 0.05, 0.0, 0.60) * wu.reflectScale;
             col = mix(col, skyRefl, reflAmt);
             col += float3(1.0, 0.98, 0.88) * spec * 0.45 * in.shade;
         }

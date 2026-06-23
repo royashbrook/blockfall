@@ -184,7 +184,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         updateHUDScaleLabel()   // fill the live value label now that it exists
 
-        let stack = NSStackView(views: [title, sliderRow, showHUD, resume, menuBtn])
+        // ---- Graphics effect toggles (#: click each effect on/off, live + persisted) ----
+        let fxTitle = NSTextField(labelWithString: "Effects")
+        fxTitle.font = .boldSystemFont(ofSize: 16); fxTitle.textColor = .white
+        let fxStack = NSStackView(views: [
+            gfxCheckbox("Waving Foliage",    tag: 0, on: renderer?.gfxFoliage ?? false),
+            gfxCheckbox("Water Reflections", tag: 1, on: renderer?.gfxWater   ?? true),
+            gfxCheckbox("God Rays",          tag: 2, on: renderer?.gfxGodRays ?? true),
+            gfxCheckbox("Pollen Motes",      tag: 3, on: renderer?.gfxPollen  ?? true),
+            gfxCheckbox("Soft Shadows",      tag: 4, on: renderer?.gfxShadows ?? true),
+        ])
+        fxStack.orientation = .vertical; fxStack.spacing = 8; fxStack.alignment = .leading
+
+        let stack = NSStackView(views: [title, sliderRow, showHUD, fxTitle, fxStack, resume, menuBtn])
         stack.orientation = .vertical; stack.spacing = 18; stack.alignment = .centerX
         stack.translatesAutoresizingMaskIntoConstraints = false
         ov.addSubview(stack)
@@ -235,6 +247,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateHUDScaleLabel() {
         let v = hud?.hudScale ?? AppDelegate.loadHUDScale()
         hudScaleValueLabel?.stringValue = String(format: "%.1f×", Double(v))
+    }
+
+    // #: a styled graphics-effect checkbox; tag selects which effect.
+    private func gfxCheckbox(_ title: String, tag: Int, on: Bool) -> NSButton {
+        let b = NSButton(checkboxWithTitle: title, target: self, action: #selector(gfxToggleChanged(_:)))
+        b.tag = tag
+        b.state = on ? .on : .off
+        b.contentTintColor = .white
+        b.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.white,
+        ])
+        return b
+    }
+    // #: graphics toggle → live renderer + persisted. Tags match gfxCheckbox order.
+    @objc private func gfxToggleChanged(_ sender: NSButton) {
+        let on = (sender.state == .on)
+        let keys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows"]
+        guard sender.tag >= 0 && sender.tag < keys.count else { return }
+        UserDefaults.standard.set(on, forKey: keys[sender.tag])
+        switch sender.tag {
+        case 0: renderer?.gfxFoliage = on
+        case 1: renderer?.gfxWater   = on
+        case 2: renderer?.gfxGodRays = on
+        case 3: renderer?.gfxPollen  = on
+        case 4: renderer?.gfxShadows = on
+        default: break
+        }
     }
     @objc private func quitToMenu() {
         pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
