@@ -1250,7 +1250,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Spawn budget
         let birdCount: Int     = Int((dayT * dayT * 12).rounded())    // 0..12 birds by day
         let fireflyCount: Int  = Int((nightT * nightT * 40).rounded()) // 0..40 fireflies by night
-        let totalSprites = min(birdCount + fireflyCount, kMaxAmbientSprites)
+        let pollenCount: Int   = Int((dayT * 16).rounded())           // 0..16 drifting motes by day (#45)
+        let totalSprites = min(birdCount + fireflyCount + pollenCount, kMaxAmbientSprites)
         guard totalSprites > 0 else { return 0 }
 
         let ptr = ambientLifeBuffer.contents().bindMemory(to: AmbientSpritePod.self, capacity: kMaxAmbientSprites)
@@ -1294,6 +1295,25 @@ final class Renderer: NSObject, MTKViewDelegate {
             ptr[idx] = AmbientSpritePod(
                 posW:  SIMD4<Float>(fx, fy, fz, 0.22),              // w=size (tiny)
                 color: SIMD4<Float>(r, g, b, ffAlpha))
+        }
+
+        // --- Pollen / dust motes (daytime, near-ground, slow drift) (#45) ---
+        // Faint pale-gold specks that drift around the player by day, so the world
+        // feels alive in sunlight the way fireflies do at night.
+        for i in 0..<pollenCount {
+            let idx = birdCount + fireflyCount + i
+            if idx >= kMaxAmbientSprites { break }              // defensive cap
+            let fi = Float(i)
+            let angle  = wallClock * 0.02 + fi * 2.399
+            let radius = 3.0 + Float(fmod(Double(fi) * 2.71, 13.0))
+            let px = camPos.x + cos(angle) * radius + sin(wallClock * 0.30 + fi) * 1.6
+            let pz = camPos.z + sin(angle) * radius + cos(wallClock * 0.27 + fi) * 1.6
+            let py = camPos.y + 0.8 + sin(fi * 0.6 + wallClock * 0.25) * 1.3
+            let twinkle = 0.5 + 0.5 * sin(wallClock * 0.8 + fi * 1.7)
+            let pAlpha  = dayT * (0.08 + twinkle * 0.10)        // faint, never busy
+            ptr[idx] = AmbientSpritePod(
+                posW:  SIMD4<Float>(px, py, pz, 0.09),          // w=size (very tiny)
+                color: SIMD4<Float>(1.0, 0.97, 0.80, pAlpha))  // pale warm gold
         }
 
         return totalSprites
@@ -2123,12 +2143,20 @@ final class Renderer: NSObject, MTKViewDelegate {
         return 0.0;
     }
 
-    // Shared wind-sway displacement used by BOTH vmain and shadowVmain.
-    // DISABLED: foliage sway is off for now (full cube blocks slide visibly).
-    // Wind uniform plumbing is kept intact; just returns zero displacement.
-    // Re-enable once proper cross/billboard foliage models are in place.
+    // Shared wind-sway displacement used by BOTH vmain and shadowVmain (#45).
+    // Sways ONLY thin transparent decorations — 36/37 flowers, 38 tall grass,
+    // 39 mushroom — which are cross/billboard quads, so they read as grass blowing.
+    // Solid blocks (ground, leaves) are deliberately excluded: the earlier attempt
+    // was disabled because swaying full cubes slid visibly / opened seams.
     static float2 windSway(float3 worldPos, uint matID, float T, float rainStr) {
-        return float2(0.0);
+        if (matID != 36u && matID != 37u && matID != 38u && matID != 39u) return float2(0.0);
+        float amp = 0.07 * (1.0 + rainStr * 1.1);         // windier when it's raining
+        // Low spatial frequency so neighbours move together; multi-frequency in time
+        // so it reads as a breeze, not a metronome.
+        float phase = worldPos.x * 0.30 + worldPos.z * 0.25;
+        float sx = sin(T * 1.6 + phase)       + 0.35 * sin(T * 3.1 + phase * 1.7);
+        float sz = cos(T * 1.3 + phase * 0.8) + 0.30 * sin(T * 2.5 + phase);
+        return float2(sx, sz) * amp;
     }
 
     // =========================================================
