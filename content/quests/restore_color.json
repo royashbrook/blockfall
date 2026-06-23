@@ -140,7 +140,7 @@
         "trigger": "befriend_creature",
         "target": "gloom_stag",
         "count": 1,
-        "objective_text": "Find a Gloom Stag in a forest and befriend it with glow dust \u2014 they know the way."
+        "objective_text": "Find a forest, then follow the gold marker to a Gloom Stag and feed it glow dust."
       }
     ],
     "rewards": [
@@ -190,7 +190,7 @@
         "trigger": "calm_boss",
         "target": "stone_basilisk",
         "count": 1,
-        "objective_text": "Find the Stone Colossus up in the mountains and calm it."
+        "objective_text": "Head up to the mountains, then follow the red marker to the Stone Colossus."
       }
     ],
     "rewards": [
@@ -265,7 +265,7 @@
         "trigger": "calm_boss",
         "target": "dim_ramlord",
         "count": 1,
-        "objective_text": "Find the Dim Herald out in the grey lands and calm it to restore the final color."
+        "objective_text": "Go out into the grey, then follow the red marker to the Dim Herald and calm it."
       }
     ],
     "rewards": [

@@ -1129,73 +1129,66 @@ final class Renderer: NSObject, MTKViewDelegate {
         let vw = CGFloat(max(1, vb.width))
         let vh = CGFloat(max(1, vb.height))
 
-        var markers: [HUDView.PeerMarker] = []
-        for i in 0..<n {
-            let e = ents[i]
-            // kind 100 = remote player (#13); kind 4 = boss (#41 quest target).
-            // Both get a compass marker so kids can find the peer / the Colossus.
-            let isBoss = (e.kind == 4)
-            guard e.kind == 100 || isBoss else { continue }
-
-            let peerPos = SIMD3<Float>(e.position.x, e.position.y + e.scale * 0.9,
-                                       e.position.z)   // aim at roughly head height
-            let toPeer  = peerPos - camPos
-            let distM   = Int(simd_length(SIMD3<Float>(e.position.x - camPos.x,
-                                                       e.position.y - camPos.y,
-                                                       e.position.z - camPos.z)).rounded())
-
-            // Bosses get a fixed warning red so they read as "danger / go here";
-            // players keep their per-peer tint.
-            let color = isBoss
-                ? NSColor(srgbRed: 0.95, green: 0.25, blue: 0.20, alpha: 1)
-                : NSColor(srgbRed: CGFloat(max(0, min(1, e.color.x))),
-                          green:   CGFloat(max(0, min(1, e.color.y))),
-                          blue:    CGFloat(max(0, min(1, e.color.z))),
-                          alpha:   1)
-
-            // Project the peer's world position through view*proj.
-            let clip = viewProj * SIMD4<Float>(peerPos.x, peerPos.y, peerPos.z, 1)
-            let inFront = clip.w > 0.0001
+        // Turn a world position into a HUD marker: an on-screen point if it projects
+        // inside the viewport, else an off-screen edge-arrow direction. Edge direction
+        // uses raw right/up dot products (not w-divided clip) so it stays stable when
+        // the target is behind the camera.
+        func marker(at worldPos: SIMD3<Float>, color: NSColor, label: String) -> HUDView.PeerMarker {
+            let to = worldPos - camPos
+            let distM = Int(simd_length(to).rounded())
+            let clip = viewProj * SIMD4<Float>(worldPos.x, worldPos.y, worldPos.z, 1)
             var onScreen = false
             var screenPt = CGPoint.zero
-            if inFront {
-                let ndcX = clip.x / clip.w
-                let ndcY = clip.y / clip.w
+            if clip.w > 0.0001 {
+                let ndcX = clip.x / clip.w, ndcY = clip.y / clip.w
                 if abs(ndcX) <= 1 && abs(ndcY) <= 1 {
                     onScreen = true
                     screenPt = CGPoint(x: (CGFloat(ndcX) * 0.5 + 0.5) * vw,
                                        y: (CGFloat(ndcY) * 0.5 + 0.5) * vh)
                 }
             }
-
             var edgeDir = CGVector(dx: 0, dy: 1)
             if !onScreen {
-                // Off-screen or behind: build an arrow direction from the peer
-                // offset's components on the camera right/up axes. This stays
-                // stable when the peer is behind the camera (forwardDot <= 0):
-                // we don't divide by w (which flips sign), we use the raw dot
-                // products so the arrow always points the natural way.
-                let rightDot = simd_dot(toPeer, camRight)
-                let upDot    = simd_dot(toPeer, camUp)
-                var dx = CGFloat(rightDot)
-                var dy = CGFloat(upDot)
+                var dx = CGFloat(simd_dot(to, camRight))
+                var dy = CGFloat(simd_dot(to, camUp))
                 let len = (dx * dx + dy * dy).squareRoot()
-                if len < 1e-5 {
-                    // Directly ahead/behind with no lateral offset — point up.
-                    dx = 0; dy = 1
-                } else {
-                    dx /= len; dy /= len
-                }
+                if len < 1e-5 { dx = 0; dy = 1 } else { dx /= len; dy /= len }
                 edgeDir = CGVector(dx: dx, dy: dy)
             }
-
-            markers.append(HUDView.PeerMarker(onScreen: onScreen,
-                                              screenPt: screenPt,
-                                              edgeDir: edgeDir,
-                                              distM: distM,
-                                              color: color,
-                                              label: isBoss ? "Boss" : "Player"))
+            return HUDView.PeerMarker(onScreen: onScreen, screenPt: screenPt,
+                                      edgeDir: edgeDir, distM: distM,
+                                      color: color, label: label)
         }
+
+        var markers: [HUDView.PeerMarker] = []
+
+        // Remote players (#13): one marker each, in the peer's tint.
+        for i in 0..<n {
+            let e = ents[i]
+            guard e.kind == 100 else { continue }
+            let head = SIMD3<Float>(e.position.x, e.position.y + e.scale * 0.9, e.position.z)
+            let color = NSColor(srgbRed: CGFloat(max(0, min(1, e.color.x))),
+                                green:   CGFloat(max(0, min(1, e.color.y))),
+                                blue:    CGFloat(max(0, min(1, e.color.z))), alpha: 1)
+            markers.append(marker(at: head, color: color, label: "Player"))
+        }
+
+        // Quest target (#41): the ONE creature the active quest wants you to reach —
+        // not every boss. Red for a boss to calm, gold for a creature to befriend.
+        if let e = engine {
+            var qt = bf_quest_target()
+            if bf_quest_target_get(e, &qt) == 1 && qt.active == 1 {
+                let pos = SIMD3<Float>(qt.position.x, qt.position.y + 1.0, qt.position.z)
+                let color = qt.is_boss == 1
+                    ? NSColor(srgbRed: 0.95, green: 0.25, blue: 0.20, alpha: 1)   // fight
+                    : NSColor(srgbRed: 1.0,  green: 0.80, blue: 0.20, alpha: 1)   // befriend
+                let label = withUnsafeBytes(of: qt.label) { raw in
+                    String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+                }
+                markers.append(marker(at: pos, color: color, label: label))
+            }
+        }
+
         hud.setPeers(markers)
     }
 

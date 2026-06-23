@@ -797,6 +797,11 @@ public:
     }
     void    debug_notify(const char* trig, const char* target) { notify_quest(trig, target); }
     void    debug_force_quest_done() { quests_completed_ = 1; }   // tests: lift the first-quest monster gate
+    void    debug_spawn_named(const char* nm) {                   // tests: drop a named creature 5m from the player
+        Creature c; c.name = nm ? nm : ""; c.pos = pos_ + V3{5.0f, -1.0f, 0.0f}; c.hp = 5; c.scale = 1.0f;
+        if (extra_) for (auto& d : extra_->creatures()) if (d.name == c.name) { c.is_boss = (d.disposition == "boss"); c.model = d.model; break; }
+        creatures_.push_back(c);
+    }
 
     // Fill the FULL quest progression list (for the #42 overview screen). Returns the
     // total quest count; writes min(count, cap) entries. Mirrors the active-quest HUD
@@ -831,6 +836,44 @@ public:
             }
         }
         return n;
+    }
+    // #41 quest-target compass: the nearest LOADED creature the active quest wants
+    // you to reach (befriend_creature / calm_boss). Returns false when the current
+    // objective isn't creature-based or no matching creature is spawned nearby.
+    bool fill_quest_target(bf_quest_target* out) const {
+        if (!out) return false;
+        std::memset(out, 0, sizeof(*out));
+        if (!extra_ || all_quests_done_ || active_quest_ >= extra_->quests().size()) return false;
+        const QuestDefX& q = extra_->quests()[active_quest_];
+        if (obj_progress_.size() != q.objectives.size()) return false;
+        const QuestObjX* obj = nullptr;
+        for (std::size_t i = 0; i < q.objectives.size(); ++i) {
+            const auto& o = q.objectives[i];
+            if (obj_progress_[i] >= o.count) continue;               // already satisfied
+            if (o.trigger == "befriend_creature" || o.trigger == "calm_boss") { obj = &o; break; }
+        }
+        if (!obj || obj->target.empty()) return false;
+        const Creature* best = nullptr; float bestd2 = 1e30f;
+        for (const auto& c : creatures_) {
+            if (c.name != obj->target) continue;
+            float dx = c.pos.x - pos_.x, dy = c.pos.y - pos_.y, dz = c.pos.z - pos_.z;
+            float d2 = dx*dx + dy*dy + dz*dz;
+            if (d2 < bestd2) { bestd2 = d2; best = &c; }
+        }
+        if (!best) return false;                                     // target not loaded -> hide marker
+        out->active   = 1;
+        out->is_boss  = (obj->trigger == "calm_boss") ? 1u : 0u;
+        out->position = bf_vec3{best->pos.x, best->pos.y, best->pos.z};
+        out->distance = std::sqrt(bestd2);
+        // Title-case the creature name for the label: "gloom_stag" -> "Gloom Stag".
+        std::string lbl = best->name; bool up = true;
+        for (char& ch : lbl) {
+            if (ch == '_') { ch = ' '; up = true; }
+            else if (up && ch >= 'a' && ch <= 'z') { ch = char(ch - 32); up = false; }
+            else up = false;
+        }
+        std::strncpy(out->label, lbl.c_str(), sizeof(out->label) - 1);
+        return true;
     }
     bool    debug_aim_at_creature0() {
         if (creatures_.empty()) return false;

@@ -151,6 +151,11 @@ uint32_t bf_quest_list(bf_engine e, bf_quest_entry* out, uint32_t cap) {
     return e->world.fill_quest_list(out, cap);
 }
 
+uint8_t bf_quest_target_get(bf_engine e, bf_quest_target* out) {
+    if (!e || !e->world_ready || !out) return 0;
+    return e->world.fill_quest_target(out) ? 1u : 0u;
+}
+
 bf_result bf_input_action(bf_engine e, const bf_action* act) {
     if (!e || !act) { set_err("null arg"); return BF_ERR_BAD_ARG; }
     if (!e->world_ready) { set_err("world not ready"); return BF_ERR_NOT_READY; }

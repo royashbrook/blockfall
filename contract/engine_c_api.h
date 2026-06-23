@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 12u  /* v12: bf_quest_list + bf_quest_entry (progression screen) */
+#define BF_ABI_VERSION 13u  /* v13: bf_quest_target (quest-target compass) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -301,6 +301,19 @@ typedef struct bf_quest_entry {
     float    progress;        /* 0..1 (meaningful for the active quest)        */
 } bf_quest_entry;
 
+/* The live creature the ACTIVE quest wants you to reach — the nearest spawned
+ * one matching a befriend_creature / calm_boss objective. Powers the quest-target
+ * compass (#41): one marker that points at the thing to fight/befriend, by name.
+ * `active` is 0 when the current objective isn't creature-based OR no matching
+ * creature is currently loaded near the player (then the marker is hidden). */
+typedef struct bf_quest_target {
+    uint8_t  active;          /* 1 = a matching creature is loaded; fields valid */
+    uint8_t  is_boss;         /* 1 = fight (calm_boss), 0 = befriend/find        */
+    bf_vec3  position;        /* world position of the nearest matching creature */
+    float    distance;        /* metres from the player                          */
+    char     label[48];       /* display name, e.g. "Gloom Stag"                 */
+} bf_quest_target;
+
 /* The whole frame, borrowed from the engine between acquire/end. */
 typedef struct bf_render_frame {
     bf_camera             camera;
@@ -326,6 +339,10 @@ BF_API bf_result bf_frame_acquire_render(bf_engine e, bf_render_frame* out);
  * quest/achievement overview screen. Order = the quest chain; states reflect what's
  * done / active / upcoming. */
 BF_API uint32_t bf_quest_list(bf_engine e, bf_quest_entry* out, uint32_t cap);
+/* Fill `out` with the active quest's target creature (nearest loaded match) and
+ * return 1, or return 0 (and zero `out`) when there's no creature objective active
+ * or none is loaded. Powers the quest-target compass (#41). */
+BF_API uint8_t bf_quest_target_get(bf_engine e, bf_quest_target* out);
 /* [MAIN] Release the borrow. After this, pointers from acquire are invalid. */
 BF_API void      bf_frame_end(bf_engine e);
 

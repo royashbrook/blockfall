@@ -43,6 +43,50 @@ int main() {
     CHECK(w.debug_quests_completed() == 1, "first quest completed after meeting its objectives");
     CHECK(w.debug_active_quest() != firstId, "advanced to the next quest");
 
-    if (fails == 0) std::printf("OK: quest engine (%zu quests, complete+chain)\n", x.quests().size());
+    // --- #41 quest-target compass: fill_quest_target finds the active objective's
+    // creature (befriend or boss), by name, only when one is loaded nearby. ---
+    {
+        GreedyMesher m2; TerrainGen g2; World w2(m2, &g2);
+        bf_gpu_allocator a2{}; a2.alloc=af; a2.free_=ff; w2.set_allocator(a2);
+        w2.set_content(&c); w2.set_extra(&x);
+        w2.set_mode(BF_MODE_SURVIVAL);
+        w2.init_world(11);
+
+        // Advance the chain until the active quest has an objective with `trig`,
+        // returning that objective (without completing its quest).
+        auto advanceTo = [&](const char* trig)->const QuestObjX*{
+            for (int guard = 0; guard < 50; ++guard) {
+                std::uint32_t aqId = w2.debug_active_quest();
+                const QuestDefX* q = nullptr;
+                for (auto& qq : x.quests()) if (qq.id == aqId) { q = &qq; break; }
+                if (!q) return nullptr;
+                for (auto& o : q->objectives) if (o.trigger == trig) return &o;
+                for (const auto& o : q->objectives)                  // not it — complete + advance
+                    for (std::uint32_t i = 0; i < o.count; ++i)
+                        w2.debug_notify(o.trigger.c_str(), o.target.c_str());
+            }
+            return nullptr;
+        };
+
+        const QuestObjX* befr = advanceTo("befriend_creature");
+        CHECK(befr != nullptr, "reached a befriend_creature quest");
+
+        bf_quest_target qt{};
+        CHECK(w2.fill_quest_target(&qt) == false, "no target while the creature isn't loaded");
+        if (befr) w2.debug_spawn_named(befr->target.c_str());
+        CHECK(w2.fill_quest_target(&qt) == true, "target active once the creature is loaded");
+        CHECK(qt.active == 1 && qt.is_boss == 0, "befriend target: active, not a boss");
+        CHECK(std::string(qt.label) == "Gloom Stag", "label title-cased from creature name");
+        CHECK(qt.distance > 0.0f && qt.distance < 20.0f, "distance to target is sane");
+
+        const QuestObjX* boss = advanceTo("calm_boss");
+        CHECK(boss != nullptr, "reached a calm_boss quest");
+        bf_quest_target qb{};
+        if (boss) w2.debug_spawn_named(boss->target.c_str());
+        CHECK(w2.fill_quest_target(&qb) == true, "boss target active once loaded");
+        CHECK(qb.is_boss == 1, "calm_boss target is flagged is_boss");
+    }
+
+    if (fails == 0) std::printf("OK: quest engine (%zu quests, complete+chain, target compass)\n", x.quests().size());
     return fails == 0 ? 0 : 1;
 }
