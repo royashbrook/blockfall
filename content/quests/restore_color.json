@@ -115,7 +115,7 @@
         "trigger": "reach_location",
         "target": "dim_barrens",
         "count": 1,
-        "objective_text": "Travel to the Dim Barrens to see what steals the color."
+        "objective_text": "Walk away from your bright spawn into the grey Dim Barrens to see what steals the color."
       }
     ],
     "rewards": [
@@ -140,7 +140,7 @@
         "trigger": "befriend_creature",
         "target": "gloom_stag",
         "count": 1,
-        "objective_text": "Befriend a Dim Wisp with glow dust \u2014 they know the way."
+        "objective_text": "Find a Gloom Stag in a forest and befriend it with glow dust \u2014 they know the way."
       }
     ],
     "rewards": [
@@ -190,7 +190,7 @@
         "trigger": "calm_boss",
         "target": "stone_basilisk",
         "count": 1,
-        "objective_text": "Calm the Stone Colossus blocking the color springs."
+        "objective_text": "Find the Stone Colossus up in the mountains and calm it."
       }
     ],
     "rewards": [
@@ -265,7 +265,7 @@
         "trigger": "calm_boss",
         "target": "dim_ramlord",
         "count": 1,
-        "objective_text": "Calm the Dim Herald and restore the final zone of color."
+        "objective_text": "Find the Dim Herald out in the grey lands and calm it to restore the final color."
       }
     ],
     "rewards": [
