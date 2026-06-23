@@ -107,6 +107,7 @@ struct WaterUniforms {
     var pad0:          Float = 0
     var pad1:          Float = 0
     var cameraPosW:    SIMD4<Float> = .zero   // xyz = world-space camera pos, w unused
+    var sunDirTime:    SIMD4<Float> = .zero   // xyz = sun dir, w = time_of_day (#43 water sky reflection)
 }
 
 /// Uniforms for the HDR composite / tonemap pass (32 bytes).
@@ -857,7 +858,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             enc.setFrontFacing(.counterClockwise)
 
             var wu = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater,
-                                   cameraPosW: camPosW)
+                                   cameraPosW: camPosW,
+                                   sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day))
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
             enc.setFragmentTexture(shadowMap, index: 0)
             enc.setFragmentSamplerState(shadowSampler, index: 0)
@@ -1398,6 +1400,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         float pad0;
         float pad1;
         float4 cameraPosW;   // xyz = world pos, w = pad
+        float4 sunDirTime;   // xyz = sun dir, w = time_of_day (#43)
     };
     #define UW_CAM_POS(wu) (wu).cameraPosW.xyz
 
@@ -2549,6 +2552,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     // translucent blending over the lake bottom already in the colour buffer.
     // Depth write is OFF (set by waterDepthState), depth test is lessEqual.
     // =========================================================
+    // Reflective water (#43) samples the sky along the reflected ray. evalSkyColor
+    // is defined further down (after cloudFbm); declare it here so water can call it.
+    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk);
+
     fragment float4 waterFmain(VOut in [[stage_in]],
                                constant WaterUniforms& wu [[buffer(2)]],
                                constant WindUniforms& wind [[buffer(3)]],
@@ -2575,7 +2582,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             noise2(uv * 1.2 + float2(t * 0.22, t * 0.14 + 0.1)) - wave1
         ) * 4.0;
         float3 perturbedN = normalize(float3(nAB.x, 1.4, nAB.y));
-        float3 sunDir3 = normalize(float3(0.5, 0.9, 0.3));
+        float3 sunDir3 = normalize(-wu.sunDirTime.xyz);   // real sun, so glint lands correctly (#43)
         float spec = pow(max(0.0, dot(perturbedN, sunDir3)), 22.0);
 
         // Shadow + AO
@@ -2595,8 +2602,20 @@ final class Renderer: NSObject, MTKViewDelegate {
         // up-facing surface so side faces stay a flat, stable water colour.
         bool topFace = (in.faceNorm == 2u);
         if (topFace) {
-            float fresnelAmt = 0.28 + rippleN * 0.10;
-            col = mix(col, float3(0.80, 0.92, 1.00), clamp(fresnelAmt, 0.0, 0.40));
+            // #43 cozy reflective water: mirror the ACTUAL sky (sun glint, sunset
+            // hues, clouds) off the rippled surface, blended by Fresnel. Capped
+            // below a full mirror so the lake bottom still reads and it stays
+            // readable for kids; the final clamp keeps it out of the bloom range.
+            float3 camP    = UW_CAM_POS(wu);
+            float3 viewDir = normalize(in.worldPos - camP);
+            float3 refl    = reflect(viewDir, perturbedN);
+            refl.y = max(refl.y, 0.02);                       // keep the bounce skyward
+            float3 skyRefl = evalSkyColor(normalize(refl),
+                                          wu.sunDirTime.xyz, wu.sunDirTime.w, t);
+            float ndv     = max(0.0, dot(-viewDir, perturbedN));
+            float fres    = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);   // Schlick, F0≈0.02
+            float reflAmt = clamp(fres * 0.9 + 0.05, 0.0, 0.60);
+            col = mix(col, skyRefl, reflAmt);
             col += float3(1.0, 0.98, 0.88) * spec * 0.45 * in.shade;
         }
 
@@ -2646,22 +2665,10 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     static float cloudFbm(float2 p) { return fbm2(p); }
 
-    fragment float4 skyFmain(SkyVOut in [[stage_in]],
-                              constant SkyUniforms& su [[buffer(0)]],
-                              constant WaterUniforms& wu [[buffer(1)]]) {
-        float t   = su.sunDirTime.w;
-        float3 sd = su.sunDirTime.xyz;
-        float clk = wu.wallClockSecs;
-
-        float tanHalfFov = su.camRight.w;
-        float aspect     = su.camUp.w;
-        float3 right     = su.camRight.xyz;
-        float3 up        = su.camUp.xyz;
-        float3 fwd       = su.camFwd.xyz;
-        float3 ray = normalize(fwd
-                               + right * (in.ndc.x * aspect * tanHalfFov)
-                               + up    * (in.ndc.y * tanHalfFov));
-
+    // Sky colour along a view ray (gradient, sun/moon, stars, clouds, weather).
+    // Shared by the sky pass AND reflective water (#43) — forward-declared above
+    // waterFmain. Does NOT apply the underground fade (that's sky-pass only).
+    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk) {
         float dayT    = max(0.0, sin(t * 3.14159265f));
         float dawnT   = max(0.0, 1.0 - abs(t - 0.25) * 8.0);
         float duskT   = max(0.0, 1.0 - abs(t - 0.75) * 8.0);
@@ -2825,11 +2832,23 @@ final class Renderer: NSObject, MTKViewDelegate {
             skyCol = mix(skyCol, cloudCol, cloudD * cloudVis * 0.90);
         }
 
+        return skyCol;
+    }
+
+    fragment float4 skyFmain(SkyVOut in [[stage_in]],
+                              constant SkyUniforms& su [[buffer(0)]],
+                              constant WaterUniforms& wu [[buffer(1)]]) {
+        float tanHalfFov = su.camRight.w;
+        float aspect     = su.camUp.w;
+        float3 ray = normalize(su.camFwd.xyz
+                               + su.camRight.xyz * (in.ndc.x * aspect * tanHalfFov)
+                               + su.camUp.xyz    * (in.ndc.y * tanHalfFov));
+        float3 skyCol = evalSkyColor(ray, su.sunDirTime.xyz, su.sunDirTime.w, wu.wallClockSecs);
+
         // FIX (#33): when the eye is underground (su.camFwd.w = underground 0..1),
         // fade the whole sky to a near-black cave colour. Surface-priority streaming
         // doesn't load the far underground, so without this the bright, sun-directional
-        // daytime sky shows through those gaps — reading as a bluish "wash" that
-        // brightened toward E/W (the sun) and went black at N/S as the player turned.
+        // daytime sky shows through those gaps — reading as a bluish "wash".
         float underground = clamp(su.camFwd.w, 0.0, 1.0);
         skyCol = mix(skyCol, float3(0.015, 0.016, 0.020), underground);
 
