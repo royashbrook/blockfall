@@ -1243,11 +1243,14 @@ private:
         cr.hp -= dmg;
         damage_held_tool();                              // weapons/tools wear when used
         cr.hit_flash = 0.22f;                            // visible white flash
-        // Knockback away from the player so hits read as impacts.
+        // Knockback away from the player so hits read as impacts. Bosses are heavy:
+        // they barely budge, so you can stand and fight instead of chasing a fleeing
+        // boss across the map for every hit of a multi-hit fight. (#41 boss feel)
         float ax = cr.pos.x - pos_.x, az = cr.pos.z - pos_.z;
         float ad = std::sqrt(ax*ax + az*az);
-        if (ad > 0.01f) { cr.pos.x += ax/ad * 1.3f; cr.pos.z += az/ad * 1.3f; }
-        cr.vy = 3.0f;                                    // little hop on hit
+        float kb = cr.is_boss ? 0.25f : 1.3f;
+        if (ad > 0.01f) { cr.pos.x += ax/ad * kb; cr.pos.z += az/ad * kb; }
+        cr.vy = cr.is_boss ? 0.8f : 3.0f;               // little hop on hit (bosses barely)
         fx(8, cv);                                       // hit thwack
         if (cr.hp <= 0) {
             bool boss = cr.is_boss, hostile = cr.hostile; std::string nm = cr.name;
