@@ -1565,13 +1565,13 @@ final class Renderer: NSObject, MTKViewDelegate {
             return [
                 (SIMD3(0.50, 0.50, 0.50), SIMD3(0.36, 0.50, 0.36), wbirch),
             ]
-        case 48:       // #62 PINE needles — dark green cones (conifer spikes) that
-                       // overlap into a crisp conical canopy
+        case 48:       // #62 PINE needles — dark green cones (conifer spikes). Slimmer
+                       // and a touch taller than before so pines are not too fat.
             let p1 = SIMD3<Float>(0.16, 0.34, 0.20)
             let p2 = SIMD3<Float>(0.13, 0.29, 0.17)
             return [
-                (SIMD3(0.50, 0.46, 0.50), SIMD3(0.82, 0.80, 0.82), p1),  // main cone
-                (SIMD3(0.44, 0.60, 0.54), SIMD3(0.52, 0.62, 0.52), p2),  // upper spike
+                (SIMD3(0.50, 0.50, 0.50), SIMD3(0.60, 0.86, 0.60), p1),  // main cone (narrow, tall)
+                (SIMD3(0.46, 0.64, 0.52), SIMD3(0.40, 0.66, 0.40), p2),  // upper spike
             ]
         default: return []
         }
@@ -3089,11 +3089,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         float sunHigh = smoothstep(-0.02, 0.28, sunDir3.y);   // 0 at/below horizon → 1 when well up
         skyCol = mix(skyCol, sunColor,             sunDisc  * sunVis);
         skyCol = mix(skyCol, float3(1.0, 0.99, 0.92), sunInner * sunVis * mix(0.25, 1.0, sunHigh));
-        // Warm corona ring just OUTSIDE the disc (#66): makes the sun visually distinct
-        // from the white moon. Mixed (not HDR-added) so the 0.92 broad-sky cap below
-        // keeps it from ever feeding bloom.
-        float sunCorona = smoothstep(0.9880, 0.9965, sunDot) * sunVis;
-        skyCol = mix(skyCol, sunColor, sunCorona * 0.14);
+        // (#66 sun corona removed: a warm ring around the sun brightened the whole E/W
+        //  sky and washed out the view toward the sun's arc unless you faced N/S. The
+        //  white moon already makes the two distinct; the sun does not need the ring.)
 
         // HDR: a SMALL boost on the tight inner disc so the sun reads as a crisp
         // bright dot — but kept BELOW the bloom bright-pass floor (1.60). Under
@@ -3772,13 +3770,29 @@ final class Renderer: NSObject, MTKViewDelegate {
         lp.x = 0.5 + dx * cy - dz * sy;
         lp.z = 0.5 + dx * sy + dz * cy;
         float3 nm = float3(cnrm.x * cy - cnrm.z * sy, cnrm.y, cnrm.x * sy + cnrm.z * cy);
-        // #62 trunk taper: the seed's high byte holds the log's height above the base,
-        // so the trunk narrows as it rises (wide root, slimmer crown).
+        // #62 trunk vs branch. Branches (bit 31) lie sideways; trunks taper with height.
         if (isTrunk) {
-            uint level = (inst.seed >> 24u) & 0xFFu;
-            float ws = clamp(1.0 - float(level) * 0.045, 0.5, 1.0);
-            lp.x = 0.5 + (lp.x - 0.5) * ws;
-            lp.z = 0.5 + (lp.z - 0.5) * ws;
+            uint isBranch = (inst.seed >> 31u) & 1u;
+            if (isBranch == 1u) {
+                // Horizontal branch: rotate the vertical cylinder so its long axis lies
+                // along x or z (bit 30), and slim it (branches are thinner than the trunk).
+                uint axis = (inst.seed >> 30u) & 1u;
+                float ox = lp.x - 0.5, oy = lp.y - 0.5, oz = lp.z - 0.5;
+                const float thin = 0.62;
+                if (axis == 0u) {            // long axis -> x
+                    lp = float3(0.5 + oy, 0.5 + ox * thin, 0.5 + oz * thin);
+                    nm = float3(nm.y, nm.x, nm.z);
+                } else {                     // long axis -> z
+                    lp = float3(0.5 + oz * thin, 0.5 + ox * thin, 0.5 + oy);
+                    nm = float3(nm.x, nm.z, nm.y);
+                }
+            } else {
+                // Trunk taper: narrows with height above the base (bits 24-30 = level).
+                uint level = (inst.seed >> 24u) & 0x7Fu;
+                float ws = clamp(1.0 - float(level) * 0.045, 0.5, 1.0);
+                lp.x = 0.5 + (lp.x - 0.5) * ws;
+                lp.z = 0.5 + (lp.z - 0.5) * ws;
+            }
         }
         // Wind sway (#45/#52): thin foliage (grass row 4, flowers rows 0/1) bends in
         // the breeze — top sways, base stays rooted. Gated by params.z (foliage toggle).

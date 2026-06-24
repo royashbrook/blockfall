@@ -2073,14 +2073,29 @@ private:
             // contiguous logs below, across chunks) in the seed's high byte, so the
             // renderer can narrow the trunk as it rises. Low 24 bits keep the colour hash.
             if (id == 21u || id == 22u) {
-                int level = 0;
-                for (int k = 1; k <= 24; ++k) {
-                    BlockId below = block_at(IVec3{bx + lx, by + ly - k, bz + lz});
-                    if (below != 21u && below != 22u) break;
-                    ++level;
+                auto is_log = [&](int dx, int dy, int dz) {
+                    BlockId b = block_at(IVec3{bx + lx + dx, by + ly + dy, bz + lz + dz});
+                    return b == 21u || b == 22u;
+                };
+                // #62 branches: a log with no log directly above OR below is a BRANCH
+                // (the trunk steps out-and-up diagonally), so it should be drawn lying
+                // sideways, not as another vertical log. Trunk logs taper with height.
+                bool above = is_log(0, 1, 0), below = is_log(0, -1, 0);
+                if (!above && !below) {
+                    // Branch: pick the horizontal axis it runs along from its neighbours.
+                    bool xax = is_log(1,1,0)||is_log(-1,1,0)||is_log(1,-1,0)||is_log(-1,-1,0)||is_log(1,0,0)||is_log(-1,0,0);
+                    bool zax = is_log(0,1,1)||is_log(0,1,-1)||is_log(0,-1,1)||is_log(0,-1,-1)||is_log(0,0,1)||is_log(0,0,-1);
+                    std::uint32_t axis = (zax && !xax) ? 1u : 0u;   // 0 = x-axis, 1 = z-axis
+                    h = 0x80000000u | (axis << 30) | (h & 0x3FFFFFFFu);  // bit31 branch, bit30 axis
+                } else {
+                    int level = 0;
+                    for (int k = 1; k <= 24; ++k) {
+                        if (!is_log(0, -k, 0)) break;
+                        ++level;
+                    }
+                    if (level > 127) level = 127;
+                    h = (std::uint32_t(level) << 24) | (h & 0x00FFFFFFu);  // bit31 = 0 (trunk)
                 }
-                if (level > 255) level = 255;
-                h = (std::uint32_t(level) << 24) | (h & 0x00FFFFFFu);
             }
             bf_prop_instance p{};
             p.position = bf_vec3{float(bx + lx), float(by + ly), float(bz + lz)};
