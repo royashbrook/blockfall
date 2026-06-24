@@ -2617,17 +2617,18 @@ final class Renderer: NSObject, MTKViewDelegate {
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
         if (depth >= 1.0) return 1.0;
 
-        // PCF 3×3: use the comparison sampler (lessEqual) which returns 0 or 1
-        // per sample; Metal's shadow sampler averages them for free.
+        // PCF 5×5: wider kernel for smoother soft-shadow edges (the 3×3 read harsh).
+        // The comparison sampler (lessEqual) returns 0/1 per sample; Metal averages
+        // the bilinear taps for free.
         float texelSize = 1.0 / 1536.0;
         float shadow = 0.0;
-        for (int dy = -1; dy <= 1; ++dy) {
-            for (int dx = -1; dx <= 1; ++dx) {
+        for (int dy = -2; dy <= 2; ++dy) {
+            for (int dx = -2; dx <= 2; ++dx) {
                 float2 off = uv + float2(dx, dy) * texelSize;
                 shadow += shadowTex.sample_compare(shadowSamp, off, depth);
             }
         }
-        shadow /= 9.0;
+        shadow /= 25.0;
         return shadow;
     }
 
@@ -2655,9 +2656,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         if (!isEmissive && wu.shadowScale > 0.5) {
             float dayFactor = clamp(in.shade * 1.5, 0.0, 1.0);
             float distToCam = length(in.worldPos - UW_CAM_POS(wu));
+            // Higher depth bias than before to kill self-shadow acne on the stepped /
+            // terraced terrain (continentalness made more near-sea-level terraces).
             float raw = (distToCam < 36.0)
-                ? sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos,  dayFactor, 0.0016)
-                : sampleShadowPCF(shadowFar, shadowSamp, in.shadowPosF, dayFactor, 0.0028);
+                ? sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos,  dayFactor, 0.0028)
+                : sampleShadowPCF(shadowFar, shadowSamp, in.shadowPosF, dayFactor, 0.0050);
             shadowFactor = 1.0 - (0.55 * dayFactor) * (1.0 - raw);
         }
 
