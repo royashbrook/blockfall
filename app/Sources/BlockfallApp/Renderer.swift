@@ -341,8 +341,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     //   near cascade = tight radius → crisp contact shadows around the player
     //   far  cascade = wide radius  → shadows out toward the horizon
     private let kShadowRes  = 1536
-    private let kShadowNearR: Float = 42   // near cascade half-extent (world units)
-    private let kShadowFarR:  Float = 115  // far cascade half-extent
+    private let kShadowNearR: Float = 48   // near cascade half-extent (world units)
+    private let kShadowFarR:  Float = 150  // far cascade half-extent (#72: wider so the
+                                           // faded boundary sits well past the play area)
     private let kCascadeSplit: Float = 36  // camera-distance split between cascades
     private var shadowMap: MTLTexture!     // depth32Float — near cascade
     private var shadowMapFar: MTLTexture!  // depth32Float — far cascade
@@ -2675,6 +2676,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Outside the shadow frustum? Assume lit.
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
         if (depth >= 1.0) return 1.0;
+        // #72: fade shadows out smoothly near the shadow-map BOUNDARY. The map is a
+        // fixed sun-aligned square around the player, so its edge is a hard line that
+        // "wiped" shadows on one side as you turned. Fading the last ~12% of the map to
+        // fully-lit turns that hard line into an invisible gradient.
+        float2 eDist = min(uv, 1.0 - uv);                 // distance to nearest edge
+        float edgeFade = smoothstep(0.0, 0.12, min(eDist.x, eDist.y));
 
         // PCF 5×5: wider kernel for smoother soft-shadow edges (the 3×3 read harsh).
         // The comparison sampler (lessEqual) returns 0/1 per sample; Metal averages
@@ -2688,7 +2695,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             }
         }
         shadow /= 25.0;
-        return shadow;
+        return mix(1.0, shadow, edgeFade);   // #72: lit at the map boundary (no hard wipe line)
     }
 
     // =========================================================

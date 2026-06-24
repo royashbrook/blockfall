@@ -769,7 +769,7 @@ public:
         // forward-cone chunks, so shadows from geometry behind/beside you popped away
         // as you turned (#46). Depth-only + already-resident, so this is cheap.
         shadow_draws.clear();
-        constexpr float kShadowR = 125.0f;
+        constexpr float kShadowR = 165.0f;   // #72: cover the widened far cascade (150) + margin
         for (auto& [cc, rec] : meshes_) {
             if (!rec.has_buffers || rec.index_count == 0) continue;
             V3 sctr{(float(cc.x) + 0.5f) * kChunkDim, (float(cc.y) + 0.5f) * kChunkDim, (float(cc.z) + 0.5f) * kChunkDim};
