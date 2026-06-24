@@ -993,6 +993,25 @@ static float river_lower(float fwx, float fwz, std::uint64_t seed) noexcept {
     return RIVER_DEPTH * t;
 }
 
+// Continentalness (#60): a very-low-frequency field that lifts inland "continent"
+// regions and sinks "ocean" regions, so scattered inland flooding shrinks to rivers
+// and lakes while open water gathers into genuine oceans. Gradual (huge scale), so it
+// keeps within-chunk plains flatness and rides safely through the seam limiter.
+static constexpr float CONTINENT_FREQ = 1.0f / 640.0f;
+static constexpr float CONTINENT_AMP  = 6.0f;
+static float continental_lift(float fwx, float fwz, std::uint64_t seed) noexcept {
+    std::uint64_t cseed = fmix64(seed ^ 0xC0117E17A15C0DE1ull);
+    float c = fbm2(fwx, fwz, cseed, 2, CONTINENT_FREQ, 2.0f, 0.5f);  // ~[0,1], bell ~0.5
+    // LIFT-ONLY: raise inland continents so their fBm dips stop reaching sea level,
+    // but never sink terrain (sinking would drown structure sites, which need
+    // H > SEA_LEVEL, and deepen oceans we do not want). Open water stays where the
+    // land is naturally low; the inland just gets drier.
+    float t = (c - 0.46f) / 0.18f;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return t * CONTINENT_AMP;
+}
+
 static float surface_height_raw(std::int32_t wx, std::int32_t wz,
                                 std::uint64_t seed,
                                 const float weights[NUM_BIOMES]) noexcept {
@@ -1031,6 +1050,10 @@ static float surface_height_raw(std::int32_t wx, std::int32_t wz,
         float h = p.base_y + (n * 2.0f - 1.0f) * p.amp + biome_swell;
         blended_h += weights[i] * h;
     }
+
+    // #60 continentalness: lift inland, sink oceans, so water concentrates into real
+    // oceans and the inland reads as rivers and lakes rather than scattered seas.
+    blended_h += continental_lift(fwx, fwz, seed);
 
     // #60 rivers: sink a meandering valley into the blended height. Faded out in
     // desert (dry) so we don't get rivers running through dunes.
