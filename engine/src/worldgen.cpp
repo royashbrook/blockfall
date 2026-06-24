@@ -3553,11 +3553,23 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                 std::int32_t wz = wz_min + lz;
                 std::uint64_t kh = hash2(wx, wz, kelp_seed);
 
-                // Lily pads float on shallow calm water (marsh/pond surface), #58.
-                // Independent of kelp; replaces the top water block at the surface.
-                if ((dom == Biome::Swamp || dom == Biome::Plains) &&
-                    (SEA_LEVEL - H) >= 1 && (SEA_LEVEL - H) <= 4 &&
-                    ((kh >> 24u) & 0xFFu) < 40u) {
+                int water_depth = SEA_LEVEL - H;       // blocks of water above the floor
+
+                // Surface life on shallow water, so the new rivers, lakes, and ponds feel
+                // alive in any green biome (#58/#60). Correct by construction: the column
+                // IS shallow water, so these never land on dry ground. Kept as sparse
+                // accents (not carpets). Reeds take the shallowest edge band; lily pads
+                // the calmer middle band.
+                bool freshwater = (dom != Biome::Desert && dom != Biome::Beach);  // not ocean/dunes
+                if (freshwater && water_depth >= 1 && water_depth <= 2 &&
+                    ((kh >> 16u) & 0xFFu) < 18u) {                 // ~7% emergent reeds
+                    std::int32_t wy = SEA_LEVEL;
+                    if (wy >= wy_min && wy <= wy_max) {
+                        int ly = static_cast<int>(wy - wy_min);
+                        if (chunk.get(lx, ly, lz) == WATER) chunk.set(lx, ly, lz, REED);
+                    }
+                } else if (freshwater && water_depth >= 2 && water_depth <= 4 &&
+                           ((kh >> 24u) & 0xFFu) < 26u) {          // ~10% lily pads
                     std::int32_t wy = SEA_LEVEL;
                     if (wy >= wy_min && wy <= wy_max) {
                         int ly = static_cast<int>(wy - wy_min);
@@ -3569,8 +3581,7 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                 if ((kh & 0xFFu) >= 56u) continue;
 
                 // Strand height 1..3, never reaching the water surface (leave the
-                // top water block clear so it reads as submerged).
-                int water_depth = SEA_LEVEL - H;       // blocks of water above floor
+                // top water block clear so it reads as submerged). water_depth above.
                 int strand = 1 + static_cast<int>((kh >> 8u) % 3u);  // 1..3
                 int max_strand = water_depth - 1;       // keep top under the surface
                 if (max_strand < 1) continue;
