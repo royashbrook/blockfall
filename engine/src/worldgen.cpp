@@ -489,28 +489,25 @@ static int entrance_depth_in(const EntranceDesc& ed,
             return depth;
         }
         case ENTR_RAVINE: {
-            // A slot running ±half_len along its axis, but with SLOPED, JAGGED
-            // shoulders across it (#: ravines were sharp vertical slots you fell
-            // into).  The inner slot is deep; each block out across the axis steps
-            // up shallower, so the sides form a climbable staircase you can see
-            // coming and scramble out of.  A per-column hash wobbles the rim so it
-            // reads as a natural jagged edge, not a ruled line.
+            // #63: a WIDE, SHALLOW, gentle V-gully, not a deep narrow slot. The first
+            // pass kept a deep centre slot with big shoulder steps, so you could still
+            // drop into it. Now the depth ramps SMOOTHLY from the centre line out to the
+            // rim over many columns (~1-2 block steps), and the whole thing is capped
+            // shallow, so a ravine reads as a natural gully you can see coming and climb
+            // out of with little effort. A per-column hash keeps the rim jagged.
             std::int32_t along  = ed.ravine_x ? dx : dz;
             std::int32_t across = ed.ravine_x ? dz : dx;
             if (along < -ed.half_len || along > ed.half_len) return 0;
-            std::int32_t aa = across < 0 ? -across : across;
-            const int shoulder = RAVINE_HALF_W + 2;   // slope reaches 2 blocks past the slot
-            if (aa > static_cast<std::int32_t>(shoulder)) return 0;
-            std::int32_t a = along < 0 ? -along : along;
-            int taper = static_cast<int>(a) / 4;       // gentle taper toward the ends
-            int depth = ed.floor - taper;
-            if (aa > RAVINE_HALF_W) {                   // on the sloped shoulder
-                int out = static_cast<int>(aa) - RAVINE_HALF_W;     // 1..2
-                depth -= out * (ed.floor / 2 + 1);     // each step out is much shallower
-            }
+            int aa = static_cast<int>(across < 0 ? -across : across);
+            const int halfW = RAVINE_HALF_W + 5;       // wide gully (half-width ~6, ~13 wide)
+            if (aa > halfW) return 0;
+            int cap   = ed.floor < 9 ? ed.floor : 9;   // shallow: never a deep drop
+            int depth = (cap * (halfW - aa)) / halfW;  // deepest at centre, 0 at the rim
+            int a = static_cast<int>(along < 0 ? -along : along);
+            depth -= a / 6;                             // taper toward the ends
             std::uint64_t jh = hash2(wx, wz, 0x9E3779B97F4A7C15ull);
-            depth += static_cast<int>(jh % 3u) - 1;    // -1..+1 jagged rim
-            if (depth < 2) return 0;                    // rim fades into normal ground
+            depth += static_cast<int>(jh % 3u) - 1;    // jagged rim
+            if (depth < 1) return 0;
             return depth;
         }
         default: {  // ENTR_POTHOLE — a SMALL, SHALLOW dimple, not a deep sharp 2×2 shaft.
