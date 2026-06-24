@@ -971,6 +971,28 @@ static constexpr std::uint64_t BIOME_SEED_OFFSETS[NUM_BIOMES] = {
 // gradient.  This is the un-clamped terrain shape; surface_height() below wraps
 // it in a Lipschitz-1 limiter so adjacent columns never differ by > 1, which is
 // what makes chunk seams safe regardless of where biome borders land.
+// ---------------------------------------------------------------------------
+// Rivers (#60): winding water valleys, not carved channels.
+// ---------------------------------------------------------------------------
+// A river is the zero-contour of a low-frequency noise: where the noise sits near
+// its median we sink the terrain into a smooth valley. Where that valley floor dips
+// below sea level it fills with water, giving a meandering river. This is added to
+// the RAW height, so the downstream 1-Lipschitz cone limiter both keeps it seam-safe
+// and naturally widens it into gentle, climbable banks (no carved cliffs). Pure
+// function of (wx,wz,seed). Deserts get no rivers (dry).
+static constexpr float RIVER_FREQ  = 1.0f / 130.0f;  // meander scale
+static constexpr float RIVER_HALFW = 0.040f;         // noise-space half width of a valley
+static constexpr float RIVER_DEPTH = 9.0f;           // blocks the valley sinks at its centre
+static float river_lower(float fwx, float fwz, std::uint64_t seed) noexcept {
+    std::uint64_t rseed = fmix64(seed ^ 0x515E12D32C0DE011ull);
+    float n = fbm2(fwx, fwz, rseed, 2, RIVER_FREQ, 2.0f, 0.5f);  // ~[0,1], bell around 0.5
+    float d = n - 0.5f; if (d < 0.0f) d = -d;                    // distance from the median contour
+    if (d >= RIVER_HALFW) return 0.0f;
+    float t = 1.0f - d / RIVER_HALFW;          // 1 at the centreline .. 0 at the bank
+    t = t * t * (3.0f - 2.0f * t);             // smoothstep valley profile
+    return RIVER_DEPTH * t;
+}
+
 static float surface_height_raw(std::int32_t wx, std::int32_t wz,
                                 std::uint64_t seed,
                                 const float weights[NUM_BIOMES]) noexcept {
@@ -1009,6 +1031,11 @@ static float surface_height_raw(std::int32_t wx, std::int32_t wz,
         float h = p.base_y + (n * 2.0f - 1.0f) * p.amp + biome_swell;
         blended_h += weights[i] * h;
     }
+
+    // #60 rivers: sink a meandering valley into the blended height. Faded out in
+    // desert (dry) so we don't get rivers running through dunes.
+    float desert_w = weights[static_cast<int>(Biome::Desert)];
+    blended_h -= river_lower(fwx, fwz, seed) * (1.0f - desert_w);
 
     return blended_h;
 }
