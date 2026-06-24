@@ -649,7 +649,7 @@ static constexpr BiomeParams BIOME_PARAMS[NUM_BIOMES] = {
     { 28.0f,  56.0f,  1.0f/40.0f,  5,     0.62f },  // Mountains (tall+broad; raised/widened so peaks survive the Lipschitz limiter)
     {  7.0f,   9.0f,  1.0f/64.0f,  3,     0.45f },  // Desert (wide smooth dunes)
     {  8.0f,  14.0f,  1.0f/48.0f,  4,     0.50f },  // Snowy (hillier white plains)
-    {  5.5f,   1.2f,  1.0f/56.0f,  3,     0.45f },  // Swamp (marsh: near-flat, just below sea level → broad shallow water, #57)
+    {  5.0f,   1.2f,  1.0f/56.0f,  3,     0.45f },  // Swamp (marsh: lowered so more sits under sea level → wetter, fewer dry patches, #57/#64)
     {  6.5f,   1.0f,  1.0f/96.0f,  2,     0.40f },  // Beach (extremely flat near sea)
 };
 
@@ -4044,7 +4044,12 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
             // H - shaft_depth (reaching into normal cave territory).
             // -----------------------------------------------------------------
             int shaft_depth = cave_entrance_depth(wx, wz, seed_);
-            bool is_entrance_col = (shaft_depth > 0 && H > SEA_LEVEL);  // only above water
+            // #65: keep big surface pits/ravines OUT of swamps. A hole in a marsh
+            // would naturally be a water sinkhole, not a dry shaft, so the simplest
+            // fix is to just not carve cave entrances in swamp biome. dom is a pure
+            // per-column value, so this stays seam-consistent and the entrance columns
+            // remain test-exempt either way.
+            bool is_entrance_col = (shaft_depth > 0 && H > SEA_LEVEL && dom != Biome::Swamp);
 
             // Choose surface and fill blocks based on dominant biome + height.
             BlockId surface_block;
@@ -4058,8 +4063,18 @@ void TerrainGen::generate(ChunkCoord c, IChunk& chunk) {
                     fill_block    = SAND;
                     break;
                 case Biome::Beach:
-                    surface_block = SAND;
-                    fill_block    = SAND;
+                    // #60: a beach only belongs right at the shoreline. A column that
+                    // blends beach + mountain climate can land high up, which used to
+                    // put sand on a mountainside with no water. Gate the sand to near
+                    // sea level; higher/inland "beach" columns read as normal grassy
+                    // land instead.
+                    if (H <= SEA_LEVEL + 2) {
+                        surface_block = SAND;
+                        fill_block    = SAND;
+                    } else {
+                        surface_block = GRASS;
+                        fill_block    = DIRT;
+                    }
                     break;
                 case Biome::Mountains:
                     if (H >= SNOW_LINE) {
