@@ -61,5 +61,16 @@
     "textures": {
       "all": "color_crystal"
     }
+  },
+  {
+    "id": 41,
+    "name": "pebble",
+    "display_name": "Pebble",
+    "hardness": 0,
+    "required_tier": 0,
+    "transparent": true,
+    "textures": {
+      "all": "stone"
+    }
   }
 ]

@@ -124,6 +124,8 @@ static void test_no_seams() {
             || b == 37  // flower_yellow
             || b == 38  // tall_grass_block
             || b == 39  // mushroom_block
+            || b == 40  // color_crystal
+            || b == 41  // pebble
             || b == 12; // snow_layer (thin, not terrain)
     };
 
@@ -186,7 +188,7 @@ static void test_no_seams_biome_transition() {
 
     auto is_decoration = [](BlockId b) -> bool {
         return b == 5 || b == 21 || b == 22 || b == 27
-            || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+            || b == 36 || b == 37 || b == 38 || b == 39 || b == 40 || b == 41 || b == 12;
     };
 
     // Surface can now reach well above one chunk (the wider biome distribution
@@ -539,7 +541,7 @@ static void test_biome_variety() {
 
     auto is_decoration = [](BlockId b) -> bool {
         return b == 5 || b == 21 || b == 22 || b == 27
-            || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+            || b == 36 || b == 37 || b == 38 || b == 39 || b == 40 || b == 41 || b == 12;
     };
 
     constexpr int SCAN_R = 16;  // scan ±16 chunks = ±256 world blocks
@@ -641,7 +643,7 @@ static void test_mountain_height() {
 
     auto is_decoration = [](BlockId b) -> bool {
         return b == 5 || b == 21 || b == 22 || b == 27
-            || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+            || b == 36 || b == 37 || b == 38 || b == 39 || b == 40 || b == 41 || b == 12;
     };
 
     // Generate a large swath and record max heights per chunk.
@@ -802,7 +804,7 @@ static void test_no_surface_holes() {
     // Decorations should not count as terrain for hole-detection.
     auto is_decoration = [](BlockId b) -> bool {
         return b == 5 || b == 21 || b == 22 || b == 27
-            || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+            || b == 36 || b == 37 || b == 38 || b == 39 || b == 40 || b == 41 || b == 12;
     };
 
     // Scan ±12 chunks in X and Z (24x24 = 576 chunk columns, 147456 world columns).
@@ -922,7 +924,7 @@ static void test_flatness() {
 
     auto is_decoration = [](BlockId b) -> bool {
         return b == 5 || b == 21 || b == 22 || b == 27
-            || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+            || b == 36 || b == 37 || b == 38 || b == 39 || b == 40 || b == 41 || b == 12;
     };
 
     constexpr int SCAN_R = 20;
@@ -1515,7 +1517,7 @@ static void test_cave_entrances() {
 
     auto is_decoration = [](BlockId b) -> bool {
         return b == 5 || b == 21 || b == 22 || b == 27
-            || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+            || b == 36 || b == 37 || b == 38 || b == 39 || b == 40 || b == 41 || b == 12;
     };
 
     constexpr int SCAN_R = 16;
@@ -1808,7 +1810,7 @@ static void test_rocky_mountains() {
 
     auto is_decoration = [](BlockId b) -> bool {
         return b == 5 || b == 21 || b == 22 || b == 27
-            || b == 36 || b == 37 || b == 38 || b == 39 || b == 12;
+            || b == 36 || b == 37 || b == 38 || b == 39 || b == 40 || b == 41 || b == 12;
     };
 
     constexpr int SCAN_R = 16;

@@ -162,6 +162,7 @@ static constexpr BlockId FLOWER_YELLOW = 37;
 static constexpr BlockId TALL_GRASS    = 38;
 static constexpr BlockId MUSHROOM      = 39;
 static constexpr BlockId COLOR_CRYSTAL = 40;   // glowing cave crystal; drops color_dust (#41 quest)
+static constexpr BlockId PEBBLE        = 41;   // small surface rock prop (#51 m2)
 
 static constexpr int SEA_LEVEL = 6;
 
@@ -3418,6 +3419,7 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                 std::uint64_t ph   = hash2(wx, wz, pseed);
                 std::uint64_t roll = ph & 0xFFu;        // 0..255, primary
                 std::uint64_t roll2 = (ph >> 8u) & 0xFFu; // 0..255, secondary
+                std::uint64_t roll3 = (ph >> 16u) & 0xFFu; // 0..255, pebble scatter
 
                 BlockId plant = AIR;
 
@@ -3468,6 +3470,13 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                         else if (roll <  75u) plant = FLOWER_YELLOW;
                         else if (roll <  81u) plant = MUSHROOM;
                     }
+                }
+
+                // Small rocks/pebbles scattered on bare ground across all biomes
+                // (#51 m2): ~2.7% on grass/dirt/stone/sand where nothing else grew.
+                if (plant == AIR && roll3 >= 249u &&
+                    (surf == GRASS || surf == DIRT || surf == STONE || surf == SAND)) {
+                    plant = PEBBLE;
                 }
 
                 if (plant != AIR) {

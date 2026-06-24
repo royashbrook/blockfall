@@ -157,7 +157,7 @@ inline void neighbour_light(IChunk* current_chunk, ChunkCoord cc, IChunkStore& s
 // non-opaque / non-occluding so neighbours still show their faces and AO isn't
 // darkened around them.
 inline bool is_subvoxel_prop(BlockId id) {
-    return id == 36 || id == 37 || id == 38 || id == 39 || id == 40;
+    return id == 36 || id == 37 || id == 38 || id == 39 || id == 40 || id == 41;
 }
 // No cross-billboard plants remain in the mesher (all are sub-voxel props now).
 inline bool is_cross_plant(BlockId) {

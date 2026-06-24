@@ -1471,6 +1471,13 @@ final class Renderer: NSObject, MTKViewDelegate {
                 (SIMD3(0.64, 0.27, 0.44), SIMD3(0.038, 0.27, 0.038), g3),  // medium right
                 (SIMD3(0.49, 0.19, 0.37), SIMD3(0.034, 0.19, 0.034), g2),  // short front
             ]
+        case 41:       // pebble / small rock — a couple of low grey stones
+            let s1 = SIMD3<Float>(0.56, 0.56, 0.59)
+            let s2 = SIMD3<Float>(0.46, 0.46, 0.49)
+            return [
+                (SIMD3(0.48, 0.11, 0.50), SIMD3(0.22, 0.11, 0.19), s1),    // main stone
+                (SIMD3(0.68, 0.07, 0.40), SIMD3(0.10, 0.07, 0.10), s2),    // small side stone
+            ]
         default: return []
         }
     }
@@ -1480,10 +1487,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Build the static model table: 4 type-rows × 4 cuboid-slots of PropCuboidGPU.
     // Unused slots are left zero (zero half-extent → the vertex shader skips them).
     static func makePropModelTable(device: MTLDevice) -> MTLBuffer {
-        let rows = 5, slots = 4
+        let rows = 6, slots = 4
         var table = [PropCuboidGPU](repeating: PropCuboidGPU(cx:0,cy:0,cz:0, hx:0,hy:0,hz:0, r:0,g:0,b:0),
                                     count: rows * slots)
-        let typeForRow: [UInt32] = [36, 37, 39, 40, 38]   // rows 0-4; 38 grass = row 4
+        let typeForRow: [UInt32] = [36, 37, 39, 40, 38, 41]  // rows 0-5; grass=4, pebble=5
         for row in 0..<rows {
             let model = propModel(typeForRow[row])
             for (s, cu) in model.prefix(slots).enumerated() {
@@ -3567,8 +3574,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                                   const device PropCuboid* models      [[buffer(2)]]) {
         PropVOut o;
         PropInstanceGPU inst = insts[iid];
-        // type id -> model-table row (36 flower_red, 37 flower_yellow, 39 mushroom, 40 crystal, 38 grass)
-        int row = (inst.type == 36u) ? 0 : (inst.type == 37u) ? 1 : (inst.type == 39u) ? 2 : (inst.type == 40u) ? 3 : (inst.type == 38u) ? 4 : -1;
+        // type id -> model-table row (36 red, 37 yellow, 39 mushroom, 40 crystal, 38 grass, 41 pebble)
+        int row = (inst.type == 36u) ? 0 : (inst.type == 37u) ? 1 : (inst.type == 39u) ? 2 : (inst.type == 40u) ? 3 : (inst.type == 38u) ? 4 : (inst.type == 41u) ? 5 : -1;
         uint cuboidIdx = vid / 36u;
         if (row < 0 || cuboidIdx >= kPropMaxCuboids) { o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o; }
         PropCuboid cu = models[uint(row) * kPropMaxCuboids + cuboidIdx];
