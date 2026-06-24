@@ -211,16 +211,39 @@ public:
             unsigned p = std::max(1u, topo.p_cores > 1 ? topo.p_cores - 1 : 1u);
             sched_ = std::make_unique<JobScheduler>(p, e);
         }
-        // Find the surface at spawn column (0,0): generate the vertical band and
+        // Pick a DRY-LAND spawn column near the origin so the player never wakes up in
+        // water. The continentalness/river terrain puts more water near some seeds, and
+        // the scan below treats WATER as a surface (it is non-air), so a submerged origin
+        // would spawn you floating over water. worldgen_surface_height is the cheap pure
+        // surface query; H >= sea level + 1 means dry land. Spiral out in 6-block steps
+        // for the nearest dry column; fall back to the origin if all-ocean (very rare).
+        constexpr int kSeaLevel = 6;
+        int sx = 0, sz = 0;
+        if (worldgen_surface_height(0, 0, seed_) < kSeaLevel + 1) {
+            bool dry = false;
+            for (int r = 1; r <= 20 && !dry; ++r)
+                for (int dz = -r; dz <= r && !dry; ++dz)
+                    for (int dx = -r; dx <= r && !dry; ++dx) {
+                        int adx = dx < 0 ? -dx : dx, adz = dz < 0 ? -dz : dz;
+                        if ((adx > adz ? adx : adz) != r) continue;   // current ring only
+                        int wx = dx * 6, wz = dz * 6;
+                        if (worldgen_surface_height(wx, wz, seed_) >= kSeaLevel + 1) {
+                            sx = wx; sz = wz; dry = true;
+                        }
+                    }
+        }
+        // Find the surface at the chosen spawn column: generate the vertical band and
         // scan from the top for the first solid block.
+        ChunkCoord scol = to_chunk(IVec3{sx, 0, sz});
+        int slx = mod16(sx), slz = mod16(sz);
         int surface = 8; bool found = false;
         for (int cy = CY_MAX; cy >= CY_MIN; --cy) {
-            ChunkCoord cc{0, cy, 0};
+            ChunkCoord cc{scol.x, cy, scol.z};
             auto ch = std::make_unique<PaletteChunk>(cc);
             gen_->generate(cc, *ch);
             if (!found)
                 for (int ly = kChunkDim - 1; ly >= 0; --ly)
-                    if (ch->get(0, ly, 0) != AIR) { surface = cy * kChunkDim + ly; found = true; break; }
+                    if (ch->get(slx, ly, slz) != AIR) { surface = cy * kChunkDim + ly; found = true; break; }
             // Keep the spawn column resident so the player lands immediately
             // (rather than falling through before streaming fills it in).
             if (!(ch->is_uniform() && ch->get(0, 0, 0) == AIR)) {
@@ -230,10 +253,10 @@ public:
         // Eye 3.2 above the surface block so the FEET (eye-1.6) clear the top
         // block and the player settles onto it, instead of spawning embedded
         // (which left you "stuck" until you jumped).
-        pos_ = V3{0.5f, float(surface) + 3.2f, 0.5f};
+        pos_ = V3{float(sx) + 0.5f, float(surface) + 3.2f, float(sz) + 0.5f};
         spawn_ = pos_;                                  // respawn here on defeat
         yaw_ = 0.6f; pitch_ = -0.25f;
-        restore_region(ChunkCoord{0, 0, 0});           // spawn region starts colorful
+        restore_region(ChunkCoord{scol.x, 0, scol.z});  // spawn region starts colorful
         recompute_stream_set();
         creatures_.clear();
         creature_timer_ = 0.0f;                     // spawn once the area streams in
