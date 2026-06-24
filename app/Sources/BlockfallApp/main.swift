@@ -62,9 +62,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             fatalError("No Metal device (this build targets Apple Silicon).")
         }
         device = dev
+        // #3: respect the persisted music/ambience toggles before starting.
+        audio.setMusicEnabled(UserDefaults.standard.object(forKey: "audMusic") as? Bool ?? true)
         audio.start()
         guide = GuideController()   // on-device AI "Guide" companion (press 'G')
-        audio.setAmbienceEnabled(true)
+        audio.setAmbienceEnabled(UserDefaults.standard.object(forKey: "audAmbience") as? Bool ?? true)
 
         // Show the main menu first; start the game when a world is chosen.
         menu.onPlayWorld = { [weak self] saveDir, _, isNew, seed in
@@ -196,7 +198,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         fxStack.orientation = .vertical; fxStack.spacing = 8; fxStack.alignment = .leading
 
-        let stack = NSStackView(views: [title, sliderRow, showHUD, fxTitle, fxStack, resume, menuBtn])
+        // ---- Audio toggles (#3: music + ambience on/off, live + persisted) ----
+        let auTitle = NSTextField(labelWithString: "Audio")
+        auTitle.font = .boldSystemFont(ofSize: 16); auTitle.textColor = .white
+        let auStack = NSStackView(views: [
+            audioCheckbox("Music",    tag: 0, on: UserDefaults.standard.object(forKey: "audMusic")    as? Bool ?? true),
+            audioCheckbox("Ambience", tag: 1, on: UserDefaults.standard.object(forKey: "audAmbience") as? Bool ?? true),
+        ])
+        auStack.orientation = .vertical; auStack.spacing = 8; auStack.alignment = .leading
+
+        let stack = NSStackView(views: [title, sliderRow, showHUD, fxTitle, fxStack, auTitle, auStack, resume, menuBtn])
         stack.orientation = .vertical; stack.spacing = 18; stack.alignment = .centerX
         stack.translatesAutoresizingMaskIntoConstraints = false
         ov.addSubview(stack)
@@ -247,6 +258,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateHUDScaleLabel() {
         let v = hud?.hudScale ?? AppDelegate.loadHUDScale()
         hudScaleValueLabel?.stringValue = String(format: "%.1f×", Double(v))
+    }
+
+    // #3: a styled audio checkbox; tag 0 = Music, 1 = Ambience.
+    private func audioCheckbox(_ title: String, tag: Int, on: Bool) -> NSButton {
+        let b = NSButton(checkboxWithTitle: title, target: self, action: #selector(audioToggleChanged(_:)))
+        b.tag = tag
+        b.state = on ? .on : .off
+        b.contentTintColor = .white
+        b.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.white,
+        ])
+        return b
+    }
+    @objc private func audioToggleChanged(_ sender: NSButton) {
+        let on = (sender.state == .on)
+        switch sender.tag {
+        case 0: UserDefaults.standard.set(on, forKey: "audMusic");    audio.setMusicEnabled(on)
+        case 1: UserDefaults.standard.set(on, forKey: "audAmbience"); audio.setAmbienceEnabled(on)
+        default: break
+        }
     }
 
     // #: a styled graphics-effect checkbox; tag selects which effect.

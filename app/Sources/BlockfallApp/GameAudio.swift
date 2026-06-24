@@ -305,7 +305,7 @@ final class GameAudio {
 
         // --- Ambience wind node ---
         let windNode = AVAudioPlayerNode()
-        windNode.volume = 0.55
+        windNode.volume = 0.30   // #2: was 0.55 — the filtered-noise wind read as a weird warbling whitenoise
         eng.attach(windNode)
         eng.connect(windNode, to: aMix, format: format)
         ambienceWindNode = windNode
@@ -328,24 +328,45 @@ final class GameAudio {
         // Store engine reference now so the graph exists; not yet started.
         self.engine = eng
 
-        // Synthesize all buffers on a background thread to avoid blocking the main thread.
+        // Synthesize on a background thread. #1: build the FIRST track first and start
+        // music right away, so the player hears music within a second or two instead of
+        // waiting for ALL TWELVE long tracks to synthesize (which took minutes). The
+        // remaining tracks build in the background while track 0 loops; the rotation
+        // timer waits for a track to be ready before switching to it.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            self.buildAllTrackBuffers()
+            // SFX are small and needed for early interactions; build them + the first
+            // music track, then go ready so music + sound start fast.
             self.buildAllSfxBuffers()
             self.buildSfxVariants()
-            self.buildAmbienceBuffers()
-
-            // Return to main queue to prepare engine and signal readiness.
+            let firstTrack = self.buildTrack0_SunshineSprint()   // day track 0 = first to play
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                self.allTrackBuffers = [firstTrack]
                 eng.prepare()
                 self.isReady = true
-                // If start() was called before we were ready, kick off music/ambience now.
-                if eng.isRunning {
-                    if self.musicEnabled    { self.startMusic() }
-                    if self.ambienceEnabled { self.startAmbience() }
-                }
+                if eng.isRunning && self.musicEnabled { self.startMusic() }
+            }
+            // Build the remaining eleven tracks in the background, then publish the full
+            // set on the main thread (allTrackBuffers is read by the music timers there).
+            var all: [[AVAudioPCMBuffer]] = [firstTrack]
+            all.append(self.buildTrack1_PixelBounce())
+            all.append(self.buildTrack2_CozyCampfire())
+            all.append(self.buildTrack3_StarlightWaltz())
+            all.append(self.buildTrack4_AdventureMarch())
+            all.append(self.buildTrack5_RainbowRoad())
+            all.append(self.buildTrack6_FireflyLullaby())
+            all.append(self.buildTrack7_MoonGarden())
+            all.append(self.buildTrack8_CopperRun())
+            all.append(self.buildTrack9_Voltage())
+            all.append(self.buildTrack10_LostRuins())
+            all.append(self.buildTrack11_DuskDrift())
+            DispatchQueue.main.async { [weak self] in self?.allTrackBuffers = all }
+            // Ambience last (lowest priority for startup).
+            self.buildAmbienceBuffers()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if eng.isRunning && self.ambienceEnabled { self.startAmbience() }
             }
         }
     }
@@ -479,7 +500,15 @@ final class GameAudio {
         // Rotate every 60 seconds — long enough to enjoy a melody before it transitions.
         trackTimer = Timer.scheduledTimer(withTimeInterval: kTrackRotationInterval, repeats: false) { [weak self] _ in
             guard let self, self.musicEnabled, self.engine?.isRunning == true else { return }
-            self.currentTrackIndex = self.nextTrackIndex(after: self.currentTrackIndex)
+            let next = self.nextTrackIndex(after: self.currentTrackIndex)
+            // #1: the background track build may not have reached this index yet. If so,
+            // keep looping the current track and try again next interval instead of
+            // crossfading to a missing buffer (which would go silent).
+            if next >= self.allTrackBuffers.count {
+                self.scheduleTrackRotation()
+                return
+            }
+            self.currentTrackIndex = next
             self.crossFadeToTrack(self.currentTrackIndex)
             self.scheduleTrackRotation()
         }
