@@ -137,13 +137,14 @@ struct WindUniforms {
     var pad1:          Float = 0
 }
 
-/// One cuboid of a prop model for the GPU model table (#52). 36 bytes; matches MSL
-/// `struct PropCuboid { packed_float3 center, half_, color; }`. Plain Floats (NOT
-/// SIMD3, which pads to 16) so the layout matches packed_float3 exactly.
+/// One part of a prop model for the GPU model table (#52/#62). 40 bytes; matches MSL
+/// `struct PropCuboid { packed_float3 center, half_, color; float shape; }`. Plain
+/// Floats (NOT SIMD3, which pads to 16) so the layout matches packed_float3 exactly.
 struct PropCuboidGPU {
     var cx: Float, cy: Float, cz: Float   // center
     var hx: Float, hy: Float, hz: Float   // half-extent
     var r: Float,  g: Float,  b: Float    // colour
+    var shape: Float = 0                   // 0=box, 1=sphere, 2=cone, 3=cylinder (#62)
 }
 /// Uniforms for the prop pass. 80 bytes; matches MSL PropUniforms.
 struct PropUniforms {
@@ -203,7 +204,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var propModelTable: MTLBuffer!       // static: 4 types × 4 cuboids (PropCuboidGPU)
     private var propInstanceBuffer: MTLBuffer?   // per-frame: the bf_prop_instance list (tiny)
     private let kPropMaxCuboids = 4
-    private let kPropVertsPerInstance = 4 * 36   // kPropMaxCuboids × 36
+    // #62: each part now draws up to 144 verts so it can be a box, sphere, cone, or
+    // cylinder (the richest is an 8-slice x 3-stack sphere = 144). Unused verts are
+    // emitted degenerate and culled.
+    private let kPropVertsPerInstance = 4 * 144  // kPropMaxCuboids × kVertsPerShape
 
     // ---- Graphics effect toggles (pause-menu Options) ------------------------
     // Each effect can be switched on/off live. Persisted in UserDefaults; loaded
@@ -1568,6 +1572,17 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // Build all visible props' world-space geometry into `out` (shared by the live
     // renderer). The GPU expands these per instance (#52) — no CPU geometry build.
+    // #62: which primitive each prop type's parts use. 0=box, 1=sphere, 2=cone,
+    // 3=cylinder. Tree foliage becomes round spheres, trunks become round (octagonal)
+    // cylinders. Everything else stays a box.
+    private static func propPartShape(_ type: UInt32) -> Float {
+        switch type {
+        case 5, 27: return 1   // oak/birch foliage → sphere
+        case 21, 22: return 3  // oak/birch trunk → cylinder
+        default:     return 0  // box
+        }
+    }
+
     // Build the static model table: 4 type-rows × 4 cuboid-slots of PropCuboidGPU.
     // Unused slots are left zero (zero half-extent → the vertex shader skips them).
     static func makePropModelTable(device: MTLDevice) -> MTLBuffer {
@@ -1578,10 +1593,12 @@ final class Renderer: NSObject, MTKViewDelegate {
                                     5, 27, 21, 22]  // #62 oak/birch foliage (12,13), oak/birch trunk (14,15)
         for row in 0..<rows {
             let model = propModel(typeForRow[row])
+            let shape = propPartShape(typeForRow[row])   // #62 box/sphere/cone/cylinder
             for (s, cu) in model.prefix(slots).enumerated() {
                 table[row * slots + s] = PropCuboidGPU(cx: cu.0.x, cy: cu.0.y, cz: cu.0.z,
                                                        hx: cu.1.x, hy: cu.1.y, hz: cu.1.z,
-                                                       r: cu.2.x, g: cu.2.y, b: cu.2.z)
+                                                       r: cu.2.x, g: cu.2.y, b: cu.2.z,
+                                                       shape: shape)
             }
         }
         return device.makeBuffer(bytes: table, length: table.count * MemoryLayout<PropCuboidGPU>.stride,
@@ -3640,8 +3657,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     struct PropVOut { float4 position [[position]]; float3 nrm; float3 col; };
     // Matches bf_prop_instance (24 bytes): position(12) + type(4) + seed(4) + sat(4).
     struct PropInstanceGPU { packed_float3 position; uint type; uint seed; float sat; };
-    // One cuboid of a model: centre, half-extent, colour (all in 0..1 block space).
-    struct PropCuboid { packed_float3 center; packed_float3 half_; packed_float3 color; };
+    // One part of a model: centre, half-extent, colour (all in 0..1 block space), and
+    // a shape selector (0=box, 1=sphere, 2=cone, 3=cylinder). (#52/#62)
+    struct PropCuboid { packed_float3 center; packed_float3 half_; packed_float3 color; float shape; };
 
     constant float3 kFaceNrm[6] = {
         float3(1,0,0), float3(-1,0,0), float3(0,1,0), float3(0,-1,0), float3(0,0,1), float3(0,0,-1)
@@ -3656,6 +3674,35 @@ final class Renderer: NSObject, MTKViewDelegate {
     };
     constant uint kTriIdx[6] = { 0u,1u,2u, 0u,2u,3u };
     constant uint kPropMaxCuboids = 4u;   // model table stride per type
+    constant uint kVertsPerShape  = 144u; // max verts per part (an 8x3 sphere)
+
+    // #62: build a unit primitive (extent [-0.5,0.5]) from a local vertex id, as a
+    // surface of revolution with 8 slices. shape: 1=sphere, 2=cone, 3=cylinder. Writes
+    // the outward normal. Verts past the shape's own count are returned degenerate.
+    static float3 propRevVert(uint lv, uint shape, thread float3& nrm) {
+        const uint S = 8u;
+        uint T = (shape == 1u) ? 3u : 1u;             // sphere: 3 stacks; cone/cyl: 1 side band
+        uint quad = lv / 6u;
+        if (quad >= S * T) { nrm = float3(0,1,0); return float3(0); }   // degenerate
+        const float2 co[6] = { float2(0,0), float2(1,0), float2(1,1),
+                               float2(0,0), float2(1,1), float2(0,1) };
+        float2 c = co[lv % 6u];
+        float a = 6.2831853 * (float(quad % S) + c.x) / float(S);
+        float t = (float(quad / S) + c.y) / float(T);  // 0..1 up the axis
+        float r, y, slope;
+        if (shape == 1u) {            // sphere
+            float phi = 3.14159265 * t;
+            r = sin(phi) * 0.5; y = -cos(phi) * 0.5; slope = 0.0;
+        } else if (shape == 2u) {     // cone: wide base, apex up
+            r = (1.0 - t) * 0.5; y = t - 0.5; slope = 0.5;
+        } else {                      // cylinder: octagonal tube
+            r = 0.5; y = t - 0.5; slope = 0.0;
+        }
+        float ca = cos(a), sa = sin(a);
+        float3 p = float3(r * ca, y, r * sa);
+        nrm = (shape == 1u) ? normalize(p + float3(1e-5)) : normalize(float3(ca, slope, sa));
+        return p;
+    }
     // Flower blooms pick a bold colour from this palette per-instance (by seed), so
     // a meadow is multicoloured without needing a block type per colour. (#51 m2)
     constant float3 kFlowerPalette[6] = {
@@ -3688,15 +3735,25 @@ final class Renderer: NSObject, MTKViewDelegate {
                 : (inst.type == 21u) ? 14 : (inst.type == 22u) ? 15  // #62 trunk (oak, birch)
                 : -1;
         bool isTrunk = (row == 14 || row == 15);
-        uint cuboidIdx = vid / 36u;
+        uint cuboidIdx = vid / kVertsPerShape;
         if (row < 0 || cuboidIdx >= kPropMaxCuboids) { o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o; }
         PropCuboid cu = models[uint(row) * kPropMaxCuboids + cuboidIdx];
         float3 half_ = float3(cu.half_);
         if (half_.x == 0.0 && half_.y == 0.0 && half_.z == 0.0) { o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o; } // unused slot
 
-        uint v = vid % 36u, face = v / 6u, corner = kTriIdx[v % 6u];
-        float3 cpos = kFaceCorner[face * 4u + corner];
-        float3 cnrm = kFaceNrm[face];
+        // #62: choose the part's primitive. 0=box (cube face table), else a surface of
+        // revolution (sphere/cone/cylinder).
+        uint shape = uint(cu.shape + 0.5);
+        float3 cpos, cnrm;
+        uint lv = vid % kVertsPerShape;
+        if (shape == 0u) {
+            if (lv >= 36u) { o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o; }
+            uint face = lv / 6u, corner = kTriIdx[lv % 6u];
+            cpos = kFaceCorner[face * 4u + corner];
+            cnrm = kFaceNrm[face];
+        } else {
+            cpos = propRevVert(lv, shape, cnrm);
+        }
         float3 lp = float3(cu.center) + cpos * (2.0 * half_);   // local pos in block space
         // per-instance yaw about block centre. Trunks must NOT spin per-block, or the
         // stacked log segments would misalign into a jagged trunk (#62).
