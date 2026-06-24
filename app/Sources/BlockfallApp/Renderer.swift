@@ -1178,7 +1178,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         if sunClip.w > 0.001 && gfxGodRays {              // #: god-ray toggle
             sunSX = (sunClip.x / sunClip.w) * 0.5 + 0.5
             sunSY = 0.5 - (sunClip.y / sunClip.w) * 0.5   // Metal top-left uv (matches fullscreenVert)
-            grStrength = dayT * (1 - frame.camera.underground) * 0.6
+            grStrength = dayT * (1 - frame.camera.underground) * 0.45
         }
         var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.18,
                               rainStrength: precipPacked, wallClockSecs: wallClock,
@@ -3446,13 +3446,17 @@ final class Renderer: NSObject, MTKViewDelegate {
             for (int i = 0; i < 24; ++i) {
                 p += delta;
                 float3 c = hdrTex.sample(s, clamp(p, 0.0, 1.0)).rgb;
-                illum += max(0.0, dot(c, float3(0.2126, 0.7152, 0.0722)) - 0.55) * decay;
+                // Only the very brightest pixels (the sun disc itself) seed rays, not the
+                // broad bright sky. A low threshold turned god rays into a screen-wide wash
+                // that washed out the view toward the sun's E/W arc (#: washout). 0.85 keeps
+                // them as tight shafts from the sun.
+                illum += max(0.0, dot(c, float3(0.2126, 0.7152, 0.0722)) - 0.85) * decay;
                 decay *= 0.92;
             }
             illum *= (1.0 / 24.0);
             float edge = 1.0 - smoothstep(0.5, 1.1, max(abs(sunUV.x - 0.5), abs(sunUV.y - 0.5)) * 2.0);
             float3 sunCol = float3(pu.sunColorR, pu.sunColorG, pu.sunColorB);
-            hdr += sunCol * (illum * pu.godrayStrength * edge * 2.2);
+            hdr += sunCol * (illum * pu.godrayStrength * edge * 1.0);  // gentler gain (was 2.2)
         }
 
         // Clamp the bloom contribution per-channel so a large bright region (sun disc,

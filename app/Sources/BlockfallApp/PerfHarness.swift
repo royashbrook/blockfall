@@ -231,9 +231,13 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 // view so the sun/moon can be checked headless (BF_SHOT_SKY=1).
                 var skySun = SIMD3<Float>(sun.x, sun.y, sun.z)
                 var skyTod = f.camera.time_of_day
-                if ProcessInfo.processInfo.environment["BF_SHOT_SKY"] == "1" {
-                    skySun = simd_normalize(camFwd)   // shader moon dir == normalize(sky sun_dir)
-                    skyTod = 0.0                       // midnight
+                let skyEnv = ProcessInfo.processInfo.environment["BF_SHOT_SKY"]
+                if skyEnv == "1" {
+                    skySun = simd_normalize(camFwd)    // moon dir == normalize(sky sun_dir)
+                    skyTod = 0.0                        // midnight
+                } else if skyEnv == "2" {
+                    skySun = -simd_normalize(camFwd)   // sun dir == normalize(-sky sun_dir): sun centred
+                    skyTod = 0.5                        // noon (test the E/W glare/washout)
                 }
                 var su = SkyUniforms(
                     sunDirTime: SIMD4<Float>(skySun.x, skySun.y, skySun.z, skyTod),
@@ -349,7 +353,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     // #52 headless screenshot: tilt the camera down to frame ground props, let the
     // chunks/lighting settle, then capture the composited frame to a PNG. No desktop.
     if let shot = shotPath {
-        let skyMode  = ProcessInfo.processInfo.environment["BF_SHOT_SKY"] == "1"
+        let skyEnvM  = ProcessInfo.processInfo.environment["BF_SHOT_SKY"]
+        let skyMode  = (skyEnvM == "1" || skyEnvM == "2")
         let treeMode = ProcessInfo.processInfo.environment["BF_SHOT_TREES"] == "1"
         let travel = treeMode ? 320 : 700
         for _ in 0..<travel { renderOneFrame(yaw: 0) }       // travel STRAIGHT to cross into grass/forest
