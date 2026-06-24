@@ -72,5 +72,17 @@
     "textures": {
       "all": "stone"
     }
+  },
+  {
+    "id": 42,
+    "name": "berry_bush",
+    "display_name": "Berry Bush",
+    "hardness": 0,
+    "required_tier": 0,
+    "drop_item": "berry_cluster",
+    "transparent": true,
+    "textures": {
+      "all": "oak_leaves"
+    }
   }
 ]

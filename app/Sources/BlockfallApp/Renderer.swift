@@ -1478,6 +1478,16 @@ final class Renderer: NSObject, MTKViewDelegate {
                 (SIMD3(0.48, 0.11, 0.50), SIMD3(0.22, 0.11, 0.19), s1),    // main stone
                 (SIMD3(0.68, 0.07, 0.40), SIMD3(0.10, 0.07, 0.10), s2),    // small side stone
             ]
+        case 42:       // berry bush — leafy green clump with red berries
+            let leaf  = SIMD3<Float>(0.20, 0.50, 0.22)
+            let leaf2 = SIMD3<Float>(0.16, 0.42, 0.18)
+            let berry = SIMD3<Float>(0.84, 0.14, 0.18)
+            return [
+                (SIMD3(0.50, 0.28, 0.50), SIMD3(0.28, 0.26, 0.28), leaf),   // bush body
+                (SIMD3(0.50, 0.50, 0.50), SIMD3(0.19, 0.13, 0.19), leaf2),  // rounded top
+                (SIMD3(0.34, 0.34, 0.62), SIMD3(0.05, 0.05, 0.05), berry),  // berry
+                (SIMD3(0.66, 0.24, 0.40), SIMD3(0.05, 0.05, 0.05), berry),  // berry
+            ]
         default: return []
         }
     }
@@ -1487,10 +1497,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Build the static model table: 4 type-rows × 4 cuboid-slots of PropCuboidGPU.
     // Unused slots are left zero (zero half-extent → the vertex shader skips them).
     static func makePropModelTable(device: MTLDevice) -> MTLBuffer {
-        let rows = 6, slots = 4
+        let rows = 7, slots = 4
         var table = [PropCuboidGPU](repeating: PropCuboidGPU(cx:0,cy:0,cz:0, hx:0,hy:0,hz:0, r:0,g:0,b:0),
                                     count: rows * slots)
-        let typeForRow: [UInt32] = [36, 37, 39, 40, 38, 41]  // rows 0-5; grass=4, pebble=5
+        let typeForRow: [UInt32] = [36, 37, 39, 40, 38, 41, 42]  // grass=4, pebble=5, berry_bush=6
         for row in 0..<rows {
             let model = propModel(typeForRow[row])
             for (s, cu) in model.prefix(slots).enumerated() {
@@ -3566,6 +3576,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3(0.97, 0.97, 0.98),   // white
         float3(0.35, 0.62, 0.95)    // sky blue
     };
+    // Mushroom caps vary too (#51 m2): red, brown, tan, orange.
+    constant float3 kMushroomPalette[4] = {
+        float3(0.85, 0.16, 0.14),   // classic red
+        float3(0.55, 0.36, 0.22),   // brown
+        float3(0.80, 0.68, 0.46),   // tan
+        float3(0.88, 0.50, 0.18)    // orange
+    };
 
     vertex PropVOut propInstVmain(uint vid [[vertex_id]],
                                   uint iid [[instance_id]],
@@ -3574,8 +3591,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                                   const device PropCuboid* models      [[buffer(2)]]) {
         PropVOut o;
         PropInstanceGPU inst = insts[iid];
-        // type id -> model-table row (36 red, 37 yellow, 39 mushroom, 40 crystal, 38 grass, 41 pebble)
-        int row = (inst.type == 36u) ? 0 : (inst.type == 37u) ? 1 : (inst.type == 39u) ? 2 : (inst.type == 40u) ? 3 : (inst.type == 38u) ? 4 : (inst.type == 41u) ? 5 : -1;
+        // type -> row (36 red,37 yellow,39 mushroom,40 crystal,38 grass,41 pebble,42 berry bush)
+        int row = (inst.type == 36u) ? 0 : (inst.type == 37u) ? 1 : (inst.type == 39u) ? 2 : (inst.type == 40u) ? 3 : (inst.type == 38u) ? 4 : (inst.type == 41u) ? 5 : (inst.type == 42u) ? 6 : -1;
         uint cuboidIdx = vid / 36u;
         if (row < 0 || cuboidIdx >= kPropMaxCuboids) { o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o; }
         PropCuboid cu = models[uint(row) * kPropMaxCuboids + cuboidIdx];
@@ -3602,6 +3619,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // colour by seed; every prop gets a small brightness jitter so clumps of
         // grass/flowers don't look stamped from one mould.
         if ((row == 0 || row == 1) && cuboidIdx == 1u) base = kFlowerPalette[inst.seed % 6u];
+        if (row == 2 && cuboidIdx == 1u) base = kMushroomPalette[inst.seed % 4u];  // mushroom cap variety
         base *= 0.90 + 0.20 * (float((inst.seed >> 5u) & 255u) / 255.0);
         float lum = dot(base, float3(0.30, 0.59, 0.11));
         float3 drained = float3(0.22, 0.25, 0.32) * (0.45 + lum * 0.85);

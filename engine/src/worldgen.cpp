@@ -163,6 +163,7 @@ static constexpr BlockId TALL_GRASS    = 38;
 static constexpr BlockId MUSHROOM      = 39;
 static constexpr BlockId COLOR_CRYSTAL = 40;   // glowing cave crystal; drops color_dust (#41 quest)
 static constexpr BlockId PEBBLE        = 41;   // small surface rock prop (#51 m2)
+static constexpr BlockId BERRY_BUSH    = 42;   // leafy bush w/ berries (#51 m2)
 
 static constexpr int SEA_LEVEL = 6;
 
@@ -3431,6 +3432,7 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                         else if (roll <  60u) plant = FLOWER_RED;   // ~6%  (was ~8%)
                         else if (roll <  75u) plant = FLOWER_YELLOW;// ~6%  (was ~7%)
                         else if (roll <  85u) plant = MUSHROOM;     // ~4%  (was ~5%)
+                        else if (roll <  91u) plant = BERRY_BUSH;   // ~2%  forest berries
                     } else if (surf == DIRT) {
                         // Shaded dirt: mushrooms more likely, sparse tall grass.
                         // TRIMMED ~25%.
@@ -3453,6 +3455,7 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                         else if (roll <  57u) plant = FLOWER_RED;   // ~7%  (was ~7%)
                         else if (roll <  75u) plant = FLOWER_YELLOW;// ~7%  (was ~7%)
                         else if (roll <  81u) plant = MUSHROOM;     // ~2%  (was ~2%)
+                        else if (roll <  86u) plant = BERRY_BUSH;   // ~2%  meadow berries
                     }
                 } else if (dom == Biome::Mountains) {
                     // Mountains: very sparse grass on lower slopes, no plants above snow line.
