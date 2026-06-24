@@ -2001,7 +2001,7 @@ private:
     }
     // #51 — is this block id drawn as a detailed sub-voxel prop (not a cube)?
     static bool is_prop_block(BlockId id) {
-        return id == 36u || id == 37u || id == 38u || id == 39u || id == 40u || id == 41u || id == 42u;  // flowers, grass, mushroom, crystal, pebble, berry bush
+        return id >= 36u && id <= 45u;  // all sub-voxel props (flowers..seashell)
     }
     // Cache the chunk's prop blocks as instances for the prop renderer. Runs once
     // per (re)mesh, not per frame.

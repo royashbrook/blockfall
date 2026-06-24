@@ -1494,6 +1494,28 @@ final class Renderer: NSObject, MTKViewDelegate {
                 (SIMD3(0.34, 0.34, 0.62), SIMD3(0.05, 0.05, 0.05), berry),  // berry
                 (SIMD3(0.66, 0.24, 0.40), SIMD3(0.05, 0.05, 0.05), berry),  // berry
             ]
+        case 43:       // reed / cattail — tall thin stalks with a brown tip
+            let stalk = SIMD3<Float>(0.28, 0.55, 0.30)
+            let tip   = SIMD3<Float>(0.42, 0.26, 0.12)
+            return [
+                (SIMD3(0.44, 0.46, 0.50), SIMD3(0.05, 0.46, 0.05), stalk),  // tall stalk
+                (SIMD3(0.58, 0.40, 0.46), SIMD3(0.045, 0.40, 0.045), stalk),// second stalk
+                (SIMD3(0.44, 0.84, 0.50), SIMD3(0.07, 0.12, 0.07), tip),    // brown cattail tip
+            ]
+        case 44:       // cactus — green column with a stubby arm
+            let cac = SIMD3<Float>(0.27, 0.52, 0.26)
+            return [
+                (SIMD3(0.50, 0.42, 0.50), SIMD3(0.16, 0.42, 0.16), cac),    // trunk
+                (SIMD3(0.74, 0.40, 0.50), SIMD3(0.09, 0.09, 0.09), cac),    // arm out
+                (SIMD3(0.80, 0.52, 0.50), SIMD3(0.07, 0.13, 0.07), cac),    // arm up
+            ]
+        case 45:       // seashell — small pale shell on the sand
+            let sh  = SIMD3<Float>(0.94, 0.86, 0.80)
+            let sh2 = SIMD3<Float>(0.90, 0.72, 0.70)
+            return [
+                (SIMD3(0.50, 0.08, 0.50), SIMD3(0.13, 0.07, 0.16), sh),     // shell body (low)
+                (SIMD3(0.50, 0.15, 0.42), SIMD3(0.08, 0.06, 0.07), sh2),    // ridge
+            ]
         default: return []
         }
     }
@@ -1503,10 +1525,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Build the static model table: 4 type-rows × 4 cuboid-slots of PropCuboidGPU.
     // Unused slots are left zero (zero half-extent → the vertex shader skips them).
     static func makePropModelTable(device: MTLDevice) -> MTLBuffer {
-        let rows = 7, slots = 4
+        let rows = 10, slots = 4
         var table = [PropCuboidGPU](repeating: PropCuboidGPU(cx:0,cy:0,cz:0, hx:0,hy:0,hz:0, r:0,g:0,b:0),
                                     count: rows * slots)
-        let typeForRow: [UInt32] = [36, 37, 39, 40, 38, 41, 42]  // grass=4, pebble=5, berry_bush=6
+        let typeForRow: [UInt32] = [36, 37, 39, 40, 38, 41, 42, 43, 44, 45]  // ..reed=7, cactus=8, seashell=9
         for row in 0..<rows {
             let model = propModel(typeForRow[row])
             for (s, cu) in model.prefix(slots).enumerated() {
@@ -3597,8 +3619,9 @@ final class Renderer: NSObject, MTKViewDelegate {
                                   const device PropCuboid* models      [[buffer(2)]]) {
         PropVOut o;
         PropInstanceGPU inst = insts[iid];
-        // type -> row (36 red,37 yellow,39 mushroom,40 crystal,38 grass,41 pebble,42 berry bush)
-        int row = (inst.type == 36u) ? 0 : (inst.type == 37u) ? 1 : (inst.type == 39u) ? 2 : (inst.type == 40u) ? 3 : (inst.type == 38u) ? 4 : (inst.type == 41u) ? 5 : (inst.type == 42u) ? 6 : -1;
+        // type -> row (36 red,37 yellow,39 mushroom,40 crystal,38 grass,41 pebble,
+        //              42 berry,43 reed,44 cactus,45 seashell)
+        int row = (inst.type == 36u) ? 0 : (inst.type == 37u) ? 1 : (inst.type == 39u) ? 2 : (inst.type == 40u) ? 3 : (inst.type == 38u) ? 4 : (inst.type == 41u) ? 5 : (inst.type == 42u) ? 6 : (inst.type == 43u) ? 7 : (inst.type == 44u) ? 8 : (inst.type == 45u) ? 9 : -1;
         uint cuboidIdx = vid / 36u;
         if (row < 0 || cuboidIdx >= kPropMaxCuboids) { o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o; }
         PropCuboid cu = models[uint(row) * kPropMaxCuboids + cuboidIdx];
@@ -3618,7 +3641,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 nm = float3(cnrm.x * cy - cnrm.z * sy, cnrm.y, cnrm.x * sy + cnrm.z * cy);
         // Wind sway (#45/#52): thin foliage (grass row 4, flowers rows 0/1) bends in
         // the breeze — top sways, base stays rooted. Gated by params.z (foliage toggle).
-        if (u.params.z > 0.5 && (row == 0 || row == 1 || row == 4)) {
+        if (u.params.z > 0.5 && (row == 0 || row == 1 || row == 4 || row == 7)) {
             float ph = float(inst.position.x) * 0.30 + float(inst.position.z) * 0.25;
             float t  = u.params.y;
             float sway = sin(t * 1.6 + ph) + 0.35 * sin(t * 3.1 + ph * 1.7);

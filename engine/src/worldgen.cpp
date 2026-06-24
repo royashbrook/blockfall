@@ -164,6 +164,9 @@ static constexpr BlockId MUSHROOM      = 39;
 static constexpr BlockId COLOR_CRYSTAL = 40;   // glowing cave crystal; drops color_dust (#41 quest)
 static constexpr BlockId PEBBLE        = 41;   // small surface rock prop (#51 m2)
 static constexpr BlockId BERRY_BUSH    = 42;   // leafy bush w/ berries (#51 m2)
+static constexpr BlockId REED          = 43;   // cattail reeds in wetlands (#58)
+static constexpr BlockId CACTUS_PLANT  = 44;   // desert cactus (#58)
+static constexpr BlockId SEASHELL      = 45;   // beach/shore seashell (#58)
 
 static constexpr int SEA_LEVEL = 6;
 
@@ -627,7 +630,7 @@ static constexpr BiomeParams BIOME_PARAMS[NUM_BIOMES] = {
     { 28.0f,  56.0f,  1.0f/40.0f,  5,     0.62f },  // Mountains (tall+broad; raised/widened so peaks survive the Lipschitz limiter)
     {  7.0f,   9.0f,  1.0f/64.0f,  3,     0.45f },  // Desert (wide smooth dunes)
     {  8.0f,  14.0f,  1.0f/48.0f,  4,     0.50f },  // Snowy (hillier white plains)
-    {  4.0f,   5.0f,  1.0f/56.0f,  3,     0.45f },  // Swamp (very flat, lower)
+    {  5.5f,   1.2f,  1.0f/56.0f,  3,     0.45f },  // Swamp (marsh: near-flat, just below sea level → broad shallow water, #57)
     {  6.5f,   1.0f,  1.0f/96.0f,  2,     0.40f },  // Beach (extremely flat near sea)
 };
 
@@ -3397,7 +3400,7 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                 Biome dom = col_cache.dom[ci];
 
                 // Desert, Beach, and Snowy have minimal/no surface plants.
-                if (dom == Biome::Desert || dom == Biome::Beach || dom == Biome::Snowy) continue;
+                if (dom == Biome::Snowy) continue;   // desert/beach now scatter cactus/shells (#58)
 
                 int H = col_cache.H[ci];
                 if (H <= SEA_LEVEL) continue;  // underwater
@@ -3440,13 +3443,17 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                         else if (roll2 < 75u) plant = TALL_GRASS;   // ~6%  (was ~8%)
                     }
                 } else if (dom == Biome::Swamp) {
-                    // Swamp: mushrooms + scattered grass tufts.
-                    // TRIMMED ~25%.
+                    // Marsh: reeds prominent at the wet edges, plus mushrooms + grass.
                     if (surf == GRASS || surf == DIRT) {
-                        if      (roll <  38u) plant = TALL_GRASS;   // ~15% (was ~20%)
-                        else if (roll <  75u) plant = MUSHROOM;     // ~15% (was ~20%)
-                        else if (roll <  90u) plant = FLOWER_RED;   // ~6%  (was ~8%)
+                        if      (roll <  32u) plant = REED;         // ~12% cattail reeds (#58)
+                        else if (roll <  60u) plant = MUSHROOM;     // ~11%
+                        else if (roll <  74u) plant = TALL_GRASS;   // ~5%
+                        else if (roll <  86u) plant = FLOWER_RED;   // ~5%
                     }
+                } else if (dom == Biome::Desert) {
+                    if (surf == SAND && roll < 10u) plant = CACTUS_PLANT;  // ~4% cacti (#58)
+                } else if (dom == Biome::Beach) {
+                    if (surf == SAND && roll < 14u) plant = SEASHELL;      // ~5.5% shells (#58)
                 } else if (dom == Biome::Plains) {
                     // Plains: scattered grass tufts, flowers prominent.
                     // TRIMMED ~25%.

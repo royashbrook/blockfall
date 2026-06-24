@@ -84,5 +84,38 @@
     "textures": {
       "all": "oak_leaves"
     }
+  },
+  {
+    "id": 43,
+    "name": "reed",
+    "display_name": "Reed",
+    "hardness": 0,
+    "required_tier": 0,
+    "transparent": true,
+    "textures": {
+      "all": "tall_grass"
+    }
+  },
+  {
+    "id": 44,
+    "name": "cactus_plant",
+    "display_name": "Cactus",
+    "hardness": 0,
+    "required_tier": 0,
+    "transparent": true,
+    "textures": {
+      "all": "oak_leaves"
+    }
+  },
+  {
+    "id": 45,
+    "name": "seashell",
+    "display_name": "Seashell",
+    "hardness": 0,
+    "required_tier": 0,
+    "transparent": true,
+    "textures": {
+      "all": "sand"
+    }
   }
 ]
