@@ -3119,7 +3119,6 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                 int dy_max_v      = canopy_dy_max(td.canopy_shape);
                 int dy_min_v      = canopy_dy_min(td.canopy_shape) - td.extra_skirt;  // #22 elder skirt
                 int canopy_wy_max = trunk_top_wy + dy_max_v;
-                int canopy_wy_min = trunk_top_wy + dy_min_v;
 
                 // Branch arms can rise a couple blocks above the canopy top and
                 // their tip clusters add one more; widen the vertical overlap test
@@ -3130,8 +3129,12 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                     if (branch_top > feature_wy_max) feature_wy_max = branch_top;
                 }
 
+                // #75 floating-trees fix: only skip when the tree's FULL vertical extent
+                // (trunk base up to the top feature) misses this chunk. The old extra
+                // `canopy_wy_min > wy_max` skip dropped the tree in chunks that hold the
+                // TRUNK but not the canopy, so tall trees whose trunk and canopy span two
+                // chunks lost their trunk and the canopy floated.
                 if (feature_wy_max < wy_min || trunk_base_wy > wy_max) continue;
-                if (canopy_wy_min > wy_max) continue;
 
                 // Place trunk logs.
                 // Leaning trunk: for the upper half, shift log position by lean_dx/lean_dz.

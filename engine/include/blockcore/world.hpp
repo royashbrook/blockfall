@@ -706,8 +706,11 @@ public:
             d.dim_sat_pz  = region_sat(ChunkCoord{cc.x, cc.y, cc.z + 1});
             d.dim_sat_pxz = region_sat(ChunkCoord{cc.x + 1, cc.y, cc.z + 1});
             draws.push_back(d);
-            // #51 — emit this chunk's props for the prop renderer (near chunks only).
-            if (dist < 80.0f && !rec.props.empty())
+            // #51/#78 — emit this chunk's props (trees, plants, rocks) for the prop
+            // renderer. Pushed out to 120 (was 80) so trees and props render noticeably
+            // farther, closer to the land render distance, without tanking the framerate
+            // (full 2x tripled the instance count and cost ~20 FPS).
+            if (dist < 120.0f && !rec.props.empty())
                 prop_instances.insert(prop_instances.end(), rec.props.begin(), rec.props.end());
         }
 
