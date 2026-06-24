@@ -117,5 +117,27 @@
     "textures": {
       "all": "sand"
     }
+  },
+  {
+    "id": 46,
+    "name": "lily_pad",
+    "display_name": "Lily Pad",
+    "hardness": 0,
+    "required_tier": 0,
+    "transparent": true,
+    "textures": {
+      "all": "tall_grass"
+    }
+  },
+  {
+    "id": 47,
+    "name": "fallen_stick",
+    "display_name": "Fallen Stick",
+    "hardness": 0,
+    "required_tier": 0,
+    "transparent": true,
+    "textures": {
+      "all": "oak_log"
+    }
   }
 ]

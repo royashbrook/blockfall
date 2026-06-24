@@ -167,6 +167,8 @@ static constexpr BlockId BERRY_BUSH    = 42;   // leafy bush w/ berries (#51 m2)
 static constexpr BlockId REED          = 43;   // cattail reeds in wetlands (#58)
 static constexpr BlockId CACTUS_PLANT  = 44;   // desert cactus (#58)
 static constexpr BlockId SEASHELL      = 45;   // beach/shore seashell (#58)
+static constexpr BlockId LILY_PAD      = 46;   // floats on shallow marsh/pond water (#58)
+static constexpr BlockId FALLEN_STICK  = 47;   // twig on the forest floor (#58)
 
 static constexpr int SEA_LEVEL = 6;
 
@@ -3436,11 +3438,13 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                         else if (roll <  75u) plant = FLOWER_YELLOW;// ~6%  (was ~7%)
                         else if (roll <  85u) plant = MUSHROOM;     // ~4%  (was ~5%)
                         else if (roll <  91u) plant = BERRY_BUSH;   // ~2%  forest berries
+                        else if (roll <  97u) plant = FALLEN_STICK; // ~2%  forest-floor twigs (#58)
                     } else if (surf == DIRT) {
                         // Shaded dirt: mushrooms more likely, sparse tall grass.
                         // TRIMMED ~25%.
-                        if      (roll2 < 60u) plant = MUSHROOM;     // ~24% (was ~31%)
-                        else if (roll2 < 75u) plant = TALL_GRASS;   // ~6%  (was ~8%)
+                        if      (roll2 < 55u) plant = MUSHROOM;     // ~22%
+                        else if (roll2 < 70u) plant = TALL_GRASS;   // ~6%
+                        else if (roll2 < 82u) plant = FALLEN_STICK; // ~5%  twigs on bare dirt
                     }
                 } else if (dom == Biome::Swamp) {
                     // Marsh: reeds prominent at the wet edges, plus mushrooms + grass.
@@ -3519,6 +3523,18 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                 std::int32_t wx = wx_min + lx;
                 std::int32_t wz = wz_min + lz;
                 std::uint64_t kh = hash2(wx, wz, kelp_seed);
+
+                // Lily pads float on shallow calm water (marsh/pond surface), #58.
+                // Independent of kelp; replaces the top water block at the surface.
+                if ((dom == Biome::Swamp || dom == Biome::Plains) &&
+                    (SEA_LEVEL - H) >= 1 && (SEA_LEVEL - H) <= 4 &&
+                    ((kh >> 24u) & 0xFFu) < 40u) {
+                    std::int32_t wy = SEA_LEVEL;
+                    if (wy >= wy_min && wy <= wy_max) {
+                        int ly = static_cast<int>(wy - wy_min);
+                        if (chunk.get(lx, ly, lz) == WATER) chunk.set(lx, ly, lz, LILY_PAD);
+                    }
+                }
 
                 // Density ~22% of submerged columns carry a strand.
                 if ((kh & 0xFFu) >= 56u) continue;

@@ -1516,6 +1516,20 @@ final class Renderer: NSObject, MTKViewDelegate {
                 (SIMD3(0.50, 0.08, 0.50), SIMD3(0.13, 0.07, 0.16), sh),     // shell body (low)
                 (SIMD3(0.50, 0.15, 0.42), SIMD3(0.08, 0.06, 0.07), sh2),    // ridge
             ]
+        case 46:       // lily pad — flat green disc floating on the water
+            let pad  = SIMD3<Float>(0.30, 0.58, 0.30)
+            let pad2 = SIMD3<Float>(0.24, 0.50, 0.26)
+            return [
+                (SIMD3(0.50, 0.04, 0.50), SIMD3(0.40, 0.03, 0.40), pad),    // wide flat pad
+                (SIMD3(0.62, 0.05, 0.40), SIMD3(0.14, 0.03, 0.14), pad2),   // second leaf
+            ]
+        case 47:       // fallen stick — a low brown twig on the ground
+            let bark  = SIMD3<Float>(0.42, 0.28, 0.16)
+            let bark2 = SIMD3<Float>(0.36, 0.24, 0.14)
+            return [
+                (SIMD3(0.50, 0.06, 0.46), SIMD3(0.34, 0.05, 0.06), bark),   // main twig
+                (SIMD3(0.40, 0.06, 0.60), SIMD3(0.16, 0.045, 0.05), bark2), // little branch
+            ]
         default: return []
         }
     }
@@ -1525,10 +1539,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Build the static model table: 4 type-rows × 4 cuboid-slots of PropCuboidGPU.
     // Unused slots are left zero (zero half-extent → the vertex shader skips them).
     static func makePropModelTable(device: MTLDevice) -> MTLBuffer {
-        let rows = 10, slots = 4
+        let rows = 12, slots = 4
         var table = [PropCuboidGPU](repeating: PropCuboidGPU(cx:0,cy:0,cz:0, hx:0,hy:0,hz:0, r:0,g:0,b:0),
                                     count: rows * slots)
-        let typeForRow: [UInt32] = [36, 37, 39, 40, 38, 41, 42, 43, 44, 45]  // ..reed=7, cactus=8, seashell=9
+        let typeForRow: [UInt32] = [36, 37, 39, 40, 38, 41, 42, 43, 44, 45, 46, 47]  // ..lily=10, stick=11
         for row in 0..<rows {
             let model = propModel(typeForRow[row])
             for (s, cu) in model.prefix(slots).enumerated() {
@@ -3621,7 +3635,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         PropInstanceGPU inst = insts[iid];
         // type -> row (36 red,37 yellow,39 mushroom,40 crystal,38 grass,41 pebble,
         //              42 berry,43 reed,44 cactus,45 seashell)
-        int row = (inst.type == 36u) ? 0 : (inst.type == 37u) ? 1 : (inst.type == 39u) ? 2 : (inst.type == 40u) ? 3 : (inst.type == 38u) ? 4 : (inst.type == 41u) ? 5 : (inst.type == 42u) ? 6 : (inst.type == 43u) ? 7 : (inst.type == 44u) ? 8 : (inst.type == 45u) ? 9 : -1;
+        int row = (inst.type == 36u) ? 0 : (inst.type == 37u) ? 1 : (inst.type == 39u) ? 2 : (inst.type == 40u) ? 3 : (inst.type == 38u) ? 4 : (inst.type == 41u) ? 5 : (inst.type == 42u) ? 6 : (inst.type == 43u) ? 7 : (inst.type == 44u) ? 8 : (inst.type == 45u) ? 9 : (inst.type == 46u) ? 10 : (inst.type == 47u) ? 11 : -1;
         uint cuboidIdx = vid / 36u;
         if (row < 0 || cuboidIdx >= kPropMaxCuboids) { o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o; }
         PropCuboid cu = models[uint(row) * kPropMaxCuboids + cuboidIdx];
