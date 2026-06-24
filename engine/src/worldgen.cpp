@@ -489,22 +489,39 @@ static int entrance_depth_in(const EntranceDesc& ed,
             return depth;
         }
         case ENTR_RAVINE: {
-            // A slot of half-width RAVINE_HALF_W running ±half_len along its axis.
-            std::int32_t along = ed.ravine_x ? dx : dz;
+            // A slot running ±half_len along its axis, but with SLOPED, JAGGED
+            // shoulders across it (#: ravines were sharp vertical slots you fell
+            // into).  The inner slot is deep; each block out across the axis steps
+            // up shallower, so the sides form a climbable staircase you can see
+            // coming and scramble out of.  A per-column hash wobbles the rim so it
+            // reads as a natural jagged edge, not a ruled line.
+            std::int32_t along  = ed.ravine_x ? dx : dz;
             std::int32_t across = ed.ravine_x ? dz : dx;
-            if (across < -RAVINE_HALF_W || across > RAVINE_HALF_W) return 0;
-            if (along < -ed.half_len || along > ed.half_len)       return 0;
-            // Floor slopes a little toward the centre of the run for character;
-            // ends are a touch shallower so you can scramble in.
+            if (along < -ed.half_len || along > ed.half_len) return 0;
+            std::int32_t aa = across < 0 ? -across : across;
+            const int shoulder = RAVINE_HALF_W + 2;   // slope reaches 2 blocks past the slot
+            if (aa > static_cast<std::int32_t>(shoulder)) return 0;
             std::int32_t a = along < 0 ? -along : along;
-            int taper = static_cast<int>(a) / 3;   // 0 near centre, grows toward ends
+            int taper = static_cast<int>(a) / 4;       // gentle taper toward the ends
             int depth = ed.floor - taper;
-            if (depth < 6) depth = 6;
+            if (aa > RAVINE_HALF_W) {                   // on the sloped shoulder
+                int out = static_cast<int>(aa) - RAVINE_HALF_W;     // 1..2
+                depth -= out * (ed.floor / 2 + 1);     // each step out is much shallower
+            }
+            std::uint64_t jh = hash2(wx, wz, 0x9E3779B97F4A7C15ull);
+            depth += static_cast<int>(jh % 3u) - 1;    // -1..+1 jagged rim
+            if (depth < 2) return 0;                    // rim fades into normal ground
             return depth;
         }
-        default: {  // ENTR_POTHOLE — compact 2×2 (or 3×3) vertical shaft.
-            if (dx < 0 || dx > 1 || dz < 0 || dz > 1) return 0;
-            return ed.floor;
+        default: {  // ENTR_POTHOLE — a SMALL, SHALLOW dimple, not a deep sharp 2×2 shaft.
+            // A 5-column plus (centre + 4 arms): stays a "small" mouth for variety,
+            // but capped shallow and stepped so you can never fall 20 blocks into a
+            // tight pit and can hop straight back out.  (#: ravines/holes too sharp)
+            int r2 = static_cast<int>(dx * dx + dz * dz);
+            if (r2 > 1) return 0;
+            int pf = ed.floor < 6 ? ed.floor : 6;       // shallow cap
+            if (r2 == 0) return pf;                     // centre
+            return pf - 2;                              // arms: a step up out of the centre
         }
     }
 }
