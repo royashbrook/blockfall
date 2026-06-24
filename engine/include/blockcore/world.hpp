@@ -1308,6 +1308,16 @@ private:
         // (not on the surface far above) — scan down from just above the player.
         int gy = floor_below(ifloor(cx), int(pos_.y) + 3, ifloor(cz));
         if (gy == kNoFloor) return false;
+        // #74: never spawn monsters in lit areas — torches and lamps make a safe zone.
+        // Block light 14 (torch) falls off ~1/block, so a >=7 reading means within about
+        // 7 blocks of a light. So placing torches around your base keeps it monster-free.
+        {
+            ChunkCoord lc = to_chunk(IVec3{ifloor(cx), gy, ifloor(cz)});
+            if (auto* lch = store_.get(lc)) {
+                int bl = int(lch->block_light(mod16(ifloor(cx)), mod16(gy), mod16(ifloor(cz))));
+                if (bl >= 7) return false;   // lit by a nearby torch/lamp — no spawn here
+            }
+        }
         Creature c;
         c.pos = V3{cx, float(gy), cz}; c.yaw = rand01() * 6.2831853f;
         c.hostile = true; c.scale = 1.0f;
