@@ -191,17 +191,23 @@ inline bool is_prop(BlockId id) {
 
 // ---- opacity / transparency helpers -----------------------------------------
 
-// A cell is OPAQUE if it is non-air, not water (id 9), and not a prop.
-// Air (0), water (9), plants (36-39), and torches (32) are NON-opaque.
+// #68 glass (glass_pane 25, colored_glass 26): see-through, drawn in the translucent
+// pass like water. Non-opaque so it does not occlude, and glass-to-glass faces are
+// culled so a wall of panes merges into one continuous sheet (connected glass).
+inline bool is_glass(BlockId id) {
+    return id == 25 || id == 26;
+}
+
+// A cell is OPAQUE if it is non-air, not water (id 9), not glass, and not a prop.
 inline bool is_opaque(BlockId id) {
-    return id != 0 && id != 9 && !is_prop(id);
+    return id != 0 && id != 9 && !is_glass(id) && !is_prop(id);
 }
 
 // ---- AO helpers -------------------------------------------------------------
 
-// Is this block id an AO-occluder?  Air (0), water (9), and props do not occlude.
+// Is this block id an AO-occluder?  Air (0), water (9), glass, and props do not occlude.
 inline bool is_occluder(BlockId id) {
-    return id != 0 && id != 9 && !is_prop(id);
+    return id != 0 && id != 9 && !is_glass(id) && !is_prop(id);
 }
 
 // Sample a block at an arbitrary world offset from (x,y,z) in chunk cc.
@@ -706,10 +712,14 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
                     bool emit = false;
                     if (is_opaque(here)) {
                         // Solid terrain: face visible against any non-opaque cell.
-                        emit = !is_opaque(nb);      // nb is air (0) or water (9)
+                        emit = !is_opaque(nb);      // nb is air (0), water (9), or glass
                     } else if (here == 9) {
                         // Water surface: only against air.
                         emit = (nb == 0);
+                    } else if (is_glass(here)) {
+                        // #68 glass: show panes against air/water, hide behind opaque, and
+                        // CULL glass-to-glass faces so adjacent panes read as one sheet.
+                        emit = (nb == 0 || nb == 9);
                     }
 
                     if (emit) {

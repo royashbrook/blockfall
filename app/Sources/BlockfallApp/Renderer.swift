@@ -2681,6 +2681,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         if (mat == 9u) {
             discard_fragment();
         }
+        // #68 glass (25, 26): see-through, drawn ONLY by the translucent pass. Discard
+        // here so the opaque pass leaves whatever is behind the glass in the buffer.
+        if (mat == 25u || mat == 26u) {
+            discard_fragment();
+        }
 
         // =========================================================
         // PLANT ALPHA-TESTED PATH (material ids 36-39)
@@ -2982,6 +2987,16 @@ final class Renderer: NSObject, MTKViewDelegate {
                                constant WindUniforms& wind [[buffer(3)]],
                                depth2d<float, access::sample> shadowTex [[texture(0)]],
                                sampler shadowSamp [[sampler(0)]]) {
+        // #68 glass (25 clear, 26 colored): a light see-through pane, rendered in this
+        // translucent pass. The mesher culls glass-to-glass faces, so a wall of panes
+        // reads as one continuous sheet (connected glass), not a per-block grid.
+        if (in.material == 25u || in.material == 26u) {
+            bool colored = (in.material == 26u);
+            float3 tint  = colored ? float3(0.40, 0.70, 0.95) : float3(0.82, 0.91, 0.98);
+            float  alpha = colored ? 0.46 : 0.22;
+            float  lit   = clamp(in.shade, 0.45, 1.0);
+            return float4(tint * lit, alpha);
+        }
         // Only render water (material id 9); discard all other blocks.
         if (in.material != 9u) discard_fragment();
 
