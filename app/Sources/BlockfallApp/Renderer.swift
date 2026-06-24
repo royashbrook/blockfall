@@ -176,6 +176,42 @@ func makeViewModelArm() -> [PropCuboidGPU] {
     ]
 }
 
+/// The held item shown in the viewmodel fist (#70 v2): tools (item ids 70-81) get a
+/// handle + head silhouette coloured by tier (wood/stone/iron); blocks and other items
+/// get a small held cube. Returns view-space cuboids, or [] for an empty hand.
+func makeHeldItem(_ itemId: Int) -> [PropCuboidGPU] {
+    func part(_ c: SIMD3<Float>, _ h: SIMD3<Float>, _ col: SIMD3<Float>) -> PropCuboidGPU {
+        PropCuboidGPU(cx: c.x, cy: c.y, cz: c.z, hx: h.x, hy: h.y, hz: h.z, r: col.x, g: col.y, b: col.z, shape: 0)
+    }
+    if itemId == 0 { return [] }
+    let fx: Float = 0.40, fy: Float = -0.82, fz: Float = -1.62      // fist anchor
+    let wood = SIMD3<Float>(0.52, 0.38, 0.22)
+    if itemId >= 70 && itemId <= 81 {                               // a tool
+        let isSword = itemId >= 79
+        let tier = isSword ? (itemId - 79) : ((itemId - 70) / 3)    // 0 wood, 1 stone, 2 iron
+        let mat: SIMD3<Float> = tier == 0 ? SIMD3(0.55, 0.40, 0.22)
+                              : tier == 1 ? SIMD3(0.56, 0.56, 0.59)
+                              :             SIMD3(0.82, 0.84, 0.88)
+        if isSword {
+            return [
+                part(SIMD3(fx, fy,        fz), SIMD3(0.03, 0.15, 0.03), wood),  // grip
+                part(SIMD3(fx, fy + 0.14, fz), SIMD3(0.10, 0.025, 0.035), mat), // guard
+                part(SIMD3(fx, fy + 0.38, fz), SIMD3(0.035, 0.26, 0.05), mat),  // blade
+            ]
+        }
+        let kind = (itemId - 70) % 3   // 0 pickaxe, 1 axe, 2 shovel
+        let head: SIMD3<Float> = kind == 0 ? SIMD3(0.21, 0.04, 0.05)   // pick: wide bar
+                               : kind == 1 ? SIMD3(0.08, 0.12, 0.04)   // axe: blade
+                               :             SIMD3(0.10, 0.13, 0.025)  // shovel: scoop
+        return [
+            part(SIMD3(fx, fy,        fz), SIMD3(0.03, 0.27, 0.03), wood),  // handle
+            part(SIMD3(fx, fy + 0.31, fz), head, mat),                     // head
+        ]
+    }
+    // Block or other item: a small held cube.
+    return [ part(SIMD3(fx, fy + 0.02, fz), SIMD3(0.12, 0.12, 0.12), SIMD3(0.58, 0.52, 0.42)) ]
+}
+
 /// Uniforms for the world-space precipitation pass (rain streaks / snow flakes).
 /// Swift layout: viewProj(64) + camPosW(16) + params(16) = 96 bytes. Must match MSL PrecipUniforms.
 struct PrecipUniforms {
@@ -230,6 +266,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var viewModelDepthState: MTLDepthStencilState!   // always-on-top
     private var viewModelArmBuf: MTLBuffer!
     private var viewModelArmCount = 0
+    private var heldItemBuf: MTLBuffer?            // #70 v2: equipped item in hand
+    private var heldItemCount = 0
+    private var lastHeldItem = -1
     private var propInstanceBuffer: MTLBuffer?   // per-frame: the bf_prop_instance list (tiny)
     private let kPropMaxCuboids = 4
     // #62: each part now draws up to 144 verts so it can be a box, sphere, cone, or
@@ -1089,7 +1128,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                                           indexBufferOffset: Int(d.index_offset))
             }
 
-            // --- First-person viewmodel (#70): the arm, drawn over the scene ---
+            // --- First-person viewmodel (#70): the arm + equipped item, over the scene ---
             if viewModelArmCount > 0 {
                 enc.setRenderPipelineState(viewModelPipeline)
                 enc.setDepthStencilState(viewModelDepthState)
@@ -1097,9 +1136,29 @@ final class Renderer: NSObject, MTKViewDelegate {
                 let dayB = 0.30 + 0.70 * max(0, sin(frame.camera.time_of_day * Float.pi))
                 var vmU = ViewModelUniforms(proj: proj, params: SIMD4<Float>(
                     sin(wallClock * 1.6) * 0.006, sin(wallClock * 3.1) * 0.006, dayB, 0))
-                enc.setVertexBuffer(viewModelArmBuf, offset: 0, index: 0)
                 enc.setVertexBytes(&vmU, length: MemoryLayout<ViewModelUniforms>.stride, index: 1)
+                enc.setVertexBuffer(viewModelArmBuf, offset: 0, index: 0)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: viewModelArmCount * 36)
+
+                // #70 v2: the equipped item in the fist (from the HUD in the frame).
+                let sel = Int(frame.hud.selected_slot)
+                var heldId = 0
+                withUnsafePointer(to: frame.hud.hotbar) { p in
+                    p.withMemoryRebound(to: bf_hud_slot.self, capacity: 9) { slots in
+                        if sel >= 0 && sel < 9 { heldId = Int(slots[sel].item) }
+                    }
+                }
+                if heldId != lastHeldItem {
+                    lastHeldItem = heldId
+                    let model = makeHeldItem(heldId)
+                    heldItemCount = model.count
+                    heldItemBuf = model.isEmpty ? nil : device.makeBuffer(
+                        bytes: model, length: model.count * MemoryLayout<PropCuboidGPU>.stride, options: .storageModeShared)
+                }
+                if let hb = heldItemBuf, heldItemCount > 0 {
+                    enc.setVertexBuffer(hb, offset: 0, index: 0)
+                    enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: heldItemCount * 36)
+                }
             }
 
             // --- World-space precipitation (rain / snow) ---

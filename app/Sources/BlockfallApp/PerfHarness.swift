@@ -305,6 +305,13 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 enc.setVertexBuffer(vmb, offset: 0, index: 0)
                 enc.setVertexBytes(&vmU, length: MemoryLayout<ViewModelUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: viewModelArm.count * 36)
+                // #70 v2: force a held item (pickaxe) so --shot can verify the held model.
+                let held = makeHeldItem(Int(ProcessInfo.processInfo.environment["BF_SHOT_HELD"] ?? "70") ?? 70)
+                if !held.isEmpty, let hb = device.makeBuffer(bytes: held,
+                        length: held.count * MemoryLayout<PropCuboidGPU>.stride, options: .storageModeShared) {
+                    enc.setVertexBuffer(hb, offset: 0, index: 0)
+                    enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: held.count * 36)
+                }
             }
             enc.endEncoding()
         }
