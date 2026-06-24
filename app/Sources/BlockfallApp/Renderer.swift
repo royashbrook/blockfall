@@ -3031,6 +3031,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         float sunHigh = smoothstep(-0.02, 0.28, sunDir3.y);   // 0 at/below horizon → 1 when well up
         skyCol = mix(skyCol, sunColor,             sunDisc  * sunVis);
         skyCol = mix(skyCol, float3(1.0, 0.99, 0.92), sunInner * sunVis * mix(0.25, 1.0, sunHigh));
+        // Warm corona ring just OUTSIDE the disc (#66): makes the sun visually distinct
+        // from the white moon. Mixed (not HDR-added) so the 0.92 broad-sky cap below
+        // keeps it from ever feeding bloom.
+        float sunCorona = smoothstep(0.9880, 0.9965, sunDot) * sunVis;
+        skyCol = mix(skyCol, sunColor, sunCorona * 0.14);
 
         // HDR: a SMALL boost on the tight inner disc so the sun reads as a crisp
         // bright dot — but kept BELOW the bloom bright-pass floor (1.60). Under
@@ -3049,16 +3054,26 @@ final class Renderer: NSObject, MTKViewDelegate {
         skyCol = clamp(skyCol - discHDR, 0.0, 0.92) + discHDR;
         skyCol = min(skyCol, float3(1.25));
 
-        // Moon: BIGGER and clearly distinct from the sun — cool blue-white with darker
-        // "maria" blotches, vs the sun's warm plain disc. (#33: they looked identical.)
+        // Moon (#66): a bright WHITE moon, clearly distinct from the warm sun. Crisp
+        // white body with subtle grey craters, a faint cool halo, and a gentle night
+        // glow so it reads as luminous (vs the sun's warm cratered-free corona disc).
         float3 moonDir3 = -sunDir3;
         float moonDot  = dot(ray, moonDir3);
-        float moonBody = smoothstep(0.9965, 0.9992, moonDot) * (1.0 - dayT);
+        float nightAmt = 1.0 - dayT;
+        float moonHalo = smoothstep(0.9840, 0.9965, moonDot) * nightAmt;  // wide faint glow ring
+        float moonBody = smoothstep(0.9965, 0.9992, moonDot) * nightAmt;  // the disc
+        if (moonHalo > 0.001) {
+            skyCol = mix(skyCol, float3(0.80, 0.85, 0.98), moonHalo * 0.16);
+        }
         if (moonBody > 0.001) {
-            float2 mlocal = float2(ray.x - moonDir3.x, ray.z - moonDir3.z) * 140.0;
-            float mare = smoothstep(0.40, 0.72, noise2(mlocal));
-            float3 moonCol = mix(float3(0.88, 0.91, 0.99), float3(0.58, 0.63, 0.76), mare * 0.7);
+            float2 mlocal = float2(ray.x - moonDir3.x, ray.z - moonDir3.z) * 150.0;
+            float mare  = smoothstep(0.42, 0.74, noise2(mlocal));          // big maria blotches
+            float crater = smoothstep(0.62, 0.80, noise2(mlocal * 3.1));   // small crater speckle
+            float3 moonCol = mix(float3(0.98, 0.99, 1.00), float3(0.78, 0.82, 0.90), mare * 0.45);
+            moonCol = mix(moonCol, float3(0.72, 0.76, 0.84), crater * 0.30);
             skyCol = mix(skyCol, moonCol, moonBody);
+            // gentle HDR glow (night sky is dark, so this stays well below bloom).
+            skyCol += float3(0.10, 0.11, 0.14) * moonBody * nightAmt;
         }
 
         if (dayT < 0.5) {

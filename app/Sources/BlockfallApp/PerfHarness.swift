@@ -211,8 +211,16 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         if let enc = cmd.makeRenderCommandEncoder(descriptor: rp) {
             if let sp = skyPipeline {
                 enc.setRenderPipelineState(sp); enc.setDepthStencilState(skyDepthState); enc.setCullMode(.none)
+                // Sky-shot override (#66): force a night sky with the moon centred in
+                // view so the sun/moon can be checked headless (BF_SHOT_SKY=1).
+                var skySun = SIMD3<Float>(sun.x, sun.y, sun.z)
+                var skyTod = f.camera.time_of_day
+                if ProcessInfo.processInfo.environment["BF_SHOT_SKY"] == "1" {
+                    skySun = simd_normalize(camFwd)   // shader moon dir == normalize(sky sun_dir)
+                    skyTod = 0.0                       // midnight
+                }
                 var su = SkyUniforms(
-                    sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, f.camera.time_of_day),
+                    sunDirTime: SIMD4<Float>(skySun.x, skySun.y, skySun.z, skyTod),
                     camRight: SIMD4<Float>(camRight.x, camRight.y, camRight.z, tanHalfFov),
                     camUp:    SIMD4<Float>(camUp.x, camUp.y, camUp.z, aspect),
                     camFwd:   SIMD4<Float>(camFwd.x, camFwd.y, camFwd.z, 0))
@@ -315,8 +323,13 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     // #52 headless screenshot: tilt the camera down to frame ground props, let the
     // chunks/lighting settle, then capture the composited frame to a PNG. No desktop.
     if let shot = shotPath {
+        let skyMode = ProcessInfo.processInfo.environment["BF_SHOT_SKY"] == "1"
         for _ in 0..<700 { renderOneFrame(yaw: 0) }          // travel STRAIGHT far to cross into grass
-        for _ in 0..<10  { renderOneFrame(pitch: -0.006, yaw: 0) }  // look slightly down at the ground ahead
+        if skyMode {
+            for _ in 0..<30 { renderOneFrame(pitch: 0.02, yaw: 0) }  // tilt UP into clear sky for the moon
+        } else {
+            for _ in 0..<10 { renderOneFrame(pitch: -0.006, yaw: 0) } // look slightly down at the ground ahead
+        }
         for _ in 0..<24  { renderOneFrame(yaw: 0) }          // settle (stream + dirty converge)
         print("shot: prop instances in final frame = \(lastShotPropN)")
         writeTexturePNG(output, to: shot)
