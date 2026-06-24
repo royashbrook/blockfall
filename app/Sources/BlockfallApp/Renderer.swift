@@ -1534,26 +1534,25 @@ final class Renderer: NSObject, MTKViewDelegate {
                 (SIMD3(0.50, 0.06, 0.46), SIMD3(0.34, 0.05, 0.06), bark),   // main twig
                 (SIMD3(0.40, 0.06, 0.60), SIMD3(0.16, 0.045, 0.05), bark2), // little branch
             ]
-        case 5:        // #62 OAK foliage — a lumpy rounded green puff (bulges past the
-                       // block so neighbouring puffs overlap into a continuous canopy)
+        case 5:        // #62 OAK foliage — BIG overlapping spheres. Each exposed leaf is
+                       // a sphere wide enough (radius ~0.85) to merge with its 1-block
+                       // neighbours into one continuous lumpy canopy, not separate dots.
             let g1 = SIMD3<Float>(0.20, 0.44, 0.16)
             let g2 = SIMD3<Float>(0.16, 0.37, 0.13)
             let g3 = SIMD3<Float>(0.25, 0.51, 0.19)
             return [
-                (SIMD3(0.50, 0.50, 0.50), SIMD3(0.58, 0.54, 0.58), g1),  // main body
-                (SIMD3(0.34, 0.62, 0.52), SIMD3(0.34, 0.34, 0.34), g3),  // upper lobe
-                (SIMD3(0.64, 0.44, 0.40), SIMD3(0.34, 0.34, 0.36), g2),  // lower lobe
-                (SIMD3(0.52, 0.46, 0.66), SIMD3(0.32, 0.36, 0.30), g3),  // front lobe
+                (SIMD3(0.50, 0.50, 0.50), SIMD3(0.88, 0.82, 0.88), g1),  // big main ball
+                (SIMD3(0.34, 0.64, 0.46), SIMD3(0.58, 0.58, 0.58), g3),  // upper lump
+                (SIMD3(0.64, 0.40, 0.58), SIMD3(0.56, 0.56, 0.56), g2),  // lower lump
             ]
-        case 27:       // #62 BIRCH foliage — lighter, more golden-green puff
+        case 27:       // #62 BIRCH foliage — lighter, big overlapping spheres
             let b1 = SIMD3<Float>(0.31, 0.50, 0.20)
             let b2 = SIMD3<Float>(0.26, 0.44, 0.16)
             let b3 = SIMD3<Float>(0.38, 0.57, 0.25)
             return [
-                (SIMD3(0.50, 0.50, 0.50), SIMD3(0.56, 0.52, 0.56), b1),
-                (SIMD3(0.36, 0.62, 0.54), SIMD3(0.33, 0.33, 0.33), b3),
-                (SIMD3(0.63, 0.45, 0.40), SIMD3(0.33, 0.33, 0.35), b2),
-                (SIMD3(0.50, 0.47, 0.64), SIMD3(0.31, 0.35, 0.30), b3),
+                (SIMD3(0.50, 0.50, 0.50), SIMD3(0.86, 0.80, 0.86), b1),
+                (SIMD3(0.36, 0.64, 0.48), SIMD3(0.57, 0.57, 0.57), b3),
+                (SIMD3(0.63, 0.41, 0.56), SIMD3(0.55, 0.55, 0.55), b2),
             ]
         case 21:       // #62 OAK trunk — a rounded brown column, thinner than a full
                        // block so the trunk reads as round, not a stack of cubes
