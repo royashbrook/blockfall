@@ -165,7 +165,7 @@ inline bool is_subvoxel_prop(BlockId id) {
 // They stay voxel blocks underneath (collision + choppable), they just are not
 // drawn as cubes by the mesher.
 inline bool is_tree_prop(BlockId id) {
-    return id == 5 || id == 27 || id == 21 || id == 22;
+    return id == 5 || id == 27 || id == 48 || id == 21 || id == 22;  // +pine leaves (48)
 }
 // Blocks the RENDERER draws as instanced models, so the mesher emits no geometry.
 inline bool is_instanced_prop(BlockId id) {

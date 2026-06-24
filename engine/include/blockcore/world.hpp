@@ -1172,7 +1172,7 @@ private:
     // through them and break them but they never block movement. Leaves being solid made
     // jumping on tree tops feel weird (cube collision under organic puffs), #62. The
     // trunk logs stay solid, so trees still block you. (#: prop collision)
-    static bool is_plant(BlockId b) { return (b >= 36 && b <= 47) || b == 5 || b == 27; }
+    static bool is_plant(BlockId b) { return (b >= 36 && b <= 47) || b == 5 || b == 27 || b == 48; }
     bool collide_solid(int x, int y, int z) const {
         BlockId b = block_at(IVec3{x, y, z});
         return b != AIR && b != WATER && !is_plant(b);
@@ -2008,9 +2008,10 @@ private:
     static bool is_prop_block(BlockId id) {
         return id >= 36u && id <= 47u;  // all sub-voxel props (flowers..seashell)
     }
-    // #62 trees: leaves (5,27) + logs (21,22) are drawn as instanced organic models.
+    // #62 trees: leaves (oak 5, birch 27, pine 48) + logs (21,22) are drawn as
+    // instanced organic models.
     static bool is_tree_block(BlockId id) {
-        return id == 5u || id == 27u || id == 21u || id == 22u;
+        return id == 5u || id == 27u || id == 48u || id == 21u || id == 22u;
     }
     // Cache the chunk's prop blocks as instances for the prop renderer. Runs once
     // per (re)mesh, not per frame.
@@ -2032,7 +2033,7 @@ private:
             // hidden, which keeps the instance count (and so the cost) sane in forests.
             // Logs (the trunk) are sparse, so they always emit. Out-of-chunk neighbours
             // are treated as exposed (a small over-count only at chunk seams).
-            if (tree && (id == 5u || id == 27u)) {
+            if (tree && (id == 5u || id == 27u || id == 48u)) {
                 auto see_through = [&](int ax, int ay, int az) -> bool {
                     if (ax < 0 || ay < 0 || az < 0 || ax >= kChunkDim || ay >= kChunkDim || az >= kChunkDim)
                         return true;                       // OOB → assume exposed

@@ -151,6 +151,7 @@ static constexpr BlockId BIRCH_LOG     = 22;
 static constexpr BlockId BIRCH_PLANKS  = 23;
 static constexpr BlockId GLASS_PANE    = 25;
 static constexpr BlockId BIRCH_LEAVES  = 27;
+static constexpr BlockId PINE_LEAVES   = 48;   // #62 conifer needles (rendered as cones)
 static constexpr BlockId WOOL_BLOCK    = 28;
 static constexpr BlockId MOSSY_STONE   = 29;
 static constexpr BlockId CHEST         = 31;
@@ -1672,7 +1673,7 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
         trunk_h,
         canopy_shape,
         is_birch ? BIRCH_LOG    : OAK_LOG,
-        is_birch ? BIRCH_LEAVES : OAK_LEAVES,
+        (canopy_shape == CANOPY_PINE) ? PINE_LEAVES : (is_birch ? BIRCH_LEAVES : OAK_LEAVES),
         true,
         thick_trunk,
         lean_dx,

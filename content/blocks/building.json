@@ -114,6 +114,18 @@
     }
   },
   {
+    "id": 48,
+    "name": "pine_leaves",
+    "display_name": "Pine Needles",
+    "hardness": 2,
+    "required_tier": 0,
+    "preferred_tool": "none",
+    "transparent": true,
+    "textures": {
+      "all": "oak_leaves"
+    }
+  },
+  {
     "id": 28,
     "name": "wool_block",
     "display_name": "Wool",

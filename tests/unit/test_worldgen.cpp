@@ -120,6 +120,7 @@ static void test_no_seams() {
             || b == 21  // oak_log
             || b == 22  // birch_log
             || b == 27  // birch_leaves
+            || b == 48  // pine_leaves
             || b == 36  // flower_red
             || b == 37  // flower_yellow
             || b == 38  // tall_grass_block
@@ -190,7 +191,7 @@ static void test_no_seams_biome_transition() {
     int total_violations = 0;
 
     auto is_decoration = [](BlockId b) -> bool {
-        return b == 5 || b == 21 || b == 22 || b == 27
+        return b == 5 || b == 21 || b == 22 || b == 27 || b == 48
             || b == 36 || b == 37 || b == 38 || b == 39 || b == 40 || b == 41 || b == 42 || b == 43 || b == 44 || b == 45 || b == 46 || b == 47 || b == 12;
     };
 
@@ -543,7 +544,7 @@ static void test_biome_variety() {
     // For each column, find the highest non-air, non-water, non-decoration solid.
 
     auto is_decoration = [](BlockId b) -> bool {
-        return b == 5 || b == 21 || b == 22 || b == 27
+        return b == 5 || b == 21 || b == 22 || b == 27 || b == 48
             || b == 36 || b == 37 || b == 38 || b == 39 || b == 40 || b == 41 || b == 42 || b == 43 || b == 44 || b == 45 || b == 46 || b == 47 || b == 12;
     };
 
@@ -645,7 +646,7 @@ static void test_mountain_height() {
     g.seed(SEED);
 
     auto is_decoration = [](BlockId b) -> bool {
-        return b == 5 || b == 21 || b == 22 || b == 27
+        return b == 5 || b == 21 || b == 22 || b == 27 || b == 48
             || b == 36 || b == 37 || b == 38 || b == 39 || b == 40 || b == 41 || b == 42 || b == 43 || b == 44 || b == 45 || b == 46 || b == 47 || b == 12;
     };
 
@@ -806,7 +807,7 @@ static void test_no_surface_holes() {
 
     // Decorations should not count as terrain for hole-detection.
     auto is_decoration = [](BlockId b) -> bool {
-        return b == 5 || b == 21 || b == 22 || b == 27
+        return b == 5 || b == 21 || b == 22 || b == 27 || b == 48
             || b == 36 || b == 37 || b == 38 || b == 39 || b == 40 || b == 41 || b == 42 || b == 43 || b == 44 || b == 45 || b == 46 || b == 47 || b == 12;
     };
 
@@ -926,7 +927,7 @@ static void test_flatness() {
     g.seed(SEED);
 
     auto is_decoration = [](BlockId b) -> bool {
-        return b == 5 || b == 21 || b == 22 || b == 27
+        return b == 5 || b == 21 || b == 22 || b == 27 || b == 48
             || b == 36 || b == 37 || b == 38 || b == 39 || b == 40 || b == 41 || b == 42 || b == 43 || b == 44 || b == 45 || b == 46 || b == 47 || b == 12;
     };
 
@@ -1519,7 +1520,7 @@ static void test_cave_entrances() {
     g.seed(SEED);
 
     auto is_decoration = [](BlockId b) -> bool {
-        return b == 5 || b == 21 || b == 22 || b == 27
+        return b == 5 || b == 21 || b == 22 || b == 27 || b == 48
             || b == 36 || b == 37 || b == 38 || b == 39 || b == 40 || b == 41 || b == 42 || b == 43 || b == 44 || b == 45 || b == 46 || b == 47 || b == 12;
     };
 
@@ -1812,7 +1813,7 @@ static void test_rocky_mountains() {
     g.seed(SEED);
 
     auto is_decoration = [](BlockId b) -> bool {
-        return b == 5 || b == 21 || b == 22 || b == 27
+        return b == 5 || b == 21 || b == 22 || b == 27 || b == 48
             || b == 36 || b == 37 || b == 38 || b == 39 || b == 40 || b == 41 || b == 42 || b == 43 || b == 44 || b == 45 || b == 46 || b == 47 || b == 12;
     };
 
