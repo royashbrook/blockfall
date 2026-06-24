@@ -324,6 +324,11 @@ if let idx = CommandLine.arguments.firstIndex(of: "--shot"), idx + 1 < CommandLi
     let ok = runPerfTest(seconds: 0, jsonPath: nil, shotPath: CommandLine.arguments[idx + 1])
     exit(ok ? 0 : 1)
 }
+// --critters <path>: headless gallery of every creature model (#51 sub-voxel review).
+if let idx = CommandLine.arguments.firstIndex(of: "--critters"), idx + 1 < CommandLine.arguments.count {
+    let ok = runCritterGallery(savePath: CommandLine.arguments[idx + 1])
+    exit(ok ? 0 : 1)
+}
 if let idx = CommandLine.arguments.firstIndex(of: "--perftest") {
     let secs = (idx + 1 < CommandLine.arguments.count) ? (Double(CommandLine.arguments[idx + 1]) ?? 20) : 20
     let ok = runPerfTest(seconds: secs, jsonPath: "/tmp/blockfall_perf.json")

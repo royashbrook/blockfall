@@ -355,3 +355,93 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     }
     return !fpsSamples.isEmpty && passMem
 }
+
+// Headless creature gallery (#51): render one of every creature kind in a row to a
+// PNG, so the detailed sub-voxel animal models can be reviewed from the terminal.
+func runCritterGallery(savePath: String) -> Bool {
+    guard let device = MTLCreateSystemDefaultDevice() else { return false }
+    let queue = device.makeCommandQueue()!
+    guard let lib = try? device.makeLibrary(source: Renderer.shaderSource, options: nil) else { return false }
+    let entR = EntityRenderer(device: device, colorFormat: .rgba16Float)
+    func pipe(_ v: String, _ f: String) -> MTLRenderPipelineState? {
+        let d = MTLRenderPipelineDescriptor()
+        d.vertexFunction = lib.makeFunction(name: v); d.fragmentFunction = lib.makeFunction(name: f)
+        d.colorAttachments[0].pixelFormat = .bgra8Unorm
+        return try? device.makeRenderPipelineState(descriptor: d)
+    }
+    guard let composite = pipe("fullscreenVert", "compositeFrag") else { return false }
+    let dsd = MTLDepthStencilDescriptor(); dsd.depthCompareFunction = .less; dsd.isDepthWriteEnabled = true
+    let depthState = device.makeDepthStencilState(descriptor: dsd)
+    let noDSD = MTLDepthStencilDescriptor(); noDSD.depthCompareFunction = .always; noDSD.isDepthWriteEnabled = false
+    let noDepth = device.makeDepthStencilState(descriptor: noDSD)
+
+    let W = 1600, H = 420
+    func tex(_ fmt: MTLPixelFormat, _ usage: MTLTextureUsage, _ shared: Bool) -> MTLTexture {
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: fmt, width: W, height: H, mipmapped: false)
+        d.usage = usage; d.storageMode = shared ? .shared : .private
+        return device.makeTexture(descriptor: d)!
+    }
+    let hdr      = tex(.rgba16Float, [.renderTarget, .shaderRead], false)
+    let hdrDepth = tex(.depth32Float, [.renderTarget], false)
+    let bloom    = tex(.rgba16Float, [.renderTarget, .shaderRead], false)
+    let output   = tex(.bgra8Unorm, [.renderTarget], true)
+
+    // One entity per creature kind (skip 6 = falling block). Varied toy colours.
+    let kinds: [UInt32] = [0,1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,100]
+    let cols: [SIMD3<Float>] = [
+        SIMD3(0.85,0.80,0.74), SIMD3(0.78,0.45,0.28), SIMD3(0.55,0.58,0.62), SIMD3(0.30,0.55,0.35),
+        SIMD3(0.90,0.86,0.40), SIMD3(0.40,0.40,0.48), SIMD3(0.72,0.36,0.30), SIMD3(0.95,0.95,0.97)
+    ]
+    // Two rows so the camera can sit close and the models render large.
+    let perRow = (kinds.count + 1) / 2
+    let spacing: Float = 1.7
+    var ents: [bf_entity_draw] = []
+    for (i, k) in kinds.enumerated() {
+        var e = bf_entity_draw()
+        let rowI = i / perRow, colI = i % perRow
+        e.position = bf_vec3(x: Float(colI) * spacing, y: 0, z: Float(rowI) * 2.6)
+        e.yaw = 0.7; e.scale = 1.35; e.kind = k; e.sat = 1.0
+        let c = cols[i % cols.count]; e.color = bf_vec3(x: c.x, y: c.y, z: c.z)
+        ents.append(e)
+    }
+    let cx = Float(perRow - 1) * spacing * 0.5
+    let proj = Renderer.perspective(fovy: 0.62, aspect: Float(W) / Float(H), near: 0.05, far: 300)
+    let eye = SIMD3<Float>(cx, 3.0, Float(perRow) * 1.15 + 3)
+    let view = EntityRenderer.rotX(0.22) * EntityRenderer.trans(SIMD3(-eye.x, -eye.y, -eye.z))
+    let viewProj = proj * view
+
+    let cmd = queue.makeCommandBuffer()!
+    let rp = MTLRenderPassDescriptor()
+    rp.colorAttachments[0].texture = hdr
+    rp.colorAttachments[0].loadAction = .clear; rp.colorAttachments[0].storeAction = .store
+    rp.colorAttachments[0].clearColor = MTLClearColor(red: 0.46, green: 0.63, blue: 0.86, alpha: 1)
+    rp.depthAttachment.texture = hdrDepth
+    rp.depthAttachment.loadAction = .clear; rp.depthAttachment.clearDepth = 1.0; rp.depthAttachment.storeAction = .dontCare
+    if let enc = cmd.makeRenderCommandEncoder(descriptor: rp) {
+        enc.setDepthStencilState(depthState)
+        ents.withUnsafeBufferPointer { p in
+            entR.encode(enc, viewProj: viewProj, entities: p.baseAddress, count: ents.count)
+        }
+        enc.endEncoding()
+    }
+    let brp = MTLRenderPassDescriptor()
+    brp.colorAttachments[0].texture = bloom
+    brp.colorAttachments[0].loadAction = .clear; brp.colorAttachments[0].clearColor = MTLClearColor(red:0,green:0,blue:0,alpha:1)
+    brp.colorAttachments[0].storeAction = .store
+    if let enc = cmd.makeRenderCommandEncoder(descriptor: brp) { enc.endEncoding() }
+    let crp = MTLRenderPassDescriptor()
+    crp.colorAttachments[0].texture = output
+    crp.colorAttachments[0].loadAction = .dontCare; crp.colorAttachments[0].storeAction = .store
+    if let enc = cmd.makeRenderCommandEncoder(descriptor: crp) {
+        enc.setRenderPipelineState(composite); enc.setDepthStencilState(noDepth); enc.setCullMode(.none)
+        enc.setFragmentTexture(hdr, index: 0); enc.setFragmentTexture(bloom, index: 1)
+        var pu = PostUniforms(bloomStrength: 0.0, vignetteStr: 0.0, satBoost: 1.15, rainStrength: 0, wallClockSecs: 0)
+        enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+        enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        enc.endEncoding()
+    }
+    cmd.commit(); cmd.waitUntilCompleted()
+    writeTexturePNG(output, to: savePath)
+    print("critter gallery: \(ents.count) kinds")
+    return true
+}
