@@ -152,6 +152,28 @@ struct PropUniforms {
     var params:   SIMD4<Float>   // x = day brightness
 }
 
+/// Uniforms for the first-person viewmodel pass (#70). Matches MSL ViewModelUniforms.
+struct ViewModelUniforms {
+    var proj:   simd_float4x4
+    var params: SIMD4<Float>   // x,y = bob offset, z = day brightness
+}
+
+/// The first-person arm + held item, as cuboids in VIEW space (camera at origin,
+/// looking down -z). Lower-right of the view, forearm angling forward, fist at the
+/// front. Ordered back-to-front so the always-on-top draw layers correctly. (#70)
+func makeViewModelArm() -> [PropCuboidGPU] {
+    let skin   = SIMD3<Float>(0.85, 0.66, 0.52)
+    let sleeve = SIMD3<Float>(0.30, 0.50, 0.82)   // blue shirt cuff
+    func part(_ c: SIMD3<Float>, _ h: SIMD3<Float>, _ col: SIMD3<Float>) -> PropCuboidGPU {
+        PropCuboidGPU(cx: c.x, cy: c.y, cz: c.z, hx: h.x, hy: h.y, hz: h.z, r: col.x, g: col.y, b: col.z, shape: 0)
+    }
+    return [
+        part(SIMD3( 0.50, -0.78, -0.95), SIMD3(0.12, 0.12, 0.16), sleeve), // cuff (back)
+        part(SIMD3( 0.45, -0.66, -1.20), SIMD3(0.10, 0.10, 0.30), skin),   // forearm
+        part(SIMD3( 0.42, -0.54, -1.58), SIMD3(0.13, 0.12, 0.13), skin),   // fist (front)
+    ]
+}
+
 /// Uniforms for the world-space precipitation pass (rain streaks / snow flakes).
 /// Swift layout: viewProj(64) + camPosW(16) + params(16) = 96 bytes. Must match MSL PrecipUniforms.
 struct PrecipUniforms {
@@ -202,6 +224,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     // ---- Sub-voxel props (#51/#52: GPU-instanced) ---------------------------
     private var propPipeline: MTLRenderPipelineState!
     private var propModelTable: MTLBuffer!       // static: 4 types × 4 cuboids (PropCuboidGPU)
+    private var viewModelPipeline: MTLRenderPipelineState!   // #70 first-person arm
+    private var viewModelDepthState: MTLDepthStencilState!   // always-on-top
+    private var viewModelArmBuf: MTLBuffer!
+    private var viewModelArmCount = 0
     private var propInstanceBuffer: MTLBuffer?   // per-frame: the bf_prop_instance list (tiny)
     private let kPropMaxCuboids = 4
     // #62: each part now draws up to 144 verts so it can be a box, sphere, cone, or
@@ -460,6 +486,23 @@ final class Renderer: NSObject, MTKViewDelegate {
         do { propPipeline = try device.makeRenderPipelineState(descriptor: propd) }
         catch { fatalError("prop pipeline failed: \(error)") }
         propModelTable = Renderer.makePropModelTable(device: device)
+
+        // ---- First-person viewmodel (#70): view-space arm, always on top ---------
+        let vmd = MTLRenderPipelineDescriptor()
+        vmd.vertexFunction   = lib.makeFunction(name: "viewModelVmain")
+        vmd.fragmentFunction = lib.makeFunction(name: "viewModelFmain")
+        vmd.colorAttachments[0].pixelFormat = .rgba16Float
+        vmd.depthAttachmentPixelFormat = .depth32Float
+        do { viewModelPipeline = try device.makeRenderPipelineState(descriptor: vmd) }
+        catch { fatalError("viewmodel pipeline failed: \(error)") }
+        let vmdd = MTLDepthStencilDescriptor()
+        vmdd.depthCompareFunction = .always   // draw over the scene; parts ordered back-to-front
+        vmdd.isDepthWriteEnabled  = false
+        viewModelDepthState = device.makeDepthStencilState(descriptor: vmdd)
+        let arm = makeViewModelArm()
+        viewModelArmCount = arm.count
+        viewModelArmBuf = device.makeBuffer(bytes: arm, length: arm.count * MemoryLayout<PropCuboidGPU>.stride,
+                                            options: .storageModeShared)
 
         // Birds: no depth test (sky sprites). Fireflies: less-equal depth test.
         // We handle both in one pipeline; fireflies use depth, birds skip via discard logic.
@@ -1042,6 +1085,19 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
                                           indexType: .uint32, indexBuffer: ibuf,
                                           indexBufferOffset: Int(d.index_offset))
+            }
+
+            // --- First-person viewmodel (#70): the arm, drawn over the scene ---
+            if viewModelArmCount > 0 {
+                enc.setRenderPipelineState(viewModelPipeline)
+                enc.setDepthStencilState(viewModelDepthState)
+                enc.setCullMode(.none)
+                let dayB = 0.30 + 0.70 * max(0, sin(frame.camera.time_of_day * Float.pi))
+                var vmU = ViewModelUniforms(proj: proj, params: SIMD4<Float>(
+                    sin(wallClock * 1.6) * 0.006, sin(wallClock * 3.1) * 0.006, dayB, 0))
+                enc.setVertexBuffer(viewModelArmBuf, offset: 0, index: 0)
+                enc.setVertexBytes(&vmU, length: MemoryLayout<ViewModelUniforms>.stride, index: 1)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: viewModelArmCount * 36)
             }
 
             // --- World-space precipitation (rain / snow) ---
@@ -3828,6 +3884,32 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Flat toy shading: up-faces brighter, down-faces a touch darker.
         float up = clamp(in.nrm.y, -1.0, 1.0);
         float shade = 0.80 + 0.20 * max(0.0, up) - 0.12 * max(0.0, -up);
+        return float4(clamp(in.col * shade, 0.0, 1.0), 1.0);
+    }
+
+    // #70 first-person viewmodel: a few cuboids (arm + held item) drawn in VIEW space
+    // (camera at origin), so they stay fixed in front of the player. params: x,y = bob
+    // offset, z = day brightness. Parts are pre-ordered back-to-front in the buffer.
+    struct ViewModelUniforms { float4x4 proj; float4 params; };
+    vertex PropVOut viewModelVmain(uint vid [[vertex_id]],
+                                   const device PropCuboid* parts [[buffer(0)]],
+                                   constant ViewModelUniforms& u  [[buffer(1)]]) {
+        PropVOut o;
+        uint part = vid / 36u;
+        PropCuboid cu = parts[part];
+        float3 half_ = float3(cu.half_);
+        uint v = vid % 36u, face = v / 6u, corner = kTriIdx[v % 6u];
+        float3 cpos = kFaceCorner[face * 4u + corner];
+        float3 vp = float3(cu.center) + cpos * (2.0 * half_);
+        vp.x += u.params.x; vp.y += u.params.y;          // idle bob
+        o.position = u.proj * float4(vp, 1.0);
+        o.nrm = kFaceNrm[face];
+        o.col = float3(cu.color) * (0.62 + 0.38 * u.params.z);  // dim a touch at night
+        return o;
+    }
+    fragment float4 viewModelFmain(PropVOut in [[stage_in]]) {
+        float up = clamp(in.nrm.y, -1.0, 1.0);
+        float shade = 0.74 + 0.26 * max(0.0, up) - 0.10 * max(0.0, -up);
         return float4(clamp(in.col * shade, 0.0, 1.0), 1.0);
     }
     """

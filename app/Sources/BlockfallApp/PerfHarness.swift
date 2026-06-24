@@ -87,6 +87,22 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     }()
     let propModelTable = Renderer.makePropModelTable(device: device)
     var propInstBuf: MTLBuffer? = nil
+    // #70 viewmodel (so --shot reflects the live render)
+    let viewModelPipeline: MTLRenderPipelineState? = {
+        let d = MTLRenderPipelineDescriptor()
+        d.vertexFunction   = lib.makeFunction(name: "viewModelVmain")
+        d.fragmentFunction = lib.makeFunction(name: "viewModelFmain")
+        d.colorAttachments[0].pixelFormat = .rgba16Float
+        d.depthAttachmentPixelFormat = .depth32Float
+        return try? device.makeRenderPipelineState(descriptor: d)
+    }()
+    let viewModelArm = makeViewModelArm()
+    let viewModelArmBuf = device.makeBuffer(bytes: makeViewModelArm(),
+        length: makeViewModelArm().count * MemoryLayout<PropCuboidGPU>.stride, options: .storageModeShared)
+    let viewModelDepthState: MTLDepthStencilState? = {
+        let dd = MTLDepthStencilDescriptor(); dd.depthCompareFunction = .always; dd.isDepthWriteEnabled = false
+        return device.makeDepthStencilState(descriptor: dd)
+    }()
     let kPropVertsPerInstance = 4 * 36
 
     let dsd = MTLDepthStencilDescriptor(); dsd.depthCompareFunction = .less; dsd.isDepthWriteEnabled = true
@@ -276,6 +292,16 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             enc.setRenderPipelineState(terrainPipeline)
             enc.setDepthStencilState(depthState)
             entR.encode(enc, viewProj: viewProj, entities: f.entities, count: Int(f.entity_count))
+
+            // #70 viewmodel arm (mirrors the live renderer so --shot shows it)
+            if let vmp = viewModelPipeline, let vmb = viewModelArmBuf, let vmd = viewModelDepthState {
+                enc.setRenderPipelineState(vmp); enc.setDepthStencilState(vmd); enc.setCullMode(.none)
+                let dayB = 0.30 + 0.70 * max(0, sin(f.camera.time_of_day * Float.pi))
+                var vmU = ViewModelUniforms(proj: proj, params: SIMD4<Float>(0, 0, dayB, 0))
+                enc.setVertexBuffer(vmb, offset: 0, index: 0)
+                enc.setVertexBytes(&vmU, length: MemoryLayout<ViewModelUniforms>.stride, index: 1)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: viewModelArm.count * 36)
+            }
             enc.endEncoding()
         }
 
