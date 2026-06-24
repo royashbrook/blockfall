@@ -3706,6 +3706,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         lp.x = 0.5 + dx * cy - dz * sy;
         lp.z = 0.5 + dx * sy + dz * cy;
         float3 nm = float3(cnrm.x * cy - cnrm.z * sy, cnrm.y, cnrm.x * sy + cnrm.z * cy);
+        // #62 trunk taper: the seed's high byte holds the log's height above the base,
+        // so the trunk narrows as it rises (wide root, slimmer crown).
+        if (isTrunk) {
+            uint level = (inst.seed >> 24u) & 0xFFu;
+            float ws = clamp(1.0 - float(level) * 0.045, 0.5, 1.0);
+            lp.x = 0.5 + (lp.x - 0.5) * ws;
+            lp.z = 0.5 + (lp.z - 0.5) * ws;
+        }
         // Wind sway (#45/#52): thin foliage (grass row 4, flowers rows 0/1) bends in
         // the breeze — top sways, base stays rooted. Gated by params.z (foliage toggle).
         if (u.params.z > 0.5 && (row == 0 || row == 1 || row == 4 || row == 7)) {

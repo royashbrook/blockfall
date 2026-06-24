@@ -28,7 +28,10 @@ inline constexpr BlockId LIGHT_AIR = 0, LIGHT_WATER = 9, LIGHT_GLOW = 7;
 // Sub-voxel props (flowers 36/37, tall grass 38, mushroom 39, color crystal 40,
 // pebble 41, berry bush 42) are little models, not solid cubes — light passes
 // through them so their cell stays lit and the block beneath/beside isn't black.
-inline bool light_plant(BlockId b) { return b >= 36 && b <= 47; }
+// Props (36-47) plus tree TRUNKS (oak 21, birch 22) are light-transparent here so a
+// trunk base does not black out the ground block it sits on (#62, same fix as pebbles).
+// Leaves stay opaque so the canopy still casts dappled shade.
+inline bool light_plant(BlockId b) { return (b >= 36 && b <= 47) || b == 21 || b == 22; }
 inline bool light_opaque(BlockId b) { return b != LIGHT_AIR && b != LIGHT_WATER && !light_plant(b); }
 // Block light emitters (values mirror content/blocks/*.json light_emit). Without
 // torch/beacon/lamp here, placing a torch underground did nothing — light blocks

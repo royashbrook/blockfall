@@ -1168,9 +1168,11 @@ private:
     // Is a block solid for player collision? (air + water are passable.)
     // Cross-plants (grass/flowers/mushroom) are decorative — you walk through them.
     // Pass-through decorations (no player/entity collision): all sub-voxel props
-    // (flowers..fallen stick). Like plants, you walk through them and break them but
-    // they never block movement. (#: prop collision)
-    static bool is_plant(BlockId b) { return b >= 36 && b <= 47; }
+    // (flowers..fallen stick) plus tree LEAVES (oak 5, birch 27). Like plants, you walk
+    // through them and break them but they never block movement. Leaves being solid made
+    // jumping on tree tops feel weird (cube collision under organic puffs), #62. The
+    // trunk logs stay solid, so trees still block you. (#: prop collision)
+    static bool is_plant(BlockId b) { return (b >= 36 && b <= 47) || b == 5 || b == 27; }
     bool collide_solid(int x, int y, int z) const {
         BlockId b = block_at(IVec3{x, y, z});
         return b != AIR && b != WATER && !is_plant(b);
@@ -2043,6 +2045,19 @@ private:
                 if (!exposed) continue;
             }
             std::uint32_t h = std::uint32_t((bx + lx) * 73856093 ^ (by + ly) * 19349663 ^ (bz + lz) * 83492791);
+            // #62 taper: a trunk log carries its height above the base (count of
+            // contiguous logs below, across chunks) in the seed's high byte, so the
+            // renderer can narrow the trunk as it rises. Low 24 bits keep the colour hash.
+            if (id == 21u || id == 22u) {
+                int level = 0;
+                for (int k = 1; k <= 24; ++k) {
+                    BlockId below = block_at(IVec3{bx + lx, by + ly - k, bz + lz});
+                    if (below != 21u && below != 22u) break;
+                    ++level;
+                }
+                if (level > 255) level = 255;
+                h = (std::uint32_t(level) << 24) | (h & 0x00FFFFFFu);
+            }
             bf_prop_instance p{};
             p.position = bf_vec3{float(bx + lx), float(by + ly), float(bz + lz)};
             p.type = std::uint32_t(id); p.seed = h; p.sat = sat;

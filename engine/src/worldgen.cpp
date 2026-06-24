@@ -1451,7 +1451,7 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
             trunk_h, canopy_shape,
             OAK_LOG, OAK_LEAVES,
             true,
-            /*thick_trunk=*/true,
+            /*thick_trunk=*/false,  // #62: giants stay 1 block wide too
             /*lean_dx=*/0, /*lean_dz=*/0,
             /*branch_count=*/MAX_BRANCHES, branch_hash,
             leaf_hash, /*sparse=*/0, /*extra_skirt=*/(elder ? 1 : 0)
@@ -1528,7 +1528,7 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
             // forest oak with trunk >= 7 is thick when thick_bit is set (~50%), so a
             // walk through a forest reliably shows a mix of slim and stout trunks.
             if (!is_birch && thick_bit == 1u && trunk_h >= 7) {
-                thick_trunk = true;
+                thick_trunk = false;  // #62: no 2x2 trunks (keep trees 1 block wide)
             }
             break;
 
@@ -1541,7 +1541,7 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
             is_birch     = (birch_bits == 0u);  // 25% birch
             // #22: stout mountain conifers — the taller pines/talls get a 2×2 trunk.
             if (!is_birch && thick_bit == 1u && trunk_h >= 7) {
-                thick_trunk = true;
+                thick_trunk = false;  // #62: no 2x2 trunks (keep trees 1 block wide)
             }
             break;
 
@@ -1553,7 +1553,7 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
             is_birch     = false;  // no birch in deep snowy (pines only)
             // #22: thick-trunked snowy spires for variety (~50% of trunk>=8).
             if (thick_bit == 1u && trunk_h >= 8) {
-                thick_trunk = true;
+                thick_trunk = false;  // #62: no 2x2 trunks (keep trees 1 block wide)
             }
             break;
 
@@ -1568,7 +1568,7 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
             if (!is_birch && thick_bit == 1u && trunk_h >= 5
                 && (canopy_shape == CANOPY_BROAD || canopy_shape == CANOPY_COMPACT
                     || canopy_shape == CANOPY_WEEPING)) {
-                thick_trunk = true;
+                thick_trunk = false;  // #62: no 2x2 trunks (keep trees 1 block wide)
             }
             break;
 

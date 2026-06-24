@@ -1484,14 +1484,14 @@ static void test_new_tree_variety() {
         }
     }
 
-    CHECK(found_thick_trunk,
-          "new tree variety: thick (2x2) trunks found in world scan");
-    // #22 TRUNK DIAMETER: thick trunks must be COMMON, not a one-off — the player
-    // reported "all trunks 1-block diameter".  Broadened thick-trunk rules (forest
-    // oaks trunk>=7, stout mountain/snowy conifers, gnarled swamp trees) should
-    // yield many thick-trunk signatures across a ±15-chunk scan.
-    CHECK(thick_trunk_count >= 50,
-          "new tree variety: thick (2x2) trunks are common (>=50 in scan) — #22");
+    // #62 TRUNK DIAMETER (reversed from #22): the player asked that no tree be more
+    // than one block wide — 2x2 trunks made jumping/collision feel weird. So thick
+    // trunks are gone. A handful of false positives can still occur where two separate
+    // 1-wide trunks happen to land in adjacent columns at the same height, so allow a
+    // small count rather than exactly zero.
+    (void)found_thick_trunk;
+    CHECK(thick_trunk_count < 10,
+          "trees are now at most one block wide; 2x2 trunks removed (#62)");
     CHECK(found_leaning_tree,
           "new tree variety: leaning (L-bend) trees found in world scan");
     CHECK(found_drooping_leaves,
