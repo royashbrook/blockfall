@@ -964,7 +964,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                 if let ib = propInstanceBuffer {
                     memcpy(ib.contents(), insts, need)
                     let dayBright = 0.30 + 0.70 * max(0, sin(frame.camera.time_of_day * Float.pi))
-                    var pu2 = PropUniforms(viewProj: viewProj, params: SIMD4<Float>(dayBright, 0, 0, 0))
+                    var pu2 = PropUniforms(viewProj: viewProj,
+                                           params: SIMD4<Float>(dayBright, wallClock, gfxFoliage ? 1 : 0, 0))
                     enc.setRenderPipelineState(propPipeline)
                     enc.setDepthStencilState(depthState)
                     enc.setCullMode(.none)   // small opaque cuboids; skip winding concerns
@@ -1399,12 +1400,15 @@ final class Renderer: NSObject, MTKViewDelegate {
             if idx >= kMaxAmbientSprites { break }              // defensive cap
             let fi = Float(i)
             let angle  = wallClock * 0.02 + fi * 2.399
-            let radius = 3.0 + Float(fmod(Double(fi) * 2.71, 13.0))
-            let px = camPos.x + cos(angle) * radius + sin(wallClock * 0.30 + fi) * 1.6
-            let pz = camPos.z + sin(angle) * radius + cos(wallClock * 0.27 + fi) * 1.6
+            let radius = 5.0 + Float(fmod(Double(fi) * 2.71, 12.0))   // 5-17: kept away from the eye
+            let px = camPos.x + cos(angle) * radius + sin(wallClock * 0.30 + fi) * 1.4
+            let pz = camPos.z + sin(angle) * radius + cos(wallClock * 0.27 + fi) * 1.4
             let py = camPos.y + 0.8 + sin(fi * 0.6 + wallClock * 0.25) * 1.3
             let twinkle = 0.5 + 0.5 * sin(wallClock * 0.8 + fi * 1.7)
-            let pAlpha  = dayT * (0.08 + twinkle * 0.10)        // faint, never busy
+            // Fade motes that drift near the eye so they never flash across the HUD.
+            let pdx = px - camPos.x, pdy = py - camPos.y, pdz = pz - camPos.z
+            let pNear = max(0, min(1, ((pdx*pdx + pdy*pdy + pdz*pdz).squareRoot() - 2.5) / 2.5))
+            let pAlpha  = dayT * (0.08 + twinkle * 0.10) * pNear   // faint, never busy, never up-close
             ptr[idx] = AmbientSpritePod(
                 posW:  SIMD4<Float>(px, py, pz, 0.09),          // w=size (very tiny)
                 color: SIMD4<Float>(1.0, 0.97, 0.80, pAlpha))  // pale warm gold
@@ -1419,14 +1423,16 @@ final class Renderer: NSObject, MTKViewDelegate {
             if idx >= kMaxAmbientSprites { break }              // defensive cap
             let fi = Float(i)
             let angle  = wallClock * 0.015 + fi * 2.399
-            let radius = 2.0 + Float(fmod(Double(fi) * 3.37, 22.0))      // out to ~24 blocks
+            let radius = 4.0 + Float(fmod(Double(fi) * 3.37, 20.0))      // 4-24 blocks (kept off the eye)
             // Slow downward drift that wraps, plus lateral sway → ash settling.
             let fall   = Float(fmod(Double(wallClock * 0.6 + fi * 1.3), 9.0))   // 0..9 wrap
             let px = camPos.x + cos(angle) * radius + sin(wallClock * 0.2 + fi) * 1.2
             let pz = camPos.z + sin(angle) * radius + cos(wallClock * 0.18 + fi) * 1.2
             let py = camPos.y + 4.5 - fall + sin(fi * 0.5 + wallClock * 0.3) * 0.6
             let twinkle = 0.6 + 0.4 * sin(wallClock * 0.5 + fi * 2.1)
-            let aAlpha  = g * (0.12 + twinkle * 0.14)           // fade in with greyness
+            let adx = px - camPos.x, ady = py - camPos.y, adz = pz - camPos.z
+            let aNear = max(0, min(1, ((adx*adx + ady*ady + adz*adz).squareRoot() - 2.5) / 2.5))
+            let aAlpha  = g * (0.12 + twinkle * 0.14) * aNear  // fade in with greyness, never up-close
             // Cold ashen grey, faintly blue, slight value variation per mote.
             let v = 0.40 + 0.18 * Float(fmod(Double(fi) * 0.61, 1.0))
             ptr[idx] = AmbientSpritePod(
@@ -3610,6 +3616,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         lp.x = 0.5 + dx * cy - dz * sy;
         lp.z = 0.5 + dx * sy + dz * cy;
         float3 nm = float3(cnrm.x * cy - cnrm.z * sy, cnrm.y, cnrm.x * sy + cnrm.z * cy);
+        // Wind sway (#45/#52): thin foliage (grass row 4, flowers rows 0/1) bends in
+        // the breeze — top sways, base stays rooted. Gated by params.z (foliage toggle).
+        if (u.params.z > 0.5 && (row == 0 || row == 1 || row == 4)) {
+            float ph = float(inst.position.x) * 0.30 + float(inst.position.z) * 0.25;
+            float t  = u.params.y;
+            float sway = sin(t * 1.6 + ph) + 0.35 * sin(t * 3.1 + ph * 1.7);
+            lp.x += sway * max(0.0, lp.y - 0.05) * 0.22;   // height-rooted bend
+        }
         float3 world = float3(inst.position) + lp;
         o.position = u.viewProj * float4(world, 1.0);
         o.nrm = nm;

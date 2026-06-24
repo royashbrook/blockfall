@@ -256,7 +256,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 if let ib = propInstBuf {
                     memcpy(ib.contents(), insts, need)
                     let dayBright = 0.30 + 0.70 * max(0, sin(f.camera.time_of_day * Float.pi))
-                    var pu2 = PropUniforms(viewProj: viewProj, params: SIMD4<Float>(dayBright, 0, 0, 0))
+                    var pu2 = PropUniforms(viewProj: viewProj, params: SIMD4<Float>(dayBright, Float(wallClock), 0, 0))
                     enc.setRenderPipelineState(pp); enc.setDepthStencilState(depthState); enc.setCullMode(.none)
                     enc.setVertexBuffer(ib, offset: 0, index: 0)
                     enc.setVertexBytes(&pu2, length: MemoryLayout<PropUniforms>.stride, index: 1)
