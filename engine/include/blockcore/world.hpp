@@ -239,6 +239,7 @@ public:
         creature_timer_ = 0.0f;                     // spawn once the area streams in
         all_quests_done_ = false; quests_completed_ = 0; regions_restored_ = 0;
         start_quest(0);
+        ensure_clear_spawn();                // never spawn embedded in terrain
     }
 
     // ---- M2: disk save/load ----------------------------------------------
@@ -395,6 +396,7 @@ public:
                 dirty_.insert(cc); edited_.insert(cc);
             }
         }
+        ensure_clear_spawn();                // don't load embedded in terrain (#: stuck-on-load bug)
         last_center_ = to_chunk(IVec3{ifloor(pos_.x), ifloor(pos_.y), ifloor(pos_.z)});
         first_stream_ = true;
         creatures_.clear();
@@ -402,6 +404,27 @@ public:
         if (!quest_loaded) start_quest(0);   // old save: begin the arc fresh
         recompute_stream_set();
         return true;
+    }
+
+    // Make sure the player isn't loaded inside solid terrain. Load only restores
+    // EDITED chunks, so the player's spawn chunk may be unedited (not on disk) and
+    // not yet streamed; and terrain can drift between builds. Generate the player's
+    // vertical column synchronously so collision is accurate on frame 1, then lift
+    // them to the first clear spot if embedded (cave/surface poses are left alone).
+    void ensure_clear_spawn() {
+        if (!gen_) return;
+        ChunkCoord pc = to_chunk(IVec3{ifloor(pos_.x), ifloor(pos_.y), ifloor(pos_.z)});
+        for (int cy = CY_MAX; cy >= CY_MIN; --cy) {
+            ChunkCoord cc{pc.x, cy, pc.z};
+            if (store_.is_resident(cc)) continue;
+            auto ch = std::make_unique<PaletteChunk>(cc);
+            gen_->generate(cc, *ch);
+            if (!(ch->is_uniform() && ch->get(0, 0, 0) == AIR)) { store_.insert(std::move(ch)); dirty_.insert(cc); }
+        }
+        if (box_collides(pos_)) {                       // embedded → rise to clear air
+            for (int i = 0; i < 64 && box_collides(pos_); ++i) pos_.y += 1.0f;
+            pos_.y += 0.1f; vy_ = 0.0f; spawn_ = pos_;
+        }
     }
 
     // ---- flat world (used by the deterministic mine/place test) ----------
