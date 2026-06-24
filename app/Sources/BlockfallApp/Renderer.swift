@@ -3549,6 +3549,16 @@ final class Renderer: NSObject, MTKViewDelegate {
     };
     constant uint kTriIdx[6] = { 0u,1u,2u, 0u,2u,3u };
     constant uint kPropMaxCuboids = 4u;   // model table stride per type
+    // Flower blooms pick a bold colour from this palette per-instance (by seed), so
+    // a meadow is multicoloured without needing a block type per colour. (#51 m2)
+    constant float3 kFlowerPalette[6] = {
+        float3(0.90, 0.20, 0.22),   // red
+        float3(0.97, 0.82, 0.16),   // yellow
+        float3(0.94, 0.45, 0.78),   // pink
+        float3(0.62, 0.40, 0.90),   // purple
+        float3(0.97, 0.97, 0.98),   // white
+        float3(0.35, 0.62, 0.95)    // sky blue
+    };
 
     vertex PropVOut propInstVmain(uint vid [[vertex_id]],
                                   uint iid [[instance_id]],
@@ -3581,6 +3591,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         o.nrm = nm;
         // flat colour, drained by region saturation, scaled by day brightness
         float3 base = float3(cu.color);
+        // Per-instance variety: flower blooms (rows 0/1, cuboid 1) take a palette
+        // colour by seed; every prop gets a small brightness jitter so clumps of
+        // grass/flowers don't look stamped from one mould.
+        if ((row == 0 || row == 1) && cuboidIdx == 1u) base = kFlowerPalette[inst.seed % 6u];
+        base *= 0.90 + 0.20 * (float((inst.seed >> 5u) & 255u) / 255.0);
         float lum = dot(base, float3(0.30, 0.59, 0.11));
         float3 drained = float3(0.22, 0.25, 0.32) * (0.45 + lum * 0.85);
         o.col = (drained + (base - drained) * clamp(inst.sat, 0.0, 1.0)) * u.params.x;
