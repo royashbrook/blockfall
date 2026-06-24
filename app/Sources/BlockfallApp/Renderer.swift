@@ -3835,25 +3835,41 @@ final class Renderer: NSObject, MTKViewDelegate {
     static float3 propRevVert(uint lv, uint shape, thread float3& nrm) {
         const uint S = 8u;
         uint T = (shape == 1u) ? 3u : 1u;             // sphere: 3 stacks; cone/cyl: 1 side band
-        uint quad = lv / 6u;
-        if (quad >= S * T) { nrm = float3(0,1,0); return float3(0); }   // degenerate
-        const float2 co[6] = { float2(0,0), float2(1,0), float2(1,1),
-                               float2(0,0), float2(1,1), float2(0,1) };
-        float2 c = co[lv % 6u];
-        float a = 6.2831853 * (float(quad % S) + c.x) / float(S);
-        float t = (float(quad / S) + c.y) / float(T);  // 0..1 up the axis
-        float r, y, slope;
-        if (shape == 1u) {            // sphere
-            float phi = 3.14159265 * t;
-            r = sin(phi) * 0.5; y = -cos(phi) * 0.5; slope = 0.0;
-        } else if (shape == 2u) {     // cone: wide base, apex up
-            r = (1.0 - t) * 0.5; y = t - 0.5; slope = 0.5;
-        } else {                      // cylinder: octagonal tube
-            r = 0.5; y = t - 0.5; slope = 0.0;
+        uint sideV = S * T * 6u;                       // verts used by the side quads
+        if (lv < sideV) {
+            uint quad = lv / 6u;
+            const float2 co[6] = { float2(0,0), float2(1,0), float2(1,1),
+                                   float2(0,0), float2(1,1), float2(0,1) };
+            float2 c = co[lv % 6u];
+            float a = 6.2831853 * (float(quad % S) + c.x) / float(S);
+            float t = (float(quad / S) + c.y) / float(T);  // 0..1 up the axis
+            float r, y, slope;
+            if (shape == 1u) {            // sphere
+                float phi = 3.14159265 * t;
+                r = sin(phi) * 0.5; y = -cos(phi) * 0.5; slope = 0.0;
+            } else if (shape == 2u) {     // cone: wide base, apex up
+                r = (1.0 - t) * 0.5; y = t - 0.5; slope = 0.5;
+            } else {                      // cylinder: octagonal tube
+                r = 0.5; y = t - 0.5; slope = 0.0;
+            }
+            float ca = cos(a), sa = sin(a);
+            float3 p = float3(r * ca, y, r * sa);
+            nrm = (shape == 1u) ? normalize(p + float3(1e-5)) : normalize(float3(ca, slope, sa));
+            return p;
         }
-        float ca = cos(a), sa = sin(a);
-        float3 p = float3(r * ca, y, r * sa);
-        nrm = (shape == 1u) ? normalize(p + float3(1e-5)) : normalize(float3(ca, slope, sa));
+        // END CAPS (#62): cylinders are open tubes and cones are open at the base, so the
+        // ends showed hollow. Close them with a triangle fan. Sphere needs none (poles).
+        if (shape == 1u) { nrm = float3(0,1,0); return float3(0); }
+        uint capTri = (lv - sideV) / 3u, cv = (lv - sideV) % 3u;
+        bool isTop = (capTri >= S);
+        uint ti = isTop ? (capTri - S) : capTri;
+        if (ti >= S || (shape == 2u && isTop)) { nrm = float3(0,1,0); return float3(0); } // cone: no top
+        float yc = isTop ? 0.5 : -0.5;
+        float a0 = 6.2831853 * float(ti) / float(S), a1 = 6.2831853 * float(ti + 1u) / float(S);
+        float3 p = (cv == 0u) ? float3(0.0, yc, 0.0)
+                 : (cv == 1u) ? float3(0.5 * cos(a0), yc, 0.5 * sin(a0))
+                 :              float3(0.5 * cos(a1), yc, 0.5 * sin(a1));
+        nrm = float3(0.0, isTop ? 1.0 : -1.0, 0.0);
         return p;
     }
     // Flower blooms pick a bold colour from this palette per-instance (by seed), so
