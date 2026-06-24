@@ -3856,15 +3856,18 @@ final class Renderer: NSObject, MTKViewDelegate {
             uint isBranch = (inst.seed >> 31u) & 1u;
             if (isBranch == 1u) {
                 // Horizontal branch: rotate the vertical cylinder so its long axis lies
-                // along x or z (bit 30), and slim it (branches are thinner than the trunk).
+                // along x or z (bit 30). Keep it fairly FAT so it fills the block on all
+                // sides, and EXTEND it past the block so it bridges to the trunk and the
+                // next branch step instead of floating as a detached stub. (#62)
                 uint axis = (inst.seed >> 30u) & 1u;
                 float ox = lp.x - 0.5, oy = lp.y - 0.5, oz = lp.z - 0.5;
-                const float thin = 0.62;
+                const float thin = 0.85;   // fatter (fill the block)
+                const float ext  = 1.4;    // longer (reach to trunk / next step)
                 if (axis == 0u) {            // long axis -> x
-                    lp = float3(0.5 + oy, 0.5 + ox * thin, 0.5 + oz * thin);
+                    lp = float3(0.5 + oy * ext, 0.5 + ox * thin, 0.5 + oz * thin);
                     nm = float3(nm.y, nm.x, nm.z);
                 } else {                     // long axis -> z
-                    lp = float3(0.5 + oz * thin, 0.5 + ox * thin, 0.5 + oy);
+                    lp = float3(0.5 + oz * thin, 0.5 + ox * thin, 0.5 + oy * ext);
                     nm = float3(nm.x, nm.z, nm.y);
                 }
             } else {
