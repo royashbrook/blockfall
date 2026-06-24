@@ -1530,6 +1530,38 @@ final class Renderer: NSObject, MTKViewDelegate {
                 (SIMD3(0.50, 0.06, 0.46), SIMD3(0.34, 0.05, 0.06), bark),   // main twig
                 (SIMD3(0.40, 0.06, 0.60), SIMD3(0.16, 0.045, 0.05), bark2), // little branch
             ]
+        case 5:        // #62 OAK foliage — a lumpy rounded green puff (bulges past the
+                       // block so neighbouring puffs overlap into a continuous canopy)
+            let g1 = SIMD3<Float>(0.20, 0.44, 0.16)
+            let g2 = SIMD3<Float>(0.16, 0.37, 0.13)
+            let g3 = SIMD3<Float>(0.25, 0.51, 0.19)
+            return [
+                (SIMD3(0.50, 0.50, 0.50), SIMD3(0.58, 0.54, 0.58), g1),  // main body
+                (SIMD3(0.34, 0.62, 0.52), SIMD3(0.34, 0.34, 0.34), g3),  // upper lobe
+                (SIMD3(0.64, 0.44, 0.40), SIMD3(0.34, 0.34, 0.36), g2),  // lower lobe
+                (SIMD3(0.52, 0.46, 0.66), SIMD3(0.32, 0.36, 0.30), g3),  // front lobe
+            ]
+        case 27:       // #62 BIRCH foliage — lighter, more golden-green puff
+            let b1 = SIMD3<Float>(0.31, 0.50, 0.20)
+            let b2 = SIMD3<Float>(0.26, 0.44, 0.16)
+            let b3 = SIMD3<Float>(0.38, 0.57, 0.25)
+            return [
+                (SIMD3(0.50, 0.50, 0.50), SIMD3(0.56, 0.52, 0.56), b1),
+                (SIMD3(0.36, 0.62, 0.54), SIMD3(0.33, 0.33, 0.33), b3),
+                (SIMD3(0.63, 0.45, 0.40), SIMD3(0.33, 0.33, 0.35), b2),
+                (SIMD3(0.50, 0.47, 0.64), SIMD3(0.31, 0.35, 0.30), b3),
+            ]
+        case 21:       // #62 OAK trunk — a rounded brown column, thinner than a full
+                       // block so the trunk reads as round, not a stack of cubes
+            let woak = SIMD3<Float>(0.40, 0.27, 0.16)
+            return [
+                (SIMD3(0.50, 0.50, 0.50), SIMD3(0.40, 0.50, 0.40), woak),
+            ]
+        case 22:       // #62 BIRCH trunk — pale, slightly thinner column
+            let wbirch = SIMD3<Float>(0.82, 0.80, 0.74)
+            return [
+                (SIMD3(0.50, 0.50, 0.50), SIMD3(0.36, 0.50, 0.36), wbirch),
+            ]
         default: return []
         }
     }
@@ -1539,10 +1571,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Build the static model table: 4 type-rows × 4 cuboid-slots of PropCuboidGPU.
     // Unused slots are left zero (zero half-extent → the vertex shader skips them).
     static func makePropModelTable(device: MTLDevice) -> MTLBuffer {
-        let rows = 12, slots = 4
+        let rows = 16, slots = 4
         var table = [PropCuboidGPU](repeating: PropCuboidGPU(cx:0,cy:0,cz:0, hx:0,hy:0,hz:0, r:0,g:0,b:0),
                                     count: rows * slots)
-        let typeForRow: [UInt32] = [36, 37, 39, 40, 38, 41, 42, 43, 44, 45, 46, 47]  // ..lily=10, stick=11
+        let typeForRow: [UInt32] = [36, 37, 39, 40, 38, 41, 42, 43, 44, 45, 46, 47,
+                                    5, 27, 21, 22]  // #62 oak/birch foliage (12,13), oak/birch trunk (14,15)
         for row in 0..<rows {
             let model = propModel(typeForRow[row])
             for (s, cu) in model.prefix(slots).enumerated() {
@@ -3650,7 +3683,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         PropInstanceGPU inst = insts[iid];
         // type -> row (36 red,37 yellow,39 mushroom,40 crystal,38 grass,41 pebble,
         //              42 berry,43 reed,44 cactus,45 seashell)
-        int row = (inst.type == 36u) ? 0 : (inst.type == 37u) ? 1 : (inst.type == 39u) ? 2 : (inst.type == 40u) ? 3 : (inst.type == 38u) ? 4 : (inst.type == 41u) ? 5 : (inst.type == 42u) ? 6 : (inst.type == 43u) ? 7 : (inst.type == 44u) ? 8 : (inst.type == 45u) ? 9 : (inst.type == 46u) ? 10 : (inst.type == 47u) ? 11 : -1;
+        int row = (inst.type == 36u) ? 0 : (inst.type == 37u) ? 1 : (inst.type == 39u) ? 2 : (inst.type == 40u) ? 3 : (inst.type == 38u) ? 4 : (inst.type == 41u) ? 5 : (inst.type == 42u) ? 6 : (inst.type == 43u) ? 7 : (inst.type == 44u) ? 8 : (inst.type == 45u) ? 9 : (inst.type == 46u) ? 10 : (inst.type == 47u) ? 11
+                : (inst.type == 5u) ? 12 : (inst.type == 27u) ? 13   // #62 foliage (oak, birch)
+                : (inst.type == 21u) ? 14 : (inst.type == 22u) ? 15  // #62 trunk (oak, birch)
+                : -1;
+        bool isTrunk = (row == 14 || row == 15);
         uint cuboidIdx = vid / 36u;
         if (row < 0 || cuboidIdx >= kPropMaxCuboids) { o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o; }
         PropCuboid cu = models[uint(row) * kPropMaxCuboids + cuboidIdx];
@@ -3661,8 +3698,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 cpos = kFaceCorner[face * 4u + corner];
         float3 cnrm = kFaceNrm[face];
         float3 lp = float3(cu.center) + cpos * (2.0 * half_);   // local pos in block space
-        // per-instance yaw about block centre
-        float yaw = float(inst.seed & 1023u) / 1023.0 * 6.2831853;
+        // per-instance yaw about block centre. Trunks must NOT spin per-block, or the
+        // stacked log segments would misalign into a jagged trunk (#62).
+        float yaw = isTrunk ? 0.0 : float(inst.seed & 1023u) / 1023.0 * 6.2831853;
         float cy = cos(yaw), sy = sin(yaw);
         float dx = lp.x - 0.5, dz = lp.z - 0.5;
         lp.x = 0.5 + dx * cy - dz * sy;
@@ -3686,6 +3724,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         // grass/flowers don't look stamped from one mould.
         if ((row == 0 || row == 1) && cuboidIdx == 1u) base = kFlowerPalette[inst.seed % 6u];
         if (row == 2 && cuboidIdx == 1u) base = kMushroomPalette[inst.seed % 4u];  // mushroom cap variety
+        // #62: foliage gets a per-puff green/gold hue shift so the canopy is mottled
+        // and natural rather than one flat green.
+        if (row == 12 || row == 13) {
+            float gv = float(inst.seed % 7u) / 6.0;     // 0..1
+            base *= float3(0.90 + 0.16 * gv, 0.97 + 0.07 * gv, 0.86 + 0.06 * gv);
+        }
         base *= 0.90 + 0.20 * (float((inst.seed >> 5u) & 255u) / 255.0);
         float lum = dot(base, float3(0.30, 0.59, 0.11));
         float3 drained = float3(0.22, 0.25, 0.32) * (0.45 + lum * 0.85);

@@ -323,10 +323,14 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     // #52 headless screenshot: tilt the camera down to frame ground props, let the
     // chunks/lighting settle, then capture the composited frame to a PNG. No desktop.
     if let shot = shotPath {
-        let skyMode = ProcessInfo.processInfo.environment["BF_SHOT_SKY"] == "1"
-        for _ in 0..<700 { renderOneFrame(yaw: 0) }          // travel STRAIGHT far to cross into grass
+        let skyMode  = ProcessInfo.processInfo.environment["BF_SHOT_SKY"] == "1"
+        let treeMode = ProcessInfo.processInfo.environment["BF_SHOT_TREES"] == "1"
+        let travel = treeMode ? 320 : 700
+        for _ in 0..<travel { renderOneFrame(yaw: 0) }       // travel STRAIGHT to cross into grass/forest
         if skyMode {
             for _ in 0..<30 { renderOneFrame(pitch: 0.02, yaw: 0) }  // tilt UP into clear sky for the moon
+        } else if treeMode {
+            for _ in 0..<12 { renderOneFrame(pitch: 0.012, yaw: 0) } // look level/up to frame trees ahead
         } else {
             for _ in 0..<10 { renderOneFrame(pitch: -0.006, yaw: 0) } // look slightly down at the ground ahead
         }

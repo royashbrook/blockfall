@@ -159,6 +159,18 @@ inline void neighbour_light(IChunk* current_chunk, ChunkCoord cc, IChunkStore& s
 inline bool is_subvoxel_prop(BlockId id) {
     return id >= 36 && id <= 47;
 }
+// #62 trees: leaves (oak 5, birch 27) and logs (oak 21, birch 22) are no longer
+// cube-meshed. The engine emits them as instances and the renderer draws organic
+// foliage puffs / tapered trunks, so trees look like real trees instead of cubes.
+// They stay voxel blocks underneath (collision + choppable), they just are not
+// drawn as cubes by the mesher.
+inline bool is_tree_prop(BlockId id) {
+    return id == 5 || id == 27 || id == 21 || id == 22;
+}
+// Blocks the RENDERER draws as instanced models, so the mesher emits no geometry.
+inline bool is_instanced_prop(BlockId id) {
+    return is_subvoxel_prop(id) || is_tree_prop(id);
+}
 // No cross-billboard plants remain in the mesher (all are sub-voxel props now).
 inline bool is_cross_plant(BlockId) {
     return false;
@@ -174,7 +186,7 @@ inline bool is_torch(BlockId id) {
 // A "billboard"/prop block emits custom geometry in the prop pass instead of
 // greedy cube faces: cross-plants (36-39) and torches (32).
 inline bool is_prop(BlockId id) {
-    return is_cross_plant(id) || is_torch(id) || is_subvoxel_prop(id);
+    return is_cross_plant(id) || is_torch(id) || is_instanced_prop(id);
 }
 
 // ---- opacity / transparency helpers -----------------------------------------
@@ -778,7 +790,7 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
             for (int z = 0; z < kChunkDim; ++z) {
                 BlockId here = chunk_get(chunk, x, y, z);
                 if (!is_prop(here)) continue;
-                if (is_subvoxel_prop(here)) continue;   // #51 drawn by the prop renderer, no mesh geometry
+                if (is_instanced_prop(here)) continue;  // #51/#62 drawn by the prop renderer, no mesh geometry
 
                 // Sample light from the prop cell itself (not an adjacent air face).
                 std::uint8_t sky = chunk->sky_light(x, y, z);

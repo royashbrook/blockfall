@@ -2006,6 +2006,10 @@ private:
     static bool is_prop_block(BlockId id) {
         return id >= 36u && id <= 47u;  // all sub-voxel props (flowers..seashell)
     }
+    // #62 trees: leaves (5,27) + logs (21,22) are drawn as instanced organic models.
+    static bool is_tree_block(BlockId id) {
+        return id == 5u || id == 27u || id == 21u || id == 22u;
+    }
     // Cache the chunk's prop blocks as instances for the prop renderer. Runs once
     // per (re)mesh, not per frame.
     void scan_chunk_props(ChunkCoord cc, MeshRec& rec) {
@@ -2018,7 +2022,26 @@ private:
         for (int ly = 0; ly < kChunkDim; ++ly)
         for (int lx = 0; lx < kChunkDim; ++lx) {
             BlockId id = ch->get(lx, ly, lz);   // direct read, no store lookup
-            if (!is_prop_block(id)) continue;
+            bool prop = is_prop_block(id);
+            bool tree = is_tree_block(id);
+            if (!prop && !tree) continue;
+            // #62: a tree LEAF only emits a foliage instance if it is exposed (has an
+            // air/water neighbour) — the visible canopy shell. Interior leaves stay
+            // hidden, which keeps the instance count (and so the cost) sane in forests.
+            // Logs (the trunk) are sparse, so they always emit. Out-of-chunk neighbours
+            // are treated as exposed (a small over-count only at chunk seams).
+            if (tree && (id == 5u || id == 27u)) {
+                auto see_through = [&](int ax, int ay, int az) -> bool {
+                    if (ax < 0 || ay < 0 || az < 0 || ax >= kChunkDim || ay >= kChunkDim || az >= kChunkDim)
+                        return true;                       // OOB → assume exposed
+                    BlockId n = ch->get(ax, ay, az);
+                    return n == 0u || n == 9u;             // air or water
+                };
+                bool exposed = see_through(lx+1,ly,lz) || see_through(lx-1,ly,lz)
+                            || see_through(lx,ly+1,lz) || see_through(lx,ly-1,lz)
+                            || see_through(lx,ly,lz+1) || see_through(lx,ly,lz-1);
+                if (!exposed) continue;
+            }
             std::uint32_t h = std::uint32_t((bx + lx) * 73856093 ^ (by + ly) * 19349663 ^ (bz + lz) * 83492791);
             bf_prop_instance p{};
             p.position = bf_vec3{float(bx + lx), float(by + ly), float(bz + lz)};
