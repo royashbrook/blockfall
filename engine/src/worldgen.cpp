@@ -1581,9 +1581,9 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
             break;
 
         case Biome::Mountains:
-            // Mountains: PINE (conical) and TALL shapes, medium trunks 5..8.
+            // Mountains: PINE (conical) and TALL shapes, taller conifers (#62).
             // Some lean on steep slopes.
-            trunk_h      = 5 + static_cast<int>(trunk_bits % 4u);   // 5..8
+            trunk_h      = 7 + static_cast<int>(trunk_bits % 5u);   // 7..11
             canopy_shape = (shape_bits <= 3u) ? CANOPY_PINE :
                            (shape_bits <= 5u) ? CANOPY_TALL : CANOPY_ROUND;
             is_birch     = (birch_bits == 0u);  // 25% birch
@@ -1594,9 +1594,8 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
             break;
 
         case Biome::Snowy:
-            // Snowy: PINE trees exclusively — tall conical conifers.
-            // Trunk 6..10 for dramatic snowy spires.
-            trunk_h      = 6 + static_cast<int>(trunk_bits % 5u);   // 6..10
+            // Snowy: PINE trees exclusively — tall conical conifers (#62 taller spires).
+            trunk_h      = 9 + static_cast<int>(trunk_bits % 7u);   // 9..15
             canopy_shape = CANOPY_PINE;
             is_birch     = false;  // no birch in deep snowy (pines only)
             // #22: thick-trunked snowy spires for variety (~50% of trunk>=8).

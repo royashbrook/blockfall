@@ -167,10 +167,12 @@ func makeViewModelArm() -> [PropCuboidGPU] {
     func part(_ c: SIMD3<Float>, _ h: SIMD3<Float>, _ col: SIMD3<Float>) -> PropCuboidGPU {
         PropCuboidGPU(cx: c.x, cy: c.y, cz: c.z, hx: h.x, hy: h.y, hz: h.z, r: col.x, g: col.y, b: col.z, shape: 0)
     }
+    // Sits low, just peeking up from the bottom of the view when idle (#70 feedback:
+    // it was too high/centred). A swing/raise on action comes with the held-item pass.
     return [
-        part(SIMD3( 0.50, -0.78, -0.95), SIMD3(0.12, 0.12, 0.16), sleeve), // cuff (back)
-        part(SIMD3( 0.45, -0.66, -1.20), SIMD3(0.10, 0.10, 0.30), skin),   // forearm
-        part(SIMD3( 0.42, -0.54, -1.58), SIMD3(0.13, 0.12, 0.13), skin),   // fist (front)
+        part(SIMD3( 0.46, -1.06, -0.95), SIMD3(0.12, 0.12, 0.16), sleeve), // cuff (back)
+        part(SIMD3( 0.43, -0.96, -1.20), SIMD3(0.10, 0.10, 0.30), skin),   // forearm
+        part(SIMD3( 0.41, -0.86, -1.58), SIMD3(0.13, 0.12, 0.13), skin),   // fist (front)
     ]
 }
 
@@ -1621,13 +1623,14 @@ final class Renderer: NSObject, MTKViewDelegate {
             return [
                 (SIMD3(0.50, 0.50, 0.50), SIMD3(0.36, 0.50, 0.36), wbirch),
             ]
-        case 48:       // #62 PINE needles — dark green cones (conifer spikes). Slimmer
-                       // and a touch taller than before so pines are not too fat.
+        case 48:       // #62 PINE needles — dark green cones. Tall, slim silhouette, but a
+                       // fuller lower skirt so the canopy reads dense, not see-through.
             let p1 = SIMD3<Float>(0.16, 0.34, 0.20)
             let p2 = SIMD3<Float>(0.13, 0.29, 0.17)
             return [
-                (SIMD3(0.50, 0.50, 0.50), SIMD3(0.60, 0.86, 0.60), p1),  // main cone (narrow, tall)
-                (SIMD3(0.46, 0.64, 0.52), SIMD3(0.40, 0.66, 0.40), p2),  // upper spike
+                (SIMD3(0.50, 0.44, 0.50), SIMD3(0.52, 0.96, 0.52), p1),  // tall slim main cone
+                (SIMD3(0.50, 0.26, 0.50), SIMD3(0.74, 0.56, 0.74), p2),  // fuller lower skirt (density)
+                (SIMD3(0.49, 0.72, 0.50), SIMD3(0.32, 0.60, 0.32), p1),  // upper spike
             ]
         default: return []
         }
