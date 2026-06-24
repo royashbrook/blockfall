@@ -584,7 +584,7 @@ public:
                 // Don't let a solid block be placed inside the player (traps them).
                 // Pass-through blocks (water, plants) are fine to place at your feet.
                 {
-                    bool solid = !(pb == AIR || pb == WATER || (pb >= 36 && pb <= 39));
+                    bool solid = !(pb == AIR || pb == WATER || (pb >= 36 && pb <= 47));
                     if (mode_ == BF_MODE_SURVIVAL && solid && voxel_in_player_box(place_)) break;
                 }
                 if (mode_ == BF_MODE_SURVIVAL && !inv_->remove_item(sel.item, 1)) break;
@@ -1167,7 +1167,10 @@ private:
 
     // Is a block solid for player collision? (air + water are passable.)
     // Cross-plants (grass/flowers/mushroom) are decorative — you walk through them.
-    static bool is_plant(BlockId b) { return b == 36 || b == 37 || b == 38 || b == 39; }
+    // Pass-through decorations (no player/entity collision): all sub-voxel props
+    // (flowers..fallen stick). Like plants, you walk through them and break them but
+    // they never block movement. (#: prop collision)
+    static bool is_plant(BlockId b) { return b >= 36 && b <= 47; }
     bool collide_solid(int x, int y, int z) const {
         BlockId b = block_at(IVec3{x, y, z});
         return b != AIR && b != WATER && !is_plant(b);

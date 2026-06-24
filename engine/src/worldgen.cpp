@@ -1629,14 +1629,19 @@ static TreeDesc tree_for_cell(std::int32_t cell_cx, std::int32_t cell_cz,
 // ---------------------------------------------------------------------------
 
 // ROUND: classic 5x3x5 with clipped corners (original shape, kept intact).
+// #54: real-tree canopies. The deciduous crowns (round/broad/compact/giant) are now
+// full rounded ELLIPSOIDS — taller and fuller than the old flat 3-block box-rings, so
+// they read as real tree crowns, not Minecraft cubes. The per-voxel leaf_hash nibble
+// (applied by the caller) still ragged-edges them so they aren't perfect spheres.
+static inline bool in_ellipsoid(int dx, int dy, int dz, float hr, float vr) noexcept {
+    float rx = float(dx) / hr, ry = float(dy) / vr, rz = float(dz) / hr;
+    return rx * rx + ry * ry + rz * rz <= 1.0f;
+}
+
+// ROUND: a full rounded ball crown (~6 wide, ~5 tall).
 static bool in_canopy_round(int dx, int dy, int dz) noexcept {
-    if (dy < -1 || dy > 1)                return false;
-    if (dx < -2 || dx > 2)               return false;
-    if (dz < -2 || dz > 2)               return false;
-    bool outer_x = (dx == -2 || dx == 2);
-    bool outer_z = (dz == -2 || dz == 2);
-    if (outer_x && outer_z && dy != 0)   return false;
-    return true;
+    if (dy < -2 || dy > 2) return false;
+    return in_ellipsoid(dx, dy, dz, 3.0f, 2.6f);
 }
 
 // TALL: narrow column-ish canopy (spruce-like).
@@ -1665,42 +1670,20 @@ static bool in_canopy_tall(int dx, int dy, int dz) noexcept {
 //   dy=+1: 3x3 crown
 //   dy= 0: 5x5 minus corners
 //   dy=-1: 7x7 minus corners (outermost ring, somewhat sparse via dy=-1 alone)
+// BROAD: a wide rounded crown (~7 wide, a touch flatter).
 static bool in_canopy_broad(int dx, int dy, int dz) noexcept {
-    if (dy < -1 || dy > 1)               return false;
-    if (dy == 1) {
-        return (dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1);  // 3x3 crown
-    }
-    if (dy == 0) {
-        if (dx < -2 || dx > 2 || dz < -2 || dz > 2) return false;
-        bool ox = (dx == -2 || dx == 2);
-        bool oz = (dz == -2 || dz == 2);
-        if (ox && oz) return false;  // clip corners
-        return true;
-    }
-    // dy == -1: 7x7 ring, heavy clipping
-    if (dx < -3 || dx > 3 || dz < -3 || dz > 3) return false;
-    bool ox = (dx <= -3 || dx >= 3);
-    bool oz = (dz <= -3 || dz >= 3);
-    if (ox && oz) return false;
-    // also skip the inner 3x3 at this level (ring only)
-    if (dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1) return false;
-    return true;
+    if (dy < -2 || dy > 2) return false;
+    return in_ellipsoid(dx, dy, dz, 3.4f, 2.1f);
 }
 
 // COMPACT: dense squat 5x3x5 fully filled (swamp/plains short trees).
 //   dy=-1: 5x5 no corners
 //   dy= 0: 5x5 no corners
 //   dy=+1: 3x3
+// COMPACT: a small dense round bush crown (short trees).
 static bool in_canopy_compact(int dx, int dy, int dz) noexcept {
-    if (dy < -1 || dy > 1)               return false;
-    if (dy == 1) {
-        return (dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1);
-    }
-    if (dx < -2 || dx > 2 || dz < -2 || dz > 2) return false;
-    bool ox = (dx == -2 || dx == 2);
-    bool oz = (dz == -2 || dz == 2);
-    if (ox && oz) return false;
-    return true;
+    if (dy < -2 || dy > 1) return false;
+    return in_ellipsoid(dx, dy, dz, 2.5f, 2.0f);
 }
 
 // PINE: tall conical layered canopy (spruce/pine).
@@ -1743,29 +1726,10 @@ static bool in_canopy_pine(int dx, int dy, int dz) noexcept {
 //   dy= 0: 5x5 no corners
 //   dy=+1: 3x3
 // This produces a massive, impressive canopy suitable for rare giant trees.
+// GIANT: a large rounded crown (~9 wide, ~6 tall) on a thick trunk.
 static bool in_canopy_giant(int dx, int dy, int dz) noexcept {
-    if (dy < -2 || dy > 1)               return false;
-    if (dy == 1) return (dx >= -1 && dx <= 1 && dz >= -1 && dz <= 1);
-    if (dy == 0) {
-        if (dx < -2 || dx > 2 || dz < -2 || dz > 2) return false;
-        bool ox = (dx == -2 || dx == 2);
-        bool oz = (dz == -2 || dz == 2);
-        if (ox && oz) return false;
-        return true;
-    }
-    if (dy == -1) {
-        if (dx < -3 || dx > 3 || dz < -3 || dz > 3) return false;
-        bool ox = (dx <= -3 || dx >= 3);
-        bool oz = (dz <= -3 || dz >= 3);
-        if (ox && oz) return false;
-        return true;
-    }
-    // dy == -2: 9x9 no outermost corners
-    if (dx < -4 || dx > 4 || dz < -4 || dz > 4) return false;
-    bool ox = (dx <= -4 || dx >= 4);
-    bool oz = (dz <= -4 || dz >= 4);
-    if (ox && oz) return false;
-    return true;
+    if (dy < -2 || dy > 3) return false;
+    return in_ellipsoid(dx, dy, dz, 4.0f, 3.0f);
 }
 
 // WEEPING: drooping willow-ish canopy.
