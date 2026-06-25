@@ -1886,7 +1886,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         let L = normalize(sunDir)                         // points downward from sun
         // Light-space basis depends ONLY on the sun direction (f = L), so it's stable
         // frame-to-frame regardless of where the camera is.
-        let worldUp: SIMD3<Float> = abs(L.y) > 0.9 ? SIMD3<Float>(1, 0, 0) : SIMD3<Float>(0, 1, 0)
+        // #49 residual sun-angle bug: this used to switch worldUp from (0,1,0) to (1,0,0)
+        // when |L.y| > 0.9, but the in-game sun peaks at |L.y| ~ 0.96 around noon, so it
+        // crossed that threshold twice a day — and the switch flips the right vector almost
+        // 180 degrees (measured |delta r| ~ 1.84 vs ~0.005 continuous), a hard shadow POP.
+        // The sun never goes fully vertical, so a fixed (0,1,0) up stays well-defined all
+        // day and the basis changes smoothly. No more flip, no more pop.
+        let worldUp = SIMD3<Float>(0, 1, 0)
         let r = normalize(cross(L, worldUp))              // light right
         let u = cross(r, L)                               // light up
         // TEXEL-SNAP the frustum centre to the light-space texel grid. This is the
