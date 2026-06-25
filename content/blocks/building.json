@@ -126,6 +126,18 @@
     }
   },
   {
+    "id": 49,
+    "name": "pine_log",
+    "display_name": "Pine Log",
+    "hardness": 10,
+    "required_tier": 0,
+    "preferred_tool": "axe",
+    "textures": {
+      "top": "oak_log_top",
+      "side": "oak_log_side"
+    }
+  },
+  {
     "id": 28,
     "name": "wool_block",
     "display_name": "Wool",

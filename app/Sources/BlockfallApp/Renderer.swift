@@ -1741,6 +1741,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             return [
                 (SIMD3(0.50, 0.50, 0.50), SIMD3(0.36, 0.50, 0.36), wbirch),
             ]
+        case 49:       // #62 PINE trunk — dark reddish-brown conifer wood
+            let wpine = SIMD3<Float>(0.34, 0.22, 0.14)
+            return [
+                (SIMD3(0.50, 0.50, 0.50), SIMD3(0.40, 0.50, 0.40), wpine),
+            ]
         case 48:       // #62 PINE needles — dark green cones. Tall, slim silhouette, but a
                        // fuller lower skirt so the canopy reads dense, not see-through.
             let p1 = SIMD3<Float>(0.16, 0.34, 0.20)
@@ -1763,7 +1768,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         switch type {
         case 5, 27: return 1   // oak/birch foliage → sphere
         case 48:    return 2   // pine needles → cone (conifer look)
-        case 21, 22: return 3  // oak/birch trunk → cylinder
+        case 21, 22, 49: return 3  // oak/birch/pine trunk → cylinder
         default:     return 0  // box
         }
     }
@@ -1771,11 +1776,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Build the static model table: 4 type-rows × 4 cuboid-slots of PropCuboidGPU.
     // Unused slots are left zero (zero half-extent → the vertex shader skips them).
     static func makePropModelTable(device: MTLDevice) -> MTLBuffer {
-        let rows = 17, slots = 4
+        let rows = 18, slots = 4
         var table = [PropCuboidGPU](repeating: PropCuboidGPU(cx:0,cy:0,cz:0, hx:0,hy:0,hz:0, r:0,g:0,b:0),
                                     count: rows * slots)
         let typeForRow: [UInt32] = [36, 37, 39, 40, 38, 41, 42, 43, 44, 45, 46, 47,
-                                    5, 27, 21, 22, 48]  // #62 foliage(12,13) trunk(14,15) pine(16)
+                                    5, 27, 21, 22, 48, 49]  // #62 foliage(12,13) trunk(14,15) pine needles(16) pine log(17)
         for row in 0..<rows {
             let model = propModel(typeForRow[row])
             let shape = propPartShape(typeForRow[row])   // #62 box/sphere/cone/cylinder
@@ -3971,9 +3976,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         int row = (inst.type == 36u) ? 0 : (inst.type == 37u) ? 1 : (inst.type == 39u) ? 2 : (inst.type == 40u) ? 3 : (inst.type == 38u) ? 4 : (inst.type == 41u) ? 5 : (inst.type == 42u) ? 6 : (inst.type == 43u) ? 7 : (inst.type == 44u) ? 8 : (inst.type == 45u) ? 9 : (inst.type == 46u) ? 10 : (inst.type == 47u) ? 11
                 : (inst.type == 5u) ? 12 : (inst.type == 27u) ? 13   // #62 foliage (oak, birch)
                 : (inst.type == 21u) ? 14 : (inst.type == 22u) ? 15  // #62 trunk (oak, birch)
-                : (inst.type == 48u) ? 16                            // #62 pine needles (cone)
+                : (inst.type == 48u) ? 16 : (inst.type == 49u) ? 17   // #62 pine needles(16), pine trunk(17)
                 : -1;
-        bool isTrunk = (row == 14 || row == 15);
+        bool isTrunk = (row == 14 || row == 15 || row == 17);
         uint cuboidIdx = vid / kVertsPerShape;
         if (row < 0 || cuboidIdx >= kPropMaxCuboids) { o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o; }
         PropCuboid cu = models[uint(row) * kPropMaxCuboids + cuboidIdx];

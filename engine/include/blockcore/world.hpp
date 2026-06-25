@@ -1514,7 +1514,7 @@ private:
     }
     // ---- Wave 3: destruction physics ---------------------------------------
     static bool is_gravity_block(BlockId b) { return b == 6 || b == 11; }   // sand, gravel
-    static bool is_log(BlockId b)           { return b == 21 || b == 22; }  // oak/birch log
+    static bool is_log(BlockId b)           { return b == 21 || b == 22 || b == 49; }  // oak/birch/pine log
     static bool is_leaf(BlockId b)          { return b == 5 || b == 27; }   // oak/birch leaves
     static V3   falling_color(BlockId b) {
         switch (b) {
@@ -2073,7 +2073,7 @@ private:
     // #62 trees: leaves (oak 5, birch 27, pine 48) + logs (21,22) are drawn as
     // instanced organic models.
     static bool is_tree_block(BlockId id) {
-        return id == 5u || id == 27u || id == 48u || id == 21u || id == 22u;
+        return id == 5u || id == 27u || id == 48u || id == 21u || id == 22u || id == 49u;
     }
     // Cache the chunk's prop blocks as instances for the prop renderer. Runs once
     // per (re)mesh, not per frame.
@@ -2111,10 +2111,10 @@ private:
             // #62 taper: a trunk log carries its height above the base (count of
             // contiguous logs below, across chunks) in the seed's high byte, so the
             // renderer can narrow the trunk as it rises. Low 24 bits keep the colour hash.
-            if (id == 21u || id == 22u) {
+            if (id == 21u || id == 22u || id == 49u) {
                 auto is_log = [&](int dx, int dy, int dz) {
                     BlockId b = block_at(IVec3{bx + lx + dx, by + ly + dy, bz + lz + dz});
-                    return b == 21u || b == 22u;
+                    return b == 21u || b == 22u || b == 49u;
                 };
                 // #62 branches: a log with no log directly above OR below is a BRANCH
                 // (the trunk steps out-and-up diagonally), so it should be drawn lying
