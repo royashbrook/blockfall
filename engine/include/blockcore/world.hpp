@@ -577,7 +577,13 @@ public:
             bob_phase_ += float(dt) * 9.5f;
             bob_amt_ = std::min(bob_amt_ + float(dt) * 5.0f, 1.0f);
             step_timer_ -= float(dt);
-            if (step_timer_ <= 0.0f) { step_timer_ = 0.45f; fx(2, player_voxel()); }   // footstep
+            if (step_timer_ <= 0.0f) {                                   // footstep
+                step_timer_ = 0.45f;
+                IVec3 pv = player_voxel();
+                int gy = floor_below(pv.x, pv.y + 1, pv.z);
+                BlockId fb = (gy != kNoFloor) ? block_at(IVec3{pv.x, gy - 1, pv.z}) : BlockId(GRASS);
+                fx(2, pv, footstep_class(fb));                           // terrain class -> step sound
+            }
         } else { bob_amt_ = std::max(bob_amt_ - float(dt) * 7.0f, 0.0f); }
         // (Don't reset step_timer_ when momentarily not walking — that caused the
         // footstep to re-trigger instantly and sound jittery on bumpy ground.)
@@ -1148,6 +1154,18 @@ private:
     }
     // #69 an OPEN door (50) is passable; a CLOSED door (33) blocks you like any wall.
     static bool solid_block(BlockId b) { return b != AIR && b != WATER && b != 50u && !is_plant(b); }
+    // Footstep terrain class for the ground you are standing on: 0 soft (grass/dirt),
+    // 1 hard (stone/brick/cobble), 2 sand, 3 snow/ice, 4 wood. The app plays a different,
+    // gentler step sound per class.
+    static int footstep_class(BlockId b) {
+        switch (b) {
+            case 3: case 8: case 10: case 29: return 1;                         // stone/brick/cobble/mossy
+            case 6:                           return 2;                         // sand
+            case 12: case 13:                 return 3;                         // snow / ice
+            case 4: case 23: case 21: case 22: case 49: case 51: case 33: return 4;  // wood
+            default:                          return 0;                         // grass / dirt / soft
+        }
+    }
     // Cheap biome label from the surface block under the player + nearby trees.
     // Authoritative biome at the player, straight from worldgen (0=Plains 1=Forest
     // 2=Mountains 3=Desert 4=Snowy 5=Swamp 6=Beach) — the old block-sniffing
@@ -2136,17 +2154,18 @@ private:
                 // (the trunk steps out-and-up diagonally), so it should be drawn lying
                 // sideways, not as another vertical log. Trunk logs taper with height.
                 bool above = is_log(0, 1, 0), below = is_log(0, -1, 0);
-                if (!above && !below) {
-                    // Branch: pick the horizontal axis it runs along from its neighbours.
-                    bool xax = is_log(1,1,0)||is_log(-1,1,0)||is_log(1,-1,0)||is_log(-1,-1,0)||is_log(1,0,0)||is_log(-1,0,0);
-                    bool zax = is_log(0,1,1)||is_log(0,1,-1)||is_log(0,-1,1)||is_log(0,-1,-1)||is_log(0,0,1)||is_log(0,0,-1);
+                bool xax = is_log(1,1,0)||is_log(-1,1,0)||is_log(1,-1,0)||is_log(-1,-1,0)||is_log(1,0,0)||is_log(-1,0,0);
+                bool zax = is_log(0,1,1)||is_log(0,1,-1)||is_log(0,-1,1)||is_log(0,-1,-1)||is_log(0,0,1)||is_log(0,0,-1);
+                if (!above && !below && !xax && !zax) {
+                    // Lone log (no neighbours at all): render as a plain upright post, not a
+                    // drooping branch. bit31=0 trunk, level 0, no slant. (#62 followup)
+                    h = (h & 0x001FFFFFu);
+                } else if (!above && !below) {
+                    // Branch: a horizontal limb. It lies SIDEWAYS along x or z (bit 30) and
+                    // is fattened + extended to bridge to its neighbours; NO downward slant
+                    // (that made branches droop and point at the ground). (#62 followup)
                     std::uint32_t axis = (zax && !xax) ? 1u : 0u;   // 0 = x-axis, 1 = z-axis
-                    // #62 branch slant: which end is the trunk/inner side (a log at or
-                    // below, along the axis), so the renderer bends that end DOWN to
-                    // connect, the same way trunk lean-bends connect.
-                    bool innerNeg = (axis == 0u) ? (is_log(-1,0,0) || is_log(-1,-1,0))
-                                                 : (is_log(0,0,-1) || is_log(0,-1,-1));
-                    h = 0x80000000u | (axis << 30) | ((innerNeg ? 1u : 0u) << 29) | (h & 0x1FFFFFFFu);
+                    h = 0x80000000u | (axis << 30) | (h & 0x3FFFFFFFu);
                 } else {
                     int level = 0;
                     for (int k = 1; k <= 24; ++k) {
