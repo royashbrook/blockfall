@@ -339,7 +339,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var charSkin  = SIMD3<Float>(0.85, 0.66, 0.52)
     private var charShirt = SIMD3<Float>(0.30, 0.50, 0.82)
     func setRenderDistance(_ chunks: Int) {   // #85 live render-distance slider
-        if let e = engine { bf_set_render_distance(e, UInt32(max(8, min(28, chunks)))) }
+        if let e = engine { bf_set_render_distance(e, UInt32(max(8, min(40, chunks)))) }
     }
     func setCharacterAppearance(skin: SIMD3<Float>, shirt: SIMD3<Float>) {
         charSkin = skin; charShirt = shirt
@@ -800,7 +800,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         cfg.start_mode = BF_MODE_SURVIVAL
         // #85 streaming radius (chunks), persisted + adjustable via the pause-menu slider.
         let rd = UserDefaults.standard.object(forKey: "gfxRenderDist") as? Int ?? 24
-        cfg.render_distance_chunks = UInt32(max(8, min(28, rd)))
+        cfg.render_distance_chunks = UInt32(max(8, min(40, rd)))
         cfg.memory_budget_bytes = 10 * 1024 * 1024 * 1024
         // Content is bundled at Resources/content (build.sh copies it there).
         // The registry loads <dir>/blocks, <dir>/items, … so point at that folder,
