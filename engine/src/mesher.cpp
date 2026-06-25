@@ -668,7 +668,7 @@ bool emit_torch(int bx, int by, int bz,
     return true;
 }
 
-bool emit_door(int bx, int by, int bz, BlockId id,
+bool emit_door(int bx, int by, int bz, BlockId id, bool rotated,
                std::uint8_t sky, std::uint8_t blk,
                std::span<std::byte>& vtx_out, std::uint32_t& vtx_written,
                std::span<std::byte>& idx_out, std::uint32_t& idx_written,
@@ -713,8 +713,15 @@ bool emit_door(int bx, int by, int bz, BlockId id,
         quad(vert(xlo,ylo,zlo,BF_NY_NEG,0,0), vert(xhi,ylo,zlo,BF_NY_NEG,1,0), vert(xhi,ylo,zhi,BF_NY_NEG,1,1), vert(xlo,ylo,zhi,BF_NY_NEG,0,1));
     };
     constexpr std::uint32_t T = 3u;   // panel thickness 3/16
-    if (id == DOOR_OPEN) box(0, T, 0, 16, 0, 16);    // swung against the -X side
-    else                 box(0, 16, 0, 16, 0, T);    // closed across the -Z opening
+    // #69 facing: `rotated` true when the wall runs along Z (passage along X), so the panel
+    // is turned 90 degrees to sit in the opening correctly instead of a fixed orientation.
+    if (id == DOOR_OPEN) {
+        if (rotated) box(0, 16, 0, 16, 0, T);    // open: swung flat against the -Z wall
+        else         box(0, T,  0, 16, 0, 16);   // open: swung flat against the -X wall
+    } else {
+        if (rotated) box(0, T,  0, 16, 0, 16);   // closed: fills the opening across X
+        else         box(0, 16, 0, 16, 0, T);    // closed: fills the opening across Z
+    }
     return true;
 }
 
@@ -869,7 +876,14 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
                 if (is_door(here)) {
                     std::uint8_t dsky = chunk->sky_light(x, y, z);
                     std::uint8_t dblk = chunk->block_light(x, y, z);
-                    if (!emit_door(x, y, z, here, dsky, dblk,
+                    // #69 orient the door to its wall: if the solid wall runs along Z
+                    // (passage along X), turn the panel 90 degrees so it fills the opening.
+                    bool wallX = is_opaque(sample_block(chunk, c, store, x - 1, y, z)) ||
+                                 is_opaque(sample_block(chunk, c, store, x + 1, y, z));
+                    bool wallZ = is_opaque(sample_block(chunk, c, store, x, y, z - 1)) ||
+                                 is_opaque(sample_block(chunk, c, store, x, y, z + 1));
+                    bool rotated = wallZ && !wallX;
+                    if (!emit_door(x, y, z, here, rotated, dsky, dblk,
                                    vtx_out, vtx_written, idx_out, idx_written, vtx_count)) {
                         std::uint32_t ic2 = idx_written / static_cast<std::uint32_t>(sizeof(std::uint32_t));
                         return MeshResult{vtx_written, idx_written, ic2, false};
