@@ -858,6 +858,8 @@ public:
     float   debug_health() const { return health_; }
     float   debug_day_time() const { return day_time(world_clock_); }
     int     debug_quests_completed() const { return quests_completed_; }
+    bool    debug_all_quests_done() const { return all_quests_done_; }   // #41 win state
+    int     debug_regions_restored() const { return regions_restored_; } // #41 Grey receding
     std::uint32_t debug_active_quest() const {
         return (extra_ && active_quest_ < extra_->quests().size() && !all_quests_done_)
              ? extra_->quests()[active_quest_].id : 0u;
