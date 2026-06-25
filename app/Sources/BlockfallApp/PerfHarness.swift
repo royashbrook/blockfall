@@ -307,7 +307,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             if let vmp = viewModelPipeline, let vmb = viewModelArmBuf, let vmd = viewModelDepthState {
                 enc.setRenderPipelineState(vmp); enc.setDepthStencilState(vmd); enc.setCullMode(.none)
                 let dayB = 0.30 + 0.70 * max(0, sin(f.camera.time_of_day * Float.pi))
-                var vmU = ViewModelUniforms(proj: proj, params: SIMD4<Float>(0, 0, dayB, 0))
+                let swing = Float(ProcessInfo.processInfo.environment["BF_SHOT_SWING"] ?? "-1") ?? -1  // #: force swing phase for shots
+                var vmU = ViewModelUniforms(proj: proj, params: SIMD4<Float>(0, 0, dayB, swing))
                 enc.setVertexBuffer(vmb, offset: 0, index: 0)
                 enc.setVertexBytes(&vmU, length: MemoryLayout<ViewModelUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: viewModelArm.count * 36)

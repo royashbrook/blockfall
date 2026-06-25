@@ -282,6 +282,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var heldItemBuf: MTLBuffer?            // #70 v2: equipped item in hand
     private var heldItemCount = 0
     private var lastHeldItem = -1
+    private var swingPulse: Double = -100          // #: time of last mine/place/attack (tool swing)
     private var propInstanceBuffer: MTLBuffer?   // per-frame: the bf_prop_instance list (tiny)
     private let kPropMaxCuboids = 4
     // #62: each part now draws up to 144 verts so it can be a box, sphere, cone, or
@@ -833,7 +834,15 @@ final class Renderer: NSObject, MTKViewDelegate {
         let worldPaused = (gameView?.worldIsPaused ?? false) && bf_net_peer_count(e) == 0
         _ = bf_frame_begin(e, &input, worldPaused ? 0.0 : dt)
         if let actions = gameView?.drainActions() {
-            for var a in actions { bf_input_action(e, &a) }
+            for var a in actions {
+                // #: trigger a tool swing on mine/place/attack (continuous mining is
+                // handled separately via mine_progress in the viewmodel draw).
+                if a.kind == BF_ACT_MINE_START || a.kind == BF_ACT_PLACE
+                   || a.kind == BF_ACT_ATTACK || a.kind == BF_ACT_INTERACT {
+                    swingPulse = now
+                }
+                bf_input_action(e, &a)
+            }
         }
 
         // 2) acquire render
@@ -1152,8 +1161,18 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setDepthStencilState(viewModelDepthState)
                 enc.setCullMode(.none)
                 let dayB = 0.30 + 0.70 * max(0, sin(frame.camera.time_of_day * Float.pi))
+                // #: tool swing — repeated goofy chops while mining (mine_progress > 0),
+                // one chop per discrete mine/place/attack. -1 = idle (no swing).
+                let swingPhase: Float
+                if frame.hud.mine_progress > 0.0 {
+                    swingPhase = Float(fmod(now * 2.4, 1.0))
+                } else if (now - swingPulse) < 0.35 {
+                    swingPhase = Float((now - swingPulse) / 0.35)
+                } else {
+                    swingPhase = -1.0
+                }
                 var vmU = ViewModelUniforms(proj: proj, params: SIMD4<Float>(
-                    sin(wallClock * 1.6) * 0.006, sin(wallClock * 3.1) * 0.006, dayB, 0))
+                    sin(wallClock * 1.6) * 0.006, sin(wallClock * 3.1) * 0.006, dayB, swingPhase))
                 enc.setVertexBytes(&vmU, length: MemoryLayout<ViewModelUniforms>.stride, index: 1)
                 enc.setVertexBuffer(viewModelArmBuf, offset: 0, index: 0)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: viewModelArmCount * 36)
@@ -4042,6 +4061,19 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 cpos = kFaceCorner[face * 4u + corner];
         float3 vp = float3(cu.center) + cpos * (2.0 * half_);
         vp.x += u.params.x; vp.y += u.params.y;          // idle bob
+        // #: goofy tool swing. params.w < 0 = idle; 0..1 = swing phase. The whole arm +
+        // held item pitch about the wrist in a quick chop (down-forward then back), with a
+        // little overshoot wobble so it reads as a fun bonk, not a precise motion.
+        if (u.params.w >= 0.0) {
+            float ph  = u.params.w;
+            float arc = sin(ph * 3.14159265) * 1.05            // main down-up chop
+                      + sin(ph * 9.4248) * 0.10;               // little jiggle/overshoot
+            float3 piv = float3(0.44, -1.04, -0.92);           // wrist/elbow pivot
+            float3 d = vp - piv;
+            float ca = cos(arc), sa = sin(arc);
+            vp = piv + float3(d.x, d.y * ca - d.z * sa, d.y * sa + d.z * ca);  // pitch about X
+            vp.z -= sin(ph * 3.14159265) * 0.18;               // thrust forward on the chop
+        }
         o.position = u.proj * float4(vp, 1.0);
         o.nrm = kFaceNrm[face];
         o.col = float3(cu.color) * (0.62 + 0.38 * u.params.z);  // dim a touch at night
