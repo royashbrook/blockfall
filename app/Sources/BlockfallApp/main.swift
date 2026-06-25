@@ -25,6 +25,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var gameView: GameView?
     var gameContainer: NSView?
     var pauseOverlay: NSView?
+    // #71 character editor state.
+    var charEditorOverlay: NSView?
+    private weak var charPreview: CharacterPreviewView?
+    private var charRowLabels: [NSTextField] = []
+    private var editorAppearance = CharacterAppearance()
+    private let charTraits: [CharacterAppearance.Trait] = [.skin, .shirt, .hairColor, .hairStyle, .nose, .mouth]
+    private let charTraitNames = ["Skin", "Shirt", "Hair Colour", "Hair Style", "Nose", "Mouth"]
     // #: pause-menu HUD-option controls (held so the action handlers can update
     // the live value label). Rebuilt each time the pause overlay opens.
     private weak var hudScaleSlider: NSSlider?
@@ -211,7 +218,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         auStack.orientation = .vertical; auStack.spacing = 8; auStack.alignment = .leading
 
-        let stack = NSStackView(views: [title, sliderRow, showHUD, fxTitle, fxStack, auTitle, auStack, resume, menuBtn])
+        let charBtn = pauseButton("Customize Character", #selector(openCharacterEditor))
+        let stack = NSStackView(views: [title, sliderRow, showHUD, fxTitle, fxStack, auTitle, auStack, charBtn, resume, menuBtn])
         stack.orientation = .vertical; stack.spacing = 18; stack.alignment = .centerX
         stack.translatesAutoresizingMaskIntoConstraints = false
         ov.addSubview(stack)
@@ -244,6 +252,100 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         gameView?.setPaused(false)
         gameView?.grabMouse()
         if let gv = gameView { window.makeFirstResponder(gv) }
+    }
+
+    // #71 character editor: a focused overlay with a live portrait preview and a row of
+    // +/- pickers for each trait. Changes save and apply to the player immediately.
+    @objc private func openCharacterEditor() {
+        guard let parent = window.contentView else { return }
+        editorAppearance = CharacterAppearance.load()
+
+        let ov = NSView(frame: parent.bounds)
+        ov.autoresizingMask = [.width, .height]
+        ov.wantsLayer = true
+        ov.layer?.backgroundColor = NSColor(calibratedWhite: 0, alpha: 0.82).cgColor
+
+        let title = NSTextField(labelWithString: "Customize Character")
+        title.font = .boldSystemFont(ofSize: 24); title.textColor = .white
+
+        let preview = CharacterPreviewView(frame: .zero)
+        preview.character = editorAppearance
+        preview.wantsLayer = true; preview.layer?.cornerRadius = 12
+        preview.translatesAutoresizingMaskIntoConstraints = false
+        preview.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        preview.heightAnchor.constraint(equalToConstant: 180).isActive = true
+        charPreview = preview
+
+        charRowLabels = []
+        var rows: [NSView] = [title, preview]
+        for (i, name) in charTraitNames.enumerated() { rows.append(charTraitRow(i, name)) }
+        let done = pauseButton("Done", #selector(closeCharacterEditor))
+        rows.append(done)
+
+        let stack = NSStackView(views: rows)
+        stack.orientation = .vertical; stack.spacing = 12; stack.alignment = .centerX
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        ov.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: ov.centerYAnchor),
+        ])
+        parent.addSubview(ov)
+        charEditorOverlay = ov
+        refreshCharRows()
+    }
+
+    private func charTraitRow(_ idx: Int, _ name: String) -> NSView {
+        let label = NSTextField(labelWithString: name)
+        label.font = .boldSystemFont(ofSize: 15); label.textColor = .white
+        label.alignment = .right
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.widthAnchor.constraint(equalToConstant: 110).isActive = true
+
+        func arrow(_ glyph: String, _ tag: Int) -> NSButton {
+            let b = NSButton(title: glyph, target: self, action: #selector(charCycle(_:)))
+            b.tag = tag; b.bezelStyle = .regularSquare; b.isBordered = false
+            b.wantsLayer = true
+            b.layer?.backgroundColor = NSColor(calibratedRed: 0.30, green: 0.62, blue: 0.42, alpha: 1).cgColor
+            b.layer?.cornerRadius = 8
+            b.attributedTitle = NSAttributedString(string: glyph, attributes: [
+                .font: NSFont.boldSystemFont(ofSize: 18), .foregroundColor: NSColor.white])
+            b.translatesAutoresizingMaskIntoConstraints = false
+            b.widthAnchor.constraint(equalToConstant: 40).isActive = true
+            b.heightAnchor.constraint(equalToConstant: 34).isActive = true
+            return b
+        }
+        let value = NSTextField(labelWithString: "")
+        value.font = .systemFont(ofSize: 15); value.textColor = .white; value.alignment = .center
+        value.translatesAutoresizingMaskIntoConstraints = false
+        value.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        charRowLabels.append(value)
+
+        let row = NSStackView(views: [label, arrow("\u{25C0}", idx * 2), value, arrow("\u{25B6}", idx * 2 + 1)])
+        row.orientation = .horizontal; row.spacing = 8; row.alignment = .centerY
+        return row
+    }
+
+    @objc private func charCycle(_ sender: NSButton) {
+        let idx = sender.tag / 2, dir = (sender.tag % 2 == 0) ? -1 : 1
+        guard idx >= 0 && idx < charTraits.count else { return }
+        editorAppearance.cycle(charTraits[idx], by: dir)
+        editorAppearance.save()
+        refreshCharRows()
+        charPreview?.character = editorAppearance
+        renderer?.setCharacterAppearance(skin: editorAppearance.skinRGB, shirt: editorAppearance.shirtRGB)
+    }
+
+    private func refreshCharRows() {
+        for (i, t) in charTraits.enumerated() where i < charRowLabels.count {
+            charRowLabels[i].stringValue = editorAppearance.valueName(t)
+        }
+    }
+
+    @objc private func closeCharacterEditor() {
+        editorAppearance.save()
+        renderer?.setCharacterAppearance(skin: editorAppearance.skinRGB, shirt: editorAppearance.shirtRGB)
+        charEditorOverlay?.removeFromSuperview(); charEditorOverlay = nil
     }
 
     // #: HUD Text Size slider → live HUD + persisted.
@@ -377,6 +479,29 @@ if let idx = CommandLine.arguments.firstIndex(of: "--screenshot"), idx + 1 < Com
 if let idx = CommandLine.arguments.firstIndex(of: "--shot"), idx + 1 < CommandLine.arguments.count {
     let ok = runPerfTest(seconds: 0, jsonPath: nil, shotPath: CommandLine.arguments[idx + 1])
     exit(ok ? 0 : 1)
+}
+// --portrait <path>: headless render of the editor portrait across a few appearance
+// variants, so the look can be checked without the desktop UI (#71).
+if let idx = CommandLine.arguments.firstIndex(of: "--portrait"), idx + 1 < CommandLine.arguments.count {
+    let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+    let cell = 256, cols = 4
+    let variants: [CharacterAppearance] = [
+        CharacterAppearance(),                                                                       // default
+        CharacterAppearance(skin: 5, shirt: 4, hairColor: 6, hairStyle: 2, nose: 2, mouth: 1),       // dark skin, spiky blue, grin
+        CharacterAppearance(skin: 0, shirt: 6, hairColor: 3, hairStyle: 1, nose: 1, mouth: 3),       // pale, long blonde, whoa
+        CharacterAppearance(skin: 3, shirt: 8, hairColor: 0, hairStyle: 3, nose: 0, mouth: 2),       // tan, bald, neutral
+    ]
+    let W = cell * min(cols, variants.count)
+    let H = cell * ((variants.count + cols - 1) / cols)
+    let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    for (i, v) in variants.enumerated() {
+        let r = CGRect(x: (i % cols) * cell, y: H - (i / cols + 1) * cell, width: cell, height: cell)
+        v.drawPortrait(in: ctx, rect: r)
+    }
+    let rep = NSBitmapImageRep(cgImage: ctx.makeImage()!)
+    try? rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[idx + 1]))
+    exit(0)
 }
 // --critters <path>: headless gallery of every creature model (#51 sub-voxel review).
 if let idx = CommandLine.arguments.firstIndex(of: "--critters"), idx + 1 < CommandLine.arguments.count {

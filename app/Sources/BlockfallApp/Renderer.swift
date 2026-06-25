@@ -161,9 +161,8 @@ struct ViewModelUniforms {
 /// The first-person arm + held item, as cuboids in VIEW space (camera at origin,
 /// looking down -z). Lower-right of the view, forearm angling forward, fist at the
 /// front. Ordered back-to-front so the always-on-top draw layers correctly. (#70)
-func makeViewModelArm() -> [PropCuboidGPU] {
-    let skin   = SIMD3<Float>(0.85, 0.66, 0.52)
-    let sleeve = SIMD3<Float>(0.30, 0.50, 0.82)   // blue shirt cuff
+func makeViewModelArm(skin: SIMD3<Float> = SIMD3<Float>(0.85, 0.66, 0.52),
+                      sleeve: SIMD3<Float> = SIMD3<Float>(0.30, 0.50, 0.82)) -> [PropCuboidGPU] {
     func part(_ c: SIMD3<Float>, _ h: SIMD3<Float>, _ col: SIMD3<Float>) -> PropCuboidGPU {
         PropCuboidGPU(cx: c.x, cy: c.y, cz: c.z, hx: h.x, hy: h.y, hz: h.z, r: col.x, g: col.y, b: col.z, shape: 0)
     }
@@ -300,6 +299,16 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var viewModelDepthState: MTLDepthStencilState!   // always-on-top
     private var viewModelArmBuf: MTLBuffer!
     private var viewModelArmCount = 0
+    // #71 the player's own skin/shirt, applied to the first-person arm.
+    private var charSkin  = SIMD3<Float>(0.85, 0.66, 0.52)
+    private var charShirt = SIMD3<Float>(0.30, 0.50, 0.82)
+    func setCharacterAppearance(skin: SIMD3<Float>, shirt: SIMD3<Float>) {
+        charSkin = skin; charShirt = shirt
+        let arm = makeViewModelArm(skin: charSkin, sleeve: charShirt)
+        viewModelArmCount = arm.count
+        viewModelArmBuf = device.makeBuffer(bytes: arm, length: arm.count * MemoryLayout<PropCuboidGPU>.stride,
+                                            options: .storageModeShared)
+    }
     private var heldItemBuf: MTLBuffer?            // #70 v2: equipped item in hand
     private var heldItemCount = 0
     private var lastHeldItem = -1
@@ -587,7 +596,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         vmdd.depthCompareFunction = .always   // draw over the scene; parts ordered back-to-front
         vmdd.isDepthWriteEnabled  = false
         viewModelDepthState = device.makeDepthStencilState(descriptor: vmdd)
-        let arm = makeViewModelArm()
+        let ap0 = CharacterAppearance.load()                 // #71 own arm reflects your skin/shirt
+        charSkin = ap0.skinRGB; charShirt = ap0.shirtRGB
+        let arm = makeViewModelArm(skin: charSkin, sleeve: charShirt)
         viewModelArmCount = arm.count
         viewModelArmBuf = device.makeBuffer(bytes: arm, length: arm.count * MemoryLayout<PropCuboidGPU>.stride,
                                             options: .storageModeShared)
