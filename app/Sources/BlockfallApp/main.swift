@@ -31,8 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var charPreview: CharacterPreviewView?
     private var charRowLabels: [NSTextField] = []
     private var editorAppearance = CharacterAppearance()
-    private let charTraits: [CharacterAppearance.Trait] = [.skin, .shirt, .hairColor, .hairStyle, .nose, .mouth]
-    private let charTraitNames = ["Skin", "Shirt", "Hair Colour", "Hair Style", "Nose", "Mouth"]
+    private let charTraits: [CharacterAppearance.Trait] = [.skin, .shirt, .hairColor, .hairStyle, .eyeStyle, .eyeColor, .nose, .mouth]
+    private let charTraitNames = ["Skin", "Shirt", "Hair Colour", "Hair Style", "Eyes", "Eye Colour", "Nose", "Mouth"]
     // #: pause-menu HUD-option controls (held so the action handlers can update
     // the live value label). Rebuilt each time the pause overlay opens.
     private weak var hudScaleSlider: NSSlider?
@@ -221,7 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let rdLabel = NSTextField(labelWithString: "Render Distance")
         rdLabel.font = .systemFont(ofSize: 14); rdLabel.textColor = .white
         let rdVal = UserDefaults.standard.object(forKey: "gfxRenderDist") as? Int ?? 24
-        let rdSlider = NSSlider(value: Double(rdVal), minValue: 8, maxValue: 28,
+        let rdSlider = NSSlider(value: Double(rdVal), minValue: 8, maxValue: 40,
                                 target: self, action: #selector(renderDistChanged(_:)))
         rdSlider.translatesAutoresizingMaskIntoConstraints = false
         rdSlider.widthAnchor.constraint(equalToConstant: 180).isActive = true
@@ -538,11 +538,12 @@ if let idx = CommandLine.arguments.firstIndex(of: "--shot"), idx + 1 < CommandLi
 // variants, so the look can be checked without the desktop UI (#71).
 if let idx = CommandLine.arguments.firstIndex(of: "--portrait"), idx + 1 < CommandLine.arguments.count {
     let cs = CGColorSpace(name: CGColorSpace.sRGB)!
-    let cell = 220, cols = 10
+    let cell = 190, cols = 10
     var variants: [CharacterAppearance] = []
-    for h in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 4, hairColor: 1, hairStyle: h, nose: 0, mouth: 0)) }  // all hair styles
-    for n in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 7, hairColor: 1, hairStyle: 2, nose: n, mouth: 0)) }  // all noses
-    for m in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 3, hairColor: 1, hairStyle: 2, nose: 0, mouth: m)) }  // all mouths
+    for h in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 4, hairColor: 1, hairStyle: h)) }              // all hair styles
+    for e in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 7, hairColor: 1, hairStyle: 2, eyeStyle: e, eyeColor: e)) } // all eyes + colours
+    for n in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 8, hairColor: 1, hairStyle: 2, nose: n)) }    // all noses
+    for m in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 3, hairColor: 1, hairStyle: 2, mouth: m)) }   // all mouths
     let W = cell * min(cols, variants.count)
     let H = cell * ((variants.count + cols - 1) / cols)
     let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: 0,

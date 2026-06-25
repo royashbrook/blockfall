@@ -13,6 +13,8 @@ struct CharacterAppearance: Equatable {
     var hairStyle: Int = 2
     var nose: Int      = 0
     var mouth: Int     = 0
+    var eyeStyle: Int  = 0
+    var eyeColor: Int  = 0
 
     // ---- preset tables (10+ each, all meant to look normal, not wacky) -----
     static let skinPalette: [SIMD3<Float>] = [
@@ -39,6 +41,15 @@ struct CharacterAppearance: Equatable {
                              "Long", "Upturned", "Flat", "Broad", "Narrow"]
     static let mouthNames = ["Smile", "Grin", "Neutral", "Whoa", "Frown",
                              "Smirk", "Laugh", "Tiny", "Big Smile", "Content"]
+    static let eyeStyleNames = ["Round", "Oval", "Wide", "Big", "Small",
+                                "Sleepy", "Squint", "Happy", "Sparkle", "Starry"]
+    static let eyeColorPalette: [SIMD3<Float>] = [
+        SIMD3(0.36, 0.24, 0.14), SIMD3(0.22, 0.46, 0.78), SIMD3(0.26, 0.56, 0.34),
+        SIMD3(0.52, 0.42, 0.24), SIMD3(0.50, 0.52, 0.55), SIMD3(0.78, 0.56, 0.20),
+        SIMD3(0.14, 0.11, 0.12), SIMD3(0.52, 0.34, 0.66), SIMD3(0.20, 0.60, 0.60),
+        SIMD3(0.70, 0.30, 0.30),
+    ]
+    var eyeRGB: SIMD3<Float> { CharacterAppearance.pick(CharacterAppearance.eyeColorPalette, eyeColor) }
 
     private static func pick(_ table: [SIMD3<Float>], _ i: Int) -> SIMD3<Float> {
         table[((i % table.count) + table.count) % table.count]
@@ -48,7 +59,7 @@ struct CharacterAppearance: Equatable {
     var hairRGB:  SIMD3<Float> { CharacterAppearance.pick(CharacterAppearance.hairPalette,  hairColor) }
 
     // ---- cycling + randomize -----------------------------------------------
-    enum Trait { case skin, shirt, hairColor, hairStyle, nose, mouth }
+    enum Trait { case skin, shirt, hairColor, hairStyle, nose, mouth, eyeStyle, eyeColor }
     static func count(_ t: Trait) -> Int {
         switch t {
         case .skin:      return skinPalette.count
@@ -57,6 +68,8 @@ struct CharacterAppearance: Equatable {
         case .hairStyle: return hairStyleNames.count
         case .nose:      return noseNames.count
         case .mouth:     return mouthNames.count
+        case .eyeStyle:  return eyeStyleNames.count
+        case .eyeColor:  return eyeColorPalette.count
         }
     }
     mutating func cycle(_ t: Trait, by d: Int) {
@@ -69,13 +82,16 @@ struct CharacterAppearance: Equatable {
         case .hairStyle: hairStyle = step(hairStyle)
         case .nose:      nose      = step(nose)
         case .mouth:     mouth     = step(mouth)
+        case .eyeStyle:  eyeStyle  = step(eyeStyle)
+        case .eyeColor:  eyeColor  = step(eyeColor)
         }
     }
     static func randomized() -> CharacterAppearance {
         CharacterAppearance(
             skin: Int.random(in: 0..<count(.skin)), shirt: Int.random(in: 0..<count(.shirt)),
             hairColor: Int.random(in: 0..<count(.hairColor)), hairStyle: Int.random(in: 0..<count(.hairStyle)),
-            nose: Int.random(in: 0..<count(.nose)), mouth: Int.random(in: 0..<count(.mouth)))
+            nose: Int.random(in: 0..<count(.nose)), mouth: Int.random(in: 0..<count(.mouth)),
+            eyeStyle: Int.random(in: 0..<count(.eyeStyle)), eyeColor: Int.random(in: 0..<count(.eyeColor)))
     }
     func valueName(_ t: Trait) -> String {
         switch t {
@@ -85,6 +101,8 @@ struct CharacterAppearance: Equatable {
         case .hairStyle: return CharacterAppearance.hairStyleNames[hairStyle % CharacterAppearance.hairStyleNames.count]
         case .nose:      return CharacterAppearance.noseNames[nose % CharacterAppearance.noseNames.count]
         case .mouth:     return CharacterAppearance.mouthNames[mouth % CharacterAppearance.mouthNames.count]
+        case .eyeStyle:  return CharacterAppearance.eyeStyleNames[eyeStyle % CharacterAppearance.eyeStyleNames.count]
+        case .eyeColor:  return "Colour \(eyeColor + 1)"
         }
     }
 
@@ -98,6 +116,8 @@ struct CharacterAppearance: Equatable {
         if d.object(forKey: "charHairStyle") != nil { a.hairStyle = d.integer(forKey: "charHairStyle") }
         if d.object(forKey: "charNose")      != nil { a.nose      = d.integer(forKey: "charNose") }
         if d.object(forKey: "charMouth")     != nil { a.mouth     = d.integer(forKey: "charMouth") }
+        if d.object(forKey: "charEyeStyle")  != nil { a.eyeStyle  = d.integer(forKey: "charEyeStyle") }
+        if d.object(forKey: "charEyeColor")  != nil { a.eyeColor  = d.integer(forKey: "charEyeColor") }
         return a
     }
     func save() {
@@ -105,6 +125,7 @@ struct CharacterAppearance: Equatable {
         d.set(skin, forKey: "charSkin");           d.set(shirt, forKey: "charShirt")
         d.set(hairColor, forKey: "charHairColor"); d.set(hairStyle, forKey: "charHairStyle")
         d.set(nose, forKey: "charNose");           d.set(mouth, forKey: "charMouth")
+        d.set(eyeStyle, forKey: "charEyeStyle");   d.set(eyeColor, forKey: "charEyeColor")
     }
 
     // ---- 2D portrait (editor preview + headless verification) --------------
@@ -143,76 +164,105 @@ struct CharacterAppearance: Equatable {
         }
         switch hairStyle {
         case 0: break                                   // Bald
-        case 1: // Buzz: thin cap hugging the very top
-            ctx.setFillColor(hc)
-            ctx.fillEllipse(in: CGRect(x: cx - headR * 0.96, y: headCY + headR * 0.18,
-                                       width: headR * 1.92, height: headR * 0.78))
-        case 3: // Side Part: cap, then sweep one side back
+        case 1: // Buzz: very short hair sitting ON TOP of the head (a thin cap on the crown)
+            cap(1.0, headR * 0.24)
+        case 3: // Side Part: a cap with a parting swept aside (does NOT cover the eyes)
+            cap(1.02, 0.0)
+            ctx.setFillColor(sc)                        // a thin skin parting line on the crown
+            ctx.saveGState()
+            ctx.translateBy(x: cx + headR * 0.16, y: headCY + headR * 0.78); ctx.rotate(by: -0.30)
+            ctx.fill(CGRect(x: -headR * 0.045, y: -headR * 0.45, width: headR * 0.09, height: headR * 0.85))
+            ctx.restoreGState()
+        case 4: // Long: cap on top + two side panels framing the face (chin/mouth stay clear)
             cap(1.02, 0.0)
             ctx.setFillColor(hc)
-            ctx.fillEllipse(in: CGRect(x: cx - headR * 0.95, y: headCY - headR * 0.1,
-                                       width: headR * 0.9, height: headR * 0.9))
-        case 4: // Long: frames the face down the sides
-            ctx.setFillColor(hc)
-            ctx.fillEllipse(in: CGRect(x: cx - headR * 1.08, y: headCY - headR * 1.05,
-                                       width: headR * 2.16, height: headR * 1.95))
-            ctx.setFillColor(sc)
-            ctx.fillEllipse(in: CGRect(x: cx - headR * 0.78, y: headCY - headR * 0.95,
-                                       width: headR * 1.56, height: headR * 1.75))
+            for sgn in [-1.0, 1.0] as [CGFloat] {
+                let bx = cx + sgn * headR * 0.84
+                ctx.fillEllipse(in: CGRect(x: bx - headR * 0.24, y: headCY - headR * 0.75,
+                                           width: headR * 0.48, height: headR * 1.55))
+            }
         case 5: // Ponytail: cap + a tail to the side
             ctx.setFillColor(hc)
-            ctx.fillEllipse(in: CGRect(x: cx + headR * 0.55, y: headCY - headR * 0.5,
-                                       width: headR * 0.7, height: headR * 1.1))
+            ctx.fillEllipse(in: CGRect(x: cx + headR * 0.6, y: headCY - headR * 0.35,
+                                       width: headR * 0.55, height: headR * 1.0))
             cap(1.02, 0.0)
-        case 6: // Spiky: triangles across the top
+        case 6: // Spiky: spikes radiating outward all around the top of the head
+            cap(0.98, headR * 0.12)
             ctx.setFillColor(hc)
-            let n = 6
+            let n = 9
             for i in 0..<n {
-                let t = CGFloat(i) / CGFloat(n - 1)
-                let bx = cx - headR * 0.85 + t * headR * 1.7
-                ctx.move(to: CGPoint(x: bx - headR * 0.18, y: headCY + headR * 0.55))
-                ctx.addLine(to: CGPoint(x: bx, y: headCY + headR * 1.2))
-                ctx.addLine(to: CGPoint(x: bx + headR * 0.18, y: headCY + headR * 0.55))
+                let a = CGFloat.pi * (0.10 + 0.80 * CGFloat(i) / CGFloat(n - 1))   // top arc
+                let ox = cos(a), oy = sin(a), pX = -oy, pY = ox
+                let bX = cx + ox * headR * 0.80, bY = headCY + oy * headR * 0.80
+                ctx.move(to: CGPoint(x: bX + pX * headR * 0.16, y: bY + pY * headR * 0.16))
+                ctx.addLine(to: CGPoint(x: cx + ox * headR * 1.55, y: headCY + oy * headR * 1.55))
+                ctx.addLine(to: CGPoint(x: bX - pX * headR * 0.16, y: bY - pY * headR * 0.16))
                 ctx.closePath()
             }
             ctx.fillPath()
-            ctx.fillEllipse(in: CGRect(x: cx - headR, y: headCY + headR * 0.25, width: headR * 2, height: headR * 0.6))
-        case 7: // Mohawk: central strip of spikes
+        case 7: // Mohawk: a thick rounded crest on top centre, shaved sides
             ctx.setFillColor(hc)
-            for i in 0..<3 {
-                let bx = cx - headR * 0.3 + CGFloat(i) * headR * 0.3
-                ctx.move(to: CGPoint(x: bx - headR * 0.14, y: headCY + headR * 0.6))
-                ctx.addLine(to: CGPoint(x: bx, y: headCY + headR * 1.35))
-                ctx.addLine(to: CGPoint(x: bx + headR * 0.14, y: headCY + headR * 0.6))
-                ctx.closePath()
-            }
-            ctx.fillPath()
-        case 8: // Curly: a scalloped row of puffs
+            ctx.fill(CGRect(x: cx - headR * 0.34, y: headCY + headR * 0.55, width: headR * 0.68, height: headR * 0.55))
+            ctx.fillEllipse(in: CGRect(x: cx - headR * 0.34, y: headCY + headR * 0.92,
+                                       width: headR * 0.68, height: headR * 0.5))
+        case 8: // Curly: a big mass with a bumpy curl silhouette
             ctx.setFillColor(hc)
-            for i in 0..<5 {
-                let t = CGFloat(i) / 4.0
-                let bx = cx - headR * 0.8 + t * headR * 1.6
-                ctx.fillEllipse(in: CGRect(x: bx - headR * 0.3, y: headCY + headR * 0.35,
-                                           width: headR * 0.6, height: headR * 0.6))
+            ctx.fillEllipse(in: CGRect(x: cx - headR * 1.06, y: headCY - headR * 0.08,
+                                       width: headR * 2.12, height: headR * 1.3))
+            let m = 10
+            for i in 0..<m {
+                let a = CGFloat.pi * (CGFloat(i) / CGFloat(m - 1))
+                let bx = cx + cos(a) * headR * 1.0, by = headCY + headR * 0.55 + sin(a) * headR * 0.68
+                ctx.fillEllipse(in: CGRect(x: bx - headR * 0.26, y: by - headR * 0.26,
+                                           width: headR * 0.52, height: headR * 0.52))
             }
-            cap(0.98, headR * 0.1)
+            ctx.setFillColor(sc)                        // re-cut the face
+            ctx.fillEllipse(in: CGRect(x: cx - headR * 0.9, y: headCY - headR * 0.62,
+                                       width: headR * 1.8, height: headR * 1.22))
         case 9: // Bun: cap + a round bun on top
             cap(1.02, 0.0)
             ctx.setFillColor(hc)
-            ctx.fillEllipse(in: CGRect(x: cx - headR * 0.3, y: headCY + headR * 0.95,
-                                       width: headR * 0.6, height: headR * 0.6))
+            ctx.fillEllipse(in: CGRect(x: cx - headR * 0.26, y: headCY + headR * 1.0,
+                                       width: headR * 0.52, height: headR * 0.52))
         default: cap(1.02, 0.0)                          // Short (2)
         }
 
-        // ---- eyes ----
+        // ---- eyes (10 styles + iris colour) ----
         let eyeY = headCY + headR * 0.12, eyeDX = headR * 0.40, eyeR = headR * 0.19
-        for sx in [-eyeDX, eyeDX] {
-            ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-            ctx.fillEllipse(in: CGRect(x: cx + sx - eyeR, y: eyeY - eyeR, width: eyeR * 2, height: eyeR * 2))
-            ctx.setFillColor(CGColor(red: 0.10, green: 0.08, blue: 0.10, alpha: 1))
-            let pr = eyeR * 0.5
-            ctx.fillEllipse(in: CGRect(x: cx + sx - pr, y: eyeY - pr, width: pr * 2, height: pr * 2))
+        let whiteC = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
+        let darkC  = CGColor(red: 0.10, green: 0.08, blue: 0.10, alpha: 1)
+        let irisC  = cg(eyeRGB)
+        func iris(_ ex: CGFloat, _ ey: CGFloat, _ ir: CGFloat) {
+            ctx.setFillColor(irisC); ctx.fillEllipse(in: CGRect(x: ex - ir, y: ey - ir, width: ir * 2, height: ir * 2))
+            ctx.setFillColor(darkC); ctx.fillEllipse(in: CGRect(x: ex - ir * 0.5, y: ey - ir * 0.5, width: ir, height: ir))
         }
+        func white(_ ex: CGFloat, _ w: CGFloat, _ h: CGFloat) {
+            ctx.setFillColor(whiteC); ctx.fillEllipse(in: CGRect(x: ex - w, y: eyeY - h, width: w * 2, height: h * 2))
+        }
+        func drawEye(_ ex: CGFloat) {
+            switch eyeStyle {
+            case 1: white(ex, eyeR * 0.8, eyeR * 1.1); iris(ex, eyeY, eyeR * 0.55)   // Oval (tall)
+            case 2: white(ex, eyeR * 1.2, eyeR * 0.75); iris(ex, eyeY, eyeR * 0.55)  // Wide
+            case 3: white(ex, eyeR * 1.15, eyeR * 1.15); iris(ex, eyeY, eyeR * 0.72) // Big
+            case 4: white(ex, eyeR * 0.6, eyeR * 0.6); iris(ex, eyeY, eyeR * 0.4)    // Small
+            case 5: white(ex, eyeR, eyeR * 0.5); iris(ex, eyeY - eyeR * 0.05, eyeR * 0.45) // Sleepy
+            case 6: white(ex, eyeR, eyeR * 0.35); iris(ex, eyeY, eyeR * 0.32)        // Squint
+            case 7: // Happy (closed upward arc)
+                ctx.setStrokeColor(darkC); ctx.setLineWidth(max(2, eyeR * 0.42)); ctx.setLineCap(.round)
+                ctx.move(to: CGPoint(x: ex - eyeR * 0.8, y: eyeY - eyeR * 0.15))
+                ctx.addQuadCurve(to: CGPoint(x: ex + eyeR * 0.8, y: eyeY - eyeR * 0.15),
+                                 control: CGPoint(x: ex, y: eyeY + eyeR * 0.7))
+                ctx.strokePath()
+            case 8: // Sparkle (round + small glint)
+                white(ex, eyeR, eyeR); iris(ex, eyeY, eyeR * 0.6)
+                ctx.setFillColor(whiteC); ctx.fillEllipse(in: CGRect(x: ex + eyeR * 0.08, y: eyeY + eyeR * 0.18, width: eyeR * 0.3, height: eyeR * 0.3))
+            case 9: // Starry (round + big highlight)
+                white(ex, eyeR, eyeR); iris(ex, eyeY, eyeR * 0.74)
+                ctx.setFillColor(whiteC); ctx.fillEllipse(in: CGRect(x: ex - eyeR * 0.32, y: eyeY + eyeR * 0.12, width: eyeR * 0.5, height: eyeR * 0.5))
+            default: white(ex, eyeR, eyeR); iris(ex, eyeY, eyeR * 0.55)              // Round
+            }
+        }
+        drawEye(cx - eyeDX); drawEye(cx + eyeDX)
 
         // ---- nose (10) ----  width/height variations of a few shapes
         ctx.setFillColor(cg(skinC * 0.80))
