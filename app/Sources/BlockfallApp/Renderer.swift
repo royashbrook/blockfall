@@ -814,7 +814,11 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // 1) input -> engine
         var input = gameView?.makeFrameInput() ?? bf_frame_input()
-        _ = bf_frame_begin(e, &input, dt)
+        // #77 world pause: when you are alone and the pause menu is up, freeze the sim by
+        // ticking with dt = 0 (creatures, day/night, physics all hold). In multiplayer
+        // (any peer connected) never pause the shared world, so dt stays real.
+        let worldPaused = (gameView?.worldIsPaused ?? false) && bf_net_peer_count(e) == 0
+        _ = bf_frame_begin(e, &input, worldPaused ? 0.0 : dt)
         if let actions = gameView?.drainActions() {
             for var a in actions { bf_input_action(e, &a) }
         }
@@ -1522,14 +1526,16 @@ final class Renderer: NSObject, MTKViewDelegate {
             if idx >= kMaxAmbientSprites { break }              // defensive cap
             let fi = Float(i)
             let angle  = wallClock * 0.02 + fi * 2.399
-            let radius = 5.0 + Float(fmod(Double(fi) * 2.71, 12.0))   // 5-17: kept away from the eye
+            let radius = 8.0 + Float(fmod(Double(fi) * 2.71, 12.0))   // 8-20: kept well away from the eye (#76)
             let px = camPos.x + cos(angle) * radius + sin(wallClock * 0.30 + fi) * 1.4
             let pz = camPos.z + sin(angle) * radius + cos(wallClock * 0.27 + fi) * 1.4
             let py = camPos.y + 0.8 + sin(fi * 0.6 + wallClock * 0.25) * 1.3
             let twinkle = 0.5 + 0.5 * sin(wallClock * 0.8 + fi * 1.7)
             // Fade motes that drift near the eye so they never flash across the HUD.
             let pdx = px - camPos.x, pdy = py - camPos.y, pdz = pz - camPos.z
-            let pNear = max(0, min(1, ((pdx*pdx + pdy*pdy + pdz*pdz).squareRoot() - 2.5) / 2.5))
+            // Hard fade anything within 5 blocks of the eye so no mote ever flashes
+            // across the HUD; full strength only past ~8 blocks. (#76)
+            let pNear = max(0, min(1, ((pdx*pdx + pdy*pdy + pdz*pdz).squareRoot() - 5.0) / 3.0))
             let pAlpha  = dayT * (0.08 + twinkle * 0.10) * pNear   // faint, never busy, never up-close
             ptr[idx] = AmbientSpritePod(
                 posW:  SIMD4<Float>(px, py, pz, 0.09),          // w=size (very tiny)

@@ -1482,6 +1482,22 @@ private:
                 }
             }
             set_block_internal(t, AIR);
+            // #73: a plant, flower, grass, or rock resting on this block has lost its
+            // support, so break it too (and drop it if it drops) instead of leaving it
+            // floating.
+            IVec3 above{t.x, t.y + 1, t.z};
+            BlockId ab = block_at(above);
+            if (is_prop_block(ab)) {
+                if (inv_ && blocks_) {
+                    const BlockDef* abd = blocks_->by_id(ab);
+                    ItemId adrop = abd ? abd->drop_item : ItemId(0);
+                    if (adrop) {
+                        inv_->add(ItemStack{adrop, 1, 0xFFFF});
+                        notify_quest("collect_item", item_name(adrop));
+                    }
+                }
+                set_block_internal(above, AIR);
+            }
             apply_gravity_above(t);                                // undermined sand/gravel falls
             flow_water(t);                                         // adjacent water flows in + falls
         }

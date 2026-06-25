@@ -76,6 +76,8 @@ final class GameAudio {
         trackTimer = nil
         crossfadeTimer?.invalidate()
         crossfadeTimer = nil
+        swellTimer?.invalidate()
+        swellTimer = nil
         engine?.stop()
     }
 
@@ -89,6 +91,8 @@ final class GameAudio {
         if on { startMusic() } else {
             crossfadeTimer?.invalidate()
             crossfadeTimer = nil
+            swellTimer?.invalidate()
+            swellTimer = nil
             musicBankNodes.forEach { $0.stop() }
             trackTimer?.invalidate()
             trackTimer = nil
@@ -440,15 +444,37 @@ final class GameAudio {
         trackTimer = nil
         musicBankNodes.forEach { $0.stop() }
 
-        // Reset bank volumes: A = 1, B = 0.
+        // Reset bank volumes: A starts SILENT and swells in (#79: music kicking in at
+        // full volume was abrupt), B = 0.
         activeBank = 0
-        musicBankMixers[0].outputVolume = 1.0
+        musicBankMixers[0].outputVolume = 0.0
         musicBankMixers[1].outputVolume = 0.0
 
         // Pick starting track from current group.
         currentTrackIndex = firstTrackIndex(for: currentTrackGroup)
         playTrackOnBank(currentTrackIndex, bank: activeBank)
+        swellInBank(activeBank, dur: 3.5)   // gentle fade-in
         scheduleTrackRotation()
+    }
+
+    private var swellTimer: Timer?
+    /// Ramp a bank's volume 0 -> 1 over `dur` seconds (power-2 ease) so music swells in
+    /// gently instead of starting at full volume. (#79)
+    private func swellInBank(_ bank: Int, dur: Double) {
+        swellTimer?.invalidate()
+        let stepDur = 0.05
+        let steps = max(1, Int(dur / stepDur))
+        var step = 0
+        swellTimer = Timer.scheduledTimer(withTimeInterval: stepDur, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            step += 1
+            let p = Float(step) / Float(steps)
+            self.musicBankMixers[bank].outputVolume = min(1.0, p * p)
+            if step >= steps {
+                t.invalidate(); self.swellTimer = nil
+                self.musicBankMixers[bank].outputVolume = 1.0
+            }
+        }
     }
 
     // Indices for each group: day → 0,1,4,5,8,9   evening → 2,3,6,7,10,11

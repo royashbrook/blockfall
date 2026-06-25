@@ -38,6 +38,7 @@ final class GameView: MTKView {
         queue(BF_ACT_MINE_STOP)
     }
     func setPaused(_ b: Bool) { gamePaused = b; if b { releasePointer() } }
+    var worldIsPaused: Bool { gamePaused }   // #77: renderer freezes the sim while paused (single-player)
 
     // Accumulated mouse look since the last frame (consumed by Renderer).
     private(set) var lookDX: Float = 0
