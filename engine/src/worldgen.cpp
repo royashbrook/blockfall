@@ -3480,9 +3480,12 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                         else if (roll2 < 82u) plant = FALLEN_STICK; // ~5%  twigs on bare dirt
                     }
                 } else if (dom == Biome::Swamp) {
-                    // Marsh: reeds prominent at the wet edges, plus mushrooms + grass.
+                    // Marsh surface: grass, mushrooms, the odd flower. Reeds are a WATER
+                    // plant now (they render as a waterlogged block), so they must NOT be
+                    // scattered on dry ground or they show as floating water cubes. The
+                    // real cattails come from the shallow-water pass below.
                     if (surf == GRASS || surf == DIRT) {
-                        if      (roll <  32u) plant = REED;         // ~12% cattail reeds (#58)
+                        if      (roll <  32u) plant = TALL_GRASS;   // ~12% marsh grass
                         else if (roll <  60u) plant = MUSHROOM;     // ~11%
                         else if (roll <  74u) plant = TALL_GRASS;   // ~5%
                         else if (roll <  86u) plant = FLOWER_RED;   // ~5%
