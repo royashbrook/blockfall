@@ -2167,6 +2167,20 @@ private:
                     // bit31=0 trunk, 24-30 level, 23 slant, 21-22 dir, 0-20 colour hash.
                     h = (std::uint32_t(level) << 24) | (slant << 23) | (sdir << 21) | (h & 0x001FFFFFu);
                 }
+            } else if (id == 38u || id == 42u) {
+                // #68 clustering: same-kind plants packed together read as one bigger clump
+                // (and shrink as you break pieces, since breaking a cell drops its
+                // neighbours' counts on the next re-gather). Count the 8 horizontal
+                // same-type neighbours into the seed's top nibble; the renderer scales the
+                // model by it. Low 28 bits keep the yaw + colour hash.
+                auto same = [&](int dx, int dz) {
+                    return block_at(IVec3{bx + lx + dx, by + ly, bz + lz + dz}) == id;
+                };
+                std::uint32_t dens = 0;
+                for (int dz2 = -1; dz2 <= 1; ++dz2)
+                    for (int dx2 = -1; dx2 <= 1; ++dx2)
+                        if ((dx2 || dz2) && same(dx2, dz2)) ++dens;   // 0..8
+                h = (h & 0x0FFFFFFFu) | (dens << 28);
             }
             bf_prop_instance p{};
             p.position = bf_vec3{float(bx + lx), float(by + ly), float(bz + lz)};

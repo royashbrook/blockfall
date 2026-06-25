@@ -4054,6 +4054,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         lp.x = 0.5 + dx * cy - dz * sy;
         lp.z = 0.5 + dx * sy + dz * cy;
         float3 nm = float3(cnrm.x * cy - cnrm.z * sy, cnrm.y, cnrm.x * sy + cnrm.z * cy);
+        // #68 clustering: grass (row 4) and berry bush (row 6) grow bigger where many of
+        // the same kind are packed together (density in the seed's top nibble), so a patch
+        // reads as one merged clump and shrinks as you break pieces. A lone plant = normal.
+        if (row == 4 || row == 6) {
+            float dens = float((inst.seed >> 28u) & 0xFu);   // 0..8 same-kind neighbours
+            float gscale = 1.0 + dens * 0.09;                // up to ~1.7x in a packed patch
+            lp.x = 0.5 + (lp.x - 0.5) * gscale;
+            lp.z = 0.5 + (lp.z - 0.5) * gscale;
+            lp.y *= gscale;                                  // taller from the ground up
+        }
         // #62 trunk vs branch. Branches (bit 31) lie sideways; trunks taper with height.
         if (isTrunk) {
             uint isBranch = (inst.seed >> 31u) & 1u;
