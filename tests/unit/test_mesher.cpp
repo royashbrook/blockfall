@@ -571,6 +571,72 @@ static void test_cross_plant() {
     CHECK(neg_x_all_ao3, "plant: plant does not occlude AO of adjacent solid block");
 }
 
+// ----------------------------------------------------------------------------
+// Test 10: connected glass (#68) — glass is see-through (non-opaque, non-occluding)
+// and a run of panes merges into one sheet because glass-to-glass faces are culled.
+//
+// Setup: solid(7,7,7), glass(8,7,7), glass(9,7,7) — mirrors the water scene, since
+// glass emits only against air/water (nb==0||nb==9), exactly like water against air.
+//   solid:      6 quads (5 air + 1 toward the see-through glass at +X).
+//   glass(8/9): -X@8 toward solid -> no face; +X@8 toward glass(9) -> CULLED (connected);
+//               Y/Z toward air -> 4 merged quads; +X@9 toward air -> 1.
+//   total: 6 + 4 + 1 = 11 quads = 66 indices, 44 verts.
+// ----------------------------------------------------------------------------
+static void test_glass_connected() {
+    bf::GreedyMesher gm;
+    FakeChunk chunk;
+    chunk.set(7, 7, 7, 1);    // solid
+    chunk.set(8, 7, 7, 25);   // glass_pane
+    chunk.set(9, 7, 7, 25);   // glass_pane (glass-against-glass)
+
+    FakeStore store;
+    store.target_coord = {0, 0, 0};
+    store.chunk        = &chunk;
+
+    auto r = do_mesh(gm, {0,0,0}, store);
+    CHECK(!r.empty, "glass: mesh not empty");
+    CHECK(r.index_count == 66, "glass: 66 indices (6 solid + 4 merged glass-YZ + 1 glass-airX)");
+    std::uint32_t nv = r.vertex_bytes / static_cast<std::uint32_t>(sizeof(bf::BFVertex));
+    CHECK(nv == 44, "glass: 44 vertices");
+
+    auto* V = reinterpret_cast<const bf::BFVertex*>(g_vtx_buf.data());
+    auto vx = [](const bf::BFVertex& v){ return int(v.pos_packed & 0x3Fu); };
+    auto vy = [](const bf::BFVertex& v){ return int((v.pos_packed >> 6) & 0x3Fu); };
+    auto vz = [](const bf::BFVertex& v){ return int((v.pos_packed >> 12) & 0x3Fu); };
+    auto vn = [](const bf::BFVertex& v){ return v.normal_uv & 0x7u; };
+    constexpr std::uint32_t NX_POS = 0u, NX_NEG = 1u;
+
+    // Solid emits its +X face toward the glass (glass is see-through / non-opaque).
+    bool solid_plus_x = false, solid_face_ao3 = true;
+    for (std::uint32_t i = 0; i < nv; ++i) {
+        if (vn(V[i]) == NX_POS && V[i].material_id == 1 &&
+            vx(V[i]) == 8 && vy(V[i]) >= 7 && vy(V[i]) <= 8 && vz(V[i]) >= 7 && vz(V[i]) <= 8) {
+            solid_plus_x = true;
+            if (vertex_ao(V[i]) != 3) solid_face_ao3 = false;
+        }
+    }
+    CHECK(solid_plus_x, "glass: solid emits a face toward see-through glass");
+    CHECK(solid_face_ao3, "glass: glass does not occlude the neighbour's AO");
+
+    // Glass-against-glass internal face is CULLED (the connected sheet): no -X face
+    // of glass(9) at x=9 facing the glass(8) neighbour.
+    bool glass_glass_internal = false;
+    for (std::uint32_t i = 0; i < nv; ++i) {
+        if (vn(V[i]) == NX_NEG && vx(V[i]) == 9 &&
+            vy(V[i]) >= 7 && vy(V[i]) <= 8 && vz(V[i]) >= 7 && vz(V[i]) <= 8) {
+            glass_glass_internal = true; break;
+        }
+    }
+    CHECK(!glass_glass_internal, "glass: glass-to-glass faces are culled (panes merge into a sheet)");
+
+    // Glass still shows its boundary face against air: +X of glass(9) at x=10.
+    bool glass_air_face = false;
+    for (std::uint32_t i = 0; i < nv; ++i) {
+        if (vn(V[i]) == NX_POS && V[i].material_id == 25 && vx(V[i]) == 10) { glass_air_face = true; break; }
+    }
+    CHECK(glass_air_face, "glass: outer boundary face against air is drawn");
+}
+
 int main() {
     test_all_air();
     test_single_block();
@@ -581,6 +647,7 @@ int main() {
     test_ao_occluded_corners();
     test_water_transparency();
     test_cross_plant();
+    test_glass_connected();
 
     if (fails == 0) std::printf("OK: mesher tests\n");
     return fails == 0 ? 0 : 1;
