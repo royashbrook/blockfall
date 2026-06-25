@@ -1674,13 +1674,14 @@ final class Renderer: NSObject, MTKViewDelegate {
                 (SIMD3(0.34, 0.34, 0.62), SIMD3(0.05, 0.05, 0.05), berry),  // berry
                 (SIMD3(0.66, 0.24, 0.40), SIMD3(0.05, 0.05, 0.05), berry),  // berry
             ]
-        case 43:       // reed / cattail — tall thin stalks with a brown tip
+        case 43:       // reed / cattail — TWO blocks tall, fuller clump, taller brown poof
             let stalk = SIMD3<Float>(0.28, 0.55, 0.30)
             let tip   = SIMD3<Float>(0.42, 0.26, 0.12)
             return [
-                (SIMD3(0.44, 0.46, 0.50), SIMD3(0.05, 0.46, 0.05), stalk),  // tall stalk
-                (SIMD3(0.58, 0.40, 0.46), SIMD3(0.045, 0.40, 0.045), stalk),// second stalk
-                (SIMD3(0.44, 0.84, 0.50), SIMD3(0.07, 0.12, 0.07), tip),    // brown cattail tip
+                (SIMD3(0.44, 0.95, 0.50), SIMD3(0.055, 0.92, 0.055), stalk),  // tall stalk (~2 tall)
+                (SIMD3(0.58, 0.86, 0.46), SIMD3(0.050, 0.84, 0.050), stalk),  // second stalk
+                (SIMD3(0.50, 0.78, 0.57), SIMD3(0.048, 0.76, 0.048), stalk),  // third stalk (more fill)
+                (SIMD3(0.46, 1.70, 0.50), SIMD3(0.10, 0.30, 0.10), tip),      // taller, fuller brown poof
             ]
         case 44:       // cactus — green column with a stubby arm
             let cac = SIMD3<Float>(0.27, 0.52, 0.26)

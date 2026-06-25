@@ -3564,19 +3564,23 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                 // accents (not carpets). Reeds take the shallowest edge band; lily pads
                 // the calmer middle band.
                 bool freshwater = (dom != Biome::Desert && dom != Biome::Beach);  // not ocean/dunes
+                // Place these in the AIR cell just ABOVE the water surface, not in the
+                // water cell itself: a voxel holds one block, so setting the surface cell
+                // to REED/LILY removed the water there and left a hole. Sitting them in the
+                // cell above keeps the water and lets their models rest on the surface.
                 if (freshwater && water_depth >= 1 && water_depth <= 2 &&
                     ((kh >> 16u) & 0xFFu) < 18u) {                 // ~7% emergent reeds
-                    std::int32_t wy = SEA_LEVEL;
+                    std::int32_t wy = SEA_LEVEL + 1;
                     if (wy >= wy_min && wy <= wy_max) {
                         int ly = static_cast<int>(wy - wy_min);
-                        if (chunk.get(lx, ly, lz) == WATER) chunk.set(lx, ly, lz, REED);
+                        if (chunk.get(lx, ly, lz) == AIR) chunk.set(lx, ly, lz, REED);
                     }
                 } else if (freshwater && water_depth >= 2 && water_depth <= 4 &&
                            ((kh >> 24u) & 0xFFu) < 26u) {          // ~10% lily pads
-                    std::int32_t wy = SEA_LEVEL;
+                    std::int32_t wy = SEA_LEVEL + 1;
                     if (wy >= wy_min && wy <= wy_max) {
                         int ly = static_cast<int>(wy - wy_min);
-                        if (chunk.get(lx, ly, lz) == WATER) chunk.set(lx, ly, lz, LILY_PAD);
+                        if (chunk.get(lx, ly, lz) == AIR) chunk.set(lx, ly, lz, LILY_PAD);
                     }
                 }
 
