@@ -31,7 +31,8 @@ inline constexpr BlockId LIGHT_AIR = 0, LIGHT_WATER = 9, LIGHT_GLOW = 7;
 // Props (36-47) plus tree TRUNKS (oak 21, birch 22) are light-transparent here so a
 // trunk base does not black out the ground block it sits on (#62, same fix as pebbles).
 // Leaves stay opaque so the canopy still casts dappled shade.
-inline bool light_plant(BlockId b) { return (b >= 36 && b <= 47) || b == 21 || b == 22 || b == 49; }
+inline bool light_plant(BlockId b) { return (b >= 36 && b <= 47) || b == 21 || b == 22 || b == 49
+                                          || b == 33 || b == 50; }  // #69 doors are thin/see-through
 // Glass (25, 26) is see-through, so light passes through it too (#68).
 inline bool light_glass(BlockId b) { return b == 25 || b == 26; }
 inline bool light_opaque(BlockId b) { return b != LIGHT_AIR && b != LIGHT_WATER && !light_glass(b) && !light_plant(b); }

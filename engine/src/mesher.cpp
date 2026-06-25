@@ -198,9 +198,15 @@ inline bool is_glass(BlockId id) {
     return id == 25 || id == 26;
 }
 
-// A cell is OPAQUE if it is non-air, not water (id 9), not glass, and not a prop.
+// #69 doors: a thin slab, not a full cube. A CLOSED door (id 33) fills the opening; an
+// OPEN door (id 50) swings 90° to the side so you can walk through. Orientation is fixed
+// for now (kid-simple); facing can come later. Drawn by emit_door, never cube-meshed.
+constexpr BlockId DOOR_CLOSED = 33, DOOR_OPEN = 50;
+inline bool is_door(BlockId id) { return id == DOOR_CLOSED || id == DOOR_OPEN; }
+
+// A cell is OPAQUE if it is non-air, not water (id 9), not glass, not a door, not a prop.
 inline bool is_opaque(BlockId id) {
-    return id != 0 && id != 9 && !is_glass(id) && !is_prop(id);
+    return id != 0 && id != 9 && !is_glass(id) && !is_door(id) && !is_prop(id);
 }
 
 // Waterlogged props (reed 43, lily pad 46): they sit in a surface water cell and their
@@ -212,9 +218,9 @@ inline bool is_waterlogged(BlockId id) {
 
 // ---- AO helpers -------------------------------------------------------------
 
-// Is this block id an AO-occluder?  Air (0), water (9), glass, and props do not occlude.
+// Is this block id an AO-occluder?  Air (0), water (9), glass, doors, and props do not occlude.
 inline bool is_occluder(BlockId id) {
-    return id != 0 && id != 9 && !is_glass(id) && !is_prop(id);
+    return id != 0 && id != 9 && !is_glass(id) && !is_door(id) && !is_prop(id);
 }
 
 // Sample a block at an arbitrary world offset from (x,y,z) in chunk cc.
@@ -662,6 +668,54 @@ bool emit_torch(int bx, int by, int bz,
     return true;
 }
 
+bool emit_door(int bx, int by, int bz, BlockId id,
+               std::uint8_t sky, std::uint8_t blk,
+               std::span<std::byte>& vtx_out, std::uint32_t& vtx_written,
+               std::span<std::byte>& idx_out, std::uint32_t& idx_written,
+               std::uint32_t& vtx_count) {
+    if (vtx_out.size() - vtx_written < 24 * sizeof(BFVertex))       return false;
+    if (idx_out.size()  - idx_written < 36 * sizeof(std::uint32_t)) return false;
+
+    constexpr std::uint32_t AO = 3u;
+    const std::uint16_t mat = static_cast<std::uint16_t>(id);
+    const std::uint32_t X = static_cast<std::uint32_t>(bx);
+    const std::uint32_t Y = static_cast<std::uint32_t>(by);
+    const std::uint32_t Z = static_cast<std::uint32_t>(bz);
+
+    // Fracs run 0..16 across the cell; split into the integer block step + 4-bit frac.
+    auto vert = [&](std::uint32_t fx, std::uint32_t fy, std::uint32_t fz,
+                    std::uint32_t normal, std::uint32_t u, std::uint32_t v) -> BFVertex {
+        return BFVertex{
+            bf_pack_pos(X + (fx >> 4), Y + (fy >> 4), Z + (fz >> 4), fx & 0xF, fy & 0xF, fz & 0xF),
+            bf_pack_normal_uv(normal, AO, u, v), mat, sky, blk, 0u };
+    };
+    auto quad = [&](const BFVertex& v0, const BFVertex& v1, const BFVertex& v2, const BFVertex& v3) {
+        std::uint32_t b = vtx_count;
+        std::memcpy(vtx_out.data() + vtx_written, &v0, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        std::memcpy(vtx_out.data() + vtx_written, &v1, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        std::memcpy(vtx_out.data() + vtx_written, &v2, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        std::memcpy(vtx_out.data() + vtx_written, &v3, sizeof(BFVertex)); vtx_written += sizeof(BFVertex);
+        vtx_count += 4;
+        std::uint32_t idx[6] = {b+0, b+1, b+2, b+0, b+2, b+3};
+        std::memcpy(idx_out.data() + idx_written, idx, 6 * sizeof(std::uint32_t));
+        idx_written += static_cast<std::uint32_t>(6 * sizeof(std::uint32_t));
+    };
+    // Axis-aligned box over [xlo..xhi] × [ylo..yhi] × [zlo..zhi] (fracs 0..16).
+    auto box = [&](std::uint32_t xlo, std::uint32_t xhi, std::uint32_t ylo,
+                   std::uint32_t yhi, std::uint32_t zlo, std::uint32_t zhi) {
+        quad(vert(xhi,ylo,zlo,BF_NX_POS,0,0), vert(xhi,yhi,zlo,BF_NX_POS,0,1), vert(xhi,yhi,zhi,BF_NX_POS,1,1), vert(xhi,ylo,zhi,BF_NX_POS,1,0));
+        quad(vert(xlo,ylo,zhi,BF_NX_NEG,0,0), vert(xlo,yhi,zhi,BF_NX_NEG,0,1), vert(xlo,yhi,zlo,BF_NX_NEG,1,1), vert(xlo,ylo,zlo,BF_NX_NEG,1,0));
+        quad(vert(xhi,ylo,zhi,BF_NZ_POS,0,0), vert(xhi,yhi,zhi,BF_NZ_POS,0,1), vert(xlo,yhi,zhi,BF_NZ_POS,1,1), vert(xlo,ylo,zhi,BF_NZ_POS,1,0));
+        quad(vert(xlo,ylo,zlo,BF_NZ_NEG,0,0), vert(xlo,yhi,zlo,BF_NZ_NEG,0,1), vert(xhi,yhi,zlo,BF_NZ_NEG,1,1), vert(xhi,ylo,zlo,BF_NZ_NEG,1,0));
+        quad(vert(xhi,yhi,zlo,BF_NY_POS,0,0), vert(xlo,yhi,zlo,BF_NY_POS,1,0), vert(xlo,yhi,zhi,BF_NY_POS,1,1), vert(xhi,yhi,zhi,BF_NY_POS,0,1));
+        quad(vert(xlo,ylo,zlo,BF_NY_NEG,0,0), vert(xhi,ylo,zlo,BF_NY_NEG,1,0), vert(xhi,ylo,zhi,BF_NY_NEG,1,1), vert(xlo,ylo,zhi,BF_NY_NEG,0,1));
+    };
+    constexpr std::uint32_t T = 3u;   // panel thickness 3/16
+    if (id == DOOR_OPEN) box(0, T, 0, 16, 0, 16);    // swung against the -X side
+    else                 box(0, 16, 0, 16, 0, T);    // closed across the -Z opening
+    return true;
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -809,6 +863,17 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
         for (int x = 0; x < kChunkDim; ++x) {
             for (int z = 0; z < kChunkDim; ++z) {
                 BlockId here = chunk_get(chunk, x, y, z);
+                // #69 doors: thin slab geometry (open vs closed), not a prop or a cube.
+                if (is_door(here)) {
+                    std::uint8_t dsky = chunk->sky_light(x, y, z);
+                    std::uint8_t dblk = chunk->block_light(x, y, z);
+                    if (!emit_door(x, y, z, here, dsky, dblk,
+                                   vtx_out, vtx_written, idx_out, idx_written, vtx_count)) {
+                        std::uint32_t ic2 = idx_written / static_cast<std::uint32_t>(sizeof(std::uint32_t));
+                        return MeshResult{vtx_written, idx_written, ic2, false};
+                    }
+                    continue;
+                }
                 if (!is_prop(here)) continue;
                 if (is_instanced_prop(here)) continue;  // #51/#62 drawn by the prop renderer, no mesh geometry
 

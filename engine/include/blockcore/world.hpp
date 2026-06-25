@@ -611,6 +611,16 @@ public:
                 break;
             }
             case BF_ACT_INTERACT: {
+                // #69 doors: looking at a door? open/close it (swings between solid-closed
+                // and passable-open). Takes priority over befriend/place.
+                if (has_target_) {
+                    BlockId tb = block_at(target_);
+                    if (tb == 33u || tb == 50u) {
+                        set_block_internal(target_, tb == 33u ? BlockId(50u) : BlockId(33u));
+                        fx(1, target_);            // door clack
+                        break;
+                    }
+                }
                 // Context-sensitive "use" (right-click): if you are looking at a creature,
                 // befriend it (feeding a berry if you have one); otherwise place the held
                 // block. This is why feeding animals did nothing before — the app never
@@ -822,6 +832,7 @@ public:
         pos_ = V3{px, py, pz}; yaw_ = yaw; pitch_ = pitch;
     }
     BlockId debug_block_at(int x, int y, int z) const { return block_at(IVec3{x, y, z}); }
+    bool    debug_collide_solid(int x, int y, int z) const { return collide_solid(x, y, z); } // #69
     int debug_sky_light(int x, int y, int z) const {
         ChunkCoord cc = to_chunk(IVec3{x, y, z});
         auto* ch = const_cast<ChunkStore&>(store_).get(cc);
@@ -1135,7 +1146,8 @@ private:
             if (collide_solid(x, y, z)) return y + 1;   // water/plants aren't standable
         return kNoFloor;
     }
-    static bool solid_block(BlockId b) { return b != AIR && b != WATER && !is_plant(b); }
+    // #69 an OPEN door (50) is passable; a CLOSED door (33) blocks you like any wall.
+    static bool solid_block(BlockId b) { return b != AIR && b != WATER && b != 50u && !is_plant(b); }
     // Cheap biome label from the surface block under the player + nearby trees.
     // Authoritative biome at the player, straight from worldgen (0=Plains 1=Forest
     // 2=Mountains 3=Desert 4=Snowy 5=Swamp 6=Beach) — the old block-sniffing
@@ -1188,7 +1200,7 @@ private:
     static bool is_plant(BlockId b) { return (b >= 36 && b <= 47) || b == 5 || b == 27 || b == 48; }
     bool collide_solid(int x, int y, int z) const {
         BlockId b = block_at(IVec3{x, y, z});
-        return b != AIR && b != WATER && !is_plant(b);
+        return b != AIR && b != WATER && b != 50u && !is_plant(b);  // #69 open door passable
     }
     // Player AABB (0.6 wide, ~1.8 tall; pos_ is the eye). Returns true if it
     // overlaps any solid voxel.
@@ -1487,6 +1499,7 @@ private:
                 const BlockDef* bd = blocks_->by_id(broken);
                 ItemId drop = bd ? bd->drop_item : ItemId(0);
                 if (drop == 0) drop = item_that_places(broken);
+                if (broken == 50u) drop = item_id_by_name("oak_door");  // #69 open door drops the door item
                 if (drop) {
                     inv_->add(ItemStack{drop, 1, 0xFFFF});
                     fx(7, t);                                      // pickup sound

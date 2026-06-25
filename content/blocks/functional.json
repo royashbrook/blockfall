@@ -59,6 +59,19 @@
     }
   },
   {
+    "id": 50,
+    "name": "oak_door_open",
+    "display_name": "Oak Door (Open)",
+    "hardness": 10,
+    "required_tier": 0,
+    "preferred_tool": "axe",
+    "functional": "door",
+    "transparent": true,
+    "textures": {
+      "all": "oak_door"
+    }
+  },
+  {
     "id": 34,
     "name": "beacon_block",
     "display_name": "Beacon",
