@@ -207,6 +207,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         fxStack.orientation = .vertical; fxStack.spacing = 8; fxStack.alignment = .leading
 
+        // #85 Render-distance slider (chunks 8..28), live + persisted.
+        let rdLabel = NSTextField(labelWithString: "Render Distance")
+        rdLabel.font = .systemFont(ofSize: 14); rdLabel.textColor = .white
+        let rdVal = UserDefaults.standard.object(forKey: "gfxRenderDist") as? Int ?? 24
+        let rdSlider = NSSlider(value: Double(rdVal), minValue: 8, maxValue: 28,
+                                target: self, action: #selector(renderDistChanged(_:)))
+        rdSlider.translatesAutoresizingMaskIntoConstraints = false
+        rdSlider.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        let rdRow = NSStackView(views: [rdLabel, rdSlider])
+        rdRow.orientation = .horizontal; rdRow.spacing = 10; rdRow.alignment = .centerY
+
         // ---- Audio toggles (#3: music + ambience on/off, live + persisted) ----
         let auTitle = NSTextField(labelWithString: "Audio")
         auTitle.font = .boldSystemFont(ofSize: 16); auTitle.textColor = .white
@@ -219,7 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         auStack.orientation = .vertical; auStack.spacing = 8; auStack.alignment = .leading
 
         let charBtn = pauseButton("Customize Character", #selector(openCharacterEditor))
-        let stack = NSStackView(views: [title, sliderRow, showHUD, fxTitle, fxStack, auTitle, auStack, charBtn, resume, menuBtn])
+        let stack = NSStackView(views: [title, sliderRow, showHUD, fxTitle, fxStack, rdRow, auTitle, auStack, charBtn, resume, menuBtn])
         stack.orientation = .vertical; stack.spacing = 18; stack.alignment = .centerX
         stack.translatesAutoresizingMaskIntoConstraints = false
         ov.addSubview(stack)
@@ -405,6 +416,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let row = NSStackView(views: [lbl, s])
         row.orientation = .horizontal; row.spacing = 10; row.alignment = .centerY
         return row
+    }
+    @objc private func renderDistChanged(_ s: NSSlider) {   // #85
+        let v = Int(s.doubleValue.rounded())
+        UserDefaults.standard.set(v, forKey: "gfxRenderDist")
+        renderer?.setRenderDistance(v)
     }
     @objc private func musicVolChanged(_ s: NSSlider) {
         UserDefaults.standard.set(s.doubleValue, forKey: "audMusicVol"); audio.setMusicVolume(Float(s.doubleValue))

@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 16u  /* v16: bf_prop_instance + frame.prop_instances (sub-voxel props) */
+#define BF_ABI_VERSION 17u  /* v17: bf_set_render_distance (runtime render-distance slider, #85) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -440,6 +440,10 @@ BF_API bf_result bf_net_host_start(bf_engine e, uint16_t port);
 BF_API bf_result bf_net_client_connect(bf_engine e, const char* host, uint16_t port);
 BF_API bf_result bf_net_stop(bf_engine e);
 BF_API uint32_t  bf_net_peer_count(bf_engine e);
+
+/* Change the horizontal render/stream distance at runtime (pause-menu slider, #85).
+ * `chunks` is clamped to [4, 28]. Re-streams immediately. */
+BF_API void      bf_set_render_distance(bf_engine e, uint32_t chunks);
 
 #ifdef __cplusplus
 } /* extern "C" */

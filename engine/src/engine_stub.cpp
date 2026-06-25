@@ -208,5 +208,6 @@ bf_result bf_net_stop(bf_engine e) {
     return BF_OK;
 }
 uint32_t  bf_net_peer_count(bf_engine e) { return (e && e->transport) ? e->transport->peer_count() : 0u; }
+void      bf_set_render_distance(bf_engine e, uint32_t chunks) { if (e) e->world.apply_render_distance(int(chunks)); }
 
 } // extern "C"

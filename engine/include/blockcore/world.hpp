@@ -135,6 +135,9 @@ public:
     void set_mode(bf_game_mode m) { mode_ = m; }
     // Horizontal streaming radius in chunks (from the render-distance config).
     void set_render_distance(int chunks) { stream_r_ = std::clamp(chunks, 4, 28); }
+    // Runtime change (a pause-menu slider, #85): also re-stream so the new radius takes
+    // effect immediately. Only safe after the world is initialised.
+    void apply_render_distance(int chunks) { set_render_distance(chunks); recompute_stream_set(); }
 
     // ---- co-op hooks (Track H) -------------------------------------------
     // Fired on every LOCAL player edit (place/mine) so the net session can
