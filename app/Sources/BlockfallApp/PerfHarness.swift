@@ -85,6 +85,14 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         d.depthAttachmentPixelFormat = .depth32Float
         return try? device.makeRenderPipelineState(descriptor: d)
     }()
+    // #80 depth-only prop pipeline so props (trees) cast shadows in --shot too.
+    let propShadowPipeline: MTLRenderPipelineState? = {
+        let d = MTLRenderPipelineDescriptor()
+        d.vertexFunction   = lib.makeFunction(name: "propInstVmain")
+        d.fragmentFunction = nil
+        d.depthAttachmentPixelFormat = .depth32Float
+        return try? device.makeRenderPipelineState(descriptor: d)
+    }()
     let propModelTable = Renderer.makePropModelTable(device: device)
     var propInstBuf: MTLBuffer? = nil
     // #70 viewmodel (so --shot reflects the live render)
@@ -217,6 +225,27 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                     enc.setVertexBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 2)
                     enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
                                               indexType: .uint32, indexBuffer: ib, indexBufferOffset: Int(d.index_offset))
+                }
+                // #80 props (trees) cast shadows here too, with the light matrix as viewProj.
+                let spropN = Int(f.prop_instance_count)
+                if spropN > 0, let insts = f.prop_instances, let psp = propShadowPipeline {
+                    let need = spropN * MemoryLayout<bf_prop_instance>.stride
+                    if propInstBuf == nil || propInstBuf!.length < need {
+                        propInstBuf = device.makeBuffer(length: max(need, 65536), options: .storageModeShared)
+                    }
+                    if let ib = propInstBuf {
+                        memcpy(ib.contents(), insts, need)
+                        let dayBright = 0.30 + 0.70 * max(0, sin(f.camera.time_of_day * Float.pi))
+                        var psu = PropUniforms(viewProj: lightViewProj,
+                                               params: SIMD4<Float>(dayBright, Float(wallClock), 0, 0))
+                        enc.setRenderPipelineState(psp); enc.setCullMode(.front)
+                        enc.setDepthBias(2.0, slopeScale: 2.0, clamp: 0.0)
+                        enc.setVertexBuffer(ib, offset: 0, index: 0)
+                        enc.setVertexBytes(&psu, length: MemoryLayout<PropUniforms>.stride, index: 1)
+                        enc.setVertexBuffer(propModelTable, offset: 0, index: 2)
+                        enc.drawPrimitives(type: .triangle, vertexStart: 0,
+                                           vertexCount: kPropVertsPerInstance, instanceCount: spropN)
+                    }
                 }
                 enc.endEncoding()
             }

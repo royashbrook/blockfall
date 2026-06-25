@@ -294,6 +294,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // ---- Sub-voxel props (#51/#52: GPU-instanced) ---------------------------
     private var propPipeline: MTLRenderPipelineState!
+    private var propShadowPipeline: MTLRenderPipelineState!   // #80 props (trees) cast shadows: depth-only, reuses propInstVmain
     private var propModelTable: MTLBuffer!       // static: 4 types × 4 cuboids (PropCuboidGPU)
     private var viewModelPipeline: MTLRenderPipelineState!   // #70 first-person arm
     private var viewModelDepthState: MTLDepthStencilState!   // always-on-top
@@ -561,6 +562,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         propd.depthAttachmentPixelFormat = .depth32Float
         do { propPipeline = try device.makeRenderPipelineState(descriptor: propd) }
         catch { fatalError("prop pipeline failed: \(error)") }
+
+        // #80 depth-only prop pipeline for the shadow cascades: same vertex expansion as
+        // the main prop draw (so trunks/foliage/slant/sway match), no fragment/colour, so
+        // instanced trees and props cast shadows again. Pass the light matrix as viewProj.
+        let propShad = MTLRenderPipelineDescriptor()
+        propShad.vertexFunction   = lib.makeFunction(name: "propInstVmain")
+        propShad.fragmentFunction = nil
+        propShad.depthAttachmentPixelFormat = .depth32Float
+        do { propShadowPipeline = try device.makeRenderPipelineState(descriptor: propShad) }
+        catch { fatalError("prop shadow pipeline failed: \(error)") }
+
         propModelTable = Renderer.makePropModelTable(device: device)
 
         // ---- First-person viewmodel (#70): view-space arm, always on top ---------
@@ -974,6 +986,19 @@ final class Renderer: NSObject, MTKViewDelegate {
         // sticks true and every later acquire returns the same frame forever.
         guard let cmd = queue.makeCommandBuffer() else { bf_frame_end(e); return }
 
+        // #80 Upload the prop instance list up front so trees/props can be drawn into the
+        // shadow cascades too (the main prop pass below reuses the same buffer). Without
+        // this the cascades only held terrain, so instanced trees cast no shadow.
+        let shadowPropN = Int(frame.prop_instance_count)
+        let propDayBright = 0.30 + 0.70 * max(0, sin(frame.camera.time_of_day * Float.pi))
+        if gfxShadows, shadowPropN > 0, let insts = frame.prop_instances {
+            let need = shadowPropN * MemoryLayout<bf_prop_instance>.stride
+            if propInstanceBuffer == nil || propInstanceBuffer!.length < need {
+                propInstanceBuffer = device.makeBuffer(length: max(need, 64 * 1024), options: .storageModeShared)
+            }
+            if let ib = propInstanceBuffer { memcpy(ib.contents(), insts, need) }
+        }
+
         // =====================================================================
         // PASS 1: Shadow depth — render the chunk meshes into BOTH cascade maps.
         // =====================================================================
@@ -1008,6 +1033,21 @@ final class Renderer: NSObject, MTKViewDelegate {
                 shadowEnc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
                                                 indexType: .uint32, indexBuffer: ibuf,
                                                 indexBufferOffset: Int(d.index_offset))
+            }
+            // #80 Props (trees, foliage, trunks) cast shadows: same instanced expansion as
+            // the main prop draw, but with the light matrix as the view-projection, depth
+            // only. Reuses propInstVmain so trunk taper / slant / wind sway all match.
+            if gfxShadows, shadowPropN > 0, let ib = propInstanceBuffer {
+                shadowEnc.setRenderPipelineState(propShadowPipeline)
+                shadowEnc.setCullMode(.front)
+                shadowEnc.setDepthBias(2.0, slopeScale: 2.0, clamp: 0.0)
+                var psu = PropUniforms(viewProj: matrix,
+                                       params: SIMD4<Float>(propDayBright, wallClock, gfxFoliage ? 1 : 0, 0))
+                shadowEnc.setVertexBuffer(ib, offset: 0, index: 0)
+                shadowEnc.setVertexBytes(&psu, length: MemoryLayout<PropUniforms>.stride, index: 1)
+                shadowEnc.setVertexBuffer(propModelTable, offset: 0, index: 2)
+                shadowEnc.drawPrimitives(type: .triangle, vertexStart: 0,
+                                         vertexCount: kPropVertsPerInstance, instanceCount: shadowPropN)
             }
             shadowEnc.endEncoding()
         }
