@@ -3685,27 +3685,38 @@ final class GameAudio {
         }
     }
 
-    /// questComplete — cheerful fanfare: C5+E5+G5 chord then C6 accent, ~800 ms
+    /// questComplete — a fun, celebratory fanfare: a bouncy ascending arpeggio
+    /// (do-mi-sol-do!) into a ringing major chord with a little sparkle on top. The old
+    /// version held a chord from the first instant, which read as an alarm.
     private func makeQuestCompleteBuffer() -> AVAudioPCMBuffer? {
-        let total:      Float  = 0.80
-        let chordEnd:   Float  = 0.50
-        let chordNotes: [Float] = [523.25, 659.25, 783.99]
-        let accentHz:   Float  = 1046.50
+        let noteDur:    Float   = 0.11
+        let arp:        [Float] = [523.25, 659.25, 783.99, 1046.50]   // C5 E5 G5 C6, bouncy
+        let chordStart: Float   = noteDur * Float(arp.count)
+        let chordDur:   Float   = 0.55
+        let total:      Float   = chordStart + chordDur
+        let chord:      [Float] = [523.25, 659.25, 783.99, 1046.50]   // C major, ringing
         return synthesize(duration: total) { i, sr in
             let t = Float(i) / sr
-            var sample: Float = 0
-            if t < chordEnd {
-                let env = self.envelope(t, a: 0.01, d: 0.05, s: 0.8, sLen: chordEnd - 0.1, r: 0.05, total: chordEnd)
-                for hz in chordNotes {
-                    sample += env * (0.22 * sin(2 * .pi * hz * t) + 0.08 * self.osc(.triangle, phase: hz * t))
-                }
+            var s: Float = 0
+            if t < chordStart {
+                // Plucky, bouncy notes climbing up (quick decay, no sustain).
+                let idx = min(Int(t / noteDur), arp.count - 1)
+                let nt  = t - Float(idx) * noteDur
+                let env = self.envelope(nt, a: 0.006, d: 0.05, s: 0.0, sLen: 0.0, r: 0.05, total: noteDur)
+                let hz  = arp[idx]
+                s = env * 0.5 * (sin(2 * .pi * hz * nt) + 0.3 * self.osc(.triangle, phase: hz * nt)
+                                 + 0.12 * sin(2 * .pi * hz * 2 * nt))
             } else {
-                let nt  = t - chordEnd
-                let dur = total - chordEnd
-                let env = self.envelope(nt, a: 0.005, d: 0.03, s: 0.7, sLen: dur - 0.08, r: 0.05, total: dur)
-                sample = env * 0.55 * (sin(2 * .pi * accentHz * nt) + 0.2 * self.osc(.triangle, phase: accentHz * nt))
+                // Ringing major chord with a soft onset, plus a fading high sparkle (hooray).
+                let nt  = t - chordStart
+                let env = self.envelope(nt, a: 0.02, d: 0.12, s: 0.55, sLen: chordDur - 0.25, r: 0.13, total: chordDur)
+                for hz in chord {
+                    s += env * 0.14 * (sin(2 * .pi * hz * nt) + 0.25 * self.osc(.triangle, phase: hz * nt))
+                }
+                let sparkle = exp(-nt * 6.0) * 0.10 * sin(2 * .pi * 2093.0 * nt) * (0.5 + 0.5 * sin(2 * .pi * 9 * nt))
+                s += sparkle
             }
-            return sample
+            return s
         }
     }
 
