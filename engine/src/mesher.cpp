@@ -203,6 +203,13 @@ inline bool is_opaque(BlockId id) {
     return id != 0 && id != 9 && !is_glass(id) && !is_prop(id);
 }
 
+// Waterlogged props (reed 43, lily pad 46): they sit in a surface water cell and their
+// own model is drawn by the prop system, but the CELL must still render as water so the
+// water is not removed around them. The mesher treats these cells as water for geometry.
+inline bool is_waterlogged(BlockId id) {
+    return id == 43 || id == 46;
+}
+
 // ---- AO helpers -------------------------------------------------------------
 
 // Is this block id an AO-occluder?  Air (0), water (9), glass, and props do not occlude.
@@ -713,8 +720,10 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
                     if (is_opaque(here)) {
                         // Solid terrain: face visible against any non-opaque cell.
                         emit = !is_opaque(nb);      // nb is air (0), water (9), or glass
-                    } else if (here == 9) {
-                        // Water surface: only against air.
+                    } else if (here == 9 || is_waterlogged(here)) {
+                        // Water (and waterlogged reed/lily) surface: only against air.
+                        // Water-against-water and water-against-waterlogged cull, so a
+                        // reed cell joins seamlessly into the surrounding water surface.
                         emit = (nb == 0);
                     } else if (is_glass(here)) {
                         // #68 glass: show panes against air/water, hide behind opaque, and
@@ -730,7 +739,8 @@ MeshResult GreedyMesher::mesh(ChunkCoord c, IChunkStore& store,
                         AOCorners ao = compute_face_ao(chunk, c, store, fd, x, y, z);
                         ao_corners[u][v] = ao;
 
-                        mask[u][v] = {here, sky, blk, pack_ao(ao)};
+                        // Waterlogged cells render with the water material (id 9).
+                        mask[u][v] = {is_waterlogged(here) ? BlockId(9) : here, sky, blk, pack_ao(ao)};
                     }
                     // else mask stays {0,...} = no face
                 }
