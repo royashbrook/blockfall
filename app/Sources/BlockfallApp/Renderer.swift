@@ -178,6 +178,38 @@ func makeViewModelArm(skin: SIMD3<Float> = SIMD3<Float>(0.85, 0.66, 0.52),
 /// The held item shown in the viewmodel fist (#70 v2): tools (item ids 70-81) get a
 /// handle + head silhouette coloured by tier (wood/stone/iron); blocks and other items
 /// get a small held cube. Returns view-space cuboids, or [] for an empty hand.
+// #70 a recognizable colour for a held BLOCK (item id == block id for placeables), so a
+// block in hand reads as itself (grass green, stone grey, wood brown) instead of a generic
+// tinted cube. Returns nil for non-block items (they fall back to the per-id tint).
+func heldBlockColor(_ id: Int) -> SIMD3<Float>? {
+    switch id {
+    case 1:  return SIMD3(0.42, 0.62, 0.28)   // grass
+    case 2:  return SIMD3(0.45, 0.32, 0.20)   // dirt
+    case 3:  return SIMD3(0.52, 0.52, 0.55)   // stone
+    case 4:  return SIMD3(0.66, 0.50, 0.30)   // oak planks
+    case 5, 27: return SIMD3(0.33, 0.54, 0.24)// oak/birch leaves
+    case 6:  return SIMD3(0.84, 0.78, 0.55)   // sand
+    case 7:  return SIMD3(0.96, 0.88, 0.45)   // glow
+    case 8:  return SIMD3(0.55, 0.55, 0.57)   // stone brick
+    case 9:  return SIMD3(0.25, 0.45, 0.78)   // water
+    case 10: return SIMD3(0.48, 0.48, 0.50)   // cobblestone
+    case 12: return SIMD3(0.92, 0.95, 0.97)   // snow
+    case 13: return SIMD3(0.66, 0.82, 0.90)   // ice
+    case 21, 51: return SIMD3(0.45, 0.32, 0.18) // oak log / wood beam
+    case 22: return SIMD3(0.80, 0.78, 0.70)   // birch log
+    case 23: return SIMD3(0.82, 0.74, 0.55)   // birch planks
+    case 24: return SIMD3(0.72, 0.42, 0.30)   // clay brick
+    case 25: return SIMD3(0.70, 0.82, 0.88)   // glass
+    case 26: return SIMD3(0.50, 0.70, 0.85)   // coloured glass
+    case 28: return SIMD3(0.92, 0.92, 0.92)   // wool
+    case 29: return SIMD3(0.40, 0.48, 0.36)   // mossy stone
+    case 31: return SIMD3(0.55, 0.40, 0.22)   // chest
+    case 48: return SIMD3(0.20, 0.40, 0.24)   // pine needles
+    case 49: return SIMD3(0.34, 0.22, 0.14)   // pine log
+    default: return nil
+    }
+}
+
 func makeHeldItem(_ itemId: Int) -> [PropCuboidGPU] {
     func part(_ c: SIMD3<Float>, _ h: SIMD3<Float>, _ col: SIMD3<Float>) -> PropCuboidGPU {
         PropCuboidGPU(cx: c.x, cy: c.y, cz: c.z, hx: h.x, hy: h.y, hz: h.z, r: col.x, g: col.y, b: col.z, shape: 0)
@@ -237,11 +269,15 @@ func makeHeldItem(_ itemId: Int) -> [PropCuboidGPU] {
             part(SIMD3(fx, fy + 0.22, fz), SIMD3(0.09, 0.05, 0.09), SIMD3(0.80, 0.20, 0.18)),
         ]
     }
-    // Any other item (blocks, materials, other food): a small cube held up, tinted by
-    // item id so different things look different.
+    // A held BLOCK shows as a small cube in its own colour, so it reads as that block.
+    if let bc = heldBlockColor(itemId) {
+        return [ part(SIMD3(fx, fy + 0.18, fz), SIMD3(0.13, 0.13, 0.13), bc) ]
+    }
+    // Any other item (materials, other food): a small cube held up, tinted by item id so
+    // different things still look different.
     let h = Float((itemId &* 2654435761) & 0xFF) / 255.0
     let tint = SIMD3<Float>(0.42 + 0.40 * h, 0.44 + 0.28 * (1 - h), 0.40 + 0.34 * h)
-    return [ part(SIMD3(fx, fy + 0.18, fz), SIMD3(0.12, 0.12, 0.12), tint) ]
+    return [ part(SIMD3(fx, fy + 0.18, fz), SIMD3(0.11, 0.11, 0.11), tint) ]
 }
 
 /// Uniforms for the world-space precipitation pass (rain streaks / snow flakes).
