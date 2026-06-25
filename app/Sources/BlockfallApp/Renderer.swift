@@ -2841,12 +2841,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Outside the shadow frustum? Assume lit.
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
         if (depth >= 1.0) return 1.0;
-        // #72: fade shadows out smoothly near the shadow-map BOUNDARY. The map is a
+        // #49/#72: fade shadows out smoothly near the shadow-map BOUNDARY. The map is a
         // fixed sun-aligned square around the player, so its edge is a hard line that
-        // "wiped" shadows on one side as you turned. Fading the last ~12% of the map to
-        // fully-lit turns that hard line into an invisible gradient.
+        // "wiped" shadows on one side as you turned. A 12% fade still showed a faint line;
+        // fading the outer ~30% of the map to fully-lit turns the edge into a gradient too
+        // soft to read at any sun angle.
         float2 eDist = min(uv, 1.0 - uv);                 // distance to nearest edge
-        float edgeFade = smoothstep(0.0, 0.12, min(eDist.x, eDist.y));
+        float edgeFade = smoothstep(0.0, 0.30, min(eDist.x, eDist.y));
 
         // PCF 5×5: wider kernel for smoother soft-shadow edges (the 3×3 read harsh).
         // The comparison sampler (lessEqual) returns 0/1 per sample; Metal averages
@@ -2892,7 +2893,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             // #49 the near/far cascade used to switch HARD at 36 units, a crisp-vs-coarse
             // seam ring you scan as you turn (the "wipe"). Blend the two across a band so
             // there is no hard boundary; only the band samples both maps.
-            float nearBlend = 1.0 - smoothstep(30.0, 42.0, distToCam);   // 1 near .. 0 far
+            float nearBlend = 1.0 - smoothstep(26.0, 46.0, distToCam);   // 1 near .. 0 far
             float raw;
             if (nearBlend >= 0.999) {
                 raw = sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos,  dayFactor, 0.0028);
@@ -2909,7 +2910,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             // the player instead, so the cutoff is a smooth circle (same in every
             // direction) that sits inside the square's minimum reach — no straight edge can
             // ever show, so turning never wipes a side.
-            float distFade = 1.0 - smoothstep(110.0, 145.0, distToCam);
+            float distFade = 1.0 - smoothstep(95.0, 135.0, distToCam);
             raw = mix(1.0, raw, distFade);
             // #72 DEBUG: shadowScale == 2 (harness sentinel) outputs the shadow factor as
             // grayscale (white = lit, black = shadowed) so coverage is unmistakable headless.

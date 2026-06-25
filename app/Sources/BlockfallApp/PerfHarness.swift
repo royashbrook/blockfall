@@ -186,6 +186,12 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         // (the test world's high midday sun casts almost none, so the wipe is invisible).
         if ProcessInfo.processInfo.environment["BF_SHADOW_DEBUG"] == "1" {
             sun = bf_vec3(x: 0.55, y: -0.62, z: 0.56)   // points down-and-sideways (sun in the NW)
+            // #49 BF_SHOT_SUN="x,y,z" overrides the forced sun so the wipe can be hunted
+            // across sun angles (it is sun-angle dependent).
+            if let s = ProcessInfo.processInfo.environment["BF_SHOT_SUN"] {
+                let p = s.split(separator: ",").compactMap { Float($0) }
+                if p.count == 3 { sun = bf_vec3(x: p[0], y: p[1], z: p[2]) }
+            }
         }
         let wallClock = Float(now.truncatingRemainder(dividingBy: 3600.0))
 
