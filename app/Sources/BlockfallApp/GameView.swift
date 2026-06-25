@@ -164,7 +164,7 @@ final class GameView: MTKView {
         if !captured { capturePointer() } else { queue(BF_ACT_MINE_START) }
     }
     override func mouseUp(with e: NSEvent) { if captured { queue(BF_ACT_MINE_STOP) } }
-    override func rightMouseDown(with e: NSEvent) { if captured { queue(BF_ACT_PLACE) } }
+    override func rightMouseDown(with e: NSEvent) { if captured { queue(BF_ACT_INTERACT) } }  // #69 interact (befriend) or place
     override func mouseMoved(with e: NSEvent)   { if captured { lookDX += Float(e.deltaX); lookDY += Float(e.deltaY) } }
     override func mouseDragged(with e: NSEvent) { if captured { lookDX += Float(e.deltaX); lookDY += Float(e.deltaY) } }
     override func rightMouseDragged(with e: NSEvent) { if captured { lookDX += Float(e.deltaX); lookDY += Float(e.deltaY) } }

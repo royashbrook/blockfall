@@ -221,8 +221,28 @@ func makeHeldItem(_ itemId: Int) -> [PropCuboidGPU] {
             ]
         }
     }
-    // Block or other item: a small held cube.
-    return [ part(SIMD3(fx, fy + 0.02, fz), SIMD3(0.12, 0.12, 0.12), SIMD3(0.58, 0.52, 0.42)) ]
+    // Non-tool items must show too (#70): held UP above the fist so the hand does not
+    // hide them (a cube at fist level was why blocks/berries did not display).
+    if itemId == 90 {                                              // berry_cluster: red berries
+        let r1 = SIMD3<Float>(0.82, 0.16, 0.22), r2 = SIMD3<Float>(0.62, 0.12, 0.24)
+        return [
+            part(SIMD3(fx,        fy + 0.15, fz),        SIMD3(0.05, 0.05, 0.05), r1),
+            part(SIMD3(fx - 0.055, fy + 0.21, fz - 0.02), SIMD3(0.045, 0.045, 0.045), r2),
+            part(SIMD3(fx + 0.055, fy + 0.20, fz + 0.02), SIMD3(0.045, 0.045, 0.045), r1),
+            part(SIMD3(fx,        fy + 0.26, fz),        SIMD3(0.04, 0.04, 0.04), r2),
+        ]
+    }
+    if itemId == 93 {                                              // mushroom: stem + red cap
+        return [
+            part(SIMD3(fx, fy + 0.14, fz), SIMD3(0.04, 0.07, 0.04), SIMD3(0.92, 0.90, 0.82)),
+            part(SIMD3(fx, fy + 0.22, fz), SIMD3(0.09, 0.05, 0.09), SIMD3(0.80, 0.20, 0.18)),
+        ]
+    }
+    // Any other item (blocks, materials, other food): a small cube held up, tinted by
+    // item id so different things look different.
+    let h = Float((itemId &* 2654435761) & 0xFF) / 255.0
+    let tint = SIMD3<Float>(0.42 + 0.40 * h, 0.44 + 0.28 * (1 - h), 0.40 + 0.34 * h)
+    return [ part(SIMD3(fx, fy + 0.18, fz), SIMD3(0.12, 0.12, 0.12), tint) ]
 }
 
 /// Uniforms for the world-space precipitation pass (rain streaks / snow flakes).

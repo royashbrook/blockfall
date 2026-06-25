@@ -597,34 +597,7 @@ public:
                 break;
             }
             case BF_ACT_MINE_STOP:  mining_ = false; mine_progress_ = 0.0f; break;
-            case BF_ACT_PLACE: {
-                if (!has_target_ || !inv_) break;
-                ItemStack sel = inv_->get(selected_);
-                if (sel.item == 0) break;
-                const ItemDef* idef = items_ ? items_->by_id(sel.item) : nullptr;
-                BlockId pb = idef ? idef->places_block : 0;
-                if (pb == 0) break;                    // not a placeable item
-                // Don't let a solid block be placed inside the player (traps them).
-                // Pass-through blocks (water, plants) are fine to place at your feet.
-                {
-                    bool solid = !(pb == AIR || pb == WATER || (pb >= 36 && pb <= 47));
-                    if (mode_ == BF_MODE_SURVIVAL && solid && voxel_in_player_box(place_)) break;
-                }
-                if (mode_ == BF_MODE_SURVIVAL && !inv_->remove_item(sel.item, 1)) break;
-                set_block_internal(place_, pb);
-                fx(1, place_);                        // place sound
-                notify_quest("place_block", block_name(pb));
-                // A glow block or a crafted beacon lights up the dark and restores
-                // colour. Fire with the block name so quest 10 (target beacon_block)
-                // and the achievement (any) both match correctly.
-                if (pb == glow_id_ || (beacon_id_ != 0 && pb == beacon_id_)) {
-                    notify_quest("light_beacon", block_name(pb));
-                    ChunkCoord rc = to_chunk(place_);
-                    if (region_sat(rc) < 0.99f) { ++regions_restored_; notify_quest("restore_region", "dim_barrens"); }
-                    restore_region(rc);
-                }
-                break;
-            }
+            case BF_ACT_PLACE: perform_place(); break;
             case BF_ACT_CRAFT:      craft_index(a.arg_i); break;
             case BF_ACT_INV_OPEN:   inv_open_ = true;  break;
             case BF_ACT_INV_CLOSE:  inv_open_ = false; break;
@@ -637,12 +610,24 @@ public:
                 if (idx >= 0) attack_creature(idx);
                 break;
             }
-            case BF_ACT_INTERACT: {                // befriend
+            case BF_ACT_INTERACT: {
+                // Context-sensitive "use" (right-click): if you are looking at a creature,
+                // befriend it (feeding a berry if you have one); otherwise place the held
+                // block. This is why feeding animals did nothing before — the app never
+                // sent INTERACT, and right-click only ever placed. (#69)
                 int idx = creature_in_view();
-                if (idx >= 0) {
+                if (idx >= 0 && !creatures_[std::size_t(idx)].hostile) {
                     creatures_[std::size_t(idx)].friendly = true; ++creatures_befriended_;
+                    // Feed the held berry (consume one) so it reads as feeding the animal.
+                    if (inv_) {
+                        ItemStack held = inv_->get(selected_);
+                        if (held.item != 0 && item_name(held.item) == std::string("berry_cluster"))
+                            inv_->remove_item(held.item, 1);
+                    }
                     fx(5, player_voxel());
                     notify_quest("befriend_creature", creatures_[std::size_t(idx)].name);
+                } else {
+                    perform_place();               // nothing to interact with → place
                 }
                 break;
             }
@@ -1458,6 +1443,31 @@ private:
         creatures_.erase(std::remove_if(creatures_.begin(), creatures_.end(),
             [](const Creature& c){ return c.hostile; }), creatures_.end());
         fx(6, player_voxel());                           // respawn chime
+    }
+
+    // Place the held block at the targeted face. Extracted so right-click INTERACT can
+    // fall back to it when there is nothing to interact with. (#69)
+    void perform_place() {
+        if (!has_target_ || !inv_) return;
+        ItemStack sel = inv_->get(selected_);
+        if (sel.item == 0) return;
+        const ItemDef* idef = items_ ? items_->by_id(sel.item) : nullptr;
+        BlockId pb = idef ? idef->places_block : 0;
+        if (pb == 0) return;                    // not a placeable item
+        {
+            bool solid = !(pb == AIR || pb == WATER || (pb >= 36 && pb <= 47));
+            if (mode_ == BF_MODE_SURVIVAL && solid && voxel_in_player_box(place_)) return;
+        }
+        if (mode_ == BF_MODE_SURVIVAL && !inv_->remove_item(sel.item, 1)) return;
+        set_block_internal(place_, pb);
+        fx(1, place_);                          // place sound
+        notify_quest("place_block", block_name(pb));
+        if (pb == glow_id_ || (beacon_id_ != 0 && pb == beacon_id_)) {
+            notify_quest("light_beacon", block_name(pb));
+            ChunkCoord rc = to_chunk(place_);
+            if (region_sat(rc) < 0.99f) { ++regions_restored_; notify_quest("restore_region", "dim_barrens"); }
+            restore_region(rc);
+        }
     }
 
     // Break a block: drop its item (or fell the whole tree for logs), play the
