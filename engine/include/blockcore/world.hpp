@@ -67,6 +67,7 @@ struct Creature {
     float wander{0};
     int   shape{0};         // renderer model variant (0..3 animals)
     int   model{-1};        // explicit renderer kind from content (-1 = legacy mapping)
+    int   npc_id{0};        // #82 dialogue id for villagers (1=Mira 2=Tom 3=Lena, 0=none)
     std::string name;       // content creature name (quest befriend target)
 };
 
@@ -635,7 +636,11 @@ public:
                 // block. This is why feeding animals did nothing before — the app never
                 // sent INTERACT, and right-click only ever placed. (#69)
                 int idx = creature_in_view();
-                if (idx >= 0 && !creatures_[std::size_t(idx)].hostile) {
+                if (idx >= 0 && creatures_[std::size_t(idx)].model == 20) {
+                    // #82 a VILLAGER: open their dialogue (do NOT befriend, which used to make
+                    // them follow you around). The app shows the dialogue tree for this npc_id.
+                    fx(20, player_voxel(), creatures_[std::size_t(idx)].npc_id);
+                } else if (idx >= 0 && !creatures_[std::size_t(idx)].hostile) {
                     creatures_[std::size_t(idx)].friendly = true; ++creatures_befriended_;
                     // Feed the held berry (consume one) so it reads as feeding the animal.
                     if (inv_) {
@@ -1776,6 +1781,7 @@ private:
             Creature c;
             c.pos = V3{ox, float(gy), oz}; c.yaw = rand01() * 6.2831853f;
             c.model = d->model;                                      // 20 = humanoid villager
+            c.npc_id = (villager_npc_next_++ % 3) + 1;               // #82 cycle Mira/Tom/Lena
             c.name = std::string(d->name);
             c.speed = (d->move_speed > 0) ? d->move_speed * 0.5f : 0.8f;   // amble slowly
             c.hp = (d->max_health > 0) ? int(d->max_health) : 20;
@@ -2489,6 +2495,7 @@ private:
     std::vector<bf_entity_draw>   entities_;
     float                         creature_timer_{0.0f};
     float                         villager_timer_{0.0f};   // #39: structure NPC spawn cadence
+    int                           villager_npc_next_{0};   // #82: round-robins villager dialogue ids
     std::uint32_t                 rng_{0x1234567u};
     int                           regions_restored_{0};
     int                           creatures_befriended_{0};

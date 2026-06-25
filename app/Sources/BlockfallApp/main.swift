@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var gameView: GameView?
     var gameContainer: NSView?
     var pauseOverlay: NSView?
+    let dialogue = DialogueController()   // #82 villager dialogue
     // #71 character editor state.
     var charEditorOverlay: NSView?
     private weak var charPreview: CharacterPreviewView?
@@ -143,6 +144,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeFirstResponder(mtkView)
         renderer = r
         hud = h
+        // #82 villager dialogue: load the trees and open the overlay when the engine reports
+        // a right-click on a villager. Release the pointer so the player can click choices.
+        dialogue.load()
+        dialogue.onClose = { [weak self] in self?.gameView?.grabMouse() }
+        r.onDialogue = { [weak self] npcId in
+            guard let self = self, let cv = self.window.contentView, !self.dialogue.isOpen else { return }
+            self.gameView?.releaseMouse()
+            self.dialogue.show(npcId: npcId, in: cv)
+        }
         gameView = mtkView
         gameContainer = container
     }

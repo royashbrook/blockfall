@@ -852,6 +852,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         discovery.browse()
     }
 
+    var onDialogue: ((Int) -> Void)?   // #82 villager dialogue hook (npc_id), wired by the app
     func handleEvent(_ ev: bf_event) {
         guard ev.kind == BF_EVT_SFX else { return }
         switch ev.i {
@@ -868,6 +869,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         case 7: audio?.play(.pickup)
         case 8: audio?.play(.mine)         // melee hit on a creature
         case 9: audio?.play(.hurt)         // player took damage
+        case 20: onDialogue?(Int(ev.j))    // #82 right-clicked a villager: open dialogue (npc_id = j)
         default: break
         }
     }
