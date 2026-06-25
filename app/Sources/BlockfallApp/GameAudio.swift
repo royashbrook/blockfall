@@ -113,6 +113,20 @@ final class GameAudio {
         ambienceMixer?.outputVolume = 0.18 * soundVol
     }
 
+    // #88 Drive the music's darker "in the grey" feel. Call every frame with whether the
+    // player is in an unrestored region. Smoothly eases the music down a few semitones,
+    // slows the tempo, and adds a slow detune wobble so it sounds off/sad; eases back to
+    // normal, cheerful playback when out of the grey.
+    func tickGrey(inGrey: Bool, dt: Float) {
+        guard let tp = musicPitch else { return }
+        let target: Float = inGrey ? 1 : 0
+        greyAmt += (target - greyAmt) * min(1, max(0, dt) * 1.5)   // ~0.7s ease
+        greyPhase += max(0, dt) * 0.6
+        let wobble = sinf(greyPhase * 2 * .pi) * 14 * greyAmt       // queasy detune in the grey
+        tp.pitch = -260 * greyAmt + wobble                          // cents: down + wavering
+        tp.rate  = 1.0 - 0.16 * greyAmt                             // slower tempo in the grey
+    }
+
     func setSfxEnabled(_ on: Bool) {
         sfxEnabled = on
     }
@@ -231,6 +245,9 @@ final class GameAudio {
     private var musicBankNodes:  [AVAudioPlayerNode] = []   // 8 nodes (4 per bank)
     private var musicBankMixers: [AVAudioMixerNode]  = []   // 2 per-bank sub-mixers
     private var musicMixer:      AVAudioMixerNode?
+    private var musicPitch:      AVAudioUnitTimePitch?   // #88 grey-music time/pitch warp
+    private var greyAmt:   Float = 0                     // 0 normal .. 1 fully in the grey
+    private var greyPhase: Float = 0                     // slow wobble phase
     private var activeBank:      Int = 0                    // 0 or 1
 
     // Silence-gap transition timing (seconds):
@@ -298,11 +315,17 @@ final class GameAudio {
         guard outFormat.channelCount > 0 else { return }
 
         // --- Music mixer (master gain only — never touched during crossfades) ---
+        // #88 the music routes through a time-pitch unit so it can be pitched down, slowed,
+        // and slightly detuned/wobbled while the player is in the grey (set in tickGrey).
         let mMix = AVAudioMixerNode()
         mMix.outputVolume = 0.20
         eng.attach(mMix)
-        eng.connect(mMix, to: mainMixer, format: outFormat)
+        let tp = AVAudioUnitTimePitch()
+        eng.attach(tp)
+        eng.connect(mMix, to: tp, format: outFormat)
+        eng.connect(tp, to: mainMixer, format: outFormat)
         musicMixer = mMix
+        musicPitch = tp
 
         // --- Ambience mixer ---
         let aMix = AVAudioMixerNode()
@@ -3689,31 +3712,34 @@ final class GameAudio {
     /// (do-mi-sol-do!) into a ringing major chord with a little sparkle on top. The old
     /// version held a chord from the first instant, which read as an alarm.
     private func makeQuestCompleteBuffer() -> AVAudioPCMBuffer? {
-        let noteDur:    Float   = 0.11
+        let noteDur:    Float   = 0.12
         let arp:        [Float] = [523.25, 659.25, 783.99, 1046.50]   // C5 E5 G5 C6, bouncy
         let chordStart: Float   = noteDur * Float(arp.count)
-        let chordDur:   Float   = 0.55
+        let chordDur:   Float   = 0.70
         let total:      Float   = chordStart + chordDur
-        let chord:      [Float] = [523.25, 659.25, 783.99, 1046.50]   // C major, ringing
+        let chord:      [Float] = [261.63, 523.25, 659.25, 783.99, 1046.50]  // C major + sub-octave body
         return synthesize(duration: total) { i, sr in
             let t = Float(i) / sr
             var s: Float = 0
             if t < chordStart {
-                // Plucky, bouncy notes climbing up (quick decay, no sustain).
+                // Plucky, bouncy notes climbing up (quick decay, no sustain), softening the
+                // very first onset so it eases in rather than blares.
                 let idx = min(Int(t / noteDur), arp.count - 1)
                 let nt  = t - Float(idx) * noteDur
-                let env = self.envelope(nt, a: 0.006, d: 0.05, s: 0.0, sLen: 0.0, r: 0.05, total: noteDur)
+                let atk: Float = (idx == 0) ? 0.012 : 0.006
+                let env = self.envelope(nt, a: atk, d: 0.06, s: 0.0, sLen: 0.0, r: 0.05, total: noteDur)
                 let hz  = arp[idx]
-                s = env * 0.5 * (sin(2 * .pi * hz * nt) + 0.3 * self.osc(.triangle, phase: hz * nt)
-                                 + 0.12 * sin(2 * .pi * hz * 2 * nt))
+                s = env * 0.46 * (sin(2 * .pi * hz * nt) + 0.3 * self.osc(.triangle, phase: hz * nt)
+                                  + 0.10 * sin(2 * .pi * hz * 2 * nt))
             } else {
-                // Ringing major chord with a soft onset, plus a fading high sparkle (hooray).
+                // Warm, ringing major chord (with a sub-octave for body), soft onset, and a
+                // gentle bell sparkle that rings out on top (hooray, not an alert).
                 let nt  = t - chordStart
-                let env = self.envelope(nt, a: 0.02, d: 0.12, s: 0.55, sLen: chordDur - 0.25, r: 0.13, total: chordDur)
+                let env = self.envelope(nt, a: 0.025, d: 0.14, s: 0.55, sLen: chordDur - 0.30, r: 0.16, total: chordDur)
                 for hz in chord {
-                    s += env * 0.14 * (sin(2 * .pi * hz * nt) + 0.25 * self.osc(.triangle, phase: hz * nt))
+                    s += env * 0.12 * (sin(2 * .pi * hz * nt) + 0.22 * self.osc(.triangle, phase: hz * nt))
                 }
-                let sparkle = exp(-nt * 6.0) * 0.10 * sin(2 * .pi * 2093.0 * nt) * (0.5 + 0.5 * sin(2 * .pi * 9 * nt))
+                let sparkle = exp(-nt * 4.5) * 0.085 * sin(2 * .pi * 1568.0 * nt) * (0.55 + 0.45 * sin(2 * .pi * 7 * nt))
                 s += sparkle
             }
             return s

@@ -1429,6 +1429,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // Audio: drive day/evening music + splash when entering water.
         audio?.setTimeOfDay(frame.camera.time_of_day)
+        audio?.tickGrey(inGrey: frame.hud.in_dim != 0, dt: Float(dt))   // #88 darker music in the grey
         let nowUnder = frame.camera.underwater > 0.5
         if nowUnder && !lastUnderwater { audio?.play(.splash) }
         lastUnderwater = nowUnder
