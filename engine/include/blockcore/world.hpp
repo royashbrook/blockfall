@@ -2133,7 +2133,19 @@ private:
                         ++level;
                     }
                     if (level > 127) level = 127;
-                    h = (std::uint32_t(level) << 24) | (h & 0x00FFFFFFu);  // bit31 = 0 (trunk)
+                    // #62 slant: a trunk block whose VERTICAL below is air but a DIAGONAL
+                    // below is a log is a lean-bend (the trunk jogs sideways). Tag it with
+                    // the direction of the lower trunk so the renderer slants its base down
+                    // toward it, connecting the two segments instead of leaving a gap.
+                    std::uint32_t slant = 0, sdir = 0;
+                    if (!below) {
+                        if      (is_log( 1, -1,  0)) { slant = 1; sdir = 0; }   // lower trunk +x
+                        else if (is_log(-1, -1,  0)) { slant = 1; sdir = 1; }   // -x
+                        else if (is_log( 0, -1,  1)) { slant = 1; sdir = 2; }   // +z
+                        else if (is_log( 0, -1, -1)) { slant = 1; sdir = 3; }   // -z
+                    }
+                    // bit31=0 trunk, 24-30 level, 23 slant, 21-22 dir, 0-20 colour hash.
+                    h = (std::uint32_t(level) << 24) | (slant << 23) | (sdir << 21) | (h & 0x001FFFFFu);
                 }
             }
             bf_prop_instance p{};

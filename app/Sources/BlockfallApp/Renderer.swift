@@ -4032,6 +4032,19 @@ final class Renderer: NSObject, MTKViewDelegate {
                 float ws = clamp(1.0 - float(level) * 0.045, 0.5, 1.0);
                 lp.x = 0.5 + (lp.x - 0.5) * ws;
                 lp.z = 0.5 + (lp.z - 0.5) * ws;
+                // #62 slant: at a lean-bend (bit 23), bend the trunk's BASE down and over
+                // toward the lower trunk (bits 21-22 dir) so the two segments connect into
+                // an elbow instead of two floating cylinders.
+                if (((inst.seed >> 23u) & 1u) == 1u) {
+                    uint sdir = (inst.seed >> 21u) & 3u;
+                    float2 dv = (sdir == 0u) ? float2(1.0, 0.0)
+                              : (sdir == 1u) ? float2(-1.0, 0.0)
+                              : (sdir == 2u) ? float2(0.0, 1.0) : float2(0.0, -1.0);
+                    float t = clamp((0.5 - lp.y) * 2.0, 0.0, 1.0);   // 0 at centre, 1 at the base
+                    lp.x += dv.x * t * 0.9;
+                    lp.z += dv.y * t * 0.9;
+                    lp.y -= t * 0.55;
+                }
             }
         }
         // Wind sway (#45/#52): thin foliage (grass row 4, flowers rows 0/1) bends in
