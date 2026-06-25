@@ -122,9 +122,9 @@ final class GameAudio {
         let target: Float = inGrey ? 1 : 0
         greyAmt += (target - greyAmt) * min(1, max(0, dt) * 1.5)   // ~0.7s ease
         greyPhase += max(0, dt) * 0.6
-        let wobble = sinf(greyPhase * 2 * .pi) * 14 * greyAmt       // queasy detune in the grey
-        tp.pitch = -260 * greyAmt + wobble                          // cents: down + wavering
-        tp.rate  = 1.0 - 0.16 * greyAmt                             // slower tempo in the grey
+        let wobble = sinf(greyPhase * 2 * .pi) * 18 * greyAmt       // queasy detune in the grey
+        tp.pitch = -430 * greyAmt + wobble                          // cents: well down + wavering
+        tp.rate  = 1.0 - 0.26 * greyAmt                             // notably slower tempo in the grey
     }
 
     func setSfxEnabled(_ on: Bool) {
