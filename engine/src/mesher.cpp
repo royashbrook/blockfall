@@ -677,7 +677,9 @@ bool emit_door(int bx, int by, int bz, BlockId id,
     if (idx_out.size()  - idx_written < 36 * sizeof(std::uint32_t)) return false;
 
     constexpr std::uint32_t AO = 3u;
-    const std::uint16_t mat = static_cast<std::uint16_t>(id);
+    // Both door states are oak: always use the oak_door (closed, id 33) texture tile. The
+    // open-door id (50) has no atlas tile of its own, which made an opened door render pink.
+    const std::uint16_t mat = static_cast<std::uint16_t>(DOOR_CLOSED);
     const std::uint32_t X = static_cast<std::uint32_t>(bx);
     const std::uint32_t Y = static_cast<std::uint32_t>(by);
     const std::uint32_t Z = static_cast<std::uint32_t>(bz);
