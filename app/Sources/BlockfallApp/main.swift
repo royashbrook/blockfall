@@ -279,8 +279,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         charRowLabels = []
         var rows: [NSView] = [title, preview]
         for (i, name) in charTraitNames.enumerated() { rows.append(charTraitRow(i, name)) }
-        let done = pauseButton("Done", #selector(closeCharacterEditor))
-        rows.append(done)
+        // Randomize previews a look; Save commits it; Cancel backs out without changing
+        // your real appearance.
+        let actions = NSStackView(views: [
+            charActionButton("Randomize", #selector(randomizeChar)),
+            charActionButton("Save",      #selector(saveChar)),
+            charActionButton("Cancel",    #selector(closeCharacterEditor)),
+        ])
+        actions.orientation = .horizontal; actions.spacing = 10; actions.alignment = .centerY
+        rows.append(actions)
 
         let stack = NSStackView(views: rows)
         stack.orientation = .vertical; stack.spacing = 12; stack.alignment = .centerX
@@ -326,14 +333,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return row
     }
 
+    // A compact green action button for the editor (Randomize / Save / Cancel).
+    private func charActionButton(_ title: String, _ sel: Selector) -> NSButton {
+        let b = NSButton(title: title, target: self, action: sel)
+        b.bezelStyle = .regularSquare; b.isBordered = false; b.wantsLayer = true
+        b.layer?.backgroundColor = NSColor(calibratedRed: 0.30, green: 0.62, blue: 0.42, alpha: 1).cgColor
+        b.layer?.cornerRadius = 10
+        b.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.boldSystemFont(ofSize: 16), .foregroundColor: NSColor.white])
+        b.translatesAutoresizingMaskIntoConstraints = false
+        b.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        return b
+    }
+    // Cycle a trait in the PREVIEW only; nothing is committed until Save.
     @objc private func charCycle(_ sender: NSButton) {
         let idx = sender.tag / 2, dir = (sender.tag % 2 == 0) ? -1 : 1
         guard idx >= 0 && idx < charTraits.count else { return }
         editorAppearance.cycle(charTraits[idx], by: dir)
-        editorAppearance.save()
         refreshCharRows()
         charPreview?.character = editorAppearance
+    }
+    @objc private func randomizeChar() {
+        editorAppearance = CharacterAppearance.randomized()
+        refreshCharRows()
+        charPreview?.character = editorAppearance
+    }
+    @objc private func saveChar() {
+        editorAppearance.save()
         renderer?.setCharacterAppearance(skin: editorAppearance.skinRGB, shirt: editorAppearance.shirtRGB)
+        charEditorOverlay?.removeFromSuperview(); charEditorOverlay = nil
     }
 
     private func refreshCharRows() {
@@ -342,9 +371,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // Cancel: close without committing. The real appearance only changes on Save.
     @objc private func closeCharacterEditor() {
-        editorAppearance.save()
-        renderer?.setCharacterAppearance(skin: editorAppearance.skinRGB, shirt: editorAppearance.shirtRGB)
         charEditorOverlay?.removeFromSuperview(); charEditorOverlay = nil
     }
 
@@ -484,13 +512,11 @@ if let idx = CommandLine.arguments.firstIndex(of: "--shot"), idx + 1 < CommandLi
 // variants, so the look can be checked without the desktop UI (#71).
 if let idx = CommandLine.arguments.firstIndex(of: "--portrait"), idx + 1 < CommandLine.arguments.count {
     let cs = CGColorSpace(name: CGColorSpace.sRGB)!
-    let cell = 256, cols = 4
-    let variants: [CharacterAppearance] = [
-        CharacterAppearance(),                                                                       // default
-        CharacterAppearance(skin: 5, shirt: 4, hairColor: 6, hairStyle: 2, nose: 2, mouth: 1),       // dark skin, spiky blue, grin
-        CharacterAppearance(skin: 0, shirt: 6, hairColor: 3, hairStyle: 1, nose: 1, mouth: 3),       // pale, long blonde, whoa
-        CharacterAppearance(skin: 3, shirt: 8, hairColor: 0, hairStyle: 3, nose: 0, mouth: 2),       // tan, bald, neutral
-    ]
+    let cell = 220, cols = 10
+    var variants: [CharacterAppearance] = []
+    for h in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 4, hairColor: 1, hairStyle: h, nose: 0, mouth: 0)) }  // all hair styles
+    for n in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 7, hairColor: 1, hairStyle: 2, nose: n, mouth: 0)) }  // all noses
+    for m in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 3, hairColor: 1, hairStyle: 2, nose: 0, mouth: m)) }  // all mouths
     let W = cell * min(cols, variants.count)
     let H = cell * ((variants.count + cols - 1) / cols)
     let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: 0,
