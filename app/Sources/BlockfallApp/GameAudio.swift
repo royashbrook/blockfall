@@ -191,6 +191,19 @@ final class GameAudio {
         node.play()
     }
 
+    // Footstep for a terrain class (0 soft, 1 hard, 2 sand, 3 snow, 4 wood). Alternates a
+    // small left/right pan so a walk reads as a gait rather than one repeated tap.
+    func playStep(_ cls: Int) {
+        guard sfxEnabled, isReady, let engine, engine.isRunning else { return }
+        let idx = (cls >= 0 && cls < stepBuffers.count) ? cls : 0
+        guard let buffer = stepBuffers[idx] else { return }
+        let node = idleSfxNode()
+        node.pan = stepLeft ? -0.12 : 0.12
+        stepLeft.toggle()
+        node.scheduleBuffer(buffer, completionHandler: nil)
+        node.play()
+    }
+
     // -----------------------------------------------------------------------
     // MARK: Private state
     // -----------------------------------------------------------------------
@@ -259,6 +272,8 @@ final class GameAudio {
     private var poolIndex = 0
 
     private var sfxBuffers: [Sfx: AVAudioPCMBuffer] = [:]
+    private var stepBuffers: [AVAudioPCMBuffer?] = []   // #footsteps: per-terrain class
+    private var stepLeft = false                        // alternate pan for a left/right gait
 
     // Pitch-variant pre-rendered buffers for frequently repeated SFX.
     private struct SfxVariantKey: Hashable {
@@ -3491,7 +3506,8 @@ final class GameAudio {
         // to playBreak(materialClass:0). Buffer retained so sfxBuffers dict lookup
         // doesn't silently drop any future path that checks for it.
         sfxBuffers[.breakBlock]    = makeBreakGeneric()
-        sfxBuffers[.step]          = makeStepBuffer()
+        stepBuffers = (0..<5).map { makeStepBuffer($0) }   // per-terrain footsteps
+        sfxBuffers[.step]          = stepBuffers[0]         // legacy play(.step) -> soft
         sfxBuffers[.jump]          = makeJumpBuffer()
         sfxBuffers[.craft]         = makeCraftBuffer()
         sfxBuffers[.befriend]      = makeBefriendBuffer()
@@ -3587,14 +3603,42 @@ final class GameAudio {
     }
 
     /// step — quiet soft tap: very short low tone, ~60 ms
-    private func makeStepBuffer() -> AVAudioPCMBuffer? {
-        let dur: Float = 0.06
+    // A soft, pleasant footstep per terrain class (0 soft, 1 hard, 2 sand, 3 snow, 4 wood).
+    // The old step was a 120 Hz sine + raw noise, which read as a snare/tom. These are short
+    // transients shaped per surface, with the noise lightly low-passed so it is gentle, not
+    // hissy. A quick low "thud" body gives weight without a clear musical pitch.
+    private func makeStepBuffer(_ cls: Int) -> AVAudioPCMBuffer? {
+        let dur: Float = (cls == 3) ? 0.085 : 0.07          // snow a touch longer (crunch)
+        var lp: Float = 0                                   // 1-pole low-pass state for the noise
         return synthesize(duration: dur) { i, sr in
-            let t   = Float(i) / sr
-            let env = self.envelope(t, a: 0.002, d: 0.015, s: 0.2, sLen: 0.01, r: 0.03, total: dur)
-            let tone  = 0.45 * sin(2 * .pi * 120 * t)
-            let noise = 0.2 * self.whitenoise()
-            return env * (tone + noise) * 0.6
+            let t = Float(i) / sr
+            let n = self.whitenoise()
+            switch cls {
+            case 1: // HARD stone/brick: short, brighter tap
+                let env = self.envelope(t, a: 0.001, d: 0.012, s: 0.0, sLen: 0.0, r: 0.02, total: dur)
+                lp += (n - lp) * 0.55
+                let body = 0.22 * sin(2 * .pi * 95 * t) * exp(-t * 95)
+                return env * (0.42 * lp + body) * 0.5
+            case 2: // SAND: dull, soft hiss, no tone
+                let env = self.envelope(t, a: 0.004, d: 0.03, s: 0.0, sLen: 0.0, r: 0.03, total: dur)
+                lp += (n - lp) * 0.10
+                return env * lp * 0.5
+            case 3: // SNOW: crunchy, granular, brighter
+                let env = self.envelope(t, a: 0.002, d: 0.05, s: 0.0, sLen: 0.0, r: 0.03, total: dur)
+                lp += (n - lp) * 0.85
+                let crunch = lp * (0.6 + 0.4 * sin(2 * .pi * 1300 * t))
+                return env * crunch * 0.4
+            case 4: // WOOD: hollow "tok"
+                let env = self.envelope(t, a: 0.001, d: 0.02, s: 0.0, sLen: 0.0, r: 0.04, total: dur)
+                lp += (n - lp) * 0.4
+                let tok = 0.5 * sin(2 * .pi * 205 * t) * exp(-t * 55)
+                return env * (tok + 0.16 * lp) * 0.5
+            default: // SOFT grass/dirt: muffled low thud
+                let env = self.envelope(t, a: 0.003, d: 0.022, s: 0.0, sLen: 0.0, r: 0.03, total: dur)
+                lp += (n - lp) * 0.12
+                let thud = 0.30 * sin(2 * .pi * 80 * t) * exp(-t * 72)
+                return env * (thud + 0.22 * lp) * 0.5
+            }
         }
     }
 
