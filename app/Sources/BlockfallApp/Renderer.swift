@@ -2887,9 +2887,20 @@ final class Renderer: NSObject, MTKViewDelegate {
             float distToCam = length(in.worldPos - UW_CAM_POS(wu));
             // Higher depth bias than before to kill self-shadow acne on the stepped /
             // terraced terrain (continentalness made more near-sea-level terraces).
-            float raw = (distToCam < 36.0)
-                ? sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos,  dayFactor, 0.0028)
-                : sampleShadowPCF(shadowFar, shadowSamp, in.shadowPosF, dayFactor, 0.0050);
+            // #49 the near/far cascade used to switch HARD at 36 units, a crisp-vs-coarse
+            // seam ring you scan as you turn (the "wipe"). Blend the two across a band so
+            // there is no hard boundary; only the band samples both maps.
+            float nearBlend = 1.0 - smoothstep(30.0, 42.0, distToCam);   // 1 near .. 0 far
+            float raw;
+            if (nearBlend >= 0.999) {
+                raw = sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos,  dayFactor, 0.0028);
+            } else if (nearBlend <= 0.001) {
+                raw = sampleShadowPCF(shadowFar, shadowSamp, in.shadowPosF, dayFactor, 0.0050);
+            } else {
+                float rn = sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos,  dayFactor, 0.0028);
+                float rf = sampleShadowPCF(shadowFar, shadowSamp, in.shadowPosF, dayFactor, 0.0050);
+                raw = mix(rf, rn, nearBlend);
+            }
             // #72 the real wipe fix: the shadow map is a sun-aligned SQUARE, whose straight
             // edges (corners reach ~1.4x farther than edge-midpoints) read as a line that
             // sweeps across the view as you turn. Fade shadows out by RADIAL DISTANCE from
