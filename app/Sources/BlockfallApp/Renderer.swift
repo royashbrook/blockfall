@@ -192,21 +192,34 @@ func makeHeldItem(_ itemId: Int) -> [PropCuboidGPU] {
         let mat: SIMD3<Float> = tier == 0 ? SIMD3(0.55, 0.40, 0.22)
                               : tier == 1 ? SIMD3(0.56, 0.56, 0.59)
                               :             SIMD3(0.82, 0.84, 0.88)
-        if isSword {
+        let handle = part(SIMD3(fx, fy, fz), SIMD3(0.026, 0.27, 0.026), wood)   // shared shaft
+        if isSword {                                                 // grip + pommel + guard + tapered blade
             return [
-                part(SIMD3(fx, fy,        fz), SIMD3(0.03, 0.15, 0.03), wood),  // grip
-                part(SIMD3(fx, fy + 0.14, fz), SIMD3(0.10, 0.025, 0.035), mat), // guard
-                part(SIMD3(fx, fy + 0.38, fz), SIMD3(0.035, 0.26, 0.05), mat),  // blade
+                part(SIMD3(fx, fy,        fz), SIMD3(0.028, 0.12, 0.028), wood),  // grip
+                part(SIMD3(fx, fy - 0.13, fz), SIMD3(0.045, 0.03, 0.045), mat),   // pommel
+                part(SIMD3(fx, fy + 0.13, fz), SIMD3(0.12, 0.025, 0.035), mat),   // wide crossguard
+                part(SIMD3(fx, fy + 0.40, fz), SIMD3(0.035, 0.27, 0.05),  mat),   // blade
+                part(SIMD3(fx, fy + 0.69, fz), SIMD3(0.018, 0.06, 0.04),  mat),   // blade tip (taper)
             ]
         }
         let kind = (itemId - 70) % 3   // 0 pickaxe, 1 axe, 2 shovel
-        let head: SIMD3<Float> = kind == 0 ? SIMD3(0.21, 0.04, 0.05)   // pick: wide bar
-                               : kind == 1 ? SIMD3(0.08, 0.12, 0.04)   // axe: blade
-                               :             SIMD3(0.10, 0.13, 0.025)  // shovel: scoop
-        return [
-            part(SIMD3(fx, fy,        fz), SIMD3(0.03, 0.27, 0.03), wood),  // handle
-            part(SIMD3(fx, fy + 0.31, fz), head, mat),                     // head
-        ]
+        if kind == 0 {                                              // PICKAXE: bar + two angled points
+            return [ handle,
+                part(SIMD3(fx,        fy + 0.31, fz), SIMD3(0.06, 0.035, 0.045), mat),  // centre socket
+                part(SIMD3(fx - 0.13, fy + 0.28, fz), SIMD3(0.07, 0.028, 0.04),  mat),  // left point (lower)
+                part(SIMD3(fx + 0.13, fy + 0.28, fz), SIMD3(0.07, 0.028, 0.04),  mat),  // right point (lower)
+            ]
+        } else if kind == 1 {                                       // AXE: socket + wedge blade to one side
+            return [ handle,
+                part(SIMD3(fx + 0.05, fy + 0.30, fz), SIMD3(0.04, 0.06, 0.04),  mat),   // socket
+                part(SIMD3(fx + 0.13, fy + 0.30, fz), SIMD3(0.035, 0.11, 0.055), mat),  // blade
+            ]
+        } else {                                                    // SHOVEL: socket + flat wide scoop
+            return [ handle,
+                part(SIMD3(fx, fy + 0.28, fz), SIMD3(0.035, 0.05, 0.03), mat),          // socket
+                part(SIMD3(fx, fy + 0.37, fz), SIMD3(0.095, 0.06, 0.018), mat),         // scoop blade
+            ]
+        }
     }
     // Block or other item: a small held cube.
     return [ part(SIMD3(fx, fy + 0.02, fz), SIMD3(0.12, 0.12, 0.12), SIMD3(0.58, 0.52, 0.42)) ]
