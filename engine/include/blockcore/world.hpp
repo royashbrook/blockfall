@@ -2125,7 +2125,12 @@ private:
                     bool xax = is_log(1,1,0)||is_log(-1,1,0)||is_log(1,-1,0)||is_log(-1,-1,0)||is_log(1,0,0)||is_log(-1,0,0);
                     bool zax = is_log(0,1,1)||is_log(0,1,-1)||is_log(0,-1,1)||is_log(0,-1,-1)||is_log(0,0,1)||is_log(0,0,-1);
                     std::uint32_t axis = (zax && !xax) ? 1u : 0u;   // 0 = x-axis, 1 = z-axis
-                    h = 0x80000000u | (axis << 30) | (h & 0x3FFFFFFFu);  // bit31 branch, bit30 axis
+                    // #62 branch slant: which end is the trunk/inner side (a log at or
+                    // below, along the axis), so the renderer bends that end DOWN to
+                    // connect, the same way trunk lean-bends connect.
+                    bool innerNeg = (axis == 0u) ? (is_log(-1,0,0) || is_log(-1,-1,0))
+                                                 : (is_log(0,0,-1) || is_log(0,-1,-1));
+                    h = 0x80000000u | (axis << 30) | ((innerNeg ? 1u : 0u) << 29) | (h & 0x1FFFFFFFu);
                 } else {
                     int level = 0;
                     for (int k = 1; k <= 24; ++k) {

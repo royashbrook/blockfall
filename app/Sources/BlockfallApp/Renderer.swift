@@ -4026,6 +4026,11 @@ final class Renderer: NSObject, MTKViewDelegate {
                     lp = float3(0.5 + oz * thin, 0.5 + ox * thin, 0.5 + oy * ext);
                     nm = float3(nm.x, nm.z, nm.y);
                 }
+                // #62 branch slant: bend the INNER end (toward the trunk / previous step,
+                // bit 29) DOWN so the bough connects like the trunk lean-bends do.
+                float along = (axis == 0u) ? (lp.x - 0.5) : (lp.z - 0.5);
+                float innerSide = (((inst.seed >> 29u) & 1u) == 1u) ? max(0.0, -along) : max(0.0, along);
+                lp.y -= innerSide * 1.3;
             } else {
                 // Trunk taper: narrows with height above the base (bits 24-30 = level).
                 uint level = (inst.seed >> 24u) & 0x7Fu;

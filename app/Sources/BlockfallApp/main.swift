@@ -62,8 +62,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             fatalError("No Metal device (this build targets Apple Silicon).")
         }
         device = dev
-        // #3: respect the persisted music/ambience toggles before starting.
+        // #3: respect the persisted music/ambience toggles + volumes before starting.
         audio.setMusicEnabled(UserDefaults.standard.object(forKey: "audMusic") as? Bool ?? true)
+        audio.setMusicVolume(Float(UserDefaults.standard.object(forKey: "audMusicVol") as? Double ?? 1.0))
+        audio.setSoundVolume(Float(UserDefaults.standard.object(forKey: "audSoundVol") as? Double ?? 1.0))
         audio.start()
         guide = GuideController()   // on-device AI "Guide" companion (press 'G')
         audio.setAmbienceEnabled(UserDefaults.standard.object(forKey: "audAmbience") as? Bool ?? true)
@@ -202,6 +204,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let auTitle = NSTextField(labelWithString: "Audio")
         auTitle.font = .boldSystemFont(ofSize: 16); auTitle.textColor = .white
         let auStack = NSStackView(views: [
+            volumeSliderRow("Music Volume", key: "audMusicVol", sel: #selector(musicVolChanged(_:))),
+            volumeSliderRow("Sound Volume", key: "audSoundVol", sel: #selector(soundVolChanged(_:))),
             audioCheckbox("Music",    tag: 0, on: UserDefaults.standard.object(forKey: "audMusic")    as? Bool ?? true),
             audioCheckbox("Ambience", tag: 1, on: UserDefaults.standard.object(forKey: "audAmbience") as? Bool ?? true),
         ])
@@ -258,6 +262,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateHUDScaleLabel() {
         let v = hud?.hudScale ?? AppDelegate.loadHUDScale()
         hudScaleValueLabel?.stringValue = String(format: "%.1f×", Double(v))
+    }
+
+    // #: a labeled 0..1 volume slider row (independent music vs sounds).
+    private func volumeSliderRow(_ title: String, key: String, sel: Selector) -> NSStackView {
+        let lbl = NSTextField(labelWithString: title)
+        lbl.font = .systemFont(ofSize: 14); lbl.textColor = .white
+        let v = UserDefaults.standard.object(forKey: key) as? Double ?? 1.0
+        let s = NSSlider(value: v, minValue: 0.0, maxValue: 1.0, target: self, action: sel)
+        s.translatesAutoresizingMaskIntoConstraints = false
+        s.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        let row = NSStackView(views: [lbl, s])
+        row.orientation = .horizontal; row.spacing = 10; row.alignment = .centerY
+        return row
+    }
+    @objc private func musicVolChanged(_ s: NSSlider) {
+        UserDefaults.standard.set(s.doubleValue, forKey: "audMusicVol"); audio.setMusicVolume(Float(s.doubleValue))
+    }
+    @objc private func soundVolChanged(_ s: NSSlider) {
+        UserDefaults.standard.set(s.doubleValue, forKey: "audSoundVol"); audio.setSoundVolume(Float(s.doubleValue))
     }
 
     // #3: a styled audio checkbox; tag 0 = Music, 1 = Ambience.

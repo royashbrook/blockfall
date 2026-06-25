@@ -99,6 +99,20 @@ final class GameAudio {
         }
     }
 
+    // #: independent volume for music vs other sounds (sfx + ambience). 0..1 scales the
+    // master gain of each group's mixer (the bases match setupEngine).
+    private var musicVol: Float = 1
+    private var soundVol: Float = 1
+    func setMusicVolume(_ v: Float) {
+        musicVol = max(0, min(1, v))
+        musicMixer?.outputVolume = 0.20 * musicVol
+    }
+    func setSoundVolume(_ v: Float) {
+        soundVol = max(0, min(1, v))
+        sfxMixer?.outputVolume      = 0.55 * soundVol
+        ambienceMixer?.outputVolume = 0.18 * soundVol
+    }
+
     func setSfxEnabled(_ on: Bool) {
         sfxEnabled = on
     }
