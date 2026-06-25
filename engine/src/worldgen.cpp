@@ -3459,6 +3459,11 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                 std::uint64_t roll = ph & 0xFFu;        // 0..255, primary
                 std::uint64_t roll2 = (ph >> 8u) & 0xFFu; // 0..255, secondary
                 std::uint64_t roll3 = (ph >> 16u) & 0xFFu; // 0..255, pebble scatter
+                // #84 grass clumps: a low-frequency patch field. Where it is high, grass
+                // grows densely (so neighbouring tufts merge into a big clump the renderer
+                // scales up); elsewhere it stays sparse. gt is the grass spawn threshold.
+                float gpatch = value_noise2(float(wx) * 0.085f, float(wz) * 0.085f, pseed ^ 0x6772ABCDull);
+                std::uint64_t gt = (gpatch > 0.58f) ? 205u : 24u;
 
                 BlockId plant = AIR;
 
@@ -3466,12 +3471,12 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                     // Undergrowth: tall_grass scattered tufts under the canopy.
                     // TRIMMED ~25%: thresholds multiplied by 0.75 vs prior version.
                     if (surf == GRASS) {
-                        if      (roll <  45u) plant = TALL_GRASS;   // ~18% (was ~24%)
-                        else if (roll <  60u) plant = FLOWER_RED;   // ~6%  (was ~8%)
-                        else if (roll <  75u) plant = FLOWER_YELLOW;// ~6%  (was ~7%)
-                        else if (roll <  85u) plant = MUSHROOM;     // ~4%  (was ~5%)
-                        else if (roll <  91u) plant = BERRY_BUSH;   // ~2%  forest berries
-                        else if (roll <  97u) plant = FALLEN_STICK; // ~2%  forest-floor twigs (#58)
+                        if      (roll <  gt)        plant = TALL_GRASS;   // #84 patchy: dense clumps / sparse
+                        else if (roll <  gt + 15u)  plant = FLOWER_RED;
+                        else if (roll <  gt + 30u)  plant = FLOWER_YELLOW;
+                        else if (roll <  gt + 40u)  plant = MUSHROOM;
+                        else if (roll <  gt + 46u)  plant = BERRY_BUSH;   // forest berries
+                        else if (roll <  gt + 52u)  plant = FALLEN_STICK; // forest-floor twigs (#58)
                     } else if (surf == DIRT) {
                         // Shaded dirt: mushrooms more likely, sparse tall grass.
                         // TRIMMED ~25%.
@@ -3485,10 +3490,9 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                     // scattered on dry ground or they show as floating water cubes. The
                     // real cattails come from the shallow-water pass below.
                     if (surf == GRASS || surf == DIRT) {
-                        if      (roll <  32u) plant = TALL_GRASS;   // ~12% marsh grass
-                        else if (roll <  60u) plant = MUSHROOM;     // ~11%
-                        else if (roll <  74u) plant = TALL_GRASS;   // ~5%
-                        else if (roll <  86u) plant = FLOWER_RED;   // ~5%
+                        if      (roll <  gt)        plant = TALL_GRASS;   // #84 patchy marsh grass
+                        else if (roll <  gt + 26u)  plant = MUSHROOM;
+                        else if (roll <  gt + 38u)  plant = FLOWER_RED;
                     }
                 } else if (dom == Biome::Desert) {
                     if (surf == SAND && roll < 10u) plant = CACTUS_PLANT;  // ~4% cacti (#58)
@@ -3498,11 +3502,11 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
                     // Plains: scattered grass tufts, flowers prominent.
                     // TRIMMED ~25%.
                     if (surf == GRASS) {
-                        if      (roll <  38u) plant = TALL_GRASS;   // ~15% (was ~20%)
-                        else if (roll <  57u) plant = FLOWER_RED;   // ~7%  (was ~7%)
-                        else if (roll <  75u) plant = FLOWER_YELLOW;// ~7%  (was ~7%)
-                        else if (roll <  81u) plant = MUSHROOM;     // ~2%  (was ~2%)
-                        else if (roll <  86u) plant = BERRY_BUSH;   // ~2%  meadow berries
+                        if      (roll <  gt)        plant = TALL_GRASS;   // #84 patchy: dense clumps / sparse
+                        else if (roll <  gt + 19u)  plant = FLOWER_RED;
+                        else if (roll <  gt + 37u)  plant = FLOWER_YELLOW;
+                        else if (roll <  gt + 43u)  plant = MUSHROOM;
+                        else if (roll <  gt + 48u)  plant = BERRY_BUSH;   // meadow berries
                     }
                 } else if (dom == Biome::Mountains) {
                     // Mountains: very sparse grass on lower slopes, no plants above snow line.
