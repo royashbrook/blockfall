@@ -173,7 +173,12 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         let proj = Renderer.perspective(fovy: fovy, aspect: aspect, near: 0.05, far: 512)
         let viewM = Renderer.mat(f.camera.view)
         let viewProj = proj * viewM
-        let sun = f.camera.sun_dir
+        var sun = f.camera.sun_dir
+        // #72 debug: force a low-ish angled sun so occluders cast clear ground shadows
+        // (the test world's high midday sun casts almost none, so the wipe is invisible).
+        if ProcessInfo.processInfo.environment["BF_SHADOW_DEBUG"] == "1" {
+            sun = bf_vec3(x: 0.55, y: -0.62, z: 0.56)   // points down-and-sideways (sun in the NW)
+        }
         let wallClock = Float(now.truncatingRemainder(dividingBy: 3600.0))
 
         let vt = viewM.columns.3
@@ -253,6 +258,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             enc.setRenderPipelineState(terrainPipeline); enc.setDepthStencilState(depthState)
             enc.setCullMode(.back); enc.setFrontFacing(.counterClockwise)
             var wu = WaterUniforms(wallClockSecs: wallClock, underwater: 0, cameraPosW: camPosW)
+            if ProcessInfo.processInfo.environment["BF_SHADOW_DEBUG"] == "1" { wu.shadowScale = 2.0 } // #72 debug view
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
             enc.setFragmentBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)
             enc.setFragmentTexture(shadowTex, index: 0)
@@ -371,6 +377,13 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             for _ in 0..<12 { renderOneFrame(pitch: 0.012, yaw: 0) } // look level/up to frame trees ahead
         } else {
             for _ in 0..<10 { renderOneFrame(pitch: -0.006, yaw: 0) } // look slightly down at the ground ahead
+        }
+        // #72 diagnosis: turn the camera by BF_SHOT_YAW degrees before capture, so the
+        // same spot can be shot at several yaws to reveal the view-dependent shadow wipe.
+        if let yawStr = ProcessInfo.processInfo.environment["BF_SHOT_YAW"], let yawDeg = Float(yawStr) {
+            let total = yawDeg * Float.pi / 180.0
+            let frames = 60
+            for _ in 0..<frames { renderOneFrame(yaw: total / Float(frames)) }
         }
         for _ in 0..<24  { renderOneFrame(yaw: 0) }          // settle (stream + dirty converge)
         print("shot: prop instances in final frame = \(lastShotPropN)")

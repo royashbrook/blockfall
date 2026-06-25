@@ -2746,6 +2746,17 @@ final class Renderer: NSObject, MTKViewDelegate {
             float raw = (distToCam < 36.0)
                 ? sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos,  dayFactor, 0.0028)
                 : sampleShadowPCF(shadowFar, shadowSamp, in.shadowPosF, dayFactor, 0.0050);
+            // #72 the real wipe fix: the shadow map is a sun-aligned SQUARE, whose straight
+            // edges (corners reach ~1.4x farther than edge-midpoints) read as a line that
+            // sweeps across the view as you turn. Fade shadows out by RADIAL DISTANCE from
+            // the player instead, so the cutoff is a smooth circle (same in every
+            // direction) that sits inside the square's minimum reach — no straight edge can
+            // ever show, so turning never wipes a side.
+            float distFade = 1.0 - smoothstep(110.0, 145.0, distToCam);
+            raw = mix(1.0, raw, distFade);
+            // #72 DEBUG: shadowScale == 2 (harness sentinel) outputs the shadow factor as
+            // grayscale (white = lit, black = shadowed) so coverage is unmistakable headless.
+            if (wu.shadowScale > 1.5) return float4(raw, raw, raw, 1.0);
             shadowFactor = 1.0 - (0.55 * dayFactor) * (1.0 - raw);
         }
 
