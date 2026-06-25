@@ -11,12 +11,13 @@
           { "label": "How can I help?", "goto": 1 },
           { "label": "What happened?", "goto": 2 },
           { "label": "Got any wise advice?", "goto": 4 },
+          { "label": "Tell me a story!", "goto": 5 },
           { "label": "Maybe later.", "goto": -1 }
         ]
       },
       {
         "id": 1,
-        "text": "Start small — light drives back the grey. Craft some torches and place them around our village. Here, let me give you a task.",
+        "text": "Start small. Light drives back the grey. Craft some torches and place them around our village. Here, let me give you a task.",
         "gives_quest": 1,
         "choices": [
           { "label": "I will do it!", "goto": -1 }
@@ -39,9 +40,16 @@
       },
       {
         "id": 4,
-        "text": "Wisdom? Of course! Always carry a torch, never trust a cave that giggles, and if a chicken stares at you... stare right back. Now where was I? Oh yes. You are doing wonderfully!",
+        "text": "Wisdom? Of course! Always carry a torch, never trust a cave that giggles, and if a chicken stares at you, stare right back. Blink first and it owns your hat now. Those are the rules.",
         "choices": [
           { "label": "Ha! Thanks, Elder.", "goto": 0 }
+        ]
+      },
+      {
+        "id": 5,
+        "text": "A story! Once, a brave hero set off to save the whole world, and then... hmm. I forgot the middle part. And the end. Old brains are like buckets with holes. But it was VERY exciting! Trust me.",
+        "choices": [
+          { "label": "Best story ever.", "goto": 0 }
         ]
       }
     ]
@@ -57,12 +65,14 @@
         "choices": [
           { "label": "Sure, what do you need?", "goto": 1 },
           { "label": "How is the building going?", "goto": 4 },
+          { "label": "Any building tips?", "goto": 5 },
+          { "label": "Built anything cool?", "goto": 6 },
           { "label": "Not right now.", "goto": -1 }
         ]
       },
       {
         "id": 1,
-        "text": "First things first: you need a crafting table. Four planks in a square. Once you have one, stone tools and proper building becomes possible.",
+        "text": "First things first: you need a crafting table. Four planks in a square. Once you have one, stone tools and proper building become possible.",
         "gives_quest": 3,
         "choices": [
           { "label": "On it!", "goto": -1 }
@@ -70,7 +80,7 @@
       },
       {
         "id": 2,
-        "text": "Nice work! With stone tools you can mine proper stone. Bring me some stone bricks for the walls — they look much better than cobblestone.",
+        "text": "Nice work! With stone tools you can mine proper stone. Bring me some stone bricks for the walls. They look much better than cobblestone.",
         "gives_quest": 103,
         "choices": [
           { "label": "I will get right on it.", "goto": -1 }
@@ -82,6 +92,20 @@
         "choices": [
           { "label": "Hang in there, Tom!", "goto": 0 }
         ]
+      },
+      {
+        "id": 5,
+        "text": "Tip one: a door is just a wall that changed its mind. Tip two: if a wall looks wobbly, squint until it looks fine. Tip three: never build a roof while standing ON the roof. I learned that one the bumpy way.",
+        "choices": [
+          { "label": "Solid advice... mostly.", "goto": 0 }
+        ]
+      },
+      {
+        "id": 6,
+        "text": "I once built a grand tower! Well, half a tower. The other half is also somewhere. Possibly underground. Possibly in a tree. We do not talk about the tower. The tower does not talk about us either.",
+        "choices": [
+          { "label": "RIP, the tower.", "goto": 0 }
+        ]
       }
     ]
   },
@@ -92,17 +116,19 @@
     "nodes": [
       {
         "id": 0,
-        "text": "Welcome! I study the plants and creatures of our land. The grey has been hard on them too — the animals seem frightened and lost.",
+        "text": "Welcome! I study the plants and creatures of our land. The grey has been hard on them too. The animals seem frightened and lost.",
         "choices": [
           { "label": "How can I help the animals?", "goto": 1 },
           { "label": "What else do you study?", "goto": 2 },
           { "label": "Do you really talk to plants?", "goto": 4 },
+          { "label": "What do the animals say?", "goto": 5 },
+          { "label": "Any plant gossip?", "goto": 6 },
           { "label": "Good to know.", "goto": -1 }
         ]
       },
       {
         "id": 1,
-        "text": "You can befriend them with food! Woolly lambs love berry clusters. Befriend two and use their wool — I think it helps the lambs feel safe.",
+        "text": "You can befriend them with food! Woolly lambs love berry clusters. Befriend two and use their wool. I think it helps the lambs feel safe.",
         "gives_quest": 101,
         "choices": [
           { "label": "That sounds wonderful!", "goto": -1 }
@@ -121,6 +147,20 @@
         "text": "Every single day! The mushrooms are wonderful listeners. The cactus, between us, is a little prickly about feedback. And the flowers? They just blush and say nothing at all.",
         "choices": [
           { "label": "You are funny, Lena.", "goto": 0 }
+        ]
+      },
+      {
+        "id": 5,
+        "text": "Oh, they have OPINIONS. The lambs mostly say baa, which means snacks please. The chickens think they are in charge of everything. And between us... the chickens might be right. Do not tell the chickens I said that.",
+        "choices": [
+          { "label": "Your secret is safe.", "goto": 0 }
+        ]
+      },
+      {
+        "id": 6,
+        "text": "The mushrooms told me a secret, but it was very quiet and also mushroom flavored, so I missed it. The ferns are terribly dramatic. The moss just vibes. The moss always vibes. Be more like the moss.",
+        "choices": [
+          { "label": "Wise words from the moss.", "goto": 0 }
         ]
       }
     ]
