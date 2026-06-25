@@ -147,6 +147,7 @@ static constexpr BlockId COPPER_ORE    = 18;
 static constexpr BlockId IRON_ORE      = 19;
 static constexpr BlockId CRYSTAL_ORE   = 20;
 static constexpr BlockId OAK_LOG       = 21;
+static constexpr BlockId WOOD_BEAM     = 51;   // cube-rendered timber for buildings (logs are cylinders now)
 static constexpr BlockId BIRCH_LOG     = 22;
 static constexpr BlockId BIRCH_PLANKS  = 23;
 static constexpr BlockId GLASS_PANE    = 25;
@@ -2200,7 +2201,7 @@ static void place_cabin(std::int32_t ax, std::int32_t az,
 
     bool cobble = ((h >> 5u) & 1u) != 0u;       // stone vs timber cabin
     BlockId wall = cobble ? COBBLESTONE : OAK_PLANKS;
-    BlockId trim = cobble ? STONE_BRICK : OAK_LOG;   // corner posts
+    BlockId trim = cobble ? STONE_BRICK : WOOD_BEAM;   // corner posts (cube timber, not floaty cylinders)
     constexpr int WALL_H = 3;
     int wall_top = floor_h + WALL_H;
 
@@ -2387,7 +2388,7 @@ static void place_camp(std::int32_t ax, std::int32_t az,
                 if (dx == 0 && dz == gap_dz) continue;   // entrance gap
                 int post_h = struct_surface(ax + dx, az + dz, seed) + 1;
                 struct_fill_col(chunk, ax + dx, az + dz, post_h, seed,
-                                wx_min, wy_min, wz_min, OAK_LOG);
+                                wx_min, wy_min, wz_min, WOOD_BEAM);
             }
         }
     }
@@ -2430,7 +2431,7 @@ static void place_watchtower(std::int32_t ax, std::int32_t az,
                 bool corner = (dx != 0 && dz != 0);
                 if (corner)
                     struct_set(chunk, ax + dx, top_y + 2, az + dz,
-                               wx_min, wy_min, wz_min, OAK_LOG);
+                               wx_min, wy_min, wz_min, WOOD_BEAM);
             }
         }
     struct_set(chunk, ax, top_y + 1, az, wx_min, wy_min, wz_min, GLOW_BLOCK);
@@ -2553,7 +2554,7 @@ static void place_well(std::int32_t ax, std::int32_t az,
     int corner[4][2] = {{-1,-1},{1,-1},{-1,1},{1,1}};
     for (int i = 0; i < 4; ++i)
         struct_fill_col(chunk, ax + corner[i][0], az + corner[i][1], post_top,
-                        seed, wx_min, wy_min, wz_min, OAK_LOG);
+                        seed, wx_min, wy_min, wz_min, WOOD_BEAM);
 
     // Pitched plank roof: ridge along X one block above the post tops; eaves at
     // the post tops, so the roof clearly peaks (a recognizable little house roof).
@@ -2565,8 +2566,8 @@ static void place_well(std::int32_t ax, std::int32_t az,
                        wx_min, wy_min, wz_min, OAK_PLANKS);
     }
     // Cross-beam + hanging bucket over the shaft, and a torch on a post top.
-    struct_set(chunk, ax, post_top, az, wx_min, wy_min, wz_min, OAK_LOG);   // winch beam
-    struct_set(chunk, ax, H + 1, az,    wx_min, wy_min, wz_min, OAK_LOG);   // bucket on the rope
+    struct_set(chunk, ax, post_top, az, wx_min, wy_min, wz_min, WOOD_BEAM);   // winch beam
+    struct_set(chunk, ax, H + 1, az,    wx_min, wy_min, wz_min, WOOD_BEAM);   // bucket on the rope
     struct_set(chunk, ax - 1, post_top, az - 1,
                wx_min, wy_min, wz_min, TORCH);
     (void)h;

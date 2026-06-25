@@ -12,6 +12,18 @@
     }
   },
   {
+    "id": 51,
+    "name": "wood_beam",
+    "display_name": "Wood Beam",
+    "hardness": 10,
+    "required_tier": 0,
+    "preferred_tool": "axe",
+    "textures": {
+      "top": "oak_log_top",
+      "side": "oak_log_side"
+    }
+  },
+  {
     "id": 4,
     "name": "oak_planks",
     "display_name": "Oak Planks",

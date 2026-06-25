@@ -1500,6 +1500,7 @@ private:
                 ItemId drop = bd ? bd->drop_item : ItemId(0);
                 if (drop == 0) drop = item_that_places(broken);
                 if (broken == 50u) drop = item_id_by_name("oak_door");  // #69 open door drops the door item
+                if (broken == 51u) drop = item_id_by_name("oak_log");   // wood beam is wood -> a log
                 if (drop) {
                     inv_->add(ItemStack{drop, 1, 0xFFFF});
                     fx(7, t);                                      // pickup sound
