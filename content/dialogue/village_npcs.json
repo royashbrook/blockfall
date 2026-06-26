@@ -164,5 +164,63 @@
         ]
       }
     ]
+  },
+  {
+    "npc_id": 4,
+    "name": "Woodcutter Finn",
+    "root": 0,
+    "nodes": [
+      {
+        "id": 0,
+        "text": "I am the village woodcutter! Our homes are open to the wild. Bring me logs and I will raise a strong wooden wall around us. Just hand me logs while we talk and watch our palisade grow!",
+        "choices": [
+          { "label": "How many logs do you need?", "goto": 1 },
+          { "label": "Why a wall?", "goto": 2 },
+          { "label": "I will gather some.", "goto": -1 }
+        ]
+      },
+      {
+        "id": 1,
+        "text": "As many as you can spare! Every couple of logs becomes another section of wall. Keep them coming and we will have a full palisade in no time.",
+        "choices": [
+          { "label": "On it!", "goto": -1 }
+        ]
+      },
+      {
+        "id": 2,
+        "text": "A wall keeps the night things out and the little ones safe. Once it is up, ask the stone mason. She can make it even stronger.",
+        "choices": [
+          { "label": "Good thinking.", "goto": 0 }
+        ]
+      }
+    ]
+  },
+  {
+    "npc_id": 5,
+    "name": "Stone Mason Bria",
+    "root": 0,
+    "nodes": [
+      {
+        "id": 0,
+        "text": "Stone mason, at your service. Once Finn's wooden wall is standing, I can reinforce it with good cut stone and raise proud towers. For now I am sharpening my chisels and waiting on that timber.",
+        "choices": [
+          { "label": "Sounds grand!", "goto": -1 }
+        ]
+      }
+    ]
+  },
+  {
+    "npc_id": 6,
+    "name": "Blacksmith Dov",
+    "root": 0,
+    "nodes": [
+      {
+        "id": 0,
+        "text": "The village blacksmith! When our walls are strong, I will forge iron gates and bright lamps to light them through the night. Bring me iron in the days to come and we will make this place shine.",
+        "choices": [
+          { "label": "I look forward to it.", "goto": -1 }
+        ]
+      }
+    ]
   }
 ]

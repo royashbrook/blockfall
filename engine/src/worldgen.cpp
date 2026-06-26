@@ -2693,11 +2693,12 @@ static void place_village(std::int32_t ax, std::int32_t az,
                        wx_min, wy_min, wz_min, centre ? GLOW_BLOCK : COBBLESTONE);
         }
 
-    // Huts placed at fixed offsets around the fire (within the ±7 cell reach).
-    // The third hut appears only sometimes so villages vary between 2 and 3 huts.
+    // Huts placed at fixed offsets around the fire (each 3x3, kept within the ±7 cell
+    // reach so they never clip at chunk borders). A fuller cluster reads as a real
+    // village; the last hut is sometimes dropped so villages vary between 4 and 5 huts.
     struct HutPos { int dx, dz; };
-    HutPos huts[3] = {{-5, -4}, {5, 4}, {0, 5}};
-    int n_huts = ((h >> 10u) & 1u) ? 3 : 2;
+    HutPos huts[5] = {{-6, -4}, {6, 4}, {0, 6}, {-6, 4}, {6, -4}};
+    int n_huts = ((h >> 10u) & 1u) ? 5 : 4;
     for (int i = 0; i < n_huts; ++i) {
         std::uint64_t hh = fmix64(h ^ (static_cast<std::uint64_t>(i) * 0x2545F4914F6CDD1Dull + 71u));
         place_hut(ax + huts[i].dx, az + huts[i].dz, hh, seed,

@@ -67,7 +67,10 @@ struct Creature {
     float wander{0};
     int   shape{0};         // renderer model variant (0..3 animals)
     int   model{-1};        // explicit renderer kind from content (-1 = legacy mapping)
-    int   npc_id{0};        // #82 dialogue id for villagers (1=Mira 2=Tom 3=Lena, 0=none)
+    int   npc_id{0};        // #82 dialogue id / role for villagers (1-3 flavour,
+                            // 4=woodcutter 5=mason 6=smith, 0=none). Roles take donations.
+    int   home_x{0};        // village/settlement centre this villager belongs to (#: living villages)
+    int   home_z{0};
     std::string name;       // content creature name (quest befriend target)
 };
 
@@ -644,9 +647,12 @@ public:
                 // sent INTERACT, and right-click only ever placed. (#69)
                 int idx = creature_in_view();
                 if (idx >= 0 && creatures_[std::size_t(idx)].model == 20) {
-                    // #82 a VILLAGER: open their dialogue (do NOT befriend, which used to make
-                    // them follow you around). The app shows the dialogue tree for this npc_id.
-                    fx(20, player_voxel(), creatures_[std::size_t(idx)].npc_id);
+                    // A VILLAGER. Trade-role villagers (woodcutter/mason/smith) take material
+                    // donations that build up their village; otherwise open their dialogue.
+                    Creature& vil = creatures_[std::size_t(idx)];
+                    if (!try_village_donation(vil)) {
+                        fx(20, player_voxel(), vil.npc_id);   // #82 app shows the dialogue tree
+                    }
                 } else if (idx >= 0 && !creatures_[std::size_t(idx)].hostile) {
                     creatures_[std::size_t(idx)].friendly = true; ++creatures_befriended_;
                     // Feed the held berry (consume one) so it reads as feeding the animal.
@@ -894,6 +900,9 @@ public:
     }
     void    debug_set_friendly(int i) {                          // tests: befriend creature i in place
         if (i >= 0 && i < int(creatures_.size())) creatures_[std::size_t(i)].friendly = true;
+    }
+    int     debug_build_palisade(int cx, int cz, int cells) {    // tests: drive the village wall builder
+        return build_palisade_segment(cx, cz, cells);
     }
     int     debug_villager_count() const { int n=0; for (auto& c : creatures_) if (c.model == 20) ++n; return n; }   // #39
     int     debug_boss_count() const { int n=0; for (auto& c : creatures_) if (c.is_boss) ++n; return n; }
@@ -1817,7 +1826,8 @@ private:
             Creature c;
             c.pos = V3{ox, float(gy), oz}; c.yaw = rand01() * 6.2831853f;
             c.model = d->model;                                      // 20 = humanoid villager
-            c.npc_id = (villager_npc_next_++ % 3) + 1;               // #82 cycle Mira/Tom/Lena
+            c.npc_id = (villager_npc_next_++ % 6) + 1;               // 1-3 flavour, 4-6 trade roles
+            c.home_x = ax; c.home_z = az;                            // remember the settlement centre
             c.name = std::string(d->name);
             c.speed = (d->move_speed > 0) ? d->move_speed * 0.5f : 0.8f;   // amble slowly
             c.hp = (d->max_health > 0) ? int(d->max_health) : 20;
@@ -1826,6 +1836,63 @@ private:
             creatures_.push_back(c); ++made;
         }
         return made;
+    }
+
+    // ---- living villages (#: material donations build up a settlement) ----------
+    // Build the next missing segment of a palisade ring around a settlement centre.
+    // STATELESS: the placed (and saved) logs ARE the progress, so we just find the
+    // first gaps in the ring and fill them. A 2-cell gate is left on the south edge.
+    // Returns the number of wall cells built this call (0 = the ring is already full).
+    int build_palisade_segment(int cx, int cz, int cellsToBuild) {
+        constexpr int R = 8;
+        const BlockId WALL = 21;   // oak_log palisade
+        int built = 0;
+        auto consider = [&](int dx, int dz) {
+            if (built >= cellsToBuild) return;
+            if (dz == R && (dx == 0 || dx == 1)) return;        // leave a gate on the south edge
+            int wx = cx + dx, wz = cz + dz;
+            // Use the ORIGINAL terrain height (not surface_top, which would rise as the
+            // wall is placed and make us stack logs on one column instead of advancing).
+            int surf = worldgen_surface_height(wx, wz, seed_);
+            if (block_at(IVec3{wx, surf + 1, wz}) == WALL) return;   // already walled here
+            set_block_internal(IVec3{wx, surf + 1, wz}, WALL);
+            set_block_internal(IVec3{wx, surf + 2, wz}, WALL);
+            ++built;
+        };
+        for (int dx = -R; dx <= R; ++dx)        { if (built >= cellsToBuild) break; consider(dx, -R); }
+        for (int dz = -R + 1; dz <= R; ++dz)    { if (built >= cellsToBuild) break; consider(R, dz); }
+        for (int dx = R - 1; dx >= -R; --dx)    { if (built >= cellsToBuild) break; consider(dx, R); }
+        for (int dz = R - 1; dz >= -R + 1; --dz){ if (built >= cellsToBuild) break; consider(-R, dz); }
+        return built;
+    }
+
+    // Right-clicking a trade-role villager while holding their material donates it and
+    // builds the next village improvement. Returns true if this handled the interaction
+    // (so the caller does not also open the dialogue). Stone/metal trades follow later.
+    bool try_village_donation(Creature& v) {
+        if (!inv_) return false;
+        ItemStack held = inv_->get(selected_);
+        if (held.item == 0) return false;
+        std::string in = item_name(held.item);
+        if (v.npc_id == 4) {   // WOODCUTTER: logs -> palisade wall ring
+            bool isLog = (in == "oak_log" || in == "birch_log" || in == "pine_log");
+            if (!isLog) return false;                 // not the right gift -> fall back to dialogue
+            if (held.count < 2) {
+                ach_toast_ = "Woodcutter: bring me more logs for the wall."; ach_toast_timer_ = 3.0f;
+                return true;
+            }
+            int cells = std::min<int>(int(held.count), 8) / 2;     // 2 logs per 2-tall segment
+            int built = build_palisade_segment(v.home_x, v.home_z, cells);
+            if (built > 0) {
+                inv_->remove_item(held.item, std::uint16_t(built * 2));
+                fx(1, player_voxel());
+                ach_toast_ = "Woodcutter: the village wall grows!"; ach_toast_timer_ = 3.0f;
+            } else {
+                ach_toast_ = "Woodcutter: our palisade is complete!"; ach_toast_timer_ = 3.0f;
+            }
+            return true;
+        }
+        return false;
     }
 
     void update_creatures(float dt) {

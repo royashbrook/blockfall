@@ -57,6 +57,31 @@ int main() {
     CHECK(pd > 1.0f, "befriended pet does not crowd onto the player");
     CHECK(pd < 5.0f, "befriended pet follows toward the player");
 
+    // --- living villages: woodcutter donations build a palisade ring ------------
+    // The wall builder is stateless (the placed logs ARE the progress), so driving it
+    // twice must extend the ring, and it must never re-fill the same cells.
+    {
+        const int vcx = 100, vcz = 100;          // near where the player streamed terrain
+        auto ringLogs = [&]() {
+            int n = 0;
+            for (int dx = -8; dx <= 8; ++dx)
+                for (int dz = -8; dz <= 8; ++dz) {
+                    int adx = dx < 0 ? -dx : dx, adz = dz < 0 ? -dz : dz;
+                    if ((adx > adz ? adx : adz) != 8) continue;   // ring perimeter only
+                    for (int wy = 120; wy >= -8; --wy)
+                        if (w.debug_block_at(vcx + dx, wy, vcz + dz) == 21) { ++n; break; }
+                }
+            return n;
+        };
+        int built1 = w.debug_build_palisade(vcx, vcz, 6);
+        CHECK(built1 > 0, "village: first donation builds wall cells");
+        int after1 = ringLogs();
+        CHECK(after1 >= built1, "village: built cells are present in the ring");
+        int built2 = w.debug_build_palisade(vcx, vcz, 6);
+        int after2 = ringLogs();
+        CHECK(built2 > 0 && after2 > after1, "village: a second donation extends the wall");
+    }
+
     if (fails == 0) std::printf("OK: creature collision + friendly follow spacing\n");
     return fails == 0 ? 0 : 1;
 }
