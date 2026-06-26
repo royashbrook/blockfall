@@ -332,6 +332,26 @@ fn tree_for_cell(cell_cx: i32, cell_cz: i32, seed: u64) -> TreeDesc {
         sparse = 0;
     }
 
+    // Skirt: extend a leaf ring down the trunk so a tall tree is not a long
+    // bare pole with a leaf cap. In a dense wood the lower trunk dominates the
+    // eye-level view, so without a skirt a closed forest reads as a "wall of
+    // bare trunks" even though every crown is intact. The skirt ring leaves the
+    // trunk column itself clear (see the ring branch in place_decorations), so
+    // this wraps the trunk in leaves without burying it, and grows with trunk
+    // height because tall trees are the ones that look bare. PINE keeps its own
+    // conifer silhouette (tapered, no skirt). Deterministic: derived only from
+    // trunk_h and canopy_shape.
+    let mut extra_skirt = extra_skirt;
+    if canopy_shape != CANOPY_PINE && canopy_shape != CANOPY_GIANT {
+        if trunk_h >= 9 {
+            extra_skirt += 3;
+        } else if trunk_h >= 7 {
+            extra_skirt += 2;
+        } else if trunk_h >= 5 {
+            extra_skirt += 1;
+        }
+    }
+
     TreeDesc {
         root_wx: cell_origin_x + off_x,
         root_wz: cell_origin_z + off_z,
@@ -605,6 +625,14 @@ fn canopy_dy_max(shape: i32) -> i32 {
     1
 }
 
+// Lowest dy relative to trunk_top that the shape actually fills. This must
+// reach as low as the matching in_canopy_* fills, or that bottom leaf layer is
+// never iterated in the emission loop and the crown is silently clipped short
+// at the bottom, raising the leaf line one block up the trunk. In a dense wood
+// that extra bare log per tree is what reads as a "wall of bare trunks" at eye
+// level. This is the symmetric counterpart to the canopy_dy_max top-clip bug
+// (#94): ROUND/BROAD/COMPACT/GIANT all fill down to dy=-2 but this returned
+// -1, dropping the entire bottom dome layer of every such tree.
 fn canopy_dy_min(shape: i32) -> i32 {
     if shape == CANOPY_WEEPING {
         return -3;
@@ -612,6 +640,14 @@ fn canopy_dy_min(shape: i32) -> i32 {
     if shape == CANOPY_PINE {
         return -2;
     }
+    if shape == CANOPY_ROUND
+        || shape == CANOPY_BROAD
+        || shape == CANOPY_COMPACT
+        || shape == CANOPY_GIANT
+    {
+        return -2;
+    }
+    // TALL, FORKED: bottom at dy=-1.
     -1
 }
 

@@ -1217,6 +1217,352 @@ mod worldgen_tests {
         run: i32,
     }
 
+    // Per-tree crown-retention record used by the distribution diagnostic.
+    struct TreeRetention {
+        wx: i32,
+        wz: i32,
+        intended: i32,
+        filled: i32,
+        forest: bool,
+        // Bare trunk height: number of log blocks from trunk base up to the
+        // lowest own leaf (the eye-level "wall of trunks" the player sees).
+        bare_trunk: i32,
+    }
+
+    // Same world walk as scan_naked_trunks, but returns the full per-tree
+    // retention distribution (own leaves kept vs intended) so we can measure
+    // how thin crowns are and whether the thin ones cluster.
+    fn scan_tree_retention(seed: u64, cx0: i32, cx1: i32, cz0: i32, cz1: i32) -> Vec<TreeRetention> {
+        let mut g = TerrainGen::new();
+        g.seed(seed);
+
+        let mut voxels: HashMap<(i32, i32, i32), BlockId> = HashMap::new();
+        for cz in cz0..=cz1 {
+            for cx in cx0..=cx1 {
+                for cy in 0..=3 {
+                    let c = ChunkCoord { x: cx, y: cy, z: cz };
+                    let mut chunk = DenseChunk::new(AIR);
+                    g.generate(c, &mut chunk);
+                    let bx = cx * K_CHUNK_DIM;
+                    let by = cy * K_CHUNK_DIM;
+                    let bz = cz * K_CHUNK_DIM;
+                    for lz in 0..K_CHUNK_DIM {
+                        for ly in 0..K_CHUNK_DIM {
+                            for lx in 0..K_CHUNK_DIM {
+                                let b = chunk.get(lx, ly, lz);
+                                if b != AIR {
+                                    voxels.insert((bx + lx, by + ly, bz + lz), b);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let get = |x: i32, y: i32, z: i32| -> BlockId { *voxels.get(&(x, y, z)).unwrap_or(&AIR) };
+
+        let wx_lo = (cx0 + 1) * K_CHUNK_DIM;
+        let wx_hi = cx1 * K_CHUNK_DIM - 1;
+        let wz_lo = (cz0 + 1) * K_CHUNK_DIM;
+        let wz_hi = cz1 * K_CHUNK_DIM - 1;
+
+        let ccx0 = tree_floordiv(wx_lo, TREE_CELL_SIZE) - 1;
+        let ccx1 = tree_floordiv(wx_hi, TREE_CELL_SIZE) + 1;
+        let ccz0 = tree_floordiv(wz_lo, TREE_CELL_SIZE) - 1;
+        let ccz1 = tree_floordiv(wz_hi, TREE_CELL_SIZE) + 1;
+
+        let mut out = Vec::new();
+
+        for ccz in ccz0..=ccz1 {
+            for ccx in ccx0..=ccx1 {
+                let td = tree_for_cell(ccx, ccz, seed);
+                if !td.present {
+                    continue;
+                }
+                let dom = voronoi_biome(td.root_wx, td.root_wz, seed);
+                if dom == Biome::Desert || dom == Biome::Beach {
+                    continue;
+                }
+                let h = surface_height(td.root_wx, td.root_wz, seed);
+                if h <= SEA_LEVEL {
+                    continue;
+                }
+                let trunk_height = worldgen_trunk_fit_to_ceiling(h, canopy_dy_max(td.canopy_shape), td.trunk_height);
+                if trunk_height <= 0 {
+                    continue;
+                }
+                let trunk_top_wy = h + trunk_height;
+                let canopy_wx = td.root_wx + td.lean_dx;
+                let canopy_wz = td.root_wz + td.lean_dz;
+                if canopy_wx < wx_lo || canopy_wx > wx_hi || canopy_wz < wz_lo || canopy_wz > wz_hi {
+                    continue;
+                }
+                if trunk_height < 4 {
+                    continue;
+                }
+
+                let dy_max_v = canopy_dy_max(td.canopy_shape);
+                let dy_min_v = canopy_dy_min(td.canopy_shape) - td.extra_skirt;
+                let shape_dy_min = canopy_dy_min(td.canopy_shape);
+                let reach = if td.canopy_shape == CANOPY_GIANT {
+                    4
+                } else if td.canopy_shape == CANOPY_WEEPING {
+                    4
+                } else if td.canopy_shape == CANOPY_BROAD || td.canopy_shape == CANOPY_PINE {
+                    3
+                } else {
+                    2
+                };
+                let mut intended = 0;
+                let mut filled = 0;
+                let mut lowest_leaf_wy = i32::MAX;
+                for dz in -reach..=reach {
+                    for dx in -reach..=reach {
+                        for dy in dy_min_v..=dy_max_v {
+                            let fill = if dy >= shape_dy_min {
+                                in_canopy(dx, dy, dz, td.canopy_shape)
+                            } else {
+                                let ax = dx.abs();
+                                let az = dz.abs();
+                                (ax <= 3 && az <= 3) && (ax >= 2 || az >= 2) && !(ax == 3 && az == 3)
+                            };
+                            if !fill {
+                                continue;
+                            }
+                            let wlx = canopy_wx + dx;
+                            let wly = trunk_top_wy + dy;
+                            let wlz = canopy_wz + dz;
+                            if !keep_leaf_voxel(td.leaf_hash, td.sparse, wlx, wly, wlz, dx, dz) {
+                                continue;
+                            }
+                            if dx == 0 && dz == 0 && wly <= trunk_top_wy {
+                                continue;
+                            }
+                            intended += 1;
+                            if is_leaf(get(wlx, wly, wlz)) {
+                                filled += 1;
+                                if wly < lowest_leaf_wy {
+                                    lowest_leaf_wy = wly;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Bare trunk = exposed logs from base up to the lowest leaf.
+                let trunk_base_wy = h + 1;
+                let bare_trunk = if lowest_leaf_wy == i32::MAX {
+                    trunk_height
+                } else {
+                    (lowest_leaf_wy - trunk_base_wy).max(0)
+                };
+                if intended > 0 {
+                    out.push(TreeRetention {
+                        wx: canopy_wx,
+                        wz: canopy_wz,
+                        intended,
+                        filled,
+                        forest: dom == Biome::Forest,
+                        bare_trunk,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    // Diagnostic (ignored by default): locate a dense Forest region for the
+    // test seed and print the per-tree crown-retention distribution, with a
+    // clustering measure (how many thin crowns have a thin neighbour). Run with
+    //   cargo test -- --ignored --nocapture forest_retention_distribution
+    #[test]
+    #[ignore]
+    fn forest_retention_distribution() {
+        // Find the chunk-region with the most Forest tree cells.
+        let mut best = (0i32, 0i32, 0usize);
+        let span = 6; // chunks per side of the scan window
+        for cz0 in (-30..=30).step_by(6) {
+            for cx0 in (-30..=30).step_by(6) {
+                let recs = scan_tree_retention(SEED, cx0, cx0 + span, cz0, cz0 + span);
+                let nf = recs.iter().filter(|r| r.forest).count();
+                if nf > best.2 {
+                    best = (cx0, cz0, nf);
+                }
+            }
+        }
+        let (cx0, cz0, _n) = best;
+        let recs = scan_tree_retention(SEED, cx0, cx0 + span, cz0, cz0 + span);
+        let forest: Vec<&TreeRetention> = recs.iter().filter(|r| r.forest).collect();
+        let total = forest.len();
+        let lt50: Vec<&&TreeRetention> = forest.iter().filter(|r| r.filled * 2 < r.intended).collect();
+        let lt25: Vec<&&TreeRetention> = forest.iter().filter(|r| r.filled * 4 < r.intended).collect();
+        let lt10: Vec<&&TreeRetention> = forest.iter().filter(|r| r.filled * 10 < r.intended).collect();
+
+        // Clustering: of the <50% trees, how many have another <50% tree within
+        // 10 blocks (one or two tree-cells away)?
+        let mut clustered = 0;
+        for a in &lt50 {
+            for b in &lt50 {
+                if std::ptr::eq(*a, *b) {
+                    continue;
+                }
+                let d = (a.wx - b.wx).abs() + (a.wz - b.wz).abs();
+                if d <= 10 {
+                    clustered += 1;
+                    break;
+                }
+            }
+        }
+
+        eprintln!("=== forest_retention_distribution seed {SEED} ===");
+        eprintln!("dense forest window: chunks x[{cx0}..{}] z[{cz0}..{}]", cx0 + span, cz0 + span);
+        eprintln!("forest tall trees: {total}");
+        eprintln!("  < 50% crown: {} ({:.1}%)", lt50.len(), 100.0 * lt50.len() as f64 / total.max(1) as f64);
+        eprintln!("  < 25% crown: {} ({:.1}%)", lt25.len(), 100.0 * lt25.len() as f64 / total.max(1) as f64);
+        eprintln!("  < 10% crown: {} ({:.1}%)", lt10.len(), 100.0 * lt10.len() as f64 / total.max(1) as f64);
+        eprintln!("  of the <50% trees, {clustered} have another <50% tree within 10 blocks");
+        let avg: f64 = if total > 0 {
+            forest.iter().map(|r| r.filled as f64 / r.intended as f64).sum::<f64>() / total as f64
+        } else {
+            0.0
+        };
+        eprintln!("  mean crown retention: {:.1}%", 100.0 * avg);
+
+        // Absolute leafiness: how many trees have a near-bare crown in raw
+        // leaf-cell terms, regardless of "intended" (which bakes in the same
+        // sparse nibble and so can hide over-thinning).
+        let mut lt8 = 0; // fewer than 8 own leaf cells
+        let mut lt4 = 0; // fewer than 4 own leaf cells
+        let mut intsum = 0;
+        let mut fillsum = 0;
+        for r in &forest {
+            if r.filled < 8 {
+                lt8 += 1;
+            }
+            if r.filled < 4 {
+                lt4 += 1;
+            }
+            intsum += r.intended;
+            fillsum += r.filled;
+        }
+        eprintln!("  trees with < 8 own leaf cells: {lt8}");
+        eprintln!("  trees with < 4 own leaf cells: {lt4}");
+        eprintln!("  mean intended leaves/tree: {:.1}", intsum as f64 / total.max(1) as f64);
+        eprintln!("  mean filled   leaves/tree: {:.1}", fillsum as f64 / total.max(1) as f64);
+
+        // Bare-trunk (eye-level wall) distribution.
+        let mut bsum = 0;
+        let mut bmax = 0;
+        let mut ge6 = 0;
+        for r in &forest {
+            bsum += r.bare_trunk;
+            if r.bare_trunk > bmax {
+                bmax = r.bare_trunk;
+            }
+            if r.bare_trunk >= 6 {
+                ge6 += 1;
+            }
+        }
+        eprintln!("  mean bare-trunk height (base to lowest leaf): {:.1}", bsum as f64 / total.max(1) as f64);
+        eprintln!("  max bare-trunk height: {bmax}");
+        eprintln!("  trees with >= 6 bare log blocks: {ge6} ({:.1}%)", 100.0 * ge6 as f64 / total.max(1) as f64);
+
+        roof_coverage(SEED, cx0, cx0 + span, cz0, cz0 + span);
+    }
+
+    // Measure, over a window, how much of the ground is under a leaf roof and
+    // the exposed-trunk picture: for each surface column inside a forest, is
+    // there a leaf above it, and how many bare log cells are exposed to the sky.
+    fn roof_coverage(seed: u64, cx0: i32, cx1: i32, cz0: i32, cz1: i32) {
+        let mut g = TerrainGen::new();
+        g.seed(seed);
+        let mut top_leaf: HashMap<(i32, i32), i32> = HashMap::new();
+        let mut top_log: HashMap<(i32, i32), i32> = HashMap::new();
+        let mut has_tree_col: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
+        for cz in cz0..=cz1 {
+            for cx in cx0..=cx1 {
+                for cy in 0..=3 {
+                    let c = ChunkCoord { x: cx, y: cy, z: cz };
+                    let mut chunk = DenseChunk::new(AIR);
+                    g.generate(c, &mut chunk);
+                    let bx = cx * K_CHUNK_DIM;
+                    let by = cy * K_CHUNK_DIM;
+                    let bz = cz * K_CHUNK_DIM;
+                    for lz in 0..K_CHUNK_DIM {
+                        for lx in 0..K_CHUNK_DIM {
+                            let key = (bx + lx, bz + lz);
+                            for ly in 0..K_CHUNK_DIM {
+                                let b = chunk.get(lx, ly, lz);
+                                let wy = by + ly;
+                                if is_leaf(b) {
+                                    let e = top_leaf.entry(key).or_insert(i32::MIN);
+                                    if wy > *e {
+                                        *e = wy;
+                                    }
+                                    has_tree_col.insert(key);
+                                }
+                                if b == OAK_LOG || b == BIRCH_LOG || b == PINE_LOG {
+                                    let e = top_log.entry(key).or_insert(i32::MIN);
+                                    if wy > *e {
+                                        *e = wy;
+                                    }
+                                    has_tree_col.insert(key);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Of the columns that contain any tree material, how many have a leaf as
+        // the topmost tree block (leafy) vs a log poking above all leaves (bare)?
+        let mut leafy_top = 0;
+        let mut log_top = 0;
+        for key in &has_tree_col {
+            let tl = top_leaf.get(key).copied().unwrap_or(i32::MIN);
+            let tg = top_log.get(key).copied().unwrap_or(i32::MIN);
+            if tg > tl {
+                log_top += 1;
+            } else if tl > i32::MIN {
+                leafy_top += 1;
+            }
+        }
+        let denom = (leafy_top + log_top).max(1);
+        eprintln!("  --- roof picture ---");
+        eprintln!("  tree columns: {}", has_tree_col.len());
+        eprintln!("  columns whose TOP tree block is a leaf: {leafy_top}");
+        eprintln!("  columns whose TOP tree block is a LOG (bare tip to sky): {log_top} ({:.1}%)",
+            100.0 * log_top as f64 / denom as f64);
+    }
+
+    // Multi-seed sweep: worst forest window per seed, reporting bare-trunk
+    // fraction and crown retention, to see if the symptom is seed-specific.
+    #[test]
+    #[ignore]
+    fn forest_sweep_seeds() {
+        for seed in [11u64, 1, 2, 7, 42, 1234, 99999] {
+            let span = 6;
+            let mut best = (0i32, 0i32, 0usize);
+            for cz0 in (-40..=40).step_by(8) {
+                for cx0 in (-40..=40).step_by(8) {
+                    let recs = scan_tree_retention(seed, cx0, cx0 + span, cz0, cz0 + span);
+                    let nf = recs.iter().filter(|r| r.forest).count();
+                    if nf > best.2 {
+                        best = (cx0, cz0, nf);
+                    }
+                }
+            }
+            let (cx0, cz0, nf) = best;
+            let recs = scan_tree_retention(seed, cx0, cx0 + span, cz0, cz0 + span);
+            let forest: Vec<&TreeRetention> = recs.iter().filter(|r| r.forest).collect();
+            let total = forest.len().max(1);
+            let lt50 = forest.iter().filter(|r| r.filled * 2 < r.intended).count();
+            let avg: f64 = forest.iter().map(|r| r.filled as f64 / r.intended as f64).sum::<f64>() / total as f64;
+            eprintln!("seed {seed:>6}: forest trees {nf:>4} (window x{cx0} z{cz0}), <50% crown {lt50}, mean retention {:.1}%", 100.0 * avg);
+            roof_coverage(seed, cx0, cx0 + span, cz0, cz0 + span);
+        }
+    }
+
     // Build the world over chunk range [cx0,cx1] x [cz0,cz1], all y chunks
     // 0..=3 (y 0..63), into a flat voxel map, and return all tall naked
     // trunks plus the total tree-log column count for context.
@@ -1362,6 +1708,89 @@ mod worldgen_tests {
         }
 
         (naked, total_trunk_cols)
+    }
+
+    // Symmetric to canopy_dy_max_covers_true_top: every shape's emission FLOOR
+    // (canopy_dy_min) must reach as low as in_canopy actually fills, or that
+    // bottom leaf layer is never iterated and the crown is clipped at the
+    // bottom, raising the leaf line one block up the trunk. That extra bare log
+    // per tree is what reads as a wall of bare trunks in a dense wood. The bug:
+    // ROUND/BROAD/COMPACT/GIANT all fill down to dy=-2 but canopy_dy_min
+    // returned -1, dropping the whole bottom dome layer.
+    #[test]
+    fn canopy_dy_min_covers_true_bottom() {
+        let shapes = [
+            CANOPY_ROUND,
+            CANOPY_TALL,
+            CANOPY_BROAD,
+            CANOPY_COMPACT,
+            CANOPY_PINE,
+            CANOPY_GIANT,
+            CANOPY_WEEPING,
+            CANOPY_FORKED,
+        ];
+        for shape in shapes {
+            let mut true_bot = i32::MAX;
+            for dy in -5..=6 {
+                for dz in -5..=5 {
+                    for dx in -5..=5 {
+                        if in_canopy(dx, dy, dz, shape) && dy < true_bot {
+                            true_bot = dy;
+                        }
+                    }
+                }
+            }
+            assert!(
+                canopy_dy_min(shape) <= true_bot,
+                "shape {shape}: canopy_dy_min {} > true bottom dy {true_bot} (bottom crown layer would be dropped)",
+                canopy_dy_min(shape)
+            );
+        }
+    }
+
+    // Regression: a DENSE forest must read as leafy at eye level, not as a wall
+    // of bare trunks. Crowns can be 100% intact (see no_tall_naked_trunks) yet
+    // the wood still looks bare if every canopy is a thin cap on a long pole. We
+    // locate the densest Forest window for the seed and require the average bare
+    // trunk (base up to the lowest own leaf) to stay low and few trees to be
+    // long bare poles. Guards both the canopy_dy_min bottom-clip and the trunk
+    // skirt that fills the lower trunk with leaves.
+    #[test]
+    fn dense_forest_is_leafy() {
+        let span = 6;
+        let mut best = (0i32, 0i32, 0usize);
+        for cz0 in (-30..=30).step_by(6) {
+            for cx0 in (-30..=30).step_by(6) {
+                let recs = scan_tree_retention(SEED, cx0, cx0 + span, cz0, cz0 + span);
+                let nf = recs.iter().filter(|r| r.forest).count();
+                if nf > best.2 {
+                    best = (cx0, cz0, nf);
+                }
+            }
+        }
+        let (cx0, cz0, nf) = best;
+        assert!(nf > 60, "no dense forest window found (best {nf} trees)");
+        let recs = scan_tree_retention(SEED, cx0, cx0 + span, cz0, cz0 + span);
+        let forest: Vec<&TreeRetention> = recs.iter().filter(|r| r.forest).collect();
+        let total = forest.len();
+
+        let bare_sum: i32 = forest.iter().map(|r| r.bare_trunk).sum();
+        let mean_bare = bare_sum as f64 / total as f64;
+        let long_poles = forest.iter().filter(|r| r.bare_trunk >= 6).count();
+        let pole_frac = long_poles as f64 / total as f64;
+
+        // Before the fix this window had mean ~6.2 and ~62% long poles; after,
+        // ~3.9 and ~9%. Guard with comfortable margins so tuning has headroom
+        // but a regression to the old bare-pole wood fails loudly.
+        assert!(
+            mean_bare <= 4.8,
+            "dense forest bare-trunk wall: mean bare trunk {mean_bare:.1} blocks over {total} trees (want <= 4.8)"
+        );
+        assert!(
+            pole_frac <= 0.25,
+            "dense forest bare-trunk wall: {:.0}% of trees are long bare poles (>=6 bare logs), want <= 25%",
+            100.0 * pole_frac
+        );
     }
 
     // Every canopy shape's emission ceiling (canopy_dy_max) must cover the
