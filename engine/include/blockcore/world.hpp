@@ -880,6 +880,13 @@ public:
         if (inv_) for (int i = 0; i < BF_INVENTORY_SLOTS; ++i) inv_->set(std::size_t(i), ItemStack{});
     }
     int     debug_creature_count() const { return int(creatures_.size()); }
+    void    debug_creature_pos(int i, float& x, float& y, float& z) const {   // tests: read a creature's position
+        if (i < 0 || i >= int(creatures_.size())) { x = y = z = 0.0f; return; }
+        const Creature& c = creatures_[std::size_t(i)]; x = c.pos.x; y = c.pos.y; z = c.pos.z;
+    }
+    void    debug_set_friendly(int i) {                          // tests: befriend creature i in place
+        if (i >= 0 && i < int(creatures_.size())) creatures_[std::size_t(i)].friendly = true;
+    }
     int     debug_villager_count() const { int n=0; for (auto& c : creatures_) if (c.model == 20) ++n; return n; }   // #39
     int     debug_boss_count() const { int n=0; for (auto& c : creatures_) if (c.is_boss) ++n; return n; }
     int     debug_count_named(const char* nm) const { int n=0; for (auto& c : creatures_) if (c.name == nm) ++n; return n; }
@@ -1836,6 +1843,7 @@ private:
                     c.pos.y -= 0.5f * dt * 4.0f;
                 continue;
             }
+            float spdMul = 1.0f;   // friendly pets ease to a stop near you (#: no crowding)
             // In Creative the monsters leave you alone (no chase, no damage).
             if (c.hostile && mode_ == BF_MODE_SURVIVAL) {
                 if (c.atk_cd > 0) c.atk_cd -= dt;
@@ -1853,9 +1861,16 @@ private:
                     c.yaw = rand01() * 6.2831853f; c.wander = 1.5f + rand01() * 2.5f;
                 }
             } else if (c.friendly) {
-                // follow the player when not too close
+                // Follow the player, but stop at a comfortable trailing distance so pets
+                // stay near without crowding onto you. Beyond ~2.2 blocks they catch up;
+                // inside it they hold position and amble (separation spreads a pack out).
                 float d = std::sqrt(dot(toPlayer, toPlayer));
-                if (d > 2.5f) c.yaw = std::atan2(toPlayer.x, toPlayer.z);
+                if (d > 2.2f) {
+                    c.yaw = std::atan2(toPlayer.x, toPlayer.z);
+                } else {
+                    spdMul = 0.0f;
+                    if (c.wander <= 0.0f) { c.yaw = rand01() * 6.2831853f; c.wander = 1.0f + rand01() * 1.5f; }
+                }
             } else if (c.skittish && dot(toPlayer, toPlayer) < 36.0f) {
                 // Rabbits/foxes bolt away when you get within ~6 blocks.
                 c.yaw = std::atan2(-toPlayer.x, -toPlayer.z); c.wander = 0.8f;
@@ -1864,7 +1879,7 @@ private:
                 c.wander = 1.5f + rand01() * 2.5f;
             }
             V3 dir{std::sin(c.yaw), 0, std::cos(c.yaw)};
-            V3 next = c.pos + dir * (c.speed * dt);
+            V3 next = c.pos + dir * (c.speed * spdMul * dt);
             IVec3 nv{ifloor(next.x), ifloor(next.y), ifloor(next.z)};
             // Land creatures refuse to step into water and turn away (#21); aquatic
             // ones (fish) ignore this. Use collide_solid so creatures still walk
@@ -1887,6 +1902,50 @@ private:
             int fy = floor_below(ifloor(c.pos.x), int(std::floor(c.pos.y)) + 1, ifloor(c.pos.z));
             if (fy != kNoFloor && c.pos.y <= float(fy)) { c.pos.y = float(fy); c.vy = 0.0f; }
             else if (fy == kNoFloor) c.vy = 0.0f;   // no ground yet (streaming) -> hover
+        }
+
+        // ---- collision: creatures (animals + villagers) hold distinct space ----
+        // A symmetric horizontal separation so befriended pets and any milling animals
+        // never stack into each other; a push is rejected if it would enter a solid.
+        std::size_t nC = creatures_.size();
+        for (std::size_t i = 0; i < nC; ++i) {
+            Creature& a = creatures_[i];
+            if (a.aquatic) continue;
+            for (std::size_t j = i + 1; j < nC; ++j) {
+                Creature& b = creatures_[j];
+                if (b.aquatic) continue;
+                float dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
+                float d2 = dx * dx + dz * dz;
+                float minD = (a.scale + b.scale) * 0.45f;
+                if (minD < 0.7f) minD = 0.7f;
+                if (d2 >= minD * minD) continue;
+                bool deg = (d2 <= 1e-6f);
+                float d  = deg ? 0.001f : std::sqrt(d2);
+                float nx = deg ? (float((i + j) & 1u) * 2.0f - 1.0f) : dx / d;   // deterministic split if exactly stacked
+                float nz = deg ? 0.0f : dz / d;
+                float push = (minD - d) * 0.5f;
+                float ax = a.pos.x - nx * push, az = a.pos.z - nz * push;
+                float bx = b.pos.x + nx * push, bz = b.pos.z + nz * push;
+                if (!collide_solid(ifloor(ax), ifloor(a.pos.y), ifloor(az))) { a.pos.x = ax; a.pos.z = az; }
+                if (!collide_solid(ifloor(bx), ifloor(b.pos.y), ifloor(bz))) { b.pos.x = bx; b.pos.z = bz; }
+            }
+        }
+        // ---- collision: keep non-hostile creatures out of the player's space ----
+        // (hostiles may still close in to strike). pos_ is the eye, but x/z match the body.
+        for (auto& c : creatures_) {
+            if (c.aquatic) continue;
+            if (c.hostile && mode_ == BF_MODE_SURVIVAL) continue;
+            float dx = c.pos.x - pos_.x, dz = c.pos.z - pos_.z;
+            float d2 = dx * dx + dz * dz;
+            float minD = 0.85f + c.scale * 0.45f;
+            if (d2 >= minD * minD) continue;
+            bool deg = (d2 <= 1e-6f);
+            float d  = deg ? 0.001f : std::sqrt(d2);
+            float nx = deg ? 1.0f : dx / d;
+            float nz = deg ? 0.0f : dz / d;
+            float push = (minD - d);
+            float cx = c.pos.x + nx * push, cz = c.pos.z + nz * push;
+            if (!collide_solid(ifloor(cx), ifloor(c.pos.y), ifloor(cz))) { c.pos.x = cx; c.pos.z = cz; }
         }
     }
 
