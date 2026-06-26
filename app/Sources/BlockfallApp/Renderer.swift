@@ -3181,11 +3181,15 @@ final class Renderer: NSObject, MTKViewDelegate {
             float sunTilt = clamp(1.0 - (dHdX + dHdY) * bumpStrength, 0.82, 1.00);
             bumpLight = (in.faceNorm == 3u) ? 1.0 : sunTilt;
 
-            // #47 PBR-ish specular: perturb the face normal by the same height field
-            // (a procedural normal map) and add a tight sun highlight that shimmers
-            // over the surface relief. Gated to mid/dark materials and scaled by the
-            // sun term + shadow, then ADDED before the hard 1.0 clamp below so it can
-            // never cross the bloom bright-pass floor (no view-dependent wash-out).
+            // #47/#89 relief sheen: perturb the face normal by the same height field (a
+            // procedural normal map) and add a sun highlight that shimmers over the surface
+            // relief. ORIGINALLY this used a Blinn-Phong half-vector (view + sun), so the
+            // highlight rode across the terrain as the camera yawed, which read as the cast
+            // shadows "wiping" when you turned (the #49/#72 shadow-map fixes were chasing a
+            // shadow bug that the pixel experiment, --shadowprobe, proved does not exist: the
+            // shadow map is byte-identical across yaws; only this sheen moved). Make the sheen
+            // VIEW-INDEPENDENT: drive it off the SUN against the perturbed normal only, so it
+            // still shimmers per-texel with the relief but no longer sweeps with the camera.
             float3 wN, wT, wB;
             switch (in.faceNorm) {
                 case 0u: wN = float3( 1,0,0); wT = float3(0,0,1); wB = float3(0,1,0); break;
@@ -3196,10 +3200,10 @@ final class Renderer: NSObject, MTKViewDelegate {
                 default: wN = float3(0,0,-1); wT = float3(1,0,0); wB = float3(0,1,0); break;
             }
             float3 pN = normalize(wN - (wT * dHdX + wB * dHdY) * 0.5);
-            float3 V  = normalize(UW_CAM_POS(wu) - in.worldPos);
             float3 Ld = normalize(-wu.sunDirTime.xyz);
-            float3 Hh = normalize(V + Ld);
-            float specBase = pow(max(0.0, dot(pN, Hh)), 18.0);
+            // Sun-only relief term: highlights where the perturbed normal faces the sun more
+            // than the flat face does. No camera term, so turning never moves it.
+            float specBase = pow(max(0.0, dot(pN, Ld)), 18.0);
             float baseLum  = dot(in.color, float3(0.299, 0.587, 0.114));
             // mid/dark materials only — bright snow/sand get none (would wash white).
             specAdd = specBase * 0.14 * clamp(in.shade * 1.4, 0.0, 1.0) * shadowFactor

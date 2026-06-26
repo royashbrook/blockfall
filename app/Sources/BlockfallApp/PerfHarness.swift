@@ -168,11 +168,16 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     let start = CACurrentMediaTime()
     var lastDt = CACurrentMediaTime()
 
-    func renderOneFrame(pitch: Float = 0, yaw: Float = 0.004) {
+    // #89 diagnosis: lets the yaw-sweep experiment turn the camera WITHOUT walking
+    // forward, so the camera ORIGIN is identical at every yaw and the only variable is
+    // the view direction. (The default keeps move_forward=1 so streaming churns.)
+    var lastLightVP = simd_float4x4(0)
+    var lastCamPosProbe = SIMD3<Float>(0, 0, 0)
+    func renderOneFrame(pitch: Float = 0, yaw: Float = 0.004, forward: Float = 1) {
         frameIdx += 1; registry.currentFrame = frameIdx
         let now = CACurrentMediaTime(); let dt = now - lastDt; lastDt = now
         // Keep the player slowly orbiting so chunks stream continuously (worst case).
-        var input = bf_frame_input(); input.move_forward = 1; input.look_yaw_delta = yaw
+        var input = bf_frame_input(); input.move_forward = forward; input.look_yaw_delta = yaw
         input.look_pitch_delta = pitch   // #52 shot mode tilts down to frame ground props
         _ = bf_frame_begin(e, &input, dt)
         var f = bf_render_frame(); _ = bf_frame_acquire_render(e, &f)
@@ -213,9 +218,22 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         let camUp    = SIMD3<Float>(viewM.columns.0.y, viewM.columns.1.y, viewM.columns.2.y)
         let camFwd   = SIMD3<Float>(-viewM.columns.0.z, -viewM.columns.1.z, -viewM.columns.2.z)
         let tanHalfFov = tan(fovy*0.5)
+        // #89: BF_LIGHT_FIXCAM="x,y,z" pins the camPos used for the SUN light matrix only,
+        // decoupling the shadow computation from the harness's wandering player. With it set,
+        // the shadow map content and every fragment's shadowPos are byte-identical across
+        // yaws, so any yaw-vs-shadow effect that survives must come from the FRAGMENT shading
+        // (specular / fades), not the shadow geometry. This is the controlled experiment the
+        // input-driven harness otherwise cannot run (it can't hold the player still).
+        var lightCam = SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z)
+        if let s = ProcessInfo.processInfo.environment["BF_LIGHT_FIXCAM"] {
+            let p = s.split(separator: ",").compactMap { Float($0) }
+            if p.count == 3 { lightCam = SIMD3<Float>(p[0], p[1], p[2]) }
+        }
         let lightViewProj = Renderer.buildLightMatrix(
             sunDir: SIMD3<Float>(sun.x, sun.y, sun.z),
-            camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z), radius: 150, res: 1536)
+            camPos: lightCam, radius: 150, res: 1536)
+        lastLightVP = lightViewProj
+        lastCamPosProbe = lightCam
 
         var windU = WindUniforms(wallClockSecs: wallClock, rainStrength: 0)
         let cmd = queue.makeCommandBuffer()!
@@ -437,12 +455,33 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         }
         // #72 diagnosis: turn the camera by BF_SHOT_YAW degrees before capture, so the
         // same spot can be shot at several yaws to reveal the view-dependent shadow wipe.
+        // #89: BF_SHOT_NOWALK=1 turns WITHOUT walking forward, so the camera origin is
+        // identical at every yaw (no position confound) for the decisive experiment.
+        let noWalk = ProcessInfo.processInfo.environment["BF_SHOT_NOWALK"] == "1"
+        // #89: before the yaw sweep, stand still long enough for gravity + async streaming
+        // to converge, so the camera lands on the SAME ground column at every yaw (otherwise
+        // free-fall + per-run streaming timing drift the origin and confound the experiment).
+        if noWalk { for _ in 0..<400 { renderOneFrame(yaw: 0, forward: 0) } }
         if let yawStr = ProcessInfo.processInfo.environment["BF_SHOT_YAW"], let yawDeg = Float(yawStr) {
             let total = yawDeg * Float.pi / 180.0
             let frames = 60
-            for _ in 0..<frames { renderOneFrame(yaw: total / Float(frames)) }
+            for _ in 0..<frames { renderOneFrame(yaw: total / Float(frames), forward: noWalk ? 0 : 1.0) }
         }
-        for _ in 0..<24  { renderOneFrame(yaw: 0) }          // settle (stream + dirty converge)
+        for _ in 0..<24  { renderOneFrame(yaw: 0, forward: noWalk ? 0 : 1.0) } // settle
+        // #89 decisive probe: dump the camera world pos and the FULL light-space view-proj
+        // matrix. The shadow map content and every fragment's shadowPos derive solely from
+        // this matrix + world position, so if it is identical across yaws, no fixed world
+        // point's shadow can change with yaw. Compared against the rendered pixels below.
+        if ProcessInfo.processInfo.environment["BF_SHADOW_PROBE"] == "1" {
+            let m = lastLightVP
+            print(String(format: "PROBE camPos= %.4f %.4f %.4f",
+                         lastCamPosProbe.x, lastCamPosProbe.y, lastCamPosProbe.z))
+            for c in 0..<4 {
+                let col = m[c]
+                print(String(format: "PROBE lightVP col%d = % .8f % .8f % .8f % .8f",
+                             c, col.x, col.y, col.z, col.w))
+            }
+        }
         print("shot: prop instances in final frame = \(lastShotPropN)")
         writeTexturePNG(output, to: shot)
         return true
@@ -568,5 +607,321 @@ func runCritterGallery(savePath: String) -> Bool {
     cmd.commit(); cmd.waitUntilCompleted()
     writeTexturePNG(output, to: savePath)
     print("critter gallery: \(ents.count) kinds")
+    return true
+}
+
+// ============================================================================
+// #89 SHADOW YAW PROBE - the decisive, confound-free experiment.
+//
+// The input-driven --shot harness cannot hold the player still (gravity + async
+// streaming drift the origin run-to-run), so it cannot answer "does a FIXED world
+// point's shadow change when ONLY the camera yaw changes?". This builds a fully
+// synthetic, fixed scene (a ground plane + one occluder pillar) using the REAL
+// shadow + terrain pipelines (shadowVmain / vmain / fmain, sampleShadowPCF, the
+// cascade blend and the radial / edge fades), places the camera at a FIXED world
+// position, and renders it at several yaws with a FIXED high sun.
+//
+// For each yaw it reports the shadow factor (the #72 BF_SHADOW_DEBUG grayscale,
+// which is `raw` straight out of the shadow path, BEFORE the #47 specular) sampled
+// at the SAME world point each time, by projecting that point into each view and
+// reading its pixel. If the value is constant across yaws => shadows are NOT
+// yaw-dependent. It ALSO reports the full-colour pixel at the same point so the
+// view-dependent #47 specular sheen can be seen to move while the shadow does not.
+// ============================================================================
+func runShadowYawProbe() -> Bool {
+    guard let device = MTLCreateSystemDefaultDevice() else { print("no Metal device"); return false }
+    let queue = device.makeCommandQueue()!
+    guard let lib = try? device.makeLibrary(source: Renderer.shaderSource, options: nil) else {
+        print("shader compile failed"); return false
+    }
+
+    func pipe(_ v: String, _ frag: String?, color: MTLPixelFormat?, depth: Bool) -> MTLRenderPipelineState? {
+        let d = MTLRenderPipelineDescriptor()
+        d.vertexFunction = lib.makeFunction(name: v)
+        d.fragmentFunction = frag.flatMap { lib.makeFunction(name: $0) }
+        if let c = color { d.colorAttachments[0].pixelFormat = c }
+        if depth { d.depthAttachmentPixelFormat = .depth32Float }
+        return try? device.makeRenderPipelineState(descriptor: d)
+    }
+    guard let shadowPipe = pipe("shadowVmain", nil, color: nil, depth: true),
+          let terrainPipe = pipe("vmain", "fmain", color: .bgra8Unorm, depth: true) else {
+        print("pipeline build failed"); return false
+    }
+    let shDSD = MTLDepthStencilDescriptor(); shDSD.depthCompareFunction = .lessEqual; shDSD.isDepthWriteEnabled = true
+    let shadowDepthState = device.makeDepthStencilState(descriptor: shDSD)
+    let dsd = MTLDepthStencilDescriptor(); dsd.depthCompareFunction = .less; dsd.isDepthWriteEnabled = true
+    let depthState = device.makeDepthStencilState(descriptor: dsd)
+
+    let ssd = MTLSamplerDescriptor()
+    ssd.minFilter = .linear; ssd.magFilter = .linear
+    ssd.sAddressMode = .clampToEdge; ssd.tAddressMode = .clampToEdge
+    ssd.compareFunction = .lessEqual
+    let shadowSampler = device.makeSamplerState(descriptor: ssd)!
+
+    // ---- Build a fixed scene as PackedVertex triangles (no engine, no streaming) ----
+    // PackedVertex: pos = x|y<<6|z<<12 (+ sub-voxel in high bits, unused here),
+    // normuv bits[0:3]=faceNorm, bits[3:5]=AO. sky=15 (full daylight), block=0.
+    struct PV { var pos: UInt32; var normuv: UInt32; var material: UInt16; var sky: UInt8; var block: UInt8; var reserved: UInt32 }
+    func pv(_ x: Int, _ y: Int, _ z: Int, _ norm: UInt32, _ mat: UInt16) -> PV {
+        let pos = UInt32(x & 0x3f) | (UInt32(y & 0x3f) << 6) | (UInt32(z & 0x3f) << 12)
+        let normuv = norm | (3 << 3)   // AO = 3 (fully open)
+        return PV(pos: pos, normuv: normuv, material: mat, sky: 15, block: 0, reserved: 0)
+    }
+    var verts: [PV] = []
+    var idx: [UInt32] = []
+    func quad(_ a: PV, _ b: PV, _ c: PV, _ d: PV) {
+        let base = UInt32(verts.count)
+        verts.append(a); verts.append(b); verts.append(c); verts.append(d)
+        // CCW winding (terrain pass uses .back cull, .counterClockwise front).
+        idx.append(base); idx.append(base+1); idx.append(base+2)
+        idx.append(base); idx.append(base+2); idx.append(base+3)
+    }
+    // Ground: a flat slab of top faces (faceNorm 2 = +Y) at y=0, mat 3 (stone, mid-luma
+    // so the #47 specular is active). Spans x,z in [0,40].
+    let gy = 0, gMat: UInt16 = 3
+    for gx in 0..<40 { for gz in 0..<40 {
+        // CCW when viewed from above (+Y) so the top face is front-facing.
+        quad(pv(gx, gy, gz, 2, gMat), pv(gx, gy, gz+1, 2, gMat),
+             pv(gx+1, gy, gz+1, 2, gMat), pv(gx+1, gy, gz, 2, gMat))
+    } }
+    // Occluder pillar: a tall thin box near the centre (x 19..21, z 19..21, y 1..12).
+    // Four side faces are enough to cast a clear shadow across the ground.
+    let px0 = 19, px1 = 21, pz0 = 19, pz1 = 21, py0 = 1, py1 = 12, pMat: UInt16 = 3
+    for y in py0..<py1 {
+        // +X face (norm 0), -X (norm 1), +Z (norm 4), -Z (norm 5)
+        quad(pv(px1, y, pz0, 0, pMat), pv(px1, y, pz1, 0, pMat), pv(px1, y+1, pz1, 0, pMat), pv(px1, y+1, pz0, 0, pMat))
+        quad(pv(px0, y, pz1, 1, pMat), pv(px0, y, pz0, 1, pMat), pv(px0, y+1, pz0, 1, pMat), pv(px0, y+1, pz1, 1, pMat))
+        quad(pv(px0, y, pz1, 4, pMat), pv(px1, y, pz1, 4, pMat), pv(px1, y+1, pz1, 4, pMat), pv(px0, y+1, pz1, 4, pMat))
+        quad(pv(px1, y, pz0, 5, pMat), pv(px0, y, pz0, 5, pMat), pv(px0, y+1, pz0, 5, pMat), pv(px1, y+1, pz0, 5, pMat))
+    }
+    let vbuf = device.makeBuffer(bytes: verts, length: verts.count * MemoryLayout<PV>.stride, options: .storageModeShared)!
+    let ibuf = device.makeBuffer(bytes: idx, length: idx.count * MemoryLayout<UInt32>.stride, options: .storageModeShared)!
+
+    // Fixed HIGH sun (worst case for the reported bug) pointing down + slightly toward
+    // +X/+Z so the pillar throws a definite ground shadow. (sun_dir points FROM the sun.)
+    let sun = simd_normalize(SIMD3<Float>(0.45, -1.25, 0.35))
+    // Fixed camera POSITION (the whole point: only yaw varies). Up high, looking down at
+    // the pillar + its shadow.
+    let camPos = SIMD3<Float>(20, 42, 20)
+    // World point we probe: a ground texel that sits INSIDE the pillar's cast shadow.
+    // With the sun coming from +X/+Z and high, the shadow falls toward -X/-Z of the pillar.
+    // A line of probe points marching from the pillar base outward along the SHADOW
+    // direction. The shadow ray travels in +sun_dir (downward, toward +X/+Z here), so the
+    // pillar's shadow lands on the ground toward +X/+Z. We march the ground from just past
+    // the pillar (x>21) outward; some points land in shadow, some in light. The test is
+    // whether EACH fixed world point's shadow value is constant across yaws.
+    var probeLine: [SIMD3<Float>] = []
+    let shadowDir = simd_normalize(SIMD3<Float>(sun.x, 0, sun.z))   // ground-plane shadow direction
+    for k in 0..<12 {
+        let t = Float(k) * 1.3
+        probeLine.append(SIMD3<Float>(21.5 + shadowDir.x * t, 0.02, 21.5 + shadowDir.z * t))
+    }
+
+    let W = 1600, H = 1200
+    let kShadowRes = 1536
+    func tex(_ fmt: MTLPixelFormat, _ w: Int, _ h: Int, _ usage: MTLTextureUsage, _ shared: Bool) -> MTLTexture {
+        let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: fmt, width: w, height: h, mipmapped: false)
+        td.usage = usage; td.storageMode = shared ? .shared : .private
+        return device.makeTexture(descriptor: td)!
+    }
+    // Shared so we can read the depth back and HASH it: proves the shadow MAP content is
+    // byte-identical across yaws (it must be - lightVP + geometry never change with yaw).
+    let shadowTex = tex(.depth32Float, kShadowRes, kShadowRes, [.renderTarget, .shaderRead], true)
+    let outTex    = tex(.bgra8Unorm, W, H, [.renderTarget, .shaderRead], true)
+    let outDepth  = tex(.depth32Float, W, H, [.renderTarget], false)
+
+    let proj = Renderer.perspective(fovy: 1.35, aspect: Float(W)/Float(H), near: 0.05, far: 512)
+    // The light matrix depends only on (sun, camPos); camPos is FIXED here, so it is the
+    // SAME for every yaw by construction; print it once to confirm.
+    let lightVP = Renderer.buildLightMatrix(sunDir: sun, camPos: camPos, radius: 60, res: Float(kShadowRes))
+
+    // Average a small block so a fixed world point that projects to slightly different
+    // SUBPIXEL screen coords at each yaw is not read off the soft PCF penumbra at a
+    // different spot (which would masquerade as a yaw-dependent shadow). Averaging over
+    // an 11x11 block cancels that subpixel sampling jitter.
+    func readPixel(_ t: MTLTexture, _ x: Int, _ y: Int, half: Int = 5) -> SIMD3<Float> {
+        var acc = SIMD3<Float>(0, 0, 0); var n: Float = 0
+        for dy in -half...half { for dx in -half...half {
+            let cx = min(max(0, x + dx), t.width - 1), cy = min(max(0, y + dy), t.height - 1)
+            var px = [UInt8](repeating: 0, count: 4)
+            t.getBytes(&px, bytesPerRow: t.width * 4, from: MTLRegionMake2D(cx, cy, 1, 1), mipmapLevel: 0)
+            acc += SIMD3<Float>(Float(px[2]) / 255.0, Float(px[1]) / 255.0, Float(px[0]) / 255.0)
+            n += 1
+        } }
+        return acc / n
+    }
+    func project(_ p: SIMD3<Float>, _ vp: simd_float4x4) -> (Int, Int) {
+        let clip = vp * SIMD4<Float>(p.x, p.y, p.z, 1)
+        let ndc = SIMD3<Float>(clip.x/clip.w, clip.y/clip.w, clip.z/clip.w)
+        let sx = Int((ndc.x * 0.5 + 0.5) * Float(W))
+        let sy = Int((1.0 - (ndc.y * 0.5 + 0.5)) * Float(H))
+        return (sx, sy)
+    }
+
+    // Build a yaw-only view matrix at the fixed camPos. yaw rotates about world Y; we
+    // tilt down a fixed pitch so the ground + shadow stay framed at every yaw.
+    func viewMatrix(yawDeg: Float) -> simd_float4x4 {
+        let yaw = yawDeg * Float.pi / 180.0
+        let pitch: Float = -1.25   // look almost straight down (keeps the ground framed at every yaw)
+        // Camera basis
+        let cp = cos(pitch), sp = sin(pitch), cy = cos(yaw), sy = sin(yaw)
+        // forward (into scene)
+        let fwd = simd_normalize(SIMD3<Float>(sy * cp, sp, -cy * cp))
+        let worldUp = SIMD3<Float>(0, 1, 0)
+        let right = simd_normalize(simd_cross(fwd, worldUp))
+        let up = simd_cross(right, fwd)
+        // View = inverse(rotation) then translate. Column-major, forward = -z.
+        let r = right, u = up, f = -fwd
+        return simd_float4x4(columns: (
+            SIMD4<Float>(r.x, u.x, f.x, 0),
+            SIMD4<Float>(r.y, u.y, f.y, 0),
+            SIMD4<Float>(r.z, u.z, f.z, 0),
+            SIMD4<Float>(-simd_dot(r, camPos), -simd_dot(u, camPos), -simd_dot(f, camPos), 1)))
+    }
+
+    print(String(format: "PROBE fixed camPos = %.3f %.3f %.3f  sun = %.3f %.3f %.3f",
+                 camPos.x, camPos.y, camPos.z, sun.x, sun.y, sun.z))
+    print("PROBE light matrix is built once from (sun,camPos) only - identical for every yaw by construction.")
+    print("shadowDbg per world point (rows) x yaw (cols). 1.0 = lit, <1 = shadowed.")
+
+    // Collect shadowDbg for every probe point at every yaw, then print as a table so
+    // each ROW (a fixed world point) can be read across yaws.
+    let yaws: [Float] = [0, 45, 90, 135]
+    var dbgTable = [[Float]](repeating: [Float](repeating: 0, count: yaws.count), count: probeLine.count)
+    var colTable = [[SIMD3<Float>]](repeating: [SIMD3<Float>](repeating: .zero, count: yaws.count), count: probeLine.count)
+
+    for (yi, yawDeg) in yaws.enumerated() {
+        let viewM = viewMatrix(yawDeg: yawDeg)
+        let viewProj = proj * viewM
+
+        // Render twice: once in #72 debug mode (shadowScale=2 => grayscale = raw shadow),
+        // once in normal colour (shadowScale=1 => includes the #47 specular).
+        func renderPass(debug: Bool) {
+            let cmd = queue.makeCommandBuffer()!
+            // Shadow depth
+            let srp = MTLRenderPassDescriptor()
+            srp.depthAttachment.texture = shadowTex
+            srp.depthAttachment.loadAction = .clear; srp.depthAttachment.storeAction = .store; srp.depthAttachment.clearDepth = 1.0
+            if let enc = cmd.makeRenderCommandEncoder(descriptor: srp) {
+                enc.setRenderPipelineState(shadowPipe); enc.setDepthStencilState(shadowDepthState)
+                enc.setCullMode(.front); enc.setDepthBias(2.0, slopeScale: 2.0, clamp: 0.0)
+                var su = ShadowVertUniforms(lightViewProj: lightVP, chunkOrigin: SIMD4<Float>(0, 0, 0, 0))
+                var wind = WindUniforms(wallClockSecs: 0, rainStrength: 0)
+                enc.setVertexBuffer(vbuf, offset: 0, index: 0)
+                enc.setVertexBytes(&su, length: MemoryLayout<ShadowVertUniforms>.stride, index: 1)
+                enc.setVertexBytes(&wind, length: MemoryLayout<WindUniforms>.stride, index: 2)
+                enc.drawIndexedPrimitives(type: .triangle, indexCount: idx.count, indexType: .uint32, indexBuffer: ibuf, indexBufferOffset: 0)
+                enc.endEncoding()
+            }
+            // Colour pass
+            let rp = MTLRenderPassDescriptor()
+            rp.colorAttachments[0].texture = outTex
+            rp.colorAttachments[0].loadAction = .clear; rp.colorAttachments[0].storeAction = .store
+            rp.colorAttachments[0].clearColor = MTLClearColor(red: 0.45, green: 0.62, blue: 0.86, alpha: 1)
+            rp.depthAttachment.texture = outDepth
+            rp.depthAttachment.loadAction = .clear; rp.depthAttachment.clearDepth = 1.0; rp.depthAttachment.storeAction = .dontCare
+            if let enc = cmd.makeRenderCommandEncoder(descriptor: rp) {
+                enc.setRenderPipelineState(terrainPipe); enc.setDepthStencilState(depthState)
+                enc.setCullMode(.back); enc.setFrontFacing(.counterClockwise)
+                var u = Uniforms(viewProj: viewProj, chunkOrigin: SIMD4<Float>(0, 0, 0, 1),
+                                 sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, 0.25),
+                                 lightViewProj: lightVP, dimSatN: SIMD4<Float>(1, 1, 1, 0),
+                                 lightViewProjF: lightVP)
+                var wu = WaterUniforms(wallClockSecs: 0, underwater: 0,
+                                       shadowScale: debug ? 2.0 : 1.0,
+                                       cameraPosW: SIMD4<Float>(camPos.x, camPos.y, camPos.z, 0),
+                                       sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, 0.25))
+                var wind = WindUniforms(wallClockSecs: 0, rainStrength: 0)
+                enc.setVertexBuffer(vbuf, offset: 0, index: 0)
+                enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+                enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
+                enc.setVertexBytes(&wind, length: MemoryLayout<WindUniforms>.stride, index: 3)
+                enc.setFragmentBytes(&wind, length: MemoryLayout<WindUniforms>.stride, index: 3)
+                enc.setFragmentTexture(shadowTex, index: 0)
+                enc.setFragmentTexture(shadowTex, index: 1)
+                enc.setFragmentSamplerState(shadowSampler, index: 0)
+                enc.drawIndexedPrimitives(type: .triangle, indexCount: idx.count, indexType: .uint32, indexBuffer: ibuf, indexBufferOffset: 0)
+                enc.endEncoding()
+            }
+            cmd.commit(); cmd.waitUntilCompleted()
+        }
+
+        // Sample the shadow-debug grayscale at each fixed world point.
+        renderPass(debug: true)
+        // Hash the whole shadow depth map to prove its content is identical across yaws.
+        do {
+            let n = kShadowRes * kShadowRes
+            var buf = [Float](repeating: 0, count: n)
+            shadowTex.getBytes(&buf, bytesPerRow: kShadowRes * 4,
+                               from: MTLRegionMake2D(0, 0, kShadowRes, kShadowRes), mipmapLevel: 0)
+            var h: UInt64 = 1469598103934665603
+            for v in buf { h = (h ^ UInt64(v.bitPattern)) &* 1099511628211 }
+            print(String(format: "PROBE yaw %3.0f  shadowMap hash = %016llx", yawDeg, h))
+        }
+        for (pi, p) in probeLine.enumerated() {
+            let (sx, sy) = project(p, viewProj)
+            dbgTable[pi][yi] = readPixel(outTex, sx, sy).x
+        }
+        // Sample full colour (includes #47 specular) at each point.
+        renderPass(debug: false)
+        for (pi, p) in probeLine.enumerated() {
+            let (sx, sy) = project(p, viewProj)
+            colTable[pi][yi] = readPixel(outTex, sx, sy)
+        }
+        // Save a colour shot per yaw for visual inspection.
+        writeTexturePNG(outTex, to: String(format: "/tmp/syawprobe_%03.0f.png", yawDeg))
+    }
+
+    // ---- Report: shadow factor per fixed world point across yaws ----
+    print("worldPoint            | shadowDbg @ yaw 0/45/90/135 | max-min  (shadow yaw-dependence)")
+    var worstShadow: Float = 0
+    for (pi, p) in probeLine.enumerated() {
+        let row = dbgTable[pi]
+        let spread = (row.max() ?? 0) - (row.min() ?? 0)
+        worstShadow = max(worstShadow, spread)
+        print(String(format: "(%.1f,%.1f)            |  %.4f %.4f %.4f %.4f       |  %.4f",
+                     p.x, p.z, row[0], row[1], row[2], row[3], spread))
+    }
+    print("")
+    print("worldPoint            | colour luma @ yaw 0/45/90/135 | max-min  (#47 specular yaw-dependence)")
+    var worstColor: Float = 0
+    for (pi, p) in probeLine.enumerated() {
+        let lumas = colTable[pi].map { 0.299 * $0.x + 0.587 * $0.y + 0.114 * $0.z }
+        let spread = (lumas.max() ?? 0) - (lumas.min() ?? 0)
+        worstColor = max(worstColor, spread)
+        print(String(format: "(%.1f,%.1f)            |  %.4f %.4f %.4f %.4f       |  %.4f",
+                     p.x, p.z, lumas[0], lumas[1], lumas[2], lumas[3], spread))
+    }
+    print("")
+    print(String(format: "VERDICT: worst shadow-factor yaw-spread = %.4f   worst colour-luma yaw-spread = %.4f",
+                 worstShadow, worstColor))
+
+    // ---- #47 specular: analytic yaw sensitivity at a GRAZING (eye-level) view ----
+    // Mirror the exact fmain specular: V = normalize(cam - worldPos), Ld = normalize(-sun),
+    // H = normalize(V+Ld), spec = pow(max(0,dot(pN,H)),18). On a flat top face pN≈(0,1,0).
+    // At eye level the view vector swings a lot with yaw, so the highlight rides across the
+    // ground as you turn, exactly what reads as "shadows shifting". Top-down hid this
+    // because V barely changes when you are looking almost straight down.
+    let litGround = SIMD3<Float>(20, 0, 30)            // a flat lit ground point ahead
+    let pN = SIMD3<Float>(0, 1, 0)                      // top-face normal (specular uses ~this)
+    let Ld = simd_normalize(SIMD3<Float>(-sun.x, -sun.y, -sun.z))
+    print("")
+    print("#47 specular at a fixed lit point, eye-level camera, vs yaw  (OLD = half-vector, NEW = sun-only):")
+    var oldMin: Float = 1e9, oldMax: Float = -1e9, newMin: Float = 1e9, newMax: Float = -1e9
+    let newSpec = pow(max(0, simd_dot(pN, Ld)), 18.0)   // sun-only: independent of yaw
+    for yawDeg in stride(from: Float(0), through: 315, by: 45) {
+        // eye-level camera position circling so it always faces the lit point (the player's
+        // eye is what moves the V vector; position change is what a real "look around" does).
+        let yaw = yawDeg * Float.pi / 180.0
+        let eye = SIMD3<Float>(20 + 6 * sin(yaw), 2.0, 30 - 6 * cos(yaw))
+        let V = simd_normalize(eye - litGround)
+        let Hh = simd_normalize(V + Ld)
+        let oldSpec = pow(max(0, simd_dot(pN, Hh)), 18.0)
+        oldMin = min(oldMin, oldSpec); oldMax = max(oldMax, oldSpec)
+        newMin = min(newMin, newSpec); newMax = max(newMax, newSpec)
+        print(String(format: "  yaw %3.0f  OLD spec = %.4f   NEW spec = %.4f", yawDeg, oldSpec, newSpec))
+    }
+    print(String(format: "#47 yaw-spread:  OLD (half-vector) = %.4f   NEW (sun-only) = %.4f",
+                 oldMax - oldMin, newMax - newMin))
     return true
 }

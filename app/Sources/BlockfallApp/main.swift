@@ -524,6 +524,14 @@ if CommandLine.arguments.contains("--washouttest") {
     let ok = runWashoutTest()
     exit(ok ? 0 : 1)
 }
+// #89 decisive shadow yaw experiment: fixed synthetic scene, fixed camera position,
+// fixed sun; render at several yaws and report the shadow factor + colour at a FIXED
+// world point. Answers "does a fixed point's shadow change with yaw?" with no streaming
+// or physics confound (which the input-driven --shot harness cannot avoid).
+if CommandLine.arguments.contains("--shadowprobe") {
+    let ok = runShadowYawProbe()
+    exit(ok ? 0 : 1)
+}
 if let idx = CommandLine.arguments.firstIndex(of: "--screenshot"), idx + 1 < CommandLine.arguments.count {
     let ok = runRenderSelfTest(savePath: CommandLine.arguments[idx + 1], width: 960, height: 720)
     exit(ok ? 0 : 1)
