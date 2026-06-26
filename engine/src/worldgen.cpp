@@ -1293,7 +1293,11 @@ static void build_column_cache(std::int32_t wx_min, std::int32_t wz_min,
 // ---------------------------------------------------------------------------
 // Decoration constants
 // ---------------------------------------------------------------------------
-static constexpr int TREE_CELL_SIZE   = 8;
+// One candidate tree per cell. Shrunk from 8 to 6 so forests can pack trees close
+// enough that their canopies overlap into real woods you cannot see through; the
+// per-biome thresholds below are rescaled so the open biomes (plains/snowy/swamp)
+// keep their old density and only the forest gets a lot denser. (#: dense forests)
+static constexpr int TREE_CELL_SIZE   = 6;
 
 // Canopy shape codes:
 //   ROUND   — classic sphere-ish 5x3x5 blob with rounded corners (original shape)
@@ -1326,14 +1330,18 @@ static constexpr int TRUNK_MAX = 12;
 // GIANT canopy extends ±4 XZ; we use 4 as the conservative upper bound.
 static constexpr int CANOPY_MAX_REACH_XZ = 4;
 
-// Default tree probability threshold (~35% of cells — raised from 18% to fix barren plains).
-static constexpr std::uint64_t TREE_PROB_THRESH_DEFAULT = 22938u;   // 0.35 * 65535
-// Forest biome: much denser trees (~65%).
-static constexpr std::uint64_t TREE_PROB_THRESH_FOREST  = 42598u;   // 0.65 * 65535
-// Snowy biome: sparse birch (~15%).
-static constexpr std::uint64_t TREE_PROB_THRESH_SNOWY   = 9830u;    // 0.15 * 65535
-// Swamp biome: sparse (~20%).
-static constexpr std::uint64_t TREE_PROB_THRESH_SWAMP   = 13107u;   // 0.20 * 65535
+// Per-cell tree probabilities. With the smaller 6x6 cell (vs the old 8x8), the open
+// biomes are scaled by (6/8)^2 = 0.5625 so their trees-per-area match the old feel;
+// the forest is pushed much higher so its canopies close into dense woods (~2.1x the
+// old forest density).
+// Default (plains): ~0.197 of cells (was 0.35 at cell 8 — same density).
+static constexpr std::uint64_t TREE_PROB_THRESH_DEFAULT = 12910u;
+// Forest biome: dense, closed-canopy woods (~0.79 of cells).
+static constexpr std::uint64_t TREE_PROB_THRESH_FOREST  = 51773u;
+// Snowy biome: sparse birch (~0.084 of cells — same density as before).
+static constexpr std::uint64_t TREE_PROB_THRESH_SNOWY   = 5530u;
+// Swamp biome: sparse (~0.1125 of cells — same density as before).
+static constexpr std::uint64_t TREE_PROB_THRESH_SWAMP   = 7373u;
 
 static constexpr std::uint64_t TREE_SEED_MIX  = 0xD7C0DECAF00D1234ull;
 static constexpr std::uint64_t PLANT_SEED_MIX = 0xB16B00B5CAFE5EEDull;
