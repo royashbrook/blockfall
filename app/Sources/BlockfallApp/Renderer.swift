@@ -3121,7 +3121,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         // to push HDR output above 1.0, causing view-dependent bloom wash-out.
         // New: sunTilt capped at 1.0 so the bump can only darken, never brighten.
         float bumpLight = 1.0;
-        {
+        float specAdd  = 0.0;   // #47 normal-mapped specular sheen (added pre-clamp)
+        if (!isEmissive) {
             const float eps = 0.06;   // finite-difference step in world units
             float2 uv0 = faceUV(in.worldPos, in.faceNorm);
             float h00 = noise2(uv0 * 7.5);
@@ -3135,6 +3136,30 @@ final class Renderer: NSObject, MTKViewDelegate {
             float bumpStrength = 0.06;
             float sunTilt = clamp(1.0 - (dHdX + dHdY) * bumpStrength, 0.82, 1.00);
             bumpLight = (in.faceNorm == 3u) ? 1.0 : sunTilt;
+
+            // #47 PBR-ish specular: perturb the face normal by the same height field
+            // (a procedural normal map) and add a tight sun highlight that shimmers
+            // over the surface relief. Gated to mid/dark materials and scaled by the
+            // sun term + shadow, then ADDED before the hard 1.0 clamp below so it can
+            // never cross the bloom bright-pass floor (no view-dependent wash-out).
+            float3 wN, wT, wB;
+            switch (in.faceNorm) {
+                case 0u: wN = float3( 1,0,0); wT = float3(0,0,1); wB = float3(0,1,0); break;
+                case 1u: wN = float3(-1,0,0); wT = float3(0,0,1); wB = float3(0,1,0); break;
+                case 2u: wN = float3(0, 1,0); wT = float3(1,0,0); wB = float3(0,0,1); break;
+                case 3u: wN = float3(0,-1,0); wT = float3(1,0,0); wB = float3(0,0,1); break;
+                case 4u: wN = float3(0,0, 1); wT = float3(1,0,0); wB = float3(0,1,0); break;
+                default: wN = float3(0,0,-1); wT = float3(1,0,0); wB = float3(0,1,0); break;
+            }
+            float3 pN = normalize(wN - (wT * dHdX + wB * dHdY) * 0.5);
+            float3 V  = normalize(UW_CAM_POS(wu) - in.worldPos);
+            float3 Ld = normalize(-wu.sunDirTime.xyz);
+            float3 Hh = normalize(V + Ld);
+            float specBase = pow(max(0.0, dot(pN, Hh)), 18.0);
+            float baseLum  = dot(in.color, float3(0.299, 0.587, 0.114));
+            // mid/dark materials only — bright snow/sand get none (would wash white).
+            specAdd = specBase * 0.14 * clamp(in.shade * 1.4, 0.0, 1.0) * shadowFactor
+                    * (1.0 - smoothstep(0.55, 0.85, baseLum));
         }
 
         // Combined: shade * AO * shadow * bump * detail
@@ -3142,6 +3167,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // ordinary sunlit terrain never crosses the bloom bright-pass threshold.
         // Emissive blocks are still allowed to go overbright (they SHOULD bloom).
         float3 col = in.color * detail * (in.shade * bumpLight) * aoFactor * shadowFactor;
+        col += specAdd;                       // #47 normal-mapped sun sheen (pre-clamp)
         if (!isEmissive) col = clamp(col, 0.0, 1.0);
 
         // Emissive blocks bloom in HDR: push them above 1.0
@@ -3530,18 +3556,34 @@ final class Renderer: NSObject, MTKViewDelegate {
                         * smoothstep(0.0, 0.10, ray.y)
                         * fairCloud;
         if (cloudVis > 0.001) {
+            // #47 volumetric-look clouds: three parallax layers at different apparent
+            // heights give depth as you turn; a slow domain-warp puffs the silhouette;
+            // and a second density sample offset toward the sun fakes self-shadowing so
+            // sun-facing billows read bright while undersides/interiors go shadowed.
             float ry = max(ray.y, 0.02);
-            float2 cloudUV  = (ray.xz / ry) * 0.30 + float2(clk * 0.010,  clk * 0.004);
-            float2 cloudUV2 = (ray.xz / ry) * 0.18 + float2(-clk * 0.007, clk * 0.003);
-            float cloud  = cloudFbm(cloudUV);
-            float cloud2 = cloudFbm(cloudUV2);
-            float cloudD = smoothstep(0.48, 0.70, (cloud + cloud2 * 0.5) / 1.5);
-            float3 cloudTop  = mix(float3(0.96, 0.96, 1.00),
-                                   mix(float3(1.0, 0.82, 0.65), float3(0.96, 0.96, 1.0), dayT),
+            float2 base = ray.xz / ry;
+            float2 uvA = base * 0.30 + float2( clk * 0.010,  clk * 0.004);
+            float2 uvB = base * 0.20 + float2(-clk * 0.007,  clk * 0.003);
+            float2 uvC = base * 0.13 + float2( clk * 0.004, -clk * 0.005);
+            float  warp = cloudFbm(base * 0.08 + float2(clk * 0.002, 0.0)) - 0.5;
+            float dA = cloudFbm(uvA + warp * 0.18);
+            float dB = cloudFbm(uvB + warp * 0.12);
+            float dC = cloudFbm(uvC);
+            float dens   = dA * 0.50 + dB * 0.32 + dC * 0.18;
+            float cloudD = smoothstep(0.46, 0.72, dens);
+            // Self-shadow: density a short step toward the sun in cloud-plane UV.
+            float2 sunUV = normalize(float2(sunDir3.x, sunDir3.z) + 1e-4) * 0.05;
+            float densSun = cloudFbm(uvA + warp * 0.18 + sunUV) * 0.50
+                          + cloudFbm(uvB + warp * 0.12 + sunUV) * 0.32 + dC * 0.18;
+            float lit = clamp((dens - densSun) * 3.2 + 0.55, 0.0, 1.0);  // sun-facing edge = lit
+            float3 cloudTop  = mix(float3(0.97, 0.97, 1.00),
+                                   mix(float3(1.0, 0.82, 0.65), float3(0.97, 0.97, 1.0), dayT),
                                    sunsetT * 0.60);
+            float3 cloudShade = cloudTop * 0.58;                  // shadowed billow
+            float3 cloudCol  = mix(cloudShade, cloudTop, lit);
             float underBelly = smoothstep(0.06, 0.35, ray.y);
-            float3 cloudCol  = mix(cloudTop * float3(0.72, 0.73, 0.80), cloudTop, underBelly);
-            skyCol = mix(skyCol, cloudCol, cloudD * cloudVis * 0.90);
+            cloudCol = mix(cloudCol * float3(0.74, 0.75, 0.82), cloudCol, underBelly);
+            skyCol = mix(skyCol, cloudCol, cloudD * cloudVis * 0.92);
         }
 
         return skyCol;
