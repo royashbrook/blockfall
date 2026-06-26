@@ -45,7 +45,9 @@ fn on_boundary(x: usize, y: usize, z: usize) -> bool {
 
 // Is the world column above (x,z) of chunk cc clear of opaque blocks (open to sky)?
 fn column_open(store: &ChunkStore, cc: ChunkCoord, x: usize, z: usize) -> bool {
-    for cy in (cc.y + 1)..=(cc.y + 8) {
+    // saturating add: chunk-y is bounded by streaming in practice, but guard against a
+    // debug overflow panic if a corrupt/extreme cc.y is ever passed in.
+    for cy in cc.y.saturating_add(1)..=cc.y.saturating_add(8) {
         match store.get(ChunkCoord { x: cc.x, y: cy, z: cc.z }) {
             None => return true, // nothing resident above -> sky
             Some(above) => {

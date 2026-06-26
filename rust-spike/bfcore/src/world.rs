@@ -2776,9 +2776,11 @@ impl<'c> World<'c> {
             return;
         }
         // Inline gen (sync). The live game's worker path generates the same chunks;
-        // here everything is synchronous and deterministic.
+        // here everything is synchronous and deterministic. A large standing backlog
+        // raises the gen budget too so the initial fill keeps pace with the mesh budget.
+        let gen_budget = if self.bulk_fill() { 64 } else { GEN_BUDGET };
         let mut made = 0;
-        while !self.gen_queue.is_empty() && made < GEN_BUDGET {
+        while !self.gen_queue.is_empty() && made < gen_budget {
             let cc = self.gen_queue.pop().unwrap();
             if self.store.is_resident(cc) {
                 continue;
@@ -2797,11 +2799,14 @@ impl<'c> World<'c> {
         }
     }
 
-    // Faithful port of World::stream_backlog (used by the live game's bulk-fill
-    // heuristic; the sync test path never consults it, but the seam is kept).
-    #[allow(dead_code)]
+    // Faithful port of World::stream_backlog + bulk_fill: a large backlog while standing
+    // still (spawn-in, teleport, initial load) engages bigger streaming budgets so the
+    // world fills quickly, then backs off once you start moving so it does not hitch.
     fn stream_backlog(&self) -> usize {
         self.gen_queue.len() + self.dirty.len()
+    }
+    fn bulk_fill(&self) -> bool {
+        !self.moving && self.stream_backlog() > 384
     }
 
     // ---- GPU allocator boundary (the one unsafe FFI surface) -------------
@@ -2968,13 +2973,17 @@ impl<'c> World<'c> {
             }
             s
         };
-        let mesh_budget = MESH_BUDGET;
-        let k = mesh_budget.min(todo.len());
-        todo.sort_by(|a, b| score(*a).partial_cmp(&score(*b)).unwrap());
-        let _ = k;
+        // #: bulk fill. A big streaming backlog while standing still (spawn-in, teleport,
+        // initial load, render-distance bump) raises the mesh + remesh budgets so the world
+        // fills in fewer frames, matching the C++ (meshBudget 12->36, kRemeshCap 4->12).
+        let bulk = self.bulk_fill();
+        let mesh_budget = if bulk { 36 } else { MESH_BUDGET };
+        // NaN-safe: a finite score sorts normally; if pos ever went NaN we keep order
+        // instead of panicking (the C++ comparator tolerated NaN as UB-but-non-crashing).
+        todo.sort_by(|a, b| score(*a).partial_cmp(&score(*b)).unwrap_or(std::cmp::Ordering::Equal));
         let mut done = 0;
         let mut remeshes = 0;
-        let kremesh_cap = 4;
+        let kremesh_cap = if bulk { 12 } else { 4 };
         // Collect the chunks to mesh (so the dirty set + lighting cascade can mutate
         // without iterator invalidation), mirroring the C++ in-loop dirty edits.
         let order: Vec<ChunkCoord> = todo;
