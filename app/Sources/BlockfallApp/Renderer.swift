@@ -1948,15 +1948,23 @@ final class Renderer: NSObject, MTKViewDelegate {
         // The sun never goes fully vertical, so a fixed (0,1,0) up stays well-defined all
         // day and the basis changes smoothly. No more flip, no more pop.
         let worldUp = SIMD3<Float>(0, 1, 0)
-        let r = normalize(cross(L, worldUp))              // light right
-        let u = cross(r, L)                               // light up
-        // TEXEL-SNAP the frustum centre to the light-space texel grid. This is the
-        // fix for the swimming that got cast shadows disabled before: the map now
-        // only ever moves in whole-texel steps, so shadow edges don't shimmer as the
-        // camera moves. Centre on the player (not ahead of view) so spinning is stable.
-        let texelWorld = (2.0 * R) / res
-        let cx = (simd_dot(camPos, r) / texelWorld).rounded() * texelWorld
-        let cy = (simd_dot(camPos, u) / texelWorld).rounded() * texelWorld
+        let r = normalize(cross(L, worldUp))              // light right (always horizontal)
+        let u = cross(r, L)                               // light up (tilts with the sun)
+        // #49 THE wipe fix: the ortho frustum used the same half-extent R on both axes, but
+        // u tilts toward the sun, so the map's WORLD-HORIZONTAL footprint was an ellipse
+        // (~R perpendicular to the sun, only R*sqrt(1-u.y^2) along it — as little as ~50
+        // units at a low sun). That short axis, not the map's outer edge, is the line that
+        // wiped shadows toward/away from the sun as you turned. Stretch the u half-extent so
+        // its horizontal reach is also R, giving a circular ground footprint at every sun
+        // angle. Clamp so a near-horizontal sun does not blow the map up (and tank texels).
+        let uHoriz = max(0.30, (1.0 - u.y * u.y).squareRoot())   // horizontal fraction of u
+        let Ry = R / uHoriz                                       // compensated up half-extent
+        // TEXEL-SNAP the frustum centre to the (per-axis) texel grid so the map only moves in
+        // whole-texel steps (no shimmer). Centre on the player so spinning is stable.
+        let texelR = (2.0 * R)  / res
+        let texelU = (2.0 * Ry) / res
+        let cx = (simd_dot(camPos, r) / texelR).rounded() * texelR
+        let cy = (simd_dot(camPos, u) / texelU).rounded() * texelU
         let cz = simd_dot(camPos, L)
         let center = r * cx + u * cy + L * cz
         let eye    = center - L * 120.0                   // light eye position
@@ -1968,14 +1976,15 @@ final class Renderer: NSObject, MTKViewDelegate {
             SIMD4<Float>( r.z,  u.z, -L.z, 0),
             SIMD4<Float>(-dot(r, eye), -dot(u, eye), dot(L, eye), 1)))
 
-        // Orthographic projection — R = half-extent of this cascade in world units.
+        // Orthographic projection — R across the (horizontal) right axis, Ry across the
+        // tilted up axis so both cover R of world ground.
         let near: Float = 0.1
         let far:  Float = 300.0
         let lightProj = simd_float4x4(columns: (
-            SIMD4<Float>(1/R,  0,    0,                      0),
-            SIMD4<Float>(0,    1/R,  0,                      0),
-            SIMD4<Float>(0,    0,    1/(near-far),            0),
-            SIMD4<Float>(0,    0,    near/(near-far),         1)))
+            SIMD4<Float>(1/R,  0,     0,                      0),
+            SIMD4<Float>(0,    1/Ry,  0,                      0),
+            SIMD4<Float>(0,    0,     1/(near-far),            0),
+            SIMD4<Float>(0,    0,     near/(near-far),         1)))
 
         return lightProj * lightView
     }
