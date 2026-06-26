@@ -263,7 +263,15 @@ public:
         pos_ = V3{float(sx) + 0.5f, float(surface) + 3.2f, float(sz) + 0.5f};
         spawn_ = pos_;                                  // respawn here on defeat
         yaw_ = 0.6f; pitch_ = -0.25f;
-        restore_region(ChunkCoord{scol.x, 0, scol.z});  // spawn region starts colorful
+        // The spawn homeland starts colorful out to a generous radius so the early game
+        // is not spent wandering in the Grey; the Grey sits out on the horizon instead.
+        // (A region is 8x8 chunks; 5x5 regions is roughly 640 blocks across.) (#: bigger start)
+        {
+            RegionKey sr = region_key(ChunkCoord{scol.x, 0, scol.z});
+            for (int dz = -2; dz <= 2; ++dz)
+                for (int dx = -2; dx <= 2; ++dx)
+                    region_sat_[RegionKey{sr.x + dx, sr.z + dz}] = 1.0f;
+        }
         recompute_stream_set();
         creatures_.clear();
         creature_timer_ = 0.0f;                     // spawn once the area streams in
@@ -597,6 +605,7 @@ public:
 
         maintain_creatures(float(dt));   // spawn near the player, despawn far away
         maintain_villagers(float(dt));   // #39: friendly people at structures
+        maintain_regrowth(float(dt));    // trees slowly grow back in living grassland
         update_creatures(float(dt));
         update_falling(float(dt));        // sand/gravel + felled-tree logs in mid-air
     }
@@ -757,10 +766,12 @@ public:
         // (z=0.35). With x swinging through zero at midday, the sun's COMPASS bearing (and
         // so every shadow's direction) whipped around fastest right at noon, and the near-
         // overhead sun made shadows vanishingly short, so looking around read as a wipe.
-        // A larger southern offset (z=0.70) keeps the bearing steady and lowers the noon
-        // sun to ~60 degrees, giving longer, stable shadows all day. y is untouched, so the
-        // day/night boundary (and day length) is unchanged.
-        out.camera.sun_dir = bf_vec3{std::cos(ang) * 0.6f, -std::sin(ang) - 0.25f, 0.70f};
+        // A larger southern offset keeps the bearing steady and lowers the noon sun, giving
+        // longer, stable shadows all day. Players still reported a midday sweep at z=0.70
+        // (the bearing change rate still peaked too high near noon), so it is raised to 0.90:
+        // the noon sun now sits at ~54 degrees and the bearing changes about a third as fast
+        // through noon as the original. y is untouched, so the day/night cycle is unchanged.
+        out.camera.sun_dir = bf_vec3{std::cos(ang) * 0.6f, -std::sin(ang) - 0.25f, 0.90f};
         out.camera.underwater =
             (block_at(IVec3{ifloor(eye.x), ifloor(eye.y), ifloor(eye.z)}) == WATER) ? 1.0f : 0.0f;
         // Cold/snowy area? Scan down from the eye: snow_layer(12)/ice(13) before
@@ -903,6 +914,12 @@ public:
     }
     int     debug_build_palisade(int cx, int cz, int cells) {    // tests: drive the village wall builder
         return build_palisade_segment(cx, cz, cells);
+    }
+    bool    debug_grow_tree(int wx, int wz) {                    // tests: grow a tree at a column
+        int surf = surface_top(wx, wz);
+        if (surf == kNoFloor) return false;
+        grow_small_tree(wx, surf, wz);
+        return true;
     }
     int     debug_villager_count() const { int n=0; for (auto& c : creatures_) if (c.model == 20) ++n; return n; }   // #39
     int     debug_boss_count() const { int n=0; for (auto& c : creatures_) if (c.is_boss) ++n; return n; }
@@ -1895,6 +1912,55 @@ private:
         return false;
     }
 
+    // ---- natural tree regrowth (#: renewable trees) ----------------------------
+    // Trees slowly grow back in living grassland near the player, filling clearings so
+    // forests stay dense and chopping wood is sustainable. Grass-surface only (so it
+    // skips desert sand, snow, and water), gap-gated (no growing under an existing
+    // canopy), and skipped in the Grey (drained land stays lifeless). Grown trees are
+    // ordinary block edits, so they persist with the save like any other placement.
+    void grow_small_tree(int wx, int surf, int wz) {
+        const BlockId LOG = 21, LEAF = 5;                 // oak
+        int H = 4 + int(rand01() * 2.0f);                 // trunk 4..5
+        int top = surf + H;
+        for (int y = surf + 1; y <= top; ++y) set_block_internal(IVec3{wx, y, wz}, LOG);
+        for (int dy = -1; dy <= 2; ++dy)
+            for (int dz = -2; dz <= 2; ++dz)
+                for (int dx = -2; dx <= 2; ++dx) {
+                    if (dx * dx + dz * dz + dy * dy * 2 > 5) continue;   // rough little crown
+                    if (dx == 0 && dz == 0 && dy <= 0) continue;        // keep the trunk tip clear
+                    IVec3 p{wx + dx, top + dy, wz + dz};
+                    if (block_at(p) == AIR) set_block_internal(p, LEAF);
+                }
+    }
+    void maintain_regrowth(float dt) {
+        if (!gen_) return;
+        regrow_timer_ -= dt;
+        if (regrow_timer_ > 0) return;
+        regrow_timer_ = 5.0f;                              // a little regrowth every 5s
+        int px = ifloor(pos_.x), pz = ifloor(pos_.z);
+        int grew = 0;
+        for (int attempt = 0; attempt < 12 && grew < 2; ++attempt) {
+            int wx = px + int(rand01() * 96.0f) - 48;
+            int wz = pz + int(rand01() * 96.0f) - 48;
+            if (!store_.is_resident(to_chunk(IVec3{wx, 0, wz}))) continue;
+            if (region_sat(to_chunk(IVec3{wx, 0, wz})) < 0.5f) continue;   // no life in the Grey
+            int surf = surface_top(wx, wz);
+            if (surf == kNoFloor) continue;
+            if (block_at(IVec3{wx, surf, wz}) != BlockId(1)) continue;     // grassy ground only
+            BlockId above = block_at(IVec3{wx, surf + 1, wz});
+            if (above != AIR && !is_plant(above)) continue;               // clear (a plant is fine)
+            // gap check: do not crowd or grow beneath an existing tree.
+            bool nearTree = false;
+            for (int dz = -3; dz <= 3 && !nearTree; ++dz)
+                for (int dx = -3; dx <= 3 && !nearTree; ++dx)
+                    for (int y = surf + 1; y <= surf + 6 && !nearTree; ++y)
+                        if (is_tree_block(block_at(IVec3{wx + dx, y, wz + dz}))) nearTree = true;
+            if (nearTree) continue;
+            grow_small_tree(wx, surf, wz);
+            ++grew;
+        }
+    }
+
     void update_creatures(float dt) {
         for (auto& c : creatures_) {
             c.wander -= dt;
@@ -2650,6 +2716,7 @@ private:
     std::vector<bf_entity_draw>   entities_;
     float                         creature_timer_{0.0f};
     float                         villager_timer_{0.0f};   // #39: structure NPC spawn cadence
+    float                         regrow_timer_{3.0f};     // natural tree regrowth cadence
     int                           villager_npc_next_{0};   // #82: round-robins villager dialogue ids
     std::uint32_t                 rng_{0x1234567u};
     int                           regions_restored_{0};

@@ -82,6 +82,21 @@ int main() {
         CHECK(built2 > 0 && after2 > after1, "village: a second donation extends the wall");
     }
 
+    // --- natural regrowth: growing a tree places a trunk and a leafy crown ------
+    {
+        const int tx = 103, tz = 103;
+        CHECK(w.debug_grow_tree(tx, tz), "regrowth: tree grown at a resident column");
+        int logs = 0, leaves = 0;
+        for (int wy = 0; wy <= 120; ++wy)
+            if (w.debug_block_at(tx, wy, tz) == 21) ++logs;        // trunk
+        for (int dx = -2; dx <= 2; ++dx)
+            for (int dz = -2; dz <= 2; ++dz)
+                for (int wy = 0; wy <= 120; ++wy)
+                    if (w.debug_block_at(tx + dx, wy, tz + dz) == 5) ++leaves;  // crown
+        CHECK(logs >= 4, "regrowth: trunk has logs");
+        CHECK(leaves >= 4, "regrowth: tree has a leaf crown");
+    }
+
     if (fails == 0) std::printf("OK: creature collision + friendly follow spacing\n");
     return fails == 0 ? 0 : 1;
 }
