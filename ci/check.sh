@@ -11,7 +11,7 @@ FAIL=0
 step() { echo ""; echo "=== $* ==="; }
 
 step "1. Rust engine tests (cargo test)"
-( cd "$ROOT/rust-spike/bfcore" && cargo test --release ) || FAIL=1
+( cd "$ROOT/engine-rs/bfcore" && cargo test --release ) || FAIL=1
 
 step "2. content validation (schemas + any content JSON)"
 python3 "$ROOT/tests/content/validate.py" || FAIL=1
@@ -38,7 +38,7 @@ fi
 
 step "4. lint (Rust warnings are failures)"
 # bfcore builds warning-free; treat any warning in a fresh build as a failure.
-WARN=$( ( cd "$ROOT/rust-spike/bfcore" && cargo build --release 2>&1 ) | grep -ci "warning" || true )
+WARN=$( ( cd "$ROOT/engine-rs/bfcore" && cargo build --release 2>&1 ) | grep -ci "warning" || true )
 if [ "$WARN" != "0" ]; then echo "LINT: $WARN cargo warning(s)"; FAIL=1; fi
 
 echo ""

@@ -17,10 +17,10 @@ APP_OUT="$BUILD/Blockfall.app"
 export PATH="/opt/homebrew/bin:$PATH"
 
 echo "==> [1/4] Rust engine (bfcore staticlib, release)"
-# The app links libbfcore.a. Always release: the engine does synchronous streaming,
+# The app links libbfcore.a. Always release: a debug build of the engine is too slow
 # so a debug build is too slow to be usable, and the C ABI is identical either way.
-( cd "$ROOT/rust-spike/bfcore" && cargo build --release >/dev/null )
-LIB_DIR="$ROOT/rust-spike/bfcore/target/release"
+( cd "$ROOT/engine-rs/bfcore" && cargo build --release >/dev/null )
+LIB_DIR="$ROOT/engine-rs/bfcore/target/release"
 [ -f "$LIB_DIR/libbfcore.a" ] || { echo "ERROR: libbfcore.a missing"; exit 1; }
 
 echo "==> [2/4] sync frozen C ABI header into Swift interop module"
