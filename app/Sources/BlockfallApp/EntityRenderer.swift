@@ -348,6 +348,7 @@ final class EntityRenderer {
             case 18: drawKind18(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             case 19: drawKind19(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             case 20: drawKind20(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 21: drawKind21(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             // kind 100 — REMOTE PLAYER (#13 multiplayer): render the connected
             // peer as an upright PERSON, not an animal. Reuse the villager
             // humanoid (drawKind20); it already tints clothing from e.color so
@@ -2112,6 +2113,113 @@ final class EntityRenderer {
                  model: pawBlock(SIMD3(-bW*0.30, hipY, -bD*0.30), -legSwing), rgb: accentCol, sat: sat)
         drawCube(enc: enc, viewProj: viewProj,
                  model: pawBlock(SIMD3( bW*0.30, hipY, -bD*0.30),  legSwing), rgb: accentCol, sat: sat)
+    }
+
+    // =========================================================================
+    // KIND 21 — PLATYPUS (Perry-style secret agent)
+    // Teal, low flat streamlined body, wide flat duck BILL (orange), broad flat
+    // beaver paddle TAIL, four short webbed legs, beady eyes, and a little fedora.
+    // =========================================================================
+    private func drawKind21(enc: MTLRenderCommandEncoder, viewProj: simd_float4x4,
+                            e: bf_entity_draw, pos: SIMD3<Float>, phase: Float, hash: Float,
+                            squash: SIMD3<Float>) {
+        let s = e.scale
+        let sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let base = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+
+        // PALETTE: mostly fixed teal (Perry), lightly tinted by the entity colour.
+        let bodyCol  = SIMD3<Float>(min(1, base.x*0.18+0.24), min(1, base.y*0.30+0.52), min(1, base.z*0.30+0.50))
+        let bellyCol = SIMD3<Float>(min(1, bodyCol.x*0.6+0.34), min(1, bodyCol.y*0.6+0.30), min(1, bodyCol.z*0.6+0.28))
+        let billCol  = SIMD3<Float>(0.88, 0.58, 0.26)                       // orange bill + webbed feet
+        let tailCol  = SIMD3<Float>(bodyCol.x*0.7, bodyCol.y*0.7, bodyCol.z*0.7)  // darker teal paddle
+        let eyeCol   = SIMD3<Float>(0.05, 0.06, 0.06)
+        let hatCol   = SIMD3<Float>(0.34, 0.24, 0.16)                       // fedora brown
+        let bandCol  = SIMD3<Float>(0.20, 0.14, 0.10)
+
+        let blinkPhase  = phase + hash*4.3
+        let breathPhase = phase*0.4 + hash*2.0
+        let walkSpeed: Float = 2.4
+        let legSwing   = sin(phase*walkSpeed) * 0.30
+        let breatheY   = breatheYOffset(breathPhase, scale: s)
+        let eyeBlinkSY = blinkScale(blinkPhase)
+        let tailWag    = sin(phase*1.8 + hash*2.5) * 0.18                   // gentle paddle wag
+
+        // PROPORTIONS — low, flat, wide.
+        let bW = s*0.50, bH = s*0.24, bD = s*0.60
+        let hW = s*0.34, hH = s*0.26, hD = s*0.28
+        let billW = s*0.40, billH = s*0.09, billD = s*0.32
+        let tlW = s*0.44, tlH = s*0.08, tlD = s*0.40
+        let legW = s*0.11, legH = s*0.15, legD = s*0.11
+        let footW = s*0.17, footH = s*0.04, footD = s*0.20
+
+        let groundY = pos.y
+        let bodyY   = groundY + legH + bH*0.5 + breatheY
+        let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R       = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
+
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+        func lw(_ hip: SIMD3<Float>, _ ang: Float, _ dims: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * EntityRenderer.trans(hip) * EntityRenderer.rotX(ang)
+                * EntityRenderer.trans(SIMD3(0, -dims.y*0.5, 0)) * EntityRenderer.scaleM(dims)
+        }
+
+        // Body + belly
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0,0,0), SIMD3(bW,bH,bD)), rgb: bodyCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0,-bH*0.30,0), SIMD3(bW*0.82,bH*0.5,bD*0.82)), rgb: bellyCol, sat: sat)
+
+        // Flat paddle tail behind, angled up a touch, wagging
+        do {
+            let pivot = SIMD3<Float>(0, bH*0.05, -bD*0.5)
+            let m = EntityRenderer.trans(wc) * R * EntityRenderer.trans(pivot)
+                * EntityRenderer.rotY(tailWag) * EntityRenderer.rotX(-0.18)
+                * EntityRenderer.trans(SIMD3(0,0,-tlD*0.5))
+                * EntityRenderer.scaleM(SIMD3(tlW,tlH,tlD))
+            drawCube(enc: enc, viewProj: viewProj, model: m, rgb: tailCol, sat: sat)
+        }
+
+        // Head (front, slightly raised)
+        let headY = bH*0.30 + hH*0.30
+        let headZ = bD*0.40
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0,headY,headZ), SIMD3(hW,hH,hD)), rgb: bodyCol, sat: sat)
+
+        // Duck BILL — wide, flat, juts forward
+        let billY = headY - hH*0.20
+        let billZ = headZ + hD*0.5 + billD*0.45
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0,billY,billZ), SIMD3(billW,billH,billD)), rgb: billCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0,billY+billH*0.42,billZ+billD*0.42), SIMD3(billW*0.5,billH*0.3,s*0.03)), rgb: SIMD3(0.60,0.38,0.16), sat: sat)
+
+        // Beady eyes, top-front of head
+        let faceZ = headZ + hD*0.42
+        let eyeW = s*0.07, eyeH = s*0.09*eyeBlinkSY, eyeD = s*0.05
+        let eyeY = headY + hH*0.20
+        drawEye(enc: enc, viewProj: viewProj, pw: pw, c: SIMD3(-hW*0.26, eyeY, faceZ), r: SIMD3(eyeW,eyeH,eyeD), sat: sat, scleraCol: SIMD3(0.95,0.95,0.95), pupilCol: eyeCol)
+        drawEye(enc: enc, viewProj: viewProj, pw: pw, c: SIMD3( hW*0.26, eyeY, faceZ), r: SIMD3(eyeW,eyeH,eyeD), sat: sat, scleraCol: SIMD3(0.95,0.95,0.95), pupilCol: eyeCol)
+
+        // Secret-agent FEDORA (Perry nod): brim + crown + band
+        let hatY = headY + hH*0.5
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, hatY+s*0.01, headZ), SIMD3(hW*1.15, s*0.03, hD*1.10)), rgb: hatCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, hatY+s*0.05, headZ), SIMD3(hW*0.68, s*0.04, hD*0.72)), rgb: bandCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, hatY+s*0.10, headZ), SIMD3(hW*0.66, s*0.14, hD*0.70)), rgb: hatCol, sat: sat)
+
+        // 4 short legs + flat webbed feet
+        let hipY = -bH*0.5
+        let legDims = SIMD3<Float>(legW, legH, legD)
+        let hips: [(SIMD3<Float>, Float)] = [
+            (SIMD3(-bW*0.34, hipY,  bD*0.30),  legSwing),
+            (SIMD3( bW*0.34, hipY,  bD*0.30), -legSwing),
+            (SIMD3(-bW*0.34, hipY, -bD*0.30), -legSwing),
+            (SIMD3( bW*0.34, hipY, -bD*0.30),  legSwing),
+        ]
+        for (hip, ang) in hips {
+            drawCube(enc: enc, viewProj: viewProj, model: lw(hip, ang, legDims), rgb: bodyCol, sat: sat)
+            let foot = EntityRenderer.trans(wc) * R * EntityRenderer.trans(hip) * EntityRenderer.rotX(ang)
+                * EntityRenderer.trans(SIMD3(0, -legH - footH*0.5, footD*0.18))
+                * EntityRenderer.scaleM(SIMD3(footW, footH, footD))
+            drawCube(enc: enc, viewProj: viewProj, model: foot, rgb: billCol, sat: sat)
+        }
     }
 
     // =========================================================================

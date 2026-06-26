@@ -191,5 +191,18 @@
     "spawn_light_max": 15,
     "befriend_item": "berry_cluster",
     "model": 14
+  },
+  {
+    "id": 18,
+    "name": "platypus",
+    "display_name": "Platypus",
+    "disposition": "skittish",
+    "max_health": 7,
+    "move_speed": 1.8,
+    "spawn_biomes": ["river_delta"],
+    "biome": "swamp",
+    "spawn_light_max": 15,
+    "befriend_item": "berry_cluster",
+    "model": 21
   }
 ]

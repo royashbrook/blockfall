@@ -496,7 +496,7 @@ func runCritterGallery(savePath: String) -> Bool {
     let output   = tex(.bgra8Unorm, [.renderTarget], true)
 
     // One entity per creature kind (skip 6 = falling block). Varied toy colours.
-    let kinds: [UInt32] = [0,1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,100]
+    let kinds: [UInt32] = [0,1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,100]
     let cols: [SIMD3<Float>] = [
         SIMD3(0.85,0.80,0.74), SIMD3(0.78,0.45,0.28), SIMD3(0.55,0.58,0.62), SIMD3(0.30,0.55,0.35),
         SIMD3(0.90,0.86,0.40), SIMD3(0.40,0.40,0.48), SIMD3(0.72,0.36,0.30), SIMD3(0.95,0.95,0.97)
