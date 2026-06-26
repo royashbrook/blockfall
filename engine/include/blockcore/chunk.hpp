@@ -231,17 +231,6 @@ public:
     void evict(ChunkCoord c) override { map_.erase(c); }
     bool is_resident(ChunkCoord c) const override { return map_.count(c) != 0; }
 
-    std::size_t serialize(ChunkCoord c, std::span<std::byte> out) const override {
-        auto it = map_.find(c);
-        return it == map_.end() ? 0 : it->second->serialize(out);
-    }
-    bool deserialize(ChunkCoord c, std::span<const std::byte> in) override {
-        auto ch = PaletteChunk::deserialize(in);
-        if (!ch) return false;
-        map_[c] = std::move(ch);
-        return true;
-    }
-
     // Direct insert (worldgen/tests).
     PaletteChunk* insert(std::unique_ptr<PaletteChunk> ch) {
         ChunkCoord c = ch->coord();

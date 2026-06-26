@@ -69,13 +69,12 @@ static void test_store() {
     auto* c = static_cast<PaletteChunk*>(store.get_or_create(ChunkCoord{0,0,0}));
     c->set(8,0,8, 3);
     CHECK(store.is_resident(ChunkCoord{0,0,0}), "created chunk resident");
+    // Round-trip via the chunk's own serialize/deserialize (the path the save uses).
     std::vector<std::byte> buf(64 * 1024);
-    std::size_t n = store.serialize(ChunkCoord{0,0,0}, buf);
-    CHECK(n > 0, "store serialize");
-    ChunkStore store2;
-    CHECK(store2.deserialize(ChunkCoord{0,0,0}, std::span<const std::byte>(buf.data(), n)),
-          "store deserialize");
-    CHECK(store2.get(ChunkCoord{0,0,0})->get(8,0,8) == 3, "store round-trip value");
+    std::size_t n = c->serialize(buf);
+    CHECK(n > 0, "chunk serialize");
+    auto c2 = PaletteChunk::deserialize(std::span<const std::byte>(buf.data(), n));
+    CHECK(c2 && c2->get(8,0,8) == 3, "chunk round-trip value");
     store.evict(ChunkCoord{0,0,0});
     CHECK(!store.is_resident(ChunkCoord{0,0,0}), "evict removes");
 }

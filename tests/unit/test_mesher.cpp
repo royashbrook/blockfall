@@ -74,8 +74,6 @@ struct FakeStore final : public bf::IChunkStore {
             return true;
         return false;
     }
-    std::size_t serialize(bf::ChunkCoord, std::span<std::byte>) const override { return 0; }
-    bool        deserialize(bf::ChunkCoord, std::span<const std::byte>) override { return false; }
 };
 
 // ============================================================================

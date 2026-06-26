@@ -107,8 +107,6 @@ struct SnapStore final : IChunkStore {
     IChunk* get_or_create(ChunkCoord c) override { return get(c); }
     void    evict(ChunkCoord) override {}
     bool    is_resident(ChunkCoord c) const override { return chunks.find(c) != chunks.end(); }
-    std::size_t serialize(ChunkCoord, std::span<std::byte>) const override { return 0; }
-    bool        deserialize(ChunkCoord, std::span<const std::byte>) override { return false; }
 };
 
 struct RegionKey { std::int32_t x, z; };

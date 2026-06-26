@@ -97,9 +97,6 @@ struct IChunkStore {
     virtual IChunk* get_or_create(ChunkCoord c) = 0;
     virtual void    evict(ChunkCoord c) = 0;
     virtual bool    is_resident(ChunkCoord c) const = 0;
-    // Serialize one chunk to a caller buffer; returns bytes written (0 = fail).
-    virtual std::size_t serialize(ChunkCoord c, std::span<std::byte> out) const = 0;
-    virtual bool        deserialize(ChunkCoord c, std::span<const std::byte> in) = 0;
 };
 
 // World query surface used by gameplay/physics/net (Track B owns impl).
