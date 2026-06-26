@@ -575,16 +575,33 @@ fn in_canopy(dx: i32, dy: i32, dz: i32, shape: i32) -> bool {
     }
 }
 
+// Maximum dy relative to trunk_top that the shape actually fills. This must
+// cover the highest dy any in_canopy_* returns, or that top leaf layer is
+// never iterated in the emission loop and the crown is silently capped short,
+// leaving a bald trunk tip poking out (worst on GIANT and ROUND/BROAD, whose
+// domes reach dy=3 and dy=2 but were clamped to dy=1). It also feeds
+// worldgen_trunk_fit_to_ceiling, so an under-count let the dome clip the world
+// ceiling on high ground.
 fn canopy_dy_max(shape: i32) -> i32 {
+    if shape == CANOPY_PINE {
+        return 3;
+    }
+    if shape == CANOPY_GIANT {
+        return 3;
+    }
     if shape == CANOPY_TALL {
         return 2;
     }
-    if shape == CANOPY_PINE {
-        return 3;
+    if shape == CANOPY_BROAD {
+        return 2;
     }
     if shape == CANOPY_FORKED {
         return 2;
     }
+    if shape == CANOPY_ROUND {
+        return 2;
+    }
+    // COMPACT, WEEPING: top at dy=1.
     1
 }
 

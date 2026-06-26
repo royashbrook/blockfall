@@ -1192,4 +1192,232 @@ mod worldgen_tests {
         let b = classify_climate_excluding(0.78, 0.55, Biome::Beach as i32);
         assert_ne!(b, Biome::Beach as i32);
     }
+
+    // -----------------------------------------------------------------------
+    // Naked-trunk scan.
+    //
+    // Generates a dense voxel map across a sizable area (all 4 vertical
+    // chunks), walks the tree cells exactly as the generator does, and for
+    // every tall tree (trunk >= 4) reproduces its own canopy emission geometry
+    // and measures how many of its intended leaf cells actually survived into
+    // the world. A tree that kept less than a third of its own crown reads as
+    // a naked trunk. Saplings and short deadwood stubs are not tall trees and
+    // are excluded by the trunk >= 4 gate.
+    // -----------------------------------------------------------------------
+    use std::collections::HashMap;
+
+    fn is_leaf(b: BlockId) -> bool {
+        b == OAK_LEAVES || b == BIRCH_LEAVES || b == PINE_LEAVES
+    }
+
+    struct NakedTrunk {
+        wx: i32,
+        wz: i32,
+        top_wy: i32,
+        run: i32,
+    }
+
+    // Build the world over chunk range [cx0,cx1] x [cz0,cz1], all y chunks
+    // 0..=3 (y 0..63), into a flat voxel map, and return all tall naked
+    // trunks plus the total tree-log column count for context.
+    fn scan_naked_trunks(seed: u64, cx0: i32, cx1: i32, cz0: i32, cz1: i32) -> (Vec<NakedTrunk>, usize) {
+        let mut g = TerrainGen::new();
+        g.seed(seed);
+
+        let mut voxels: HashMap<(i32, i32, i32), BlockId> = HashMap::new();
+        for cz in cz0..=cz1 {
+            for cx in cx0..=cx1 {
+                for cy in 0..=3 {
+                    let c = ChunkCoord { x: cx, y: cy, z: cz };
+                    let mut chunk = DenseChunk::new(AIR);
+                    g.generate(c, &mut chunk);
+                    let bx = cx * K_CHUNK_DIM;
+                    let by = cy * K_CHUNK_DIM;
+                    let bz = cz * K_CHUNK_DIM;
+                    for lz in 0..K_CHUNK_DIM {
+                        for ly in 0..K_CHUNK_DIM {
+                            for lx in 0..K_CHUNK_DIM {
+                                let b = chunk.get(lx, ly, lz);
+                                if b != AIR {
+                                    voxels.insert((bx + lx, by + ly, bz + lz), b);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let get = |x: i32, y: i32, z: i32| -> BlockId { *voxels.get(&(x, y, z)).unwrap_or(&AIR) };
+
+        // Walk the tree cells the same way the generator does, reproduce each
+        // tree's geometry, and for the trees whose crown lands in the inner
+        // area, check whether the crown actually has leaves. A trunk is
+        // "naked" when its top log run has no leaf at or above the trunk top
+        // anywhere in its own canopy footprint, i.e. the bare trunk pokes out.
+        let wx_lo = (cx0 + 1) * K_CHUNK_DIM;
+        let wx_hi = cx1 * K_CHUNK_DIM - 1;
+        let wz_lo = (cz0 + 1) * K_CHUNK_DIM;
+        let wz_hi = cz1 * K_CHUNK_DIM - 1;
+
+        let ccx0 = tree_floordiv(wx_lo, TREE_CELL_SIZE) - 1;
+        let ccx1 = tree_floordiv(wx_hi, TREE_CELL_SIZE) + 1;
+        let ccz0 = tree_floordiv(wz_lo, TREE_CELL_SIZE) - 1;
+        let ccz1 = tree_floordiv(wz_hi, TREE_CELL_SIZE) + 1;
+
+        let mut total_trunk_cols = 0usize;
+        let mut naked = Vec::new();
+
+        for ccz in ccz0..=ccz1 {
+            for ccx in ccx0..=ccx1 {
+                let td = tree_for_cell(ccx, ccz, seed);
+                if !td.present {
+                    continue;
+                }
+                let dom = voronoi_biome(td.root_wx, td.root_wz, seed);
+                if dom == Biome::Desert || dom == Biome::Beach {
+                    continue;
+                }
+                let h = surface_height(td.root_wx, td.root_wz, seed);
+                if h <= SEA_LEVEL {
+                    continue;
+                }
+                let trunk_height = worldgen_trunk_fit_to_ceiling(h, canopy_dy_max(td.canopy_shape), td.trunk_height);
+                if trunk_height <= 0 {
+                    continue;
+                }
+                let trunk_top_wy = h + trunk_height;
+                let canopy_wx = td.root_wx + td.lean_dx;
+                let canopy_wz = td.root_wz + td.lean_dz;
+
+                // Only consider trees whose crown sits inside the inner area
+                // (so its full canopy and all neighbours are generated).
+                if canopy_wx < wx_lo || canopy_wx > wx_hi || canopy_wz < wz_lo || canopy_wz > wz_hi {
+                    continue;
+                }
+
+                // Only tall trees; short stubs/saplings are not the bug.
+                if trunk_height < 4 {
+                    continue;
+                }
+                total_trunk_cols += 1;
+
+                // Recreate this tree's OWN intended leaf cells using the exact
+                // emission geometry (shape, reach, sparse nibble), then check
+                // how many of those cells actually hold a leaf in the dense
+                // world. A cell that holds a log/other block was eaten by a
+                // neighbour (or this tree's own trunk). A tree whose own crown
+                // is mostly eaten reads as a naked trunk.
+                let dy_max_v = canopy_dy_max(td.canopy_shape);
+                let dy_min_v = canopy_dy_min(td.canopy_shape) - td.extra_skirt;
+                let shape_dy_min = canopy_dy_min(td.canopy_shape);
+                let reach = if td.canopy_shape == CANOPY_GIANT {
+                    4
+                } else if td.canopy_shape == CANOPY_WEEPING {
+                    4
+                } else if td.canopy_shape == CANOPY_BROAD || td.canopy_shape == CANOPY_PINE {
+                    3
+                } else {
+                    2
+                };
+                let mut intended = 0;
+                let mut filled = 0;
+                for dz in -reach..=reach {
+                    for dx in -reach..=reach {
+                        for dy in dy_min_v..=dy_max_v {
+                            let fill = if dy >= shape_dy_min {
+                                in_canopy(dx, dy, dz, td.canopy_shape)
+                            } else {
+                                let ax = dx.abs();
+                                let az = dz.abs();
+                                (ax <= 3 && az <= 3) && (ax >= 2 || az >= 2) && !(ax == 3 && az == 3)
+                            };
+                            if !fill {
+                                continue;
+                            }
+                            let wlx = canopy_wx + dx;
+                            let wly = trunk_top_wy + dy;
+                            let wlz = canopy_wz + dz;
+                            if !keep_leaf_voxel(td.leaf_hash, td.sparse, wlx, wly, wlz, dx, dz) {
+                                continue;
+                            }
+                            // Skip the trunk cell (own log occupies it).
+                            if dx == 0 && dz == 0 && wly <= trunk_top_wy {
+                                continue;
+                            }
+                            intended += 1;
+                            if is_leaf(get(wlx, wly, wlz)) {
+                                filled += 1;
+                            }
+                        }
+                    }
+                }
+
+                // Naked: less than 1/3 of this tree's own intended leaf cells
+                // actually became leaves (the crown was eaten by neighbours).
+                if intended > 0 && (filled * 3) < intended {
+                    naked.push(NakedTrunk { wx: canopy_wx, wz: canopy_wz, top_wy: trunk_top_wy, run: trunk_height });
+                }
+            }
+        }
+
+        (naked, total_trunk_cols)
+    }
+
+    // Every canopy shape's emission ceiling (canopy_dy_max) must cover the
+    // highest dy that in_canopy actually fills. If it does not, the top leaf
+    // layer is never iterated in place_decorations and the crown is capped
+    // short, leaving a bald trunk tip. This was the residual naked-trunk bug:
+    // ROUND/BROAD reached dy=2 and GIANT reached dy=3, but canopy_dy_max
+    // returned 1, so 9/5/26 top cells per crown were silently dropped.
+    #[test]
+    fn canopy_dy_max_covers_true_top() {
+        let shapes = [
+            CANOPY_ROUND,
+            CANOPY_TALL,
+            CANOPY_BROAD,
+            CANOPY_COMPACT,
+            CANOPY_PINE,
+            CANOPY_GIANT,
+            CANOPY_WEEPING,
+            CANOPY_FORKED,
+        ];
+        for shape in shapes {
+            let mut true_top = i32::MIN;
+            for dy in -4..=6 {
+                for dz in -5..=5 {
+                    for dx in -5..=5 {
+                        if in_canopy(dx, dy, dz, shape) && dy > true_top {
+                            true_top = dy;
+                        }
+                    }
+                }
+            }
+            assert!(
+                canopy_dy_max(shape) >= true_top,
+                "shape {shape}: canopy_dy_max {} < true top dy {true_top} (top crown layer would be dropped)",
+                canopy_dy_max(shape)
+            );
+        }
+    }
+
+    // Regression: no tall tree (trunk >= 4) may end up with its own crown
+    // mostly eaten in a dense forest. We reproduce each tree's exact emission
+    // geometry and require at least a third of its intended leaf cells to
+    // survive into the generated world. A bare trunk poking out of a dense
+    // wood is the symptom we are guarding against.
+    #[test]
+    fn no_tall_naked_trunks() {
+        let (naked, total) = scan_naked_trunks(SEED, -12, 12, -12, 12);
+        assert!(total > 100, "scan saw too few tall trees ({total}) to be meaningful");
+        assert!(
+            naked.is_empty(),
+            "found {} tall naked trunks (e.g. wx={} wz={} top_wy={} trunk={})",
+            naked.len(),
+            naked.first().map(|n| n.wx).unwrap_or(0),
+            naked.first().map(|n| n.wz).unwrap_or(0),
+            naked.first().map(|n| n.top_wy).unwrap_or(0),
+            naked.first().map(|n| n.run).unwrap_or(0),
+        );
+    }
 }
