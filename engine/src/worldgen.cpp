@@ -1049,14 +1049,20 @@ static float surface_height_raw(std::int32_t wx, std::int32_t wz,
         // Non-Plains biomes additionally receive the regional swell so the
         // landscape rolls at large scale.  Plains stays unswelled to keep the
         // flatness test (best_plains_variation <= 5) passing.
-        float biome_swell = (static_cast<Biome>(i) != Biome::Plains) ? swell : 0.0f;
+        // Plains stays unswelled (flatness test); Swamp too, so wetlands stay low
+        // and flat instead of riding the regional swell up onto high ground (#87).
+        float biome_swell = (static_cast<Biome>(i) != Biome::Plains &&
+                             static_cast<Biome>(i) != Biome::Swamp) ? swell : 0.0f;
         float h = p.base_y + (n * 2.0f - 1.0f) * p.amp + biome_swell;
         blended_h += weights[i] * h;
     }
 
     // #60 continentalness: lift inland, sink oceans, so water concentrates into real
     // oceans and the inland reads as rivers and lakes rather than scattered seas.
-    blended_h += continental_lift(fwx, fwz, seed);
+    // #87: damp the lift on swamp-dominant columns so wetlands settle back toward sea
+    // level (mud + shallow pools) instead of being carried up onto high inland ground.
+    float swamp_w = weights[static_cast<int>(Biome::Swamp)];
+    blended_h += continental_lift(fwx, fwz, seed) * (1.0f - 0.6f * swamp_w);
 
     // #60 rivers: sink a meandering valley into the blended height. Faded out in
     // desert (dry) so we don't get rivers running through dunes.
