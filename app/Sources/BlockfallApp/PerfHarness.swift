@@ -206,7 +206,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         let tanHalfFov = tan(fovy*0.5)
         let lightViewProj = Renderer.buildLightMatrix(
             sunDir: SIMD3<Float>(sun.x, sun.y, sun.z),
-            camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z), radius: 90, res: 1536)
+            camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z), radius: 150, res: 1536)
 
         var windU = WindUniforms(wallClockSecs: wallClock, rainStrength: 0)
         let cmd = queue.makeCommandBuffer()!
@@ -220,8 +220,13 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             if let enc = cmd.makeRenderCommandEncoder(descriptor: srp) {
                 enc.setRenderPipelineState(sp); enc.setDepthStencilState(shadowDepthState)
                 enc.setCullMode(.front); enc.setDepthBias(2.0, slopeScale: 2.0, clamp: 0.0)
-                for i in 0..<Int(f.draw_count) {
-                    let d = f.draws[i]
+                // #49: mirror the live renderer — cast from the UN-culled shadow occluder
+                // list, not the view-cone-culled draw list (the harness was lying: it made
+                // terrain shadows look view-dependent when the shipping path is not).
+                let sN = Int(f.shadow_draw_count); let sD = f.shadow_draws
+                let useS = (sN > 0 && sD != nil)
+                for i in 0..<(useS ? sN : Int(f.draw_count)) {
+                    let d = useS ? sD![i] : f.draws[i]
                     guard d.index_count > 0, let vb = registry.lookup(d.vertex_buffer),
                           let ib = registry.lookup(d.index_buffer) else { continue }
                     var su = ShadowVertUniforms(lightViewProj: lightViewProj,

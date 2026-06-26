@@ -2919,7 +2919,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             // the player instead, so the cutoff is a smooth circle (same in every
             // direction) that sits inside the square's minimum reach — no straight edge can
             // ever show, so turning never wipes a side.
-            float distFade = 1.0 - smoothstep(115.0, 150.0, distToCam);
+            float distFade = 1.0 - smoothstep(135.0, 149.0, distToCam);
             raw = mix(1.0, raw, distFade);
             // #72 DEBUG: shadowScale == 2 (harness sentinel) outputs the shadow factor as
             // grayscale (white = lit, black = shadowed) so coverage is unmistakable headless.
@@ -4426,8 +4426,10 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
                 enc.setDepthBias(2.0, slopeScale: 2.0, clamp: 0.0)
                 var windST = WindUniforms(wallClockSecs: Float(f)/60.0, rainStrength: 0)
                 enc.setVertexBytes(&windST, length: MemoryLayout<WindUniforms>.stride, index: 2)
-                for i in 0..<Int(frame.draw_count) {
-                    let d = frame.draws[i]
+                let sNt = Int(frame.shadow_draw_count); let sDt = frame.shadow_draws   // #49 un-culled
+                let useSt = (sNt > 0 && sDt != nil)
+                for i in 0..<(useSt ? sNt : Int(frame.draw_count)) {
+                    let d = useSt ? sDt![i] : frame.draws[i]
                     guard d.index_count > 0,
                           let vb = registry.lookup(d.vertex_buffer),
                           let ib = registry.lookup(d.index_buffer) else { continue }
