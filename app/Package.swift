@@ -2,12 +2,13 @@
 import PackageDescription
 import Foundation
 
-// The CMake build (ci/build.sh) produces libblockcore.a and exports its dir
-// via BLOCKCORE_LIB_DIR. We link it as a prebuilt archive. The C ABI header is
+// ci/build.sh builds the Rust engine staticlib (rust-spike/bfcore ->
+// libbfcore.a) and exports its dir via BLOCKCORE_LIB_DIR. We link it as a
+// prebuilt archive in place of the old C++ libblockcore.a. The C ABI header is
 // copied into Sources/CBlockcore/include by ci/build.sh (single source of
 // truth stays in /contract). See ci/build.sh.
 let libDir = ProcessInfo.processInfo.environment["BLOCKCORE_LIB_DIR"]
-    ?? "../build/engine"
+    ?? "../rust-spike/bfcore/target/release"
 
 let package = Package(
     name: "Blockfall",
@@ -24,7 +25,9 @@ let package = Package(
             path: "Sources/BlockfallApp",
             linkerSettings: [
                 .unsafeFlags([
-                    "-L\(libDir)", "-lblockcore", "-lc++",
+                    // Link the Rust engine staticlib. No -lc++ needed: the Rust
+                    // archive pulls in nothing beyond libSystem (already linked).
+                    "-L\(libDir)", "-lbfcore",
                 ]),
                 .linkedFramework("AppKit"),
                 .linkedFramework("Metal"),
