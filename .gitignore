@@ -14,3 +14,4 @@ app/Sources/CBlockcore/include/engine_c_api.h
 # Python
 __pycache__/
 *.pyc
+.claude/
