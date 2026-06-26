@@ -675,6 +675,70 @@ fn gameplay_drops_crafting_creatures() {
 }
 
 // ============================================================================
+// Hostiles must spawn at NIGHT on the open surface (not only in deep caves), and
+// daytime fauna must still spawn. Regression guard for the night-spawn gate.
+// ============================================================================
+#[test]
+fn hostiles_spawn_at_night_on_surface() {
+    let mut content = ContentRegistry::new();
+    assert!(content.load(CONTENT), "content load");
+
+    // ---- night: hostiles appear on the surface ----
+    let mut w = World::new(Some(TerrainGen::new()));
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_content(&content);
+    w.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    w.init_world(5);
+    w.debug_force_quest_done(); // lift the first-night grace gate
+
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+
+    // Stand on the surface (not in a cave), then jump the clock to deep night.
+    let (cx, cz) = (200, 200);
+    let surf = worldgen::worldgen_surface_height(cx, cz, 5);
+    w.debug_set_camera(cx as f32 + 0.5, surf as f32 + 2.0, cz as f32 + 0.5, 0.0, 0.0);
+    for _ in 0..30 {
+        w.update(&zero, 0.05);
+    }
+    w.debug_set_day_time(0.90); // t > 0.80 => night
+    w.debug_set_camera(cx as f32 + 0.5, surf as f32 + 2.0, cz as f32 + 0.5, 0.0, 0.0);
+    assert!(w.debug_day_time() > 0.80, "world clock is at night");
+
+    let mut i = 0;
+    while i < 400 && w.debug_hostile_count() == 0 {
+        w.update(&zero, 0.05);
+        i += 1;
+    }
+    assert!(
+        w.debug_hostile_count() > 0,
+        "hostiles spawn at night on the surface (day_time = {})",
+        w.debug_day_time()
+    );
+
+    // ---- daytime fauna still spawns (don't break passives) ----
+    let mut day = World::new(Some(TerrainGen::new()));
+    day.debug_set_sync_streaming(true);
+    day.set_allocator(allocator());
+    day.set_content(&content);
+    day.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    day.init_world(5);
+    day.debug_set_day_time(0.30); // bright morning, not night
+    let (dx, dz) = (200, 200);
+    let dsurf = worldgen::worldgen_surface_height(dx, dz, 5);
+    day.debug_set_camera(dx as f32 + 0.5, dsurf as f32 + 2.0, dz as f32 + 0.5, 0.0, 0.0);
+    let mut j = 0;
+    while j < 400 && day.debug_creature_count() < 4 {
+        day.update(&zero, 0.05);
+        j += 1;
+    }
+    assert!(day.debug_day_time() < 0.20 || day.debug_day_time() > 0.80 || day.debug_creature_count() >= 4,
+        "stayed daytime");
+    assert!(day.debug_creature_count() >= 4, "daytime fauna still spawn");
+    assert_eq!(day.debug_hostile_count(), 0, "no hostiles in daylight on the surface");
+}
+
+// ============================================================================
 // #25 async streaming: the LIVE (sync_stream == false) worker-pool path fills the
 // world over a few frames. This exercises the gen + mesh worker pool end to end:
 // update() submits gen jobs, build_frame() drains finished gen + uploads worker

@@ -4244,6 +4244,14 @@ impl<'c> World<'c> {
     pub fn debug_day_time(&self) -> f32 {
         Self::day_time(self.world_clock)
     }
+    // tests: jump the world clock to a chosen day_time phase (0..1) so a test can
+    // put the world into night without pumping ~5 minutes of frames.
+    pub fn debug_set_day_time(&mut self, phase: f32) {
+        // invert day_time: phase = (clock * 0.00175 + 0.30) % 1.0
+        let p = phase.rem_euclid(1.0) as f64;
+        let frac = (p - 0.30).rem_euclid(1.0);
+        self.world_clock = frac / 0.00175;
+    }
     pub fn debug_quests_completed(&self) -> i32 {
         self.quests_completed
     }
