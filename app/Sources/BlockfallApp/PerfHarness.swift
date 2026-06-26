@@ -177,6 +177,15 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         _ = bf_frame_begin(e, &input, dt)
         var f = bf_render_frame(); _ = bf_frame_acquire_render(e, &f)
 
+        // BF_SHOT_TOD=<0..1> overrides the whole-scene time of day (and the matching
+        // sun direction) so a headless shot can be driven to any point in the day, e.g.
+        // deep night (0.75) to check night lighting. Mirrors world.hpp's sun_dir formula.
+        if let todStr = ProcessInfo.processInfo.environment["BF_SHOT_TOD"], let tod = Float(todStr) {
+            f.camera.time_of_day = tod
+            let ang = tod * 6.2831853
+            f.camera.sun_dir = bf_vec3(x: cos(ang) * 0.6, y: -sin(ang) - 0.25, z: 0.90)
+        }
+
         let aspect = Float(W)/Float(H), fovy: Float = 1.20
         let proj = Renderer.perspective(fovy: fovy, aspect: aspect, near: 0.05, far: 512)
         let viewM = Renderer.mat(f.camera.view)
@@ -246,7 +255,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                     }
                     if let ib = propInstBuf {
                         memcpy(ib.contents(), insts, need)
-                        let dayBright = 0.30 + 0.70 * max(0, sin(f.camera.time_of_day * Float.pi))
+                        let dayBright = 0.30 + 0.70 * Renderer.dayLight(f.camera.time_of_day)
                         var psu = PropUniforms(viewProj: lightViewProj,
                                                params: SIMD4<Float>(dayBright, Float(wallClock), 0, 0))
                         enc.setRenderPipelineState(psp); enc.setCullMode(.front)
@@ -279,7 +288,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 let skyEnv = ProcessInfo.processInfo.environment["BF_SHOT_SKY"]
                 if skyEnv == "1" {
                     skySun = simd_normalize(camFwd)    // moon dir == normalize(sky sun_dir)
-                    skyTod = 0.0                        // midnight
+                    skyTod = 0.75                       // midnight (sun lowest; see Renderer.dayLight)
                 } else if skyEnv == "2" {
                     skySun = -simd_normalize(camFwd)   // sun dir == normalize(-sky sun_dir): sun centred
                     skyTod = 0.5                        // noon (test the E/W glare/washout)
@@ -336,7 +345,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 }
                 if let ib = propInstBuf {
                     memcpy(ib.contents(), insts, need)
-                    let dayBright = 0.30 + 0.70 * max(0, sin(f.camera.time_of_day * Float.pi))
+                    let dayBright = 0.30 + 0.70 * Renderer.dayLight(f.camera.time_of_day)
                     var pu2 = PropUniforms(viewProj: viewProj, params: SIMD4<Float>(dayBright, Float(wallClock), 0, 0))
                     enc.setRenderPipelineState(pp); enc.setDepthStencilState(depthState); enc.setCullMode(.none)
                     enc.setVertexBuffer(ib, offset: 0, index: 0)
@@ -353,7 +362,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             // #70 viewmodel arm (mirrors the live renderer so --shot shows it)
             if let vmp = viewModelPipeline, let vmb = viewModelArmBuf, let vmd = viewModelDepthState {
                 enc.setRenderPipelineState(vmp); enc.setDepthStencilState(vmd); enc.setCullMode(.none)
-                let dayB = 0.30 + 0.70 * max(0, sin(f.camera.time_of_day * Float.pi))
+                let dayB = 0.30 + 0.70 * Renderer.dayLight(f.camera.time_of_day)
                 let swing = Float(ProcessInfo.processInfo.environment["BF_SHOT_SWING"] ?? "-1") ?? -1  // #: force swing phase for shots
                 var vmU = ViewModelUniforms(proj: proj, params: SIMD4<Float>(0, 0, dayB, swing))
                 enc.setVertexBuffer(vmb, offset: 0, index: 0)

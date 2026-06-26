@@ -1044,7 +1044,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // shadow cascades too (the main prop pass below reuses the same buffer). Without
         // this the cascades only held terrain, so instanced trees cast no shadow.
         let shadowPropN = Int(frame.prop_instance_count)
-        let propDayBright = 0.30 + 0.70 * max(0, sin(frame.camera.time_of_day * Float.pi))
+        let propDayBright = 0.30 + 0.70 * Renderer.dayLight(frame.camera.time_of_day)
         if gfxShadows, shadowPropN > 0, let insts = frame.prop_instances {
             let need = shadowPropN * MemoryLayout<bf_prop_instance>.stride
             if propInstanceBuffer == nil || propInstanceBuffer!.length < need {
@@ -1192,7 +1192,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 }
                 if let ib = propInstanceBuffer {
                     memcpy(ib.contents(), insts, need)
-                    let dayBright = 0.30 + 0.70 * max(0, sin(frame.camera.time_of_day * Float.pi))
+                    let dayBright = 0.30 + 0.70 * Renderer.dayLight(frame.camera.time_of_day)
                     var pu2 = PropUniforms(viewProj: viewProj,
                                            params: SIMD4<Float>(dayBright, wallClock, gfxFoliage ? 1 : 0, 0))
                     enc.setRenderPipelineState(propPipeline)
@@ -1274,7 +1274,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setRenderPipelineState(viewModelPipeline)
                 enc.setDepthStencilState(viewModelDepthState)
                 enc.setCullMode(.none)
-                let dayB = 0.30 + 0.70 * max(0, sin(frame.camera.time_of_day * Float.pi))
+                let dayB = 0.30 + 0.70 * Renderer.dayLight(frame.camera.time_of_day)
                 // #: tool swing — repeated goofy chops while mining (mine_progress > 0),
                 // one chop per discrete mine/place/attack. -1 = idle (no swing).
                 let swingPhase: Float
@@ -1381,7 +1381,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         // God rays (#44): project the sun to screen space; the composite marches
         // toward it to scatter light shafts. Gated to daytime above ground.
-        let dayT  = max(0, sin(frame.camera.time_of_day * Float.pi))
+        let dayT  = Renderer.dayLight(frame.camera.time_of_day)
         let toSun = simd_normalize(SIMD3<Float>(-sun.x, -sun.y, -sun.z))
         let sunClip = viewProj * SIMD4<Float>(camPosW.x + toSun.x * 2000,
                                               camPosW.y + toSun.y * 2000,
@@ -1606,8 +1606,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     @discardableResult
     private func updateAmbientSprites(wallClock: Float, timeOfDay: Float, camPos: SIMD3<Float>,
                                       greyAmt: Float = 0) -> Int {
-        // dayT: 0=night, 1=noon
-        let dayT  = max(0, sin(timeOfDay * .pi))
+        // dayT: 0=night, 1=day (sun-elevation based so birds/fireflies swap when the
+        // sun actually sets, not a quarter-cycle off — see Renderer.dayLight).
+        let dayT  = Renderer.dayLight(timeOfDay)
         // nightT: inverse
         let nightT = max(0, 1.0 - dayT * 2.0)   // 0 during day, >0 during dusk/night
 
@@ -1922,6 +1923,37 @@ final class Renderer: NSObject, MTKViewDelegate {
             SIMD4<Float>(c.12, c.13, c.14, c.15)))
     }
 
+    // Day/night light level (0 = full night, 1 = full day), driven by the sun's
+    // actual elevation rather than sin(t*pi).
+    //
+    // FIX (night washout): the old terrain/prop/sky brightness used
+    // 0.15 + 0.85*max(0, sin(t*pi)), which peaks at t=0.5 and only reaches its
+    // night floor at the single instant t=0 / t=1. But the sun arc is
+    // sun_dir = {cos(ang)*0.6, -sin(ang)-0.25, 0.90} with ang = t*2*pi, so the
+    // sun is BELOW the horizon for t in ~(0.54, 0.96) and lowest at t=0.75 — a
+    // quarter-cycle out of phase with sin(t*pi). The result: the world stayed lit
+    // at 65-99% of noon through the whole night (no sun, so no shadows = a flat,
+    // low-contrast, washed-out bright scene that is hard to read), and only went
+    // dark at t~0/1 when the sun was actually back up. The shadow toggle never
+    // touched this ambient term, so disabling lighting did not help — matching the
+    // report ("washed out even with lighting off").
+    //
+    // Now we derive brightness from the real (normalized) sun elevation, so the
+    // world is bright while the sun is up, falls through dusk, and holds a low
+    // night floor across the entire night window. Noon stays at full brightness so
+    // the daytime look is unchanged.
+    static func dayLight(_ t: Float) -> Float {
+        let ang = t * 2.0 * Float.pi
+        // Sun direction (matches world.hpp). Elevation = -normalize(dir).y, positive
+        // when the sun is above the horizon.
+        let dx = cos(ang) * 0.6, dy = -sin(ang) - 0.25, dz: Float = 0.90
+        let elev = -dy / (dx * dx + dy * dy + dz * dz).squareRoot()
+        // smoothstep(-0.12, 0.25): full day when the sun is comfortably up, fading
+        // to the night floor through dusk/dawn as it crosses the horizon.
+        let x = max(0.0, min(1.0, (elev + 0.12) / 0.37))
+        return x * x * (3.0 - 2.0 * x)
+    }
+
     static func perspective(fovy: Float, aspect: Float, near: Float, far: Float) -> simd_float4x4 {
         let t = tan(fovy * 0.5)
         var m = simd_float4x4(0)
@@ -2130,6 +2162,18 @@ final class Renderer: NSObject, MTKViewDelegate {
         if (n == 2u) return 1.0;    // top
         if (n == 3u) return 0.40;   // bottom
         return 0.62;                // sides (wider top/side spread = more depth)
+    }
+
+    // Day/night light level (0 = full night, 1 = full day) from the sun's actual
+    // elevation. Mirrors Renderer.dayLight on the Swift side — see the long comment
+    // there for the night-washout fix this replaces. The old sin(t*pi) term kept the
+    // world bright through the whole night (a quarter-cycle out of phase with the sun
+    // arc), so night read as a flat washed-out scene; this tracks the real sun.
+    static float dayLight(float t) {
+        float ang = t * 6.2831853f;
+        float dx = cos(ang) * 0.6f, dy = -sin(ang) - 0.25f, dz = 0.90f;
+        float elev = -dy * rsqrt(dx*dx + dy*dy + dz*dz);
+        return smoothstep(-0.12f, 0.25f, elev);
     }
 
     static float3 hashColor(uint m) {
@@ -2795,7 +2839,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         ao = pow(ao, 0.85);
 
         // --- Lighting: sky + block + day/night (same as before) ---
-        float dayB   = 0.15 + 0.85 * max(0.0, sin(u.sunDirTime.w * 3.14159265f));
+        float dayB   = 0.15 + 0.85 * dayLight(u.sunDirTime.w);
         float skyC   = (float(p.sky)   / 15.0) * dayB;
         float blockC = float(p.block)  / 15.0;
         float lightLevel = max(max(skyC, blockC), 0.08);
@@ -3394,9 +3438,15 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Shared by the sky pass AND reflective water (#43) — forward-declared above
     // waterFmain. Does NOT apply the underground fade (that's sky-pass only).
     float3 evalSkyColor(float3 ray, float3 sd, float t, float clk) {
-        float dayT    = max(0.0, sin(t * 3.14159265f));
-        float dawnT   = max(0.0, 1.0 - abs(t - 0.25) * 8.0);
-        float duskT   = max(0.0, 1.0 - abs(t - 0.75) * 8.0);
+        // dayT now tracks the real sun elevation (see dayLight) so the sky darkens
+        // when the sun actually sets, instead of staying lit until t~1.0 (the old
+        // sin(t*pi) was a quarter-cycle out of phase with the sun arc). The sun
+        // crosses the horizon at t~0.54 (dusk) and t~0.96 (dawn), so the warm
+        // sunset/sunrise tint is centred there now (it used to peak at t=0.25/0.75,
+        // which with the corrected dayT would have painted midnight orange).
+        float dayT    = dayLight(t);
+        float dawnT   = max(0.0, 1.0 - abs(t - 0.96) * 8.0);
+        float duskT   = max(0.0, 1.0 - abs(t - 0.54) * 8.0);
         float sunsetT = dawnT + duskT;
 
         float3 zenithDay    = float3(0.16, 0.42, 0.88);
@@ -3541,7 +3591,15 @@ final class Renderer: NSObject, MTKViewDelegate {
             float ltFlash = smoothstep(0.97, 0.99, ltPhase) * smoothstep(1.00, 0.99, ltPhase);
             // Only light the sky-facing rays (not ground)
             ltFlash *= smoothstep(0.0, 0.15, ray.y);
-            float ltAmp = rainStrength * ltFlash * 2.5;
+            // FIX (night whiteout): the old amp was rainStrength*ltFlash*2.5 — a mix
+            // factor up to 2.5, so mix(skyCol, white, amp) EXTRAPOLATED far past white
+            // (skyCol + 2.5*(white-skyCol) ~= 2.4 HDR over the whole sky). At night the
+            // dark sky got lifted to ~2.4, which sails past the bloom bright-pass floor
+            // (1.60) so the entire sky bloomed and ACES mapped it to a full white-out
+            // that washed the night scene. Cap the mix factor to <=1 (never overshoot
+            // past the flash colour) and keep the flash colour below the bloom floor so
+            // a flash is a brief visible brighten, not a screen-wide white bloom.
+            float ltAmp = clamp(rainStrength * ltFlash, 0.0, 0.85);
             skyCol = mix(skyCol, float3(0.88, 0.92, 1.00), ltAmp);
         }
 
