@@ -54,6 +54,9 @@ fn world_mine_place_loop() {
     let mut content = ContentRegistry::new();
     content.load(CONTENT);
     let mut w = World::new(None);
+    // Deterministic inline streaming/meshing (the async worker pool only runs on the
+    // live sync_stream == false path; this test asserts meshes appear immediately).
+    w.debug_set_sync_streaming(true);
     w.set_content(&content);
     w.set_allocator(allocator());
 
@@ -669,6 +672,48 @@ fn gameplay_drops_crafting_creatures() {
         assert!(cave.debug_hostile_count() > 0, "hostiles spawn deep underground (#7)");
     }
     let _ = IVec3::default();
+}
+
+// ============================================================================
+// #25 async streaming: the LIVE (sync_stream == false) worker-pool path fills the
+// world over a few frames. This exercises the gen + mesh worker pool end to end:
+// update() submits gen jobs, build_frame() drains finished gen + uploads worker
+// mesh results. We only assert that the async path actually fills (draws grow and
+// stay bounded per frame); exact counts are nondeterministic (worker wall-clock).
+// ============================================================================
+#[test]
+fn async_streaming_fills_world() {
+    let mut content = ContentRegistry::new();
+    content.load(CONTENT);
+    let mut w = World::new(Some(TerrainGen::new()));
+    // NOTE: do NOT set sync streaming — this is the live async worker-pool path.
+    w.set_content(&content);
+    w.set_allocator(allocator());
+    w.set_render_distance(8);
+    w.init_world(424242);
+
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    let mut f = empty_frame();
+    let mut draws: Vec<bf_draw_item> = Vec::new();
+    let mut shadow: Vec<bf_draw_item> = Vec::new();
+    let mut props: Vec<bf_prop_instance> = Vec::new();
+
+    // Pump frames; between each give the workers a moment so results are ready to
+    // collect on the next build_frame (the pool runs on its own threads).
+    let mut max_draws = 0u32;
+    for _ in 0..120 {
+        w.update(&zero, 0.016);
+        w.build_frame(&mut f, &mut draws, &mut shadow, &mut props, 0.0);
+        if f.draw_count > max_draws {
+            max_draws = f.draw_count;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+
+    assert!(
+        max_draws > 0,
+        "async worker pool meshed chunks into the draw list (got {max_draws} draws)"
+    );
 }
 
 // read a NUL-terminated fixed byte buffer as a String slice.

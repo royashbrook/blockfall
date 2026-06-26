@@ -12,6 +12,7 @@ pub mod content;
 pub mod lighting;
 pub mod worldgen;
 pub mod mesher;
+pub mod jobs;
 pub mod abi;
 pub mod world;
 pub mod net;

@@ -17,8 +17,6 @@
 //! synchronous path faithfully and treats the async/JobScheduler path as a no-op
 //! fallback that also generates inline (no worker pool), so behaviour is deterministic.
 
-use std::time::{Duration, Instant};
-
 use crate::abi::*;
 use crate::chunk::PaletteChunk;
 use crate::content::{ContentExtra, ContentRegistry, CreatureDefX, QuestDefX};
@@ -152,6 +150,40 @@ impl mesher::ChunkStore for ChunkStore {
     fn get(&self, c: ChunkCoord) -> Option<&PaletteChunk> {
         ChunkStore::get(self, c)
     }
+}
+
+// ============================================================================
+// Async streaming support (#25): a read-only chunk snapshot + worker results.
+// ============================================================================
+
+// A read-only store holding owned COPIES of a chunk + its 6 face neighbours, so
+// a worker thread can greedy-mesh it without touching (or racing) the live store.
+// Mirrors the C++ SnapStore. The mesher only ever calls get(); it resolves the
+// cross-chunk lookups it needs from these seven entries.
+struct SnapStore {
+    chunks: HashMap<ChunkCoord, PaletteChunk>,
+}
+impl mesher::ChunkStore for SnapStore {
+    type Chunk = PaletteChunk;
+    fn get(&self, c: ChunkCoord) -> Option<&PaletteChunk> {
+        self.chunks.get(&c)
+    }
+}
+
+// A chunk generated on a worker, handed back to the frame thread to insert.
+struct GenResult {
+    cc: ChunkCoord,
+    chunk: PaletteChunk,
+}
+
+// A meshed snapshot, handed back to the frame thread to upload through the GPU
+// allocator. Carries the packed CPU buffers (the allocator is frame-thread only).
+struct MeshJobResult {
+    cc: ChunkCoord,
+    vbytes: Vec<u8>,
+    ibytes: Vec<u8>,
+    index_count: u32,
+    empty: bool,
 }
 
 // ============================================================================
@@ -386,6 +418,18 @@ pub struct World<'c> {
     surf_cy_cache: HashMap<i64, i32>,
     sync_stream: bool,
     moving: bool,
+
+    // Async streaming (#25): worker pool + result channels. Created lazily on the
+    // first live (sync_stream == false) stream_tick and torn down on Drop. The
+    // sync test path never creates these (so it stays deterministic + inline).
+    pool: Option<crate::jobs::WorkerPool>,
+    gen_tx: Option<std::sync::mpsc::Sender<GenResult>>,
+    gen_rx: Option<std::sync::mpsc::Receiver<GenResult>>,
+    mesh_tx: Option<std::sync::mpsc::Sender<MeshJobResult>>,
+    mesh_rx: Option<std::sync::mpsc::Receiver<MeshJobResult>>,
+    // Chunks currently being generated / meshed on a worker (do not re-enqueue).
+    gen_inflight: HashSet<ChunkCoord>,
+    mesh_inflight: HashSet<ChunkCoord>,
 }
 
 impl<'c> World<'c> {
@@ -464,6 +508,13 @@ impl<'c> World<'c> {
             surf_cy_cache: HashMap::new(),
             sync_stream: false,
             moving: false,
+            pool: None,
+            gen_tx: None,
+            gen_rx: None,
+            mesh_tx: None,
+            mesh_rx: None,
+            gen_inflight: HashSet::new(),
+            mesh_inflight: HashSet::new(),
         }
     }
 
@@ -2777,34 +2828,123 @@ impl<'c> World<'c> {
         }
     }
 
+    // How much terrain is still waiting to be generated + meshed.
+    fn stream_backlog(&self) -> usize {
+        self.gen_queue.len() + self.dirty.len()
+    }
+    // A LARGE backlog means a bulk fill (spawn-in, teleport, the initial load at a
+    // big render distance), not the small ring added by normal walking. Only then
+    // do we crank the per-frame budgets + in-flight caps, so steady-state play
+    // never floods the upload/dirty work. Mirrors the C++ bulk_fill heuristic.
+    fn bulk_fill(&self) -> bool {
+        !self.moving && self.stream_backlog() > 384
+    }
+
+    // Lazily create the worker pool + result channels on the first live tick.
+    // Never called on the sync test path (that branch returns before this).
+    fn ensure_pool(&mut self) {
+        if self.pool.is_some() {
+            return;
+        }
+        self.pool = Some(crate::jobs::WorkerPool::new(crate::jobs::recommended_workers()));
+        let (gtx, grx) = std::sync::mpsc::channel::<GenResult>();
+        let (mtx, mrx) = std::sync::mpsc::channel::<MeshJobResult>();
+        self.gen_tx = Some(gtx);
+        self.gen_rx = Some(grx);
+        self.mesh_tx = Some(mtx);
+        self.mesh_rx = Some(mrx);
+    }
+
     fn stream_tick(&mut self) {
         if self.gen.is_none() {
             return;
         }
-        // Inline gen (sync). Generation runs on the frame thread, so keep it small and let
-        // the LIVE path stop early once it has run ~3ms, so a big backlog fills over more
-        // frames instead of hitching. The sync-test path ignores the clock for determinism.
-        let deadline = if self.sync_stream { None } else { Some(Instant::now() + Duration::from_millis(3)) };
-        let mut made = 0;
-        while !self.gen_queue.is_empty()
-            && made < GEN_BUDGET
-            && !deadline.is_some_and(|d| Instant::now() >= d)
-        {
-            let cc = self.gen_queue.pop().unwrap();
-            if self.store.is_resident(cc) {
-                continue;
-            }
-            let ch = match self.gen_chunk(cc) {
-                Some(c) => c,
-                None => continue,
-            };
-            if ch.is_uniform() && ch.get(0, 0, 0) == AIR {
+        // Synchronous mode (tests): generate inline so chunk availability is
+        // deterministic per update() call rather than dependent on worker
+        // wall-clock. KEEP THIS PATH EXACTLY as the original sync streamer (#25:
+        // the unit/world tests run with debug_set_sync_streaming(true) and depend
+        // on this inline, deterministic behaviour).
+        if self.sync_stream {
+            let mut made = 0;
+            while !self.gen_queue.is_empty() && made < GEN_BUDGET {
+                let cc = self.gen_queue.pop().unwrap();
+                if self.store.is_resident(cc) {
+                    continue;
+                }
+                let ch = match self.gen_chunk(cc) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                if ch.is_uniform() && ch.get(0, 0, 0) == AIR {
+                    made += 1;
+                    continue;
+                }
+                self.store.insert(ch);
+                self.dirty.insert(cc);
                 made += 1;
+            }
+            return;
+        }
+
+        // Live (async) path: generate on workers, collect finished chunks here.
+        self.ensure_pool();
+        let bulk = self.bulk_fill();
+
+        // 1) Drain finished gen chunks. Budgeted: meshing downstream is the limit,
+        // so inserting the whole worker backlog at once explodes dirty_ and the
+        // per-frame dirty scan, tanking FPS (mirrors the C++ kGenCollect).
+        let gen_collect = if bulk { 64 } else { 16 };
+        let mut done: Vec<GenResult> = Vec::new();
+        if let Some(rx) = self.gen_rx.as_ref() {
+            while done.len() < gen_collect {
+                match rx.try_recv() {
+                    Ok(r) => done.push(r),
+                    Err(_) => break,
+                }
+            }
+        }
+        for r in done {
+            self.gen_inflight.remove(&r.cc);
+            if self.store.is_resident(r.cc) {
                 continue;
             }
-            self.store.insert(ch);
-            self.dirty.insert(cc);
-            made += 1;
+            // Skip pure-air chunks (above terrain): block_at() returns AIR anyway.
+            if r.chunk.is_uniform() && r.chunk.get(0, 0, 0) == AIR {
+                continue;
+            }
+            self.store.insert(r.chunk);
+            self.dirty.insert(r.cc);
+        }
+
+        // 2) Submit more gen jobs, keeping a bounded number in flight (the queue is
+        // sorted farthest-first, so popping the back submits nearest-first).
+        let max_inflight = if bulk { 128 } else { 32 };
+        // worldgen is a pure fn of coord + seed; each job builds its own seeded
+        // generator from this seed (TerrainGen does not derive Clone, so we re-seed
+        // a fresh one rather than capture self.gen).
+        let seed = self.seed;
+        while !self.gen_queue.is_empty() && self.gen_inflight.len() < max_inflight {
+            let cc = self.gen_queue.pop().unwrap();
+            if self.store.is_resident(cc) || self.gen_inflight.contains(&cc) {
+                continue;
+            }
+            let tx = match self.gen_tx.as_ref() {
+                Some(t) => t.clone(),
+                None => break,
+            };
+            if self.pool.is_none() {
+                break;
+            }
+            self.gen_inflight.insert(cc);
+            let job = move || {
+                let mut g = TerrainGen::new();
+                g.seed(seed);
+                let mut ch = PaletteChunk::new(cc, 0);
+                g.generate(cc, &mut ch);
+                // If the channel is gone (World dropped) the send just fails.
+                let _ = tx.send(GenResult { cc, chunk: ch });
+            };
+            self.pool.as_ref().unwrap().submit(job);
         }
     }
 
@@ -2949,6 +3089,33 @@ impl<'c> World<'c> {
         if !self.has_alloc {
             return;
         }
+        let async_mode = !self.sync_stream;
+        if async_mode {
+            self.ensure_pool();
+        }
+        let bulk = self.bulk_fill();
+
+        // 1) (async) Upload meshes finished on worker threads. The GPU allocator is
+        // frame-thread only, so this is the one place worker output reaches the GPU.
+        // Budgeted: buffer alloc + memcpy is the main-thread cost (mirrors the C++
+        // kUploadBudget); the rest waits a frame rather than tanking FPS.
+        if async_mode {
+            let upload_budget = if bulk { 24 } else { 8 };
+            let mut batch: Vec<MeshJobResult> = Vec::new();
+            if let Some(rx) = self.mesh_rx.as_ref() {
+                while batch.len() < upload_budget {
+                    match rx.try_recv() {
+                        Ok(r) => batch.push(r),
+                        Err(_) => break,
+                    }
+                }
+            }
+            for r in batch {
+                self.mesh_inflight.remove(&r.cc);
+                self.upload_mesh_result(r);
+            }
+        }
+
         if self.dirty.is_empty() {
             return;
         }
@@ -2973,15 +3140,20 @@ impl<'c> World<'c> {
             }
             s
         };
-        // This engine streams on the frame thread (the C++ used worker threads for
-        // throughput). So keep the per-frame mesh work small and favour smoothness with
-        // gradual pop-in over a fast-but-hitchy fill. The LIVE path also stops early once
-        // this loop has run ~4ms, so a heavy load (spawn-in, teleport, render-distance bump)
-        // can never tank the frame; it just fills over more frames. The sync-test path
-        // ignores the clock so per-frame chunk counts stay deterministic.
-        let mesh_budget = MESH_BUDGET;
-        let kremesh_cap = 4;
-        let deadline = if self.sync_stream { None } else { Some(Instant::now() + Duration::from_millis(4)) };
+        // Sync (tests): a small fixed budget so per-frame chunk counts stay
+        // deterministic (lighting + meshing run inline on the frame thread).
+        // Async (live): a bigger budget that just SUBMITS jobs (cheap), letting the
+        // workers do the meshing; bulk fill cranks it so a big load rushes in. The
+        // C++ used the same split (MESH_BUDGET sync, bulk 36 async).
+        let mesh_budget = if !async_mode {
+            MESH_BUDGET
+        } else if bulk {
+            36
+        } else {
+            MESH_BUDGET
+        };
+        let kremesh_cap = if bulk { 12 } else { 4 };
+        let mesh_inflight_cap = if bulk { 192 } else { 64 };
         // NaN-safe: a finite score sorts normally; if pos ever went NaN we keep order
         // instead of panicking (the C++ comparator tolerated NaN as UB-but-non-crashing).
         todo.sort_by(|a, b| score(*a).partial_cmp(&score(*b)).unwrap_or(std::cmp::Ordering::Equal));
@@ -2991,8 +3163,13 @@ impl<'c> World<'c> {
         // without iterator invalidation), mirroring the C++ in-loop dirty edits.
         let order: Vec<ChunkCoord> = todo;
         for cc in order {
-            if done >= mesh_budget || deadline.is_some_and(|d| Instant::now() >= d) {
+            if done >= mesh_budget {
                 break;
+            }
+            // (async) Do not re-enqueue a chunk already meshing on a worker, and
+            // stop submitting once the in-flight cap is hit (back-pressure).
+            if async_mode && (self.mesh_inflight.contains(&cc) || self.mesh_inflight.len() >= mesh_inflight_cap) {
+                continue;
             }
             let fresh = !self.meshes.contains_key(&cc);
             if !fresh && remeshes >= kremesh_cap {
@@ -3008,6 +3185,9 @@ impl<'c> World<'c> {
             }
             done += 1;
             // Light before meshing; re-dirty only neighbours whose boundary changed.
+            // Lighting stays on the FRAME THREAD (it mutates the live store and drives
+            // the re-dirty cascade); the worker only meshes the resulting lit snapshot,
+            // so async results match the sync inline path exactly.
             let faces = lighting::light_chunk(&mut self.store, cc);
             if faces != 0 {
                 let dirs = [
@@ -3027,8 +3207,104 @@ impl<'c> World<'c> {
                     }
                 }
             }
-            self.remesh_one(cc);
+            if async_mode {
+                self.submit_mesh_job(cc); // game: mesh on a worker, upload when done
+            } else {
+                self.remesh_one(cc); // sync / tests: inline mesh + upload
+            }
         }
+    }
+
+    // Snapshot the lit chunk + its 6 face neighbours and enqueue a mesh job. The
+    // worker greedy-meshes the snapshot into CPU byte buffers; the frame thread
+    // uploads them later (upload_mesh_result). The snapshot is owned COPIES, so
+    // the worker never races the live store.
+    fn submit_mesh_job(&mut self, cc: ChunkCoord) {
+        let mut chunks: HashMap<ChunkCoord, PaletteChunk> = HashMap::new();
+        let add = |w: &mut HashMap<ChunkCoord, PaletteChunk>, c: ChunkCoord| {
+            if let Some(ch) = self.store.get(c) {
+                w.insert(c, ch.clone());
+            }
+        };
+        add(&mut chunks, cc);
+        let dirs = [
+            ChunkCoord { x: cc.x + 1, y: cc.y, z: cc.z },
+            ChunkCoord { x: cc.x - 1, y: cc.y, z: cc.z },
+            ChunkCoord { x: cc.x, y: cc.y + 1, z: cc.z },
+            ChunkCoord { x: cc.x, y: cc.y - 1, z: cc.z },
+            ChunkCoord { x: cc.x, y: cc.y, z: cc.z + 1 },
+            ChunkCoord { x: cc.x, y: cc.y, z: cc.z - 1 },
+        ];
+        for d in dirs {
+            add(&mut chunks, d);
+        }
+        let tx = match self.mesh_tx.as_ref() {
+            Some(t) => t.clone(),
+            None => return,
+        };
+        if self.pool.is_none() {
+            return;
+        }
+        self.mesh_inflight.insert(cc);
+        // The mesher is a zero-size, stateless unit struct; make a fresh one for the
+        // job rather than borrowing self.mesher into the closure.
+        let mesher = GreedyMesher::new();
+        let job = move || {
+            let snap = SnapStore { chunks };
+            let (mr, vbytes, ibytes) = mesher.mesh(cc, &snap, false);
+            let empty = mr.empty || mr.index_count == 0;
+            let _ = tx.send(MeshJobResult {
+                cc,
+                vbytes: if empty { Vec::new() } else { vbytes },
+                ibytes: if empty { Vec::new() } else { ibytes },
+                index_count: mr.index_count,
+                empty,
+            });
+        };
+        self.pool.as_ref().unwrap().submit(job);
+    }
+
+    // Frame-thread upload of a worker mesh result: refresh the prop cache (props
+    // are scanned here against the LIVE store, exactly as the sync remesh_one does),
+    // free the old GPU buffers, and upload the new ones through the allocator.
+    fn upload_mesh_result(&mut self, r: MeshJobResult) {
+        if !self.store.is_resident(r.cc) {
+            return; // evicted while meshing — drop the result
+        }
+        let props = self.scan_chunk_props(r.cc);
+        if let Some(rec) = self.meshes.get(&r.cc) {
+            if rec.has_buffers {
+                self.gpu_free(rec.vbuf.handle);
+                self.gpu_free(rec.ibuf.handle);
+            }
+        }
+        let rec = self.meshes.entry(r.cc).or_default();
+        rec.props = props;
+        rec.has_buffers = false;
+        if r.empty {
+            rec.index_count = 0;
+            return;
+        }
+        let vbytes_len = r.vbytes.len() as u32;
+        let ibytes_len = r.ibytes.len() as u32;
+        let vb = self.gpu_alloc(vbytes_len);
+        let ib = self.gpu_alloc(ibytes_len);
+        if vb.contents.is_null() || ib.contents.is_null() {
+            let rec = self.meshes.get_mut(&r.cc).unwrap();
+            rec.index_count = 0;
+            return;
+        }
+        // SAFETY: the allocator returned contents pointing to >= vbytes_len /
+        // ibytes_len of writable shared memory; we copy exactly that many bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(r.vbytes.as_ptr(), vb.contents as *mut u8, vbytes_len as usize);
+            std::ptr::copy_nonoverlapping(r.ibytes.as_ptr(), ib.contents as *mut u8, ibytes_len as usize);
+        }
+        let rec = self.meshes.get_mut(&r.cc).unwrap();
+        rec.vbuf = vb;
+        rec.ibuf = ib;
+        rec.index_count = r.index_count;
+        rec.has_buffers = true;
     }
 
     fn remesh_one(&mut self, cc: ChunkCoord) {
