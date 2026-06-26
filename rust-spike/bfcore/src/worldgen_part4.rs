@@ -1168,12 +1168,13 @@ mod worldgen_tests {
         }
     }
 
-    // The world is varied near spawn (the biome map is not collapsed to one type).
+    // The world is varied (the biome map is not collapsed to one type). Biomes are
+    // large now, so scan a wide area to see the variety.
     #[test]
     fn biome_variety_near_origin() {
         let mut seen = [false; NUM_BIOMES];
-        for wz in (-150..=150).step_by(10) {
-            for wx in (-150..=150).step_by(10) {
+        for wz in (-700..=700).step_by(25) {
+            for wx in (-700..=700).step_by(25) {
                 let b = worldgen_dominant_biome(wx, wz, SEED);
                 if (b as usize) < NUM_BIOMES {
                     seen[b as usize] = true;
@@ -1181,7 +1182,7 @@ mod worldgen_tests {
             }
         }
         let n = seen.iter().filter(|&&s| s).count();
-        assert!(n >= 5, "expected varied biomes near origin, saw {n}: {seen:?}");
+        assert!(n >= 5, "expected varied biomes in a wide scan, saw {n}: {seen:?}");
     }
 
     // The coastal gate: classify_climate_excluding never returns the excluded biome.

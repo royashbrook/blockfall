@@ -541,7 +541,10 @@ fn sample_climate(wx: i32, wz: i32, seed: u64) -> (f32, f32) {
     let mseed = fmix64(seed ^ 0xB10E5EED00000002);
     let fwx = wx as f32;
     let fwz = wz as f32;
-    const BIOME_NOISE_FREQ: f32 = 1.0 / 72.0;
+    // #: bigger biomes. The climate field varies ~3x more slowly (was 1/72) so each
+    // biome covers a much larger contiguous area and has its own identity, instead of
+    // small biomes stepping on each other. Pairs with the larger BIOME_CELL below.
+    const BIOME_NOISE_FREQ: f32 = 1.0 / 216.0;
     let temp = climate_spread(fbm2(fwx, fwz, tseed, 3, BIOME_NOISE_FREQ, 2.0, 0.5));
     let moist = climate_spread(fbm2(fwx, fwz, mseed, 3, BIOME_NOISE_FREQ, 2.0, 0.5));
     (temp, moist)
@@ -633,7 +636,7 @@ fn biome_weights(wx: i32, wz: i32, seed: u64) -> [f32; NUM_BIOMES] {
 // ---------------------------------------------------------------------------
 // Voronoi biome map (#6)
 // ---------------------------------------------------------------------------
-const BIOME_CELL: i32 = 44;
+const BIOME_CELL: i32 = 132; // #: bigger biomes (was 44); ~3x wider Voronoi regions
 const VORONOI_SEED_MIX: u64 = 0x901A0701B10E5EED;
 
 #[inline]
