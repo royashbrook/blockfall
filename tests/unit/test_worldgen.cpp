@@ -2532,8 +2532,32 @@ static void test_all_biomes_present() {
     CHECK(seen[6], "biome present for spawning (#10): Beach");
 }
 
+// Trees must never have their canopy clipped off by the world's vertical ceiling
+// (that left tall birch as bare trunks on high ground). The trunk-fit helper shrinks
+// or drops a tree so the whole canopy stays in the generated world.
+static void test_tree_ceiling_fit() {
+    // Low ground: a tall tree keeps its full height.
+    CHECK(worldgen_trunk_fit_to_ceiling(20, 2, 10) == 10, "tree fit: low ground keeps full trunk");
+    // Near the ceiling: the trunk shrinks so the canopy still fits under the top.
+    int t = worldgen_trunk_fit_to_ceiling(55, 2, 10);
+    CHECK(t > 0 && (55 + t + 2) <= 63, "tree fit: high ground shrinks trunk so canopy fits");
+    // Too high: even a minimal tree would clip, so the tree is dropped.
+    CHECK(worldgen_trunk_fit_to_ceiling(59, 2, 10) == 0, "tree fit: peak too high drops the tree");
+    // Invariant: across every surface height and canopy reach, a KEPT tree's canopy
+    // top never exceeds the world ceiling (y=63) — i.e. it can never be left bare.
+    int kept = 0, clipped = 0;
+    for (int H = 0; H <= 63; ++H)
+        for (int dymax = 1; dymax <= 3; ++dymax) {
+            int tt = worldgen_trunk_fit_to_ceiling(H, dymax, 12);
+            if (tt > 0) { ++kept; if (H + tt + dymax > 63) ++clipped; }
+        }
+    CHECK(kept > 0, "tree fit: trees are kept across the height range");
+    CHECK(clipped == 0, "tree fit: no kept tree's canopy ever exceeds the world ceiling");
+}
+
 int main() {
     test_all_biomes_present();
+    test_tree_ceiling_fit();
     test_determinism();
     test_seed_sensitivity();
     test_no_seams();

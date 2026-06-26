@@ -52,6 +52,13 @@ int worldgen_dominant_biome(std::int32_t wx, std::int32_t wz,
 int worldgen_surface_height(std::int32_t wx, std::int32_t wz,
                             std::uint64_t seed) noexcept;
 
+// Clamp a tree's trunk so its whole canopy fits under the world's vertical ceiling
+// (canopies above it are never generated, leaving bare trunks). Returns the usable
+// trunk height for a tree on surface column height `surface_H` whose canopy reaches
+// `canopy_dy_max` above the trunk top, or 0 if even a minimal tree would clip. Pure.
+int worldgen_trunk_fit_to_ceiling(int surface_H, int canopy_dy_max,
+                                  int desired_trunk) noexcept;
+
 // Counts how many world structures (huts/pillars/campfires/watchtowers/treasure/
 // cairns) are present in the square block region [wx0, wx0+span) × [wz0, wz0+span)
 // for the given seed.  Pure function of its inputs — exposed so tests/benchmarks

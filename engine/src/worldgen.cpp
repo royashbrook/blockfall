@@ -1921,6 +1921,19 @@ static int canopy_dy_min(int shape) noexcept {
     return -1;
 }
 
+// Clamp a tree's trunk so its whole canopy stays under the world ceiling. The world
+// generates vertical chunk bands only up to World::CY_MAX, so the top writable block
+// is y = (CY_MAX+1)*kChunkDim - 1. A canopy pushed above that is never written, which
+// left tall trees (most visibly birch, trunk 7..10) as bare trunks on high ground.
+// Returns the usable trunk height, or 0 if even a minimal (3-tall) tree would clip —
+// the caller then skips the tree. Pure function → unit-tested directly.
+int worldgen_trunk_fit_to_ceiling(int surface_H, int canopy_dy_max, int desired_trunk) noexcept {
+    constexpr int kWorldTopY = 4 * kChunkDim - 1;   // World::CY_MAX(3)+1 bands → y 63
+    int maxTrunk = kWorldTopY - surface_H - canopy_dy_max;
+    if (maxTrunk < 3) return 0;
+    return desired_trunk > maxTrunk ? maxTrunk : desired_trunk;
+}
+
 // ---------------------------------------------------------------------------
 // Structure system — seam-safe deterministic world landmarks
 // ---------------------------------------------------------------------------
@@ -3122,6 +3135,16 @@ static void place_decorations(ChunkCoord c, IChunk& chunk, std::uint64_t seed,
 
                 int H = surface_height_cached(td.root_wx, td.root_wz, anchor_cache);
                 if (H <= SEA_LEVEL) continue;  // don't grow trees underwater
+
+                // The world only generates vertical chunk bands up to World::CY_MAX, so a
+                // canopy pushed above the ceiling is silently never written, which left
+                // tall trees (most visibly birch, trunk 7..10) as bare trunks on high
+                // ground. Shrink the trunk so the whole canopy fits; drop the tree if even
+                // a short one cannot (a bare alpine top reads better than a headless pole).
+                int fit = worldgen_trunk_fit_to_ceiling(H, canopy_dy_max(td.canopy_shape),
+                                                        td.trunk_height);
+                if (fit <= 0) continue;
+                td.trunk_height = fit;
 
                 // Trunk: H+1 .. H+trunk_height
                 int trunk_base_wy = H + 1;
