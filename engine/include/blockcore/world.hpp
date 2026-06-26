@@ -626,7 +626,14 @@ public:
                 if (has_target_) {
                     BlockId tb = block_at(target_);
                     if (tb == 33u || tb == 50u) {
-                        set_block_internal(target_, tb == 33u ? BlockId(50u) : BlockId(33u));
+                        BlockId nb = (tb == 33u) ? BlockId(50u) : BlockId(33u);
+                        set_block_internal(target_, nb);
+                        // #89 doors are 2 tall: swing the other half in sync.
+                        IVec3 up{target_.x, target_.y + 1, target_.z};
+                        IVec3 dn{target_.x, target_.y - 1, target_.z};
+                        BlockId bu = block_at(up), bd = block_at(dn);
+                        if (bu == 33u || bu == 50u) set_block_internal(up, nb);
+                        if (bd == 33u || bd == 50u) set_block_internal(dn, nb);
                         fx(1, target_);            // door clack
                         break;
                     }
@@ -1500,6 +1507,10 @@ private:
         }
         if (mode_ == BF_MODE_SURVIVAL && !inv_->remove_item(sel.item, 1)) return;
         set_block_internal(place_, pb);
+        if (pb == 33u) {                        // #89 doors are 2 blocks tall
+            IVec3 up{place_.x, place_.y + 1, place_.z};
+            if (block_at(up) == AIR) set_block_internal(up, BlockId(33u));
+        }
         fx(1, place_);                          // place sound
         notify_quest("place_block", block_name(pb));
         if (pb == glow_id_ || (beacon_id_ != 0 && pb == beacon_id_)) {
@@ -1534,6 +1545,14 @@ private:
                 }
             }
             set_block_internal(t, AIR);
+            // #89 doors are 2 tall: breaking one half clears the other (it already
+            // dropped one door item above, so don't drop a second).
+            if (broken == 33u || broken == 50u) {
+                IVec3 dup{t.x, t.y + 1, t.z}, ddn{t.x, t.y - 1, t.z};
+                BlockId du = block_at(dup), dd = block_at(ddn);
+                if (du == 33u || du == 50u) set_block_internal(dup, AIR);
+                if (dd == 33u || dd == 50u) set_block_internal(ddn, AIR);
+            }
             // #73: a plant, flower, grass, or rock resting on this block has lost its
             // support, so break it too (and drop it if it drops) instead of leaving it
             // floating.

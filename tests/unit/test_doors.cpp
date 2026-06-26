@@ -56,6 +56,24 @@ int main() {
     CHECK(w.debug_block_at(dx, dy, dz) == 33, "interacting again closes the door");
     CHECK(w.debug_collide_solid(dx, dy, dz), "the re-closed door blocks movement again");
 
+    // #89 — doors are 2 blocks tall and swing as one. Stack two door cells and
+    // interact with the lower half; both halves must flip together.
+    const int ex = 104, ey = 145, ez = 104;
+    w.debug_edit(ex, ey,     ez, BlockId(33));
+    w.debug_edit(ex, ey + 1, ez, BlockId(33));
+    w.debug_set_camera(float(ex) + 0.5f, float(ey) + 5.0f, float(ez) + 0.5f, 0.0f, -1.5707f);
+    w.update(zero, 0.016);
+    CHECK(w.debug_block_at(ex, ey, ez) == 33 && w.debug_block_at(ex, ey + 1, ez) == 33,
+          "2-tall door both halves closed");
+    w.action(use);
+    w.update(zero, 0.016);
+    CHECK(w.debug_block_at(ex, ey, ez) == 50 && w.debug_block_at(ex, ey + 1, ez) == 50,
+          "both halves open together (#89)");
+    w.action(use);
+    w.update(zero, 0.016);
+    CHECK(w.debug_block_at(ex, ey, ez) == 33 && w.debug_block_at(ex, ey + 1, ez) == 33,
+          "both halves close together (#89)");
+
     if (fails == 0) std::printf("OK: doors open/close (toggle + collision)\n");
     return fails == 0 ? 0 : 1;
 }

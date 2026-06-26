@@ -2227,8 +2227,10 @@ static void place_cabin(std::int32_t ax, std::int32_t az,
             // Door opening: a 2-high gap in the middle of the door wall.
             bool is_door = (dx == door_dx && dz == 0);
             if (is_door) {
-                // leave floor_h+1..+2 open; place an oak_door on the lower gap.
+                // #89 doors are 2 tall: fill both cells of the gap with the door.
                 struct_set(chunk, ax + dx, floor_h + 1, az + dz,
+                           wx_min, wy_min, wz_min, OAK_DOOR);
+                struct_set(chunk, ax + dx, floor_h + 2, az + dz,
                            wx_min, wy_min, wz_min, OAK_DOOR);
                 continue;
             }
