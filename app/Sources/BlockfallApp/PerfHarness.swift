@@ -297,7 +297,14 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             }
             enc.setRenderPipelineState(terrainPipeline); enc.setDepthStencilState(depthState)
             enc.setCullMode(.back); enc.setFrontFacing(.counterClockwise)
-            var wu = WaterUniforms(wallClockSecs: wallClock, underwater: 0, cameraPosW: camPosW)
+            // #49: pass sunDirTime so the terrain fragment shader's #47 view-dependent
+            // specular sheen sees the REAL sun direction in --shot. The live renderer sets
+            // this; the harness used to leave it zero, so the spec sampled an undefined sun
+            // (normalize of the zero vector) and the headless shots were not representative of
+            // how that shading actually looks in game. (Hunting the #49 shadow wipe with the
+            // old harness produced a bogus broad ground "wash" that does not exist live.)
+            var wu = WaterUniforms(wallClockSecs: wallClock, underwater: 0, cameraPosW: camPosW,
+                                   sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, f.camera.time_of_day))
             if ProcessInfo.processInfo.environment["BF_SHADOW_DEBUG"] == "1" { wu.shadowScale = 2.0 } // #72 debug view
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
             enc.setFragmentBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)

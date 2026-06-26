@@ -746,7 +746,15 @@ public:
         float t = day_time(clock);
         out.camera.time_of_day = t;
         float ang = t * 6.2831853f;
-        out.camera.sun_dir = bf_vec3{std::cos(ang) * 0.6f, -std::sin(ang) - 0.25f, 0.35f};
+        // #49 the residual "high-sun wipe": the shadow shader is yaw-stable, but the sun
+        // arced almost straight overhead at noon with only a tiny fixed horizontal offset
+        // (z=0.35). With x swinging through zero at midday, the sun's COMPASS bearing (and
+        // so every shadow's direction) whipped around fastest right at noon, and the near-
+        // overhead sun made shadows vanishingly short, so looking around read as a wipe.
+        // A larger southern offset (z=0.70) keeps the bearing steady and lowers the noon
+        // sun to ~60 degrees, giving longer, stable shadows all day. y is untouched, so the
+        // day/night boundary (and day length) is unchanged.
+        out.camera.sun_dir = bf_vec3{std::cos(ang) * 0.6f, -std::sin(ang) - 0.25f, 0.70f};
         out.camera.underwater =
             (block_at(IVec3{ifloor(eye.x), ifloor(eye.y), ifloor(eye.z)}) == WATER) ? 1.0f : 0.0f;
         // Cold/snowy area? Scan down from the eye: snow_layer(12)/ice(13) before
