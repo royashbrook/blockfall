@@ -1,0 +1,8 @@
+[package]
+name = "blockchunk"
+version = "0.0.1"
+edition = "2021"
+description = "Rust port spike of blockcore's palette-compressed chunk (engine/include/blockcore/chunk.hpp)"
+
+[lib]
+path = "src/lib.rs"
