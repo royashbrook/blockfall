@@ -483,10 +483,12 @@ fn creature_collision_and_villages() {
         assert!(built2 > 0 && after2 > after1, "village: second donation extends the wall");
     }
 
-    // Natural regrowth.
+    // Natural regrowth. #: with real oceans the origin region for seed 11 is open
+    // water, so grow the regrowth tree on a known dry-land column instead (a tree
+    // cannot keep a crown underwater).
     {
-        let (tx, tz) = (103, 103);
-        assert!(w.debug_grow_tree(tx, tz), "regrowth: tree grown at a resident column");
+        let (tx, tz) = (204, 0);
+        assert!(w.debug_grow_tree(tx, tz), "regrowth: tree grown on a dry-land column");
         let mut logs = 0;
         let mut leaves = 0;
         for wy in 0..=120 {

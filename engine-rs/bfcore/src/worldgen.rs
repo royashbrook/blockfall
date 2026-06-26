@@ -708,39 +708,104 @@ const BIOME_SEED_OFFSETS: [u64; NUM_BIOMES] = [
     0x6666666666666666,
 ];
 
-// Rivers
-const RIVER_FREQ: f32 = 1.0 / 130.0;
-const RIVER_HALFW: f32 = 0.040;
-const RIVER_DEPTH: f32 = 9.0;
-fn river_lower(fwx: f32, fwz: f32, seed: u64) -> f32 {
-    let rseed = fmix64(seed ^ 0x515E12D32C0DE011);
-    let n = fbm2(fwx, fwz, rseed, 2, RIVER_FREQ, 2.0, 0.5);
-    let mut d = n - 0.5;
-    if d < 0.0 {
-        d = -d;
+// ---------------------------------------------------------------------------
+// Continentalness (#: real oceans)
+//
+// A single very-low-frequency field decides, at the continental scale, whether a
+// region is ocean or land. Its period (~1/CONTINENT_FREQ blocks) is several times
+// wider than a biome cell, so the ocean/land split is a large-scale coherent
+// structure: oceans come out hundreds of blocks across, not ponds.
+//
+// continentalness() returns a SIGNED value centred on 0 (fBm is in [0,1], we map
+// to [-1,1]). Negative => below the shore (ocean), positive => inland. It is a
+// smooth function of position, so it flows through the Lipschitz limiter cleanly
+// and never makes a seam cliff.
+// ---------------------------------------------------------------------------
+const CONTINENT_FREQ: f32 = 1.0 / 1100.0; // very low freq => big continents/oceans
+const CONTINENT_SEED_MIX: u64 = 0xC0117E17A15C0DE1;
+
+// Shore bias: added to raw [-1,1] so land slightly outweighs ocean. Higher =>
+// more land. Tuned for a healthy land fraction (see oceans_and_rivers test).
+const CONTINENT_SHORE_BIAS: f32 = 0.10;
+
+fn continentalness(fwx: f32, fwz: f32, seed: u64) -> f32 {
+    let cseed = fmix64(seed ^ CONTINENT_SEED_MIX);
+    // 3 octaves so coastlines wiggle a little instead of being perfect blobs.
+    let c = fbm2(fwx, fwz, cseed, 3, CONTINENT_FREQ, 2.0, 0.5);
+    (c * 2.0 - 1.0) + CONTINENT_SHORE_BIAS
+}
+
+// How far this column is pushed by the continent field, in blocks (signed).
+// Ocean side (cont < 0) is pulled WELL below sea level so the basin holds a deep,
+// broad ocean; land side (cont > 0) is lifted gently. A smooth shoulder around
+// the shore keeps a gradual beach gradient instead of a wall.
+const OCEAN_DEPTH: f32 = 26.0; // max blocks below the land base out in deep ocean
+const LAND_LIFT: f32 = 7.0; // max blocks lifted on solid land
+
+fn continent_offset(fwx: f32, fwz: f32, seed: u64) -> f32 {
+    let cont = continentalness(fwx, fwz, seed);
+    if cont >= 0.0 {
+        // Land: smootherstep up to LAND_LIFT.
+        let t = (cont / 0.6).min(1.0);
+        let s = t * t * (3.0 - 2.0 * t);
+        s * LAND_LIFT
+    } else {
+        // Ocean: smooth descent. Near the shore it dips gently (beaches sit
+        // here); farther out it drops toward full OCEAN_DEPTH.
+        let a = -cont; // 0..~1
+        let t = (a / 0.6).min(1.0);
+        let s = t * t * (3.0 - 2.0 * t);
+        -s * OCEAN_DEPTH
     }
+}
+
+// True when this column is open ocean (terrain pulled clearly below sea level by
+// the continent field, not a transient noise dip). Used to gate ocean-only logic.
+fn is_ocean_column(fwx: f32, fwz: f32, seed: u64) -> bool {
+    continentalness(fwx, fwz, seed) < -0.04
+}
+
+// ---------------------------------------------------------------------------
+// Rivers (#: visible meandering channels that reach the sea)
+//
+// A ridged-noise valley network. We take a low-frequency fBm field and fold it
+// to a ridge at its mid value; the thin band around the ridge is the river. The
+// carve is a few blocks wide with smooth banks. River depth is referenced to the
+// surrounding land height so a channel cuts DOWN to about sea level: as a channel
+// meanders into a coastal/ocean region (where the continent field already sits at
+// or below the sea) it merges straight into the open water, so rivers connect to
+// the ocean instead of dead-ending on a plateau. Inland, a channel that sits in a
+// local low fills as a lake.
+// ---------------------------------------------------------------------------
+const RIVER_FREQ: f32 = 1.0 / 260.0; // long, winding rivers
+const RIVER_HALFW: f32 = 0.030; // half-width of the ridge band (river width)
+const RIVER_SEED_MIX: u64 = 0x515E12D32C0DE011;
+
+// 0..1 across the channel (1 at the centre line, 0 at/beyond the bank).
+fn river_channel_t(fwx: f32, fwz: f32, seed: u64) -> f32 {
+    let rseed = fmix64(seed ^ RIVER_SEED_MIX);
+    let n = fbm2(fwx, fwz, rseed, 3, RIVER_FREQ, 2.0, 0.5);
+    // Distance from the ridge (mid value 0.5); the river runs where this is small.
+    let d = (n - 0.5).abs();
     if d >= RIVER_HALFW {
         return 0.0;
     }
-    let mut t = 1.0 - d / RIVER_HALFW;
-    t = t * t * (3.0 - 2.0 * t);
-    RIVER_DEPTH * t
+    let t = 1.0 - d / RIVER_HALFW;
+    t * t * (3.0 - 2.0 * t) // smooth banks
 }
 
-// Continentalness
-const CONTINENT_FREQ: f32 = 1.0 / 640.0;
-const CONTINENT_AMP: f32 = 6.0;
-fn continental_lift(fwx: f32, fwz: f32, seed: u64) -> f32 {
-    let cseed = fmix64(seed ^ 0xC0117E17A15C0DE1);
-    let c = fbm2(fwx, fwz, cseed, 2, CONTINENT_FREQ, 2.0, 0.5);
-    let mut t = (c - 0.46) / 0.18;
-    if t < 0.0 {
-        t = 0.0;
+// River carve depth in blocks for this column, given the un-carved land height.
+// We only ever LOWER terrain (max 0), and we cut toward a bed just below sea
+// level so there is always visible water in the channel. The cut is capped so a
+// river crossing high ground does not become a bottomless canyon.
+fn river_carve(fwx: f32, fwz: f32, seed: u64, land_h: f32) -> f32 {
+    let t = river_channel_t(fwx, fwz, seed);
+    if t <= 0.0 {
+        return 0.0;
     }
-    if t > 1.0 {
-        t = 1.0;
-    }
-    t * CONTINENT_AMP
+    let bed_target = (SEA_LEVEL as f32) - 1.5;
+    let cut = (land_h - bed_target).max(0.0).min(12.0);
+    cut * t
 }
 
 fn surface_height_raw(wx: i32, wz: i32, seed: u64, weights: &[f32; NUM_BIOMES]) -> f32 {
@@ -776,11 +841,20 @@ fn surface_height_raw(wx: i32, wz: i32, seed: u64, weights: &[f32; NUM_BIOMES]) 
         blended_h += weights[i] * h;
     }
 
+    // Continent offset: lifts land, sinks oceans. This is the field that creates
+    // the large-scale ocean/land split. Swamps stay near sea level (they should
+    // not be hoisted up onto continents), so we damp the lift for them.
     let swamp_w = weights[Biome::Swamp as usize];
-    blended_h += continental_lift(fwx, fwz, seed) * (1.0 - 0.6 * swamp_w);
+    let cont = continent_offset(fwx, fwz, seed);
+    let cont = if cont > 0.0 { cont * (1.0 - 0.6 * swamp_w) } else { cont };
+    blended_h += cont;
 
+    // Rivers carve into the (already continent-adjusted) land. Skip the carve in
+    // open ocean (it is already underwater) and damp it in deserts (dry washes).
     let desert_w = weights[Biome::Desert as usize];
-    blended_h -= river_lower(fwx, fwz, seed) * (1.0 - desert_w);
+    if !is_ocean_column(fwx, fwz, seed) {
+        blended_h -= river_carve(fwx, fwz, seed, blended_h) * (1.0 - desert_w);
+    }
 
     blended_h
 }

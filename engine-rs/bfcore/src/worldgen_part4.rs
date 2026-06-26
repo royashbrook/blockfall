@@ -1074,6 +1074,19 @@ pub fn worldgen_surface_height(wx: i32, wz: i32, seed: u64) -> i32 {
     surface_height(wx, wz, seed)
 }
 
+/// True when this column is open ocean (pulled below sea level by the continent
+/// field). Exposed for diagnostics and any future ocean-aware game logic.
+pub fn worldgen_is_ocean_col(wx: i32, wz: i32, seed: u64) -> bool {
+    is_ocean_column(wx as f32, wz as f32, seed)
+}
+
+/// 0..1 river-channel intensity at this column (1 at the centre line). Exposed
+/// for diagnostics. Note: a column with intensity > 0 is only wet if it also sits
+/// at/below sea level after the carve.
+pub fn worldgen_river_t(wx: i32, wz: i32, seed: u64) -> f32 {
+    river_channel_t(wx as f32, wz as f32, seed)
+}
+
 pub fn worldgen_count_structures(wx0: i32, wz0: i32, span: i32, seed: u64) -> i32 {
     let scx_min = struct_floordiv(wx0, STRUCT_CELL_SIZE);
     let scx_max = struct_floordiv(wx0 + span - 1, STRUCT_CELL_SIZE);
@@ -1191,6 +1204,228 @@ mod worldgen_tests {
         // Beach-ish climate, excluding Beach, must pick something else.
         let b = classify_climate_excluding(0.78, 0.55, Biome::Beach as i32);
         assert_ne!(b, Biome::Beach as i32);
+    }
+
+    // -----------------------------------------------------------------------
+    // Oceans + rivers (#: real water).
+    //
+    // Sample the surface height on a coarse grid over a large area. A grid cell is
+    // "water" when its surface sits at/below sea level. Flood-fill (4-connected)
+    // to find connected water bodies; the largest is the ocean. We also walk the
+    // river channel field and require at least one river cell adjacent to ocean
+    // water (a river that reaches the sea), and we require a healthy land fraction
+    // so the world is still playable (not drowned).
+    // -----------------------------------------------------------------------
+
+    // Grid in world blocks: STEP blocks per cell, N x N cells, centred on origin.
+    const OR_STEP: i32 = 8;
+    const OR_N: i32 = 220; // 220 * 8 = 1760 blocks across, ~3M blocks scanned
+
+    fn or_sample(seed: u64) -> (Vec<bool>, i32) {
+        // water[i] = surface <= SEA_LEVEL at that grid cell.
+        let n = OR_N as usize;
+        let mut water = vec![false; n * n];
+        let half = OR_N / 2;
+        for gz in 0..OR_N {
+            for gx in 0..OR_N {
+                let wx = (gx - half) * OR_STEP;
+                let wz = (gz - half) * OR_STEP;
+                let h = worldgen_surface_height(wx, wz, seed);
+                water[(gz * OR_N + gx) as usize] = h <= SEA_LEVEL;
+            }
+        }
+        (water, OR_N)
+    }
+
+    // Largest connected water body (4-connected), returned as (size_in_cells,
+    // label_grid). label == component id, or -1 for land.
+    fn or_largest_body(water: &[bool], n: i32) -> (i32, Vec<i32>) {
+        let mut label = vec![-1i32; (n * n) as usize];
+        let mut next = 0i32;
+        let mut best = 0i32;
+        let mut best_label = -1i32;
+        let mut stack: Vec<(i32, i32)> = Vec::new();
+        for sz in 0..n {
+            for sx in 0..n {
+                let si = (sz * n + sx) as usize;
+                if !water[si] || label[si] != -1 {
+                    continue;
+                }
+                let id = next;
+                next += 1;
+                let mut size = 0;
+                stack.push((sx, sz));
+                label[si] = id;
+                while let Some((cx, cz)) = stack.pop() {
+                    size += 1;
+                    for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                        let nx = cx + dx;
+                        let nz = cz + dz;
+                        if nx < 0 || nz < 0 || nx >= n || nz >= n {
+                            continue;
+                        }
+                        let ni = (nz * n + nx) as usize;
+                        if water[ni] && label[ni] == -1 {
+                            label[ni] = id;
+                            stack.push((nx, nz));
+                        }
+                    }
+                }
+                if size > best {
+                    best = size;
+                    best_label = id;
+                }
+            }
+        }
+        // Re-label so the biggest body is 0 and everything else is -1, for callers.
+        let mut out = vec![-1i32; (n * n) as usize];
+        for i in 0..out.len() {
+            if label[i] == best_label {
+                out[i] = 0;
+            }
+        }
+        (best, out)
+    }
+
+    // Diagnostic dump (ignored by default): prints land fraction, ocean size, and
+    // whether a river reaches the sea. Run with:
+    //   cargo test --release oceans_diag -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn oceans_diag() {
+        for seed in [11u64, 1, 7, 42, 24, 1234] {
+            let (water, n) = or_sample(seed);
+            let total = (n * n) as f32;
+            let water_cells = water.iter().filter(|&&w| w).count() as f32;
+            let land_frac = 1.0 - water_cells / total;
+            let (ocean_cells, ocean) = or_largest_body(&water, n);
+            // ocean span in blocks (bounding box diagonal-ish: max extent).
+            let mut minx = n;
+            let mut maxx = 0;
+            let mut minz = n;
+            let mut maxz = 0;
+            for gz in 0..n {
+                for gx in 0..n {
+                    if ocean[(gz * n + gx) as usize] == 0 {
+                        minx = minx.min(gx);
+                        maxx = maxx.max(gx);
+                        minz = minz.min(gz);
+                        maxz = maxz.max(gz);
+                    }
+                }
+            }
+            let span_x = (maxx - minx) * OR_STEP;
+            let span_z = (maxz - minz) * OR_STEP;
+            let ocean_blocks = ocean_cells * OR_STEP * OR_STEP;
+
+            // River reach: count channel cells and channel cells touching ocean.
+            let half = n / 2;
+            let mut river_cells = 0;
+            let mut river_to_sea = 0;
+            for gz in 0..n {
+                for gx in 0..n {
+                    let wx = (gx - half) * OR_STEP;
+                    let wz = (gz - half) * OR_STEP;
+                    if river_channel_t(wx as f32, wz as f32, seed) > 0.4
+                        && !is_ocean_column(wx as f32, wz as f32, seed)
+                    {
+                        river_cells += 1;
+                        // adjacent ocean cell?
+                        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                            let nx = gx + dx;
+                            let nz = gz + dz;
+                            if nx >= 0 && nz >= 0 && nx < n && nz < n && ocean[(nz * n + nx) as usize] == 0 {
+                                river_to_sea += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            println!(
+                "seed {seed}: land {:.1}% | ocean {ocean_cells} cells (~{ocean_blocks} blocks, span {span_x}x{span_z}) | river cells {river_cells}, touching sea {river_to_sea}",
+                land_frac * 100.0
+            );
+        }
+    }
+
+    // Regression: seed 11 must have a large ocean, rivers that reach the sea, and a
+    // playable land fraction. Numbers are deliberately loose so terrain re-tuning
+    // does not make this brittle, while still catching "no real ocean" or "world
+    // drowned" regressions.
+    #[test]
+    fn oceans_and_rivers() {
+        let seed = SEED; // 11
+        let (water, n) = or_sample(seed);
+        let total = (n * n) as f32;
+        let water_cells = water.iter().filter(|&&w| w).count() as f32;
+        let land_frac = 1.0 - water_cells / total;
+
+        // Playable: not drowned, not bone dry.
+        assert!(
+            (0.40..=0.75).contains(&land_frac),
+            "land fraction {:.1}% out of healthy 40-75% range",
+            land_frac * 100.0
+        );
+
+        // A real ocean: the largest connected water body must be big. Each cell is
+        // OR_STEP^2 = 64 blocks; require >= 4000 cells (~256k blocks, hundreds of
+        // blocks across), i.e. far bigger than a pond.
+        let (ocean_cells, ocean) = or_largest_body(&water, n);
+        assert!(
+            ocean_cells >= 4000,
+            "largest water body only {ocean_cells} grid cells; expected a real ocean (>= 4000)"
+        );
+
+        // Ocean spatial extent: span at least 200 blocks in each axis.
+        let mut minx = n;
+        let mut maxx = 0;
+        let mut minz = n;
+        let mut maxz = 0;
+        for gz in 0..n {
+            for gx in 0..n {
+                if ocean[(gz * n + gx) as usize] == 0 {
+                    minx = minx.min(gx);
+                    maxx = maxx.max(gx);
+                    minz = minz.min(gz);
+                    maxz = maxz.max(gz);
+                }
+            }
+        }
+        let span_x = (maxx - minx) * OR_STEP;
+        let span_z = (maxz - minz) * OR_STEP;
+        assert!(
+            span_x >= 200 && span_z >= 200,
+            "ocean too small: span {span_x}x{span_z} blocks (want >= 200 each)"
+        );
+
+        // Rivers exist and at least one reaches the sea (a channel cell adjacent to
+        // the ocean body).
+        let half = n / 2;
+        let mut river_cells = 0;
+        let mut river_to_sea = 0;
+        for gz in 0..n {
+            for gx in 0..n {
+                let wx = (gx - half) * OR_STEP;
+                let wz = (gz - half) * OR_STEP;
+                if river_channel_t(wx as f32, wz as f32, seed) > 0.4
+                    && !is_ocean_column(wx as f32, wz as f32, seed)
+                {
+                    river_cells += 1;
+                    for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                        let nx = gx + dx;
+                        let nz = gz + dz;
+                        if nx >= 0 && nz >= 0 && nx < n && nz < n && ocean[(nz * n + nx) as usize] == 0 {
+                            river_to_sea += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(river_cells > 50, "too few river channel cells found ({river_cells})");
+        assert!(
+            river_to_sea > 0,
+            "no river channel reaches the ocean (river_cells={river_cells})"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1837,7 +2072,11 @@ mod worldgen_tests {
     // wood is the symptom we are guarding against.
     #[test]
     fn no_tall_naked_trunks() {
-        let (naked, total) = scan_naked_trunks(SEED, -12, 12, -12, 12);
+        // #: real oceans pushed much of the origin region underwater for some
+        // seeds, so trees (which only grow above sea level) are sparse in a tight
+        // window. Scan a wider area so the sample still contains plenty of forested
+        // land. The naked-trunk invariant is unchanged.
+        let (naked, total) = scan_naked_trunks(SEED, -22, 22, -22, 22);
         assert!(total > 100, "scan saw too few tall trees ({total}) to be meaningful");
         assert!(
             naked.is_empty(),

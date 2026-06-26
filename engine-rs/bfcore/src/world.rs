@@ -851,13 +851,19 @@ impl<'c> World<'c> {
             g.seed(seed);
         }
         // Pick a DRY-LAND spawn column near the origin (never wake up in water).
+        // #: real oceans can put the origin in open water, and a whole coast can be
+        // wider than the old 120-block search. Search outward in expanding rings far
+        // enough to clear an ocean and reach the nearest shore (step 8, up to ~768
+        // blocks). The scan is a one-time cheap height lookup per ring cell.
         const SEA_LEVEL: i32 = 6;
+        const SPAWN_STEP: i32 = 8;
+        const SPAWN_MAX_R: i32 = 96; // 96 * 8 = 768 blocks of reach
         let mut sx = 0i32;
         let mut sz = 0i32;
         if worldgen::worldgen_surface_height(0, 0, self.seed) < SEA_LEVEL + 1 {
             let mut dry = false;
             let mut r = 1;
-            while r <= 20 && !dry {
+            while r <= SPAWN_MAX_R && !dry {
                 let mut dz = -r;
                 while dz <= r && !dry {
                     let mut dx = -r;
@@ -868,8 +874,8 @@ impl<'c> World<'c> {
                             dx += 1;
                             continue;
                         }
-                        let wx = dx * 6;
-                        let wz = dz * 6;
+                        let wx = dx * SPAWN_STEP;
+                        let wz = dz * SPAWN_STEP;
                         if worldgen::worldgen_surface_height(wx, wz, self.seed) >= SEA_LEVEL + 1 {
                             sx = wx;
                             sz = wz;
