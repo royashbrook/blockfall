@@ -563,6 +563,27 @@ fn classify_climate(temp: f32, moist: f32) -> i32 {
     best_i
 }
 
+// Like classify_climate but never returns the excluded biome. Used to keep beaches
+// off high, dry ground (a beach belongs at the coast, not in the mountains).
+fn classify_climate_excluding(temp: f32, moist: f32, exclude: i32) -> i32 {
+    let mut best_i = 0i32;
+    let mut best_d = 1e30f32;
+    for i in 0..NUM_BIOMES {
+        if i as i32 == exclude {
+            continue;
+        }
+        let bc = &BIOME_CENTRES[i];
+        let dt = (temp - bc.temp) / bc.radius_t;
+        let dm = (moist - bc.moist) / bc.radius_m;
+        let d2 = dt * dt + dm * dm;
+        if d2 < best_d {
+            best_d = d2;
+            best_i = i as i32;
+        }
+    }
+    best_i
+}
+
 fn biome_weights(wx: i32, wz: i32, seed: u64) -> [f32; NUM_BIOMES] {
     let (temp, moist) = sample_climate(wx, wz, seed);
 
@@ -633,7 +654,17 @@ fn voronoi_cell_compute(cx: i32, cz: i32, vseed: u64, seed: u64) -> VoronoiCell 
     let sx = (cx as f32 + 0.5 + jx) * (BIOME_CELL as f32);
     let sz = (cz as f32 + 0.5 + jz) * (BIOME_CELL as f32);
     let (temp, moist) = sample_climate((sx + 0.5) as i32, (sz + 0.5) as i32, seed);
-    VoronoiCell { sx, sz, biome: classify_climate(temp, moist) }
+    let mut biome = classify_climate(temp, moist);
+    // #: beaches belong at the coast. A beach site sitting well above sea level (inland
+    // or in the mountains, no water) renders as dry grass, not sand, which reads as a
+    // bug. Reclassify such a site to its next-best climate biome so beaches only appear
+    // near the water.
+    if biome == Biome::Beach as i32
+        && surface_height_raw_at((sx + 0.5) as i32, (sz + 0.5) as i32, seed) > (SEA_LEVEL + 3) as f32
+    {
+        biome = classify_climate_excluding(temp, moist, Biome::Beach as i32);
+    }
+    VoronoiCell { sx, sz, biome }
 }
 
 fn voronoi_biome(wx: i32, wz: i32, seed: u64) -> Biome {

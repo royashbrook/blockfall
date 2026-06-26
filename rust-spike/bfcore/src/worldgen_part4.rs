@@ -1147,3 +1147,48 @@ pub fn worldgen_structure_footprint(wx: i32, wz: i32, seed: u64) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod worldgen_tests {
+    use super::*;
+    const SEED: u64 = 11;
+
+    // Same seed + coord must yield an identical chunk (no hidden global state).
+    #[test]
+    fn deterministic() {
+        let (mut g1, mut g2) = (TerrainGen::new(), TerrainGen::new());
+        g1.seed(SEED);
+        g2.seed(SEED);
+        for c in [
+            ChunkCoord { x: 0, y: 0, z: 0 },
+            ChunkCoord { x: 3, y: 1, z: -5 },
+            ChunkCoord { x: 10, y: 2, z: 7 },
+        ] {
+            assert_eq!(g1.content_hash(c), g2.content_hash(c), "seed {SEED} chunk {c:?}");
+        }
+    }
+
+    // The world is varied near spawn (the biome map is not collapsed to one type).
+    #[test]
+    fn biome_variety_near_origin() {
+        let mut seen = [false; NUM_BIOMES];
+        for wz in (-150..=150).step_by(10) {
+            for wx in (-150..=150).step_by(10) {
+                let b = worldgen_dominant_biome(wx, wz, SEED);
+                if (b as usize) < NUM_BIOMES {
+                    seen[b as usize] = true;
+                }
+            }
+        }
+        let n = seen.iter().filter(|&&s| s).count();
+        assert!(n >= 5, "expected varied biomes near origin, saw {n}: {seen:?}");
+    }
+
+    // The coastal gate: classify_climate_excluding never returns the excluded biome.
+    #[test]
+    fn exclude_skips_biome() {
+        // Beach-ish climate, excluding Beach, must pick something else.
+        let b = classify_climate_excluding(0.78, 0.55, Biome::Beach as i32);
+        assert_ne!(b, Biome::Beach as i32);
+    }
+}
