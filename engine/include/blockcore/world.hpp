@@ -897,6 +897,7 @@ public:
              ? extra_->quests()[active_quest_].id : 0u;
     }
     void    debug_notify(const char* trig, const char* target) { notify_quest(trig, target); }
+    const std::string& debug_ach_toast() const { return ach_toast_; }   // tests: last achievement banner
     void    debug_force_quest_done() { quests_completed_ = 1; }   // tests: lift the first-quest monster gate
     void    debug_spawn_named(const char* nm) {                   // tests: drop a named creature 5m from the player
         Creature c; c.name = nm ? nm : ""; c.pos = pos_ + V3{5.0f, -1.0f, 0.0f}; c.hp = 5; c.scale = 1.0f;
@@ -1116,6 +1117,7 @@ private:
         {"calm_boss",    "",         1,  "Big Softie"},
         {"light_beacon", "",         1,  "Guiding Light"},
         {"restore_region", "dim_barrens", 1, "True Colors"},
+        {"befriend_creature", "platypus", 1, "Perry the Platypus"},
     };
     static constexpr int kAchievementCount = int(sizeof(kAchievements) / sizeof(kAchievements[0]));
     void check_achievements(const std::string& trig, const std::string& target) {

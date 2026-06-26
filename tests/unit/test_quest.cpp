@@ -87,6 +87,17 @@ int main() {
         CHECK(qb.is_boss == 1, "calm_boss target is flagged is_boss");
     }
 
+    // Taming a platypus earns the "Perry the Platypus" achievement (a fun nod).
+    {
+        GreedyMesher m3; TerrainGen g3; World w3(m3, &g3);
+        bf_gpu_allocator a3{}; a3.alloc=af; a3.free_=ff; w3.set_allocator(a3);
+        w3.set_content(&c); w3.set_extra(&x);
+        w3.set_mode(BF_MODE_CREATIVE); w3.init_world(11);
+        w3.debug_notify("befriend_creature", "platypus");
+        CHECK(w3.debug_ach_toast() == "Achievement: Perry the Platypus",
+              "befriending a platypus unlocks the Perry the Platypus achievement");
+    }
+
     if (fails == 0) std::printf("OK: quest engine (%zu quests, complete+chain, target compass)\n", x.quests().size());
     return fails == 0 ? 0 : 1;
 }
