@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Blockfall — build.sh : produce a runnable Blockfall.app (spec §5).
-# Steps: build the C++ core (CMake, for the C++ unit tests) -> build the Rust
-# engine staticlib (libbfcore.a, what the app links) -> copy the frozen C ABI
+# Steps: build the Rust engine staticlib (libbfcore.a) -> copy the frozen C ABI
 # header into the Swift interop module -> build the Swift app -> assemble the
-# .app bundle.
+# .app bundle. The C++ engine was retired (#101); the engine is now Rust (bfcore).
 # arm64-only (spec §2/§4.11).
 set -euo pipefail
 
@@ -17,35 +16,25 @@ BUILD="$ROOT/build"
 APP_OUT="$BUILD/Blockfall.app"
 export PATH="/opt/homebrew/bin:$PATH"
 
-echo "==> [1/5] C++ core (blockcore, $CONFIG)"
-# Still built so the C++ unit tests (ci/check.sh) keep linking + passing. The
-# app no longer links libblockcore.a; it links the Rust engine (step 2).
-CMAKE_BT=$([ "$CONFIG" = release ] && echo Release || echo Debug)
-cmake -S "$ROOT/engine" -B "$BUILD/engine" \
-      -DCMAKE_BUILD_TYPE="$CMAKE_BT" -DBF_BUILD_TESTS=ON >/dev/null
-cmake --build "$BUILD/engine" -j >/dev/null
-[ -f "$BUILD/engine/libblockcore.a" ] || { echo "ERROR: libblockcore.a missing"; exit 1; }
-
-echo "==> [2/5] Rust engine (bfcore staticlib, release)"
-# The app links THIS instead of libblockcore.a. Always release: the Rust engine
-# does synchronous streaming, so a debug build is too slow to be usable, and the
-# C ABI it exports is identical in either profile.
+echo "==> [1/4] Rust engine (bfcore staticlib, release)"
+# The app links libbfcore.a. Always release: the engine does synchronous streaming,
+# so a debug build is too slow to be usable, and the C ABI is identical either way.
 ( cd "$ROOT/rust-spike/bfcore" && cargo build --release >/dev/null )
 LIB_DIR="$ROOT/rust-spike/bfcore/target/release"
 [ -f "$LIB_DIR/libbfcore.a" ] || { echo "ERROR: libbfcore.a missing"; exit 1; }
 
-echo "==> [3/5] sync frozen C ABI header into Swift interop module"
+echo "==> [2/4] sync frozen C ABI header into Swift interop module"
 cp "$ROOT/contract/engine_c_api.h" \
    "$ROOT/app/Sources/CBlockcore/include/engine_c_api.h"
 
-echo "==> [4/5] Swift app ($CONFIG)"
+echo "==> [3/4] Swift app ($CONFIG)"
 SWIFT_FLAGS=()
 [ "$CONFIG" = release ] && SWIFT_FLAGS+=(-c release)
 ( cd "$ROOT/app" && BLOCKCORE_LIB_DIR="$LIB_DIR" swift build ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} )
 BIN="$ROOT/app/.build/$CONFIG/BlockfallApp"
 [ -f "$BIN" ] || { echo "ERROR: app binary missing at $BIN"; exit 1; }
 
-echo "==> [5/5] assemble $APP_OUT"
+echo "==> [4/4] assemble $APP_OUT"
 rm -rf "$APP_OUT"
 mkdir -p "$APP_OUT/Contents/MacOS" "$APP_OUT/Contents/Resources"
 cp "$BIN" "$APP_OUT/Contents/MacOS/Blockfall"
@@ -68,7 +57,6 @@ cat > "$APP_OUT/Contents/Info.plist" <<'PLIST'
   <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict></plist>
 PLIST
-echo '<?xml version="1.0"?>' > /dev/null
 
 # Ad-hoc sign (spec §4.11). Real .dmg signing happens in package.sh.
 codesign --force --deep --sign - "$APP_OUT" >/dev/null 2>&1 || \
