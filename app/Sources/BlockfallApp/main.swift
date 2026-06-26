@@ -31,8 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var charPreview: CharacterPreviewView?
     private var charRowLabels: [NSTextField] = []
     private var editorAppearance = CharacterAppearance()
-    private let charTraits: [CharacterAppearance.Trait] = [.skin, .shirt, .hairColor, .hairStyle, .eyeStyle, .eyeColor, .nose, .mouth]
-    private let charTraitNames = ["Skin", "Shirt", "Hair Colour", "Hair Style", "Eyes", "Eye Colour", "Nose", "Mouth"]
+    private let charTraits: [CharacterAppearance.Trait] = [.skin, .shirt, .headShape, .bodyShape, .hairColor, .hairStyle, .eyeStyle, .eyeColor, .nose, .mouth]
+    private let charTraitNames = ["Skin", "Shirt", "Head Shape", "Body Shape", "Hair Colour", "Hair Style", "Eyes", "Eye Colour", "Nose", "Mouth"]
     // #: pause-menu HUD-option controls (held so the action handlers can update
     // the live value label). Rebuilt each time the pause overlay opens.
     private weak var hudScaleSlider: NSSlider?
@@ -544,6 +544,8 @@ if let idx = CommandLine.arguments.firstIndex(of: "--portrait"), idx + 1 < Comma
     for e in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 7, hairColor: 1, hairStyle: 2, eyeStyle: e, eyeColor: e)) } // all eyes + colours
     for n in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 8, hairColor: 1, hairStyle: 2, nose: n)) }    // all noses
     for m in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 3, hairColor: 1, hairStyle: 2, mouth: m)) }   // all mouths
+    for hs in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 4, hairColor: 1, hairStyle: 2, headShape: hs)) } // all head shapes
+    for bs in 0..<10 { variants.append(CharacterAppearance(skin: 2, shirt: 5, hairColor: 1, hairStyle: 2, bodyShape: bs)) } // all body shapes
     let W = cell * min(cols, variants.count)
     let H = cell * ((variants.count + cols - 1) / cols)
     let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: 0,

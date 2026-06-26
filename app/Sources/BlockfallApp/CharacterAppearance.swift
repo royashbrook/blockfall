@@ -15,6 +15,8 @@ struct CharacterAppearance: Equatable {
     var mouth: Int     = 0
     var eyeStyle: Int  = 0
     var eyeColor: Int  = 0
+    var headShape: Int = 0
+    var bodyShape: Int = 0
 
     // ---- preset tables (10+ each, all meant to look normal, not wacky) -----
     static let skinPalette: [SIMD3<Float>] = [
@@ -43,6 +45,28 @@ struct CharacterAppearance: Equatable {
                              "Smirk", "Laugh", "Tiny", "Big Smile", "Content"]
     static let eyeStyleNames = ["Round", "Oval", "Wide", "Big", "Small",
                                 "Sleepy", "Squint", "Happy", "Sparkle", "Starry"]
+    static let headShapeNames = ["Round", "Oval", "Wide", "Narrow", "Tall",
+                                 "Broad", "Long", "Small", "Big", "Soft"]
+    static let bodyShapeNames = ["Average", "Slim", "Broad", "Round", "Square",
+                                 "Tall", "Short", "Athletic", "Petite", "Sturdy"]
+    // (width-factor, height-factor) applied as a scale about the head centre, so the
+    // whole face (hair, eyes, nose, mouth) follows the silhouette. (#90)
+    static func headShapeFactors(_ i: Int) -> (CGFloat, CGFloat) {
+        let t: [(CGFloat, CGFloat)] = [
+            (1.00, 1.00), (0.92, 1.12), (1.16, 0.90), (0.82, 1.04), (0.90, 1.20),
+            (1.14, 0.95), (0.86, 1.16), (0.86, 0.86), (1.14, 1.14), (1.04, 1.02),
+        ]
+        return t[((i % t.count) + t.count) % t.count]
+    }
+    // (width-mul, height-mul, corner-mul) applied to the shoulders/torso. (#90)
+    static func bodyShapeFactors(_ i: Int) -> (CGFloat, CGFloat, CGFloat) {
+        let t: [(CGFloat, CGFloat, CGFloat)] = [
+            (1.00, 1.00, 1.0), (0.82, 1.00, 1.0), (1.20, 1.00, 0.9), (1.05, 1.05, 1.6),
+            (1.05, 1.00, 0.4), (0.95, 1.18, 1.0), (1.05, 0.82, 1.2), (1.12, 1.02, 0.7),
+            (0.85, 0.88, 1.1), (1.15, 1.05, 0.8),
+        ]
+        return t[((i % t.count) + t.count) % t.count]
+    }
     static let eyeColorPalette: [SIMD3<Float>] = [
         SIMD3(0.36, 0.24, 0.14), SIMD3(0.22, 0.46, 0.78), SIMD3(0.26, 0.56, 0.34),
         SIMD3(0.52, 0.42, 0.24), SIMD3(0.50, 0.52, 0.55), SIMD3(0.78, 0.56, 0.20),
@@ -59,7 +83,7 @@ struct CharacterAppearance: Equatable {
     var hairRGB:  SIMD3<Float> { CharacterAppearance.pick(CharacterAppearance.hairPalette,  hairColor) }
 
     // ---- cycling + randomize -----------------------------------------------
-    enum Trait { case skin, shirt, hairColor, hairStyle, nose, mouth, eyeStyle, eyeColor }
+    enum Trait { case skin, shirt, hairColor, hairStyle, nose, mouth, eyeStyle, eyeColor, headShape, bodyShape }
     static func count(_ t: Trait) -> Int {
         switch t {
         case .skin:      return skinPalette.count
@@ -70,6 +94,8 @@ struct CharacterAppearance: Equatable {
         case .mouth:     return mouthNames.count
         case .eyeStyle:  return eyeStyleNames.count
         case .eyeColor:  return eyeColorPalette.count
+        case .headShape: return headShapeNames.count
+        case .bodyShape: return bodyShapeNames.count
         }
     }
     mutating func cycle(_ t: Trait, by d: Int) {
@@ -84,6 +110,8 @@ struct CharacterAppearance: Equatable {
         case .mouth:     mouth     = step(mouth)
         case .eyeStyle:  eyeStyle  = step(eyeStyle)
         case .eyeColor:  eyeColor  = step(eyeColor)
+        case .headShape: headShape = step(headShape)
+        case .bodyShape: bodyShape = step(bodyShape)
         }
     }
     static func randomized() -> CharacterAppearance {
@@ -91,7 +119,8 @@ struct CharacterAppearance: Equatable {
             skin: Int.random(in: 0..<count(.skin)), shirt: Int.random(in: 0..<count(.shirt)),
             hairColor: Int.random(in: 0..<count(.hairColor)), hairStyle: Int.random(in: 0..<count(.hairStyle)),
             nose: Int.random(in: 0..<count(.nose)), mouth: Int.random(in: 0..<count(.mouth)),
-            eyeStyle: Int.random(in: 0..<count(.eyeStyle)), eyeColor: Int.random(in: 0..<count(.eyeColor)))
+            eyeStyle: Int.random(in: 0..<count(.eyeStyle)), eyeColor: Int.random(in: 0..<count(.eyeColor)),
+            headShape: Int.random(in: 0..<count(.headShape)), bodyShape: Int.random(in: 0..<count(.bodyShape)))
     }
     func valueName(_ t: Trait) -> String {
         switch t {
@@ -103,6 +132,8 @@ struct CharacterAppearance: Equatable {
         case .mouth:     return CharacterAppearance.mouthNames[mouth % CharacterAppearance.mouthNames.count]
         case .eyeStyle:  return CharacterAppearance.eyeStyleNames[eyeStyle % CharacterAppearance.eyeStyleNames.count]
         case .eyeColor:  return "Colour \(eyeColor + 1)"
+        case .headShape: return CharacterAppearance.headShapeNames[headShape % CharacterAppearance.headShapeNames.count]
+        case .bodyShape: return CharacterAppearance.bodyShapeNames[bodyShape % CharacterAppearance.bodyShapeNames.count]
         }
     }
 
@@ -118,6 +149,8 @@ struct CharacterAppearance: Equatable {
         if d.object(forKey: "charMouth")     != nil { a.mouth     = d.integer(forKey: "charMouth") }
         if d.object(forKey: "charEyeStyle")  != nil { a.eyeStyle  = d.integer(forKey: "charEyeStyle") }
         if d.object(forKey: "charEyeColor")  != nil { a.eyeColor  = d.integer(forKey: "charEyeColor") }
+        if d.object(forKey: "charHeadShape") != nil { a.headShape = d.integer(forKey: "charHeadShape") }
+        if d.object(forKey: "charBodyShape") != nil { a.bodyShape = d.integer(forKey: "charBodyShape") }
         return a
     }
     func save() {
@@ -126,6 +159,7 @@ struct CharacterAppearance: Equatable {
         d.set(hairColor, forKey: "charHairColor"); d.set(hairStyle, forKey: "charHairStyle")
         d.set(nose, forKey: "charNose");           d.set(mouth, forKey: "charMouth")
         d.set(eyeStyle, forKey: "charEyeStyle");   d.set(eyeColor, forKey: "charEyeColor")
+        d.set(headShape, forKey: "charHeadShape"); d.set(bodyShape, forKey: "charBodyShape")
     }
 
     // ---- 2D portrait (editor preview + headless verification) --------------
@@ -142,12 +176,20 @@ struct CharacterAppearance: Equatable {
 
         ctx.setFillColor(CGColor(red: 0.16, green: 0.17, blue: 0.20, alpha: 1)); ctx.fill(rect)
 
-        // Shirt / shoulders.
-        let shW = headR * 2.5, shH = rect.height * 0.34
+        // Shirt / shoulders — shaped by bodyShape (#90).
+        let (bwf, bhf, bcf) = CharacterAppearance.bodyShapeFactors(bodyShape)
+        let shW = headR * 2.5 * bwf, shH = rect.height * 0.34 * bhf
         let shRect = CGRect(x: cx - shW/2, y: rect.minY + rect.height * 0.05, width: shW, height: shH)
         ctx.setFillColor(cg(shirtC))
-        ctx.addPath(CGPath(roundedRect: shRect, cornerWidth: shW * 0.22, cornerHeight: shW * 0.22, transform: nil))
+        let shCorner = min(shW * 0.22 * bcf, min(shW, shH) / 2)
+        ctx.addPath(CGPath(roundedRect: shRect, cornerWidth: shCorner, cornerHeight: shCorner, transform: nil))
         ctx.fillPath()
+
+        // ---- head shape: scale the whole face about the head centre so the hair,
+        // eyes, nose and mouth all follow the silhouette (#90) ----
+        let (hwf, hhf) = CharacterAppearance.headShapeFactors(headShape)
+        ctx.saveGState()
+        ctx.translateBy(x: cx, y: headCY); ctx.scaleBy(x: hwf, y: hhf); ctx.translateBy(x: -cx, y: -headCY)
 
         // Head.
         ctx.setFillColor(cg(skinC)); ctx.fillEllipse(in: headRect)
@@ -316,6 +358,8 @@ struct CharacterAppearance: Equatable {
         case 9: curve(0.35, 0.18)                       // Content
         default: curve(0.50, 0.30)                      // Smile
         }
+
+        ctx.restoreGState()   // end head-shape transform (#90)
     }
 
     @discardableResult
