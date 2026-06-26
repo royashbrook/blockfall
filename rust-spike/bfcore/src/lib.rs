@@ -4,8 +4,10 @@
 //! module against the C++ engine. The app stays Swift/Metal; only the engine moves,
 //! behind the frozen C ABI (contract/engine_c_api.h), so it can swap in module by module.
 //!
-//! Ported so far: types, chunk (byte-parity with C++), inventory.
+//! Ported so far: types, chunk (byte-parity with C++), inventory, store, lighting.
 
 pub mod types;
 pub mod chunk;
 pub mod inventory;
+pub mod store;
+pub mod lighting;

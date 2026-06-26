@@ -7,7 +7,7 @@ pub const CHUNK_DIM: usize = 16;
 pub const CHUNK_VOL: usize = CHUNK_DIM * CHUNK_DIM * CHUNK_DIM; // 4096
 pub const REGION_CHUNKS: i32 = 8;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct ChunkCoord {
     pub x: i32,
     pub y: i32,
