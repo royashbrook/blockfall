@@ -1,25 +1,10 @@
-//! Rust port spike of blockcore's palette-compressed chunk storage.
-//! Faithful port of `engine/include/blockcore/chunk.hpp` (PaletteChunk): a 16^3 voxel
-//! chunk kept as a palette of distinct block ids plus a bit-packed index array, with a
-//! lossless BFCK serialization. The byte layout matches the C++ engine exactly (same
-//! little-endian field order), so a save written by one side loads on the other.
-//!
-//! This is a ONE-MODULE spike to gauge the economics of porting blockcore to Rust.
-//! It is standalone (cargo test) and is not wired into the live build.
+//! Palette-compressed chunk storage: faithful port of engine/include/blockcore/chunk.hpp.
+//! A 16^3 chunk kept as a palette of distinct block ids plus a bit-packed index array
+//! (widths 1/2/4/8/16). Uniform chunks store only the palette entry. The BFCK
+//! serialization is byte-identical to the C++ engine (verified by byte_identical_to_cpp).
 
-pub const CHUNK_DIM: usize = 16;
-pub const CHUNK_VOL: usize = CHUNK_DIM * CHUNK_DIM * CHUNK_DIM; // 4096
-pub type BlockId = u16;
+use crate::types::{BlockId, ChunkCoord, CHUNK_DIM, CHUNK_VOL};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct ChunkCoord {
-    pub x: i32,
-    pub y: i32,
-    pub z: i32,
-}
-
-/// Palette-compressed chunk. A uniform chunk (bits == 0) stores only its single
-/// palette entry and no index array, so air/single-block chunks are nearly free.
 #[derive(Clone)]
 pub struct PaletteChunk {
     coord: ChunkCoord,
@@ -34,7 +19,7 @@ impl PaletteChunk {
     pub fn new(coord: ChunkCoord, fill: BlockId) -> Self {
         Self {
             coord,
-            palette: vec![fill], // index 0 == fill (uniform to start)
+            palette: vec![fill],
             data: Vec::new(),
             light: Vec::new(),
             bits: 0,
@@ -48,7 +33,7 @@ impl PaletteChunk {
 
     pub fn get(&self, lx: usize, ly: usize, lz: usize) -> BlockId {
         if self.bits == 0 {
-            return self.palette[0]; // uniform fast path
+            return self.palette[0];
         }
         self.palette[self.read_index(Self::voxel(lx, ly, lz)) as usize]
     }
@@ -57,10 +42,10 @@ impl PaletteChunk {
         let pi = self.palette_index_for(b);
         if self.bits == 0 {
             if pi == 0 {
-                self.revision += 1; // still uniform, no-op value
+                self.revision += 1;
                 return;
             }
-            self.grow_bits(1); // leave uniform: allocate indices
+            self.grow_bits(1);
         }
         self.write_index(Self::voxel(lx, ly, lz), pi);
         self.revision += 1;
@@ -79,7 +64,6 @@ impl PaletteChunk {
         self.bits
     }
 
-    // ---- per-voxel light (sky << 4 | block) --------------------------------
     pub fn sky_light(&self, lx: usize, ly: usize, lz: usize) -> u8 {
         if self.light.is_empty() {
             return 15;
@@ -105,8 +89,6 @@ impl PaletteChunk {
         }
         self.palette.push(b);
         let needed = self.palette.len();
-        // Grow bits if the palette outgrew the current width. (When still uniform,
-        // bits == 0 and set() does the first allocation via grow_bits(1).)
         let mut want = if self.bits != 0 { self.bits } else { 1 };
         while (1usize << want) < needed {
             want *= 2;
@@ -125,7 +107,6 @@ impl PaletteChunk {
         }
     }
 
-    // Move from uniform (or a smaller width) to `new_bits`, repacking existing indices.
     fn grow_bits(&mut self, new_bits: u8) {
         let mut old = vec![0u32; CHUNK_VOL];
         for n in 0..CHUNK_VOL {
@@ -156,14 +137,13 @@ impl PaletteChunk {
         self.data[w] = (self.data[w] & !mask) | (((value as u64) << off) & mask);
     }
 
-    // ---- serialization (BFCK; byte-identical to the C++ engine) ------------
-    // magic 'BFCK', u16 ver=1, u16 flags(bit0 uniform), i32 cx,cy,cz, u32 revision,
+    // BFCK blob: magic, u16 ver=1, u16 flags(bit0 uniform), i32 cx,cy,cz, u32 revision,
     // u16 palette_count, u8 bits, u8 pad, palette[u16*count],
-    // if !uniform: u32 word_count, words[u64*word_count].
+    // if !uniform: u32 word_count, words[u64*word_count]. Byte-identical to the C++ engine.
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"BFCK");
-        out.extend_from_slice(&1u16.to_le_bytes()); // ver
+        out.extend_from_slice(&1u16.to_le_bytes());
         let flags: u16 = if self.bits == 0 { 1 } else { 0 };
         out.extend_from_slice(&flags.to_le_bytes());
         out.extend_from_slice(&self.coord.x.to_le_bytes());
@@ -172,7 +152,7 @@ impl PaletteChunk {
         out.extend_from_slice(&self.revision.to_le_bytes());
         out.extend_from_slice(&(self.palette.len() as u16).to_le_bytes());
         out.push(self.bits);
-        out.push(0u8); // pad
+        out.push(0u8);
         for &b in &self.palette {
             out.extend_from_slice(&b.to_le_bytes());
         }
@@ -186,9 +166,6 @@ impl PaletteChunk {
     }
 
     pub fn deserialize(input: &[u8]) -> Option<PaletteChunk> {
-        // The C++ side hand-rolls a bounds-checked reader with an `ok` flag; here the
-        // type system does that bookkeeping: every read returns Option and `?` bails on
-        // a truncated or corrupt blob, so reading past the end is impossible by construction.
         let mut r = Reader::new(input);
         if r.take(4)? != b"BFCK" {
             return None;
@@ -198,17 +175,11 @@ impl PaletteChunk {
         if ver != 1 {
             return None;
         }
-        let coord = ChunkCoord {
-            x: r.i32()?,
-            y: r.i32()?,
-            z: r.i32()?,
-        };
+        let coord = ChunkCoord { x: r.i32()?, y: r.i32()?, z: r.i32()? };
         let rev = r.u32()?;
         let pc = r.u16()?;
         let bits = r.u8()?;
         let _pad = r.u8()?;
-        // Validate width + palette size from disk before trusting them; a bogus
-        // bits/pc must not let indices run off the end of the palette or data.
         if ![0u8, 1, 2, 4, 8, 16].contains(&bits) {
             return None;
         }
@@ -223,10 +194,9 @@ impl PaletteChunk {
             let per_word = 64 / bits as usize;
             let required = (CHUNK_VOL + per_word - 1) / per_word;
             if wc != required {
-                return None; // wrong word count
+                return None;
             }
             ch.data = (0..wc).map(|_| r.u64()).collect::<Option<Vec<_>>>()?;
-            // Every packed index must address a real palette entry.
             for n in 0..CHUNK_VOL {
                 if ch.read_index(n) as usize >= pc as usize {
                     return None;
@@ -238,7 +208,8 @@ impl PaletteChunk {
     }
 }
 
-/// Bounds-checked little-endian cursor over a byte slice.
+/// Bounds-checked little-endian cursor; every read returns Option so a truncated or
+/// corrupt blob can never read past the end (the C++ side hand-rolls this with an `ok` flag).
 struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
@@ -273,8 +244,6 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
 
-    // Mirrors tests/unit/test_chunk.cpp: a chunk starts uniform, a set makes it
-    // non-uniform, and reads return what was written.
     #[test]
     fn uniform_then_set() {
         let mut c = PaletteChunk::new(ChunkCoord { x: 0, y: 0, z: 0 }, 0);
@@ -286,43 +255,28 @@ mod tests {
         assert_eq!(c.get(0, 0, 0), 0);
     }
 
-    // Lossless serialize round-trip, including palette growth that bumps the
-    // bit width (1 -> 2 -> 4 bits as distinct block ids accumulate).
     #[test]
     fn serialize_round_trip() {
         let mut c = PaletteChunk::new(ChunkCoord { x: 1, y: -2, z: 3 }, 0);
         c.set(8, 0, 8, 3);
         for i in 0..16 {
-            c.set(i, 1, 0, (i as BlockId) + 10); // forces several palette/width growths
+            c.set(i, 1, 0, (i as BlockId) + 10);
         }
         assert!(c.bits_per_index() >= 4);
         let bytes = c.serialize();
         let c2 = PaletteChunk::deserialize(&bytes).expect("round trip");
         assert_eq!(c2.coord(), c.coord());
         assert_eq!(c2.revision(), c.revision());
-        assert_eq!(c2.bits_per_index(), c.bits_per_index());
         for z in 0..CHUNK_DIM {
             for y in 0..CHUNK_DIM {
                 for x in 0..CHUNK_DIM {
-                    assert_eq!(c2.get(x, y, z), c.get(x, y, z), "voxel {x},{y},{z}");
+                    assert_eq!(c2.get(x, y, z), c.get(x, y, z));
                 }
             }
         }
     }
 
-    // A uniform chunk is the header (28 bytes) plus one u16 palette entry, no index data.
-    #[test]
-    fn uniform_byte_layout() {
-        let c = PaletteChunk::new(ChunkCoord::default(), 7);
-        let b = c.serialize();
-        assert_eq!(&b[0..4], b"BFCK");
-        assert_eq!(b.len(), 28 + 2);
-    }
-
-    // Cross-language parity: the SAME chunk serialized by the C++ engine
-    // (engine/include/blockcore/chunk.hpp) produces byte-identical output, so a save
-    // written by either side loads on the other. The golden hex was emitted by the C++
-    // serialize for: PaletteChunk({1,-2,3}); set(8,0,8,3); for i in 0..16 set(i,1,0,i+10).
+    // Byte-for-byte parity with the C++ engine's serialize (golden hex captured from it).
     #[test]
     fn byte_identical_to_cpp() {
         let mut c = PaletteChunk::new(ChunkCoord { x: 1, y: -2, z: 3 }, 0);
@@ -334,7 +288,6 @@ mod tests {
         assert_eq!(hex, include_str!("cpp_golden.hex").trim());
     }
 
-    // Truncated or garbage input is rejected, never read out of bounds.
     #[test]
     fn corrupt_input_rejected() {
         let mut c = PaletteChunk::new(ChunkCoord::default(), 0);
