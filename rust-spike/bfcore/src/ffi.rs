@@ -6,8 +6,10 @@
 //! sim behind the same POD ABI the C++ core exposes, so the Swift/Metal app can
 //! link `libbfcore.a` in place of `libblockcore.a` with no source changes.
 //!
-//! Networking (co-op) is intentionally stubbed out (returns BF_ERR_NET): the
-//! single-player path is the swap-in target; the UDP transport is a later port.
+//! Networking (co-op) is implemented: the reliable-UDP transport lives in
+//! `net.rs` and the replication session in `session.rs`. The `bf_net_*` calls
+//! create/wire/tear them down on the Engine (see the NETWORK section below) and
+//! `bf_frame_begin` pumps both each frame.
 //!
 //! ## Ownership and the self-reference problem
 //!
@@ -104,7 +106,25 @@ struct Engine {
     prop_instances: Vec<bf_prop_instance>,
     frame: bf_render_frame,
     borrowed: bool,
+
+    // Co-op networking (Track H). Both are None in single-player. See bf_net_*.
+    // The transport owns the socket + per-peer reliability; the session owns the
+    // replication protocol. They are decoupled via two shared queues so neither
+    // closure has to capture the other (or the World):
+    //   - session.sender pushes outgoing payloads into `net_outbox`; the frame
+    //     loop drains it into transport.send.
+    //   - transport.recv_cb pushes delivered payloads into `net_inbox`; the frame
+    //     loop drains it into session.on_payload(&mut world).
+    // This keeps the session/World borrow purely call-scoped (no self-reference)
+    // with zero unsafe in the net seam.
+    transport: Option<crate::net::UdpTransport>,
+    session: Option<crate::session::NetSession>,
+    net_outbox: NetQueue,
+    net_inbox: NetQueue,
 }
+
+/// A shared queue of session-level payloads: (peer_id, channel, bytes).
+type NetQueue = std::rc::Rc<RefCell<Vec<(u16, crate::net::NetChannel, Vec<u8>)>>>;
 
 impl Drop for Engine {
     fn drop(&mut self) {
@@ -199,6 +219,10 @@ pub unsafe extern "C" fn bf_engine_create(
         prop_instances: Vec::new(),
         frame: empty_frame(),
         borrowed: false,
+        transport: None,
+        session: None,
+        net_outbox: std::rc::Rc::new(RefCell::new(Vec::new())),
+        net_inbox: std::rc::Rc::new(RefCell::new(Vec::new())),
     });
     let raw = Box::into_raw(engine);
 
@@ -359,7 +383,44 @@ pub unsafe extern "C" fn bf_frame_begin(
     if e.world_ready {
         e.world.update(&input, real_dt);
     }
-    // NET: transport/session are not ported (single-player swap-in). No-op.
+
+    // NET: pump the transport + session each frame (mirrors the C++
+    // `transport->poll(); session->update(dt)`). The two are decoupled via the
+    // shared inbox/outbox queues (see the Engine struct docs):
+    //   1. poll() drains sockets -> net_inbox (via the recv_cb).
+    //   2. drain net_inbox -> session.on_payload(&mut world).
+    //   3. session.update() drains local edits + emits snapshots -> net_outbox.
+    //   4. drain net_outbox -> transport.send (which flushes to the socket).
+    if e.transport.is_some() {
+        // Borrow the transport only for the poll, then release it so we can also
+        // touch e.session/e.world below (disjoint borrows of the Engine).
+        if let Some(transport) = e.transport.as_mut() {
+            transport.poll();
+        }
+
+        // Deliver received payloads to the session (needs &mut world).
+        let inbound: Vec<(u16, crate::net::NetChannel, Vec<u8>)> = {
+            let mut ib = e.net_inbox.borrow_mut();
+            std::mem::take(&mut *ib)
+        };
+        if let Some(session) = e.session.as_mut() {
+            for (peer, ch, payload) in inbound {
+                session.on_payload(peer, ch, &payload, &mut e.world);
+            }
+            session.update(real_dt, &mut e.world);
+        }
+
+        // Drain anything the session queued (edits, snapshots, welcomes) out.
+        let outbound: Vec<(u16, crate::net::NetChannel, Vec<u8>)> = {
+            let mut ob = e.net_outbox.borrow_mut();
+            std::mem::take(&mut *ob)
+        };
+        if let Some(transport) = e.transport.as_mut() {
+            for (peer, ch, payload) in outbound {
+                transport.send(ch, &payload, peer as u32);
+            }
+        }
+    }
     bf_result::BF_OK
 }
 
@@ -545,41 +606,124 @@ pub unsafe extern "C" fn bf_set_event_callback(
 }
 
 // ---------------------------------------------------------------------------
-// 7. NETWORK (co-op) — stubbed for the single-player swap-in.
+// 7. NETWORK (co-op) — reliable-UDP transport + replication session (Track H).
+//
+// Mirrors engine_stub.cpp's wire_net + bf_net_*. The transport and session are
+// created on the Engine as Options; they are wired together through the Engine's
+// shared net_inbox/net_outbox queues (rather than C++'s mutually-capturing
+// lambdas) so neither closure references the World or the other half:
+//   - transport.recv_cb pushes (peer, ch, payload) into net_inbox.
+//   - session.sender    pushes (peer, ch, payload) into net_outbox.
+// bf_frame_begin pumps both and bridges the queues across the World borrow.
 // ---------------------------------------------------------------------------
 
-#[no_mangle]
-pub unsafe extern "C" fn bf_net_host_start(e: bf_engine, _port: u16) -> bf_result {
-    if e.is_null() {
-        return bf_result::BF_ERR_BAD_ARG;
+/// Build the transport + session for `role`, wire the recv/sender queues, and
+/// install the World edit callback. Leaves start_host/connect to the caller.
+fn wire_net(e: &mut Engine, role: crate::session::NetRole) {
+    use crate::net::{NetChannel, UdpTransport};
+    use crate::session::NetSession;
+
+    let mut transport = UdpTransport::new();
+    let inbox = e.net_inbox.clone();
+    transport.set_receive_callback(Box::new(move |peer: u32, ch: NetChannel, payload: &[u8]| {
+        inbox.borrow_mut().push((peer as u16, ch, payload.to_vec()));
+    }));
+
+    let mut session = NetSession::new(role);
+    let outbox = e.net_outbox.clone();
+    session.set_sender(Box::new(move |peer: u16, ch: NetChannel, payload: &[u8]| {
+        outbox.borrow_mut().push((peer, ch, payload.to_vec()));
+    }));
+    // Funnel local edits (NOT remote ones) into the session's replication queue.
+    session.install_edit_callback(&mut e.world);
+
+    e.transport = Some(transport);
+    e.session = Some(session);
+}
+
+/// Tear down any active co-op session: stop the transport, drop both halves,
+/// clear the queues, and remove the World edit callback so single-player edits
+/// no longer queue. Mirrors bf_net_stop in engine_stub.cpp.
+fn teardown_net(e: &mut Engine) {
+    if let Some(t) = e.transport.as_mut() {
+        t.stop();
     }
-    // Co-op transport is a later port. Single-player only for now.
-    bf_result::BF_ERR_NET
+    e.session = None;
+    e.transport = None;
+    e.net_inbox.borrow_mut().clear();
+    e.net_outbox.borrow_mut().clear();
+    // Drop the edit callback the session installed (no closure, no replication).
+    e.world.clear_edit_callback();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn bf_net_host_start(e: bf_engine, port: u16) -> bf_result {
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => return bf_result::BF_ERR_BAD_ARG,
+    };
+    wire_net(e, crate::session::NetRole::Host);
+    let ok = e.transport.as_mut().unwrap().start_host(port);
+    if !ok {
+        teardown_net(e);
+        set_err("host bind failed");
+        return bf_result::BF_ERR_NET;
+    }
+    bf_result::BF_OK
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn bf_net_client_connect(
     e: bf_engine,
     host: *const c_char,
-    _port: u16,
+    port: u16,
 ) -> bf_result {
-    if e.is_null() || host.is_null() {
+    if host.is_null() {
         return bf_result::BF_ERR_BAD_ARG;
     }
-    bf_result::BF_ERR_NET
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn bf_net_stop(e: bf_engine) -> bf_result {
-    if e.is_null() {
-        return bf_result::BF_ERR_BAD_ARG;
+    let host_str = cstr_or(host, "");
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => return bf_result::BF_ERR_BAD_ARG,
+    };
+    wire_net(e, crate::session::NetRole::Client);
+    let ok = e.transport.as_mut().unwrap().connect(&host_str, port);
+    if !ok {
+        teardown_net(e);
+        set_err("client connect failed");
+        return bf_result::BF_ERR_NET;
+    }
+    // Host is peer 1; sends HELLO -> WELCOME(seed). The session sender queues the
+    // HELLO into net_outbox; flush it through the transport right away so the
+    // handshake starts without waiting for the first frame.
+    e.session.as_mut().unwrap().on_peer_join(1);
+    let outbound: Vec<(u16, crate::net::NetChannel, Vec<u8>)> = {
+        let mut ob = e.net_outbox.borrow_mut();
+        std::mem::take(&mut *ob)
+    };
+    let transport = e.transport.as_mut().unwrap();
+    for (peer, ch, payload) in outbound {
+        transport.send(ch, &payload, peer as u32);
     }
     bf_result::BF_OK
 }
 
 #[no_mangle]
-pub extern "C" fn bf_net_peer_count(_e: bf_engine) -> u32 {
-    0
+pub unsafe extern "C" fn bf_net_stop(e: bf_engine) -> bf_result {
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => return bf_result::BF_ERR_BAD_ARG,
+    };
+    teardown_net(e);
+    bf_result::BF_OK
+}
+
+#[no_mangle]
+pub extern "C" fn bf_net_peer_count(e: bf_engine) -> u32 {
+    match engine_ref(e) {
+        Some(e) => e.transport.as_ref().map(|t| t.peer_count()).unwrap_or(0),
+        None => 0,
+    }
 }
 
 #[no_mangle]

@@ -483,6 +483,10 @@ impl<'c> World<'c> {
     pub fn set_edit_callback(&mut self, cb: EditCb) {
         self.edit_cb = Some(cb);
     }
+    /// Remove the local-edit callback (co-op teardown: stop replicating edits).
+    pub fn clear_edit_callback(&mut self) {
+        self.edit_cb = None;
+    }
     pub fn apply_remote_edit(&mut self, w: IVec3, b: BlockId) {
         self.set_block_remote(w, b, true);
     }

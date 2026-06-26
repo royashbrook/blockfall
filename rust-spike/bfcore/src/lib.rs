@@ -14,4 +14,6 @@ pub mod worldgen;
 pub mod mesher;
 pub mod abi;
 pub mod world;
+pub mod net;
+pub mod session;
 pub mod ffi;
