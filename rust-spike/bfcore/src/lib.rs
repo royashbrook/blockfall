@@ -13,3 +13,4 @@ pub mod lighting;
 pub mod worldgen;
 pub mod mesher;
 pub mod abi;
+pub mod world;

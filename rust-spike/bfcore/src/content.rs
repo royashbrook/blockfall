@@ -18,7 +18,7 @@ use std::path::Path;
 use serde_json::Value;
 
 // Shared value types come from the crate's types module (BlockId/ItemId = u16).
-use crate::types::{BlockId, ItemId};
+use crate::types::{BlockId, ItemId, ItemRegistry};
 
 // ---------------------------------------------------------------------------
 // BlockDef. Mirrors bf::BlockDef (contract/blockcore_interfaces.hpp).
@@ -578,6 +578,15 @@ impl ContentRegistry {
     }
 
     // ---- Direct typed accessors -------------------------------------------
+    /// Max stack for an item id, or 64 when unknown (matches the C++ default the
+    /// Inventory uses when the registry has no override). World wires its Inventory
+    /// to this so per-item stack limits come straight from content.
+    pub fn item_max_stack(&self, item: ItemId) -> u16 {
+        match self.item_by_id(item) {
+            Some(d) if d.max_stack > 0 => d.max_stack,
+            _ => 64,
+        }
+    }
     pub fn block_by_id(&self, id: BlockId) -> Option<&BlockDef> {
         self.block_id_map.get(&(id as u32)).map(|&i| &self.blocks[i])
     }
@@ -625,6 +634,14 @@ impl ContentRegistry {
             }
         }
         None
+    }
+}
+
+/// So an Inventory can borrow content for its per-item stack limits (the C++
+/// Inventory holds an IItemRegistry* for exactly this).
+impl ItemRegistry for ContentRegistry {
+    fn max_stack(&self, item: ItemId) -> u16 {
+        self.item_max_stack(item)
     }
 }
 
