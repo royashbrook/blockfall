@@ -27,6 +27,12 @@ const STRUCT_KEEP: i32 = 11; // a small keep / castle (walls + a few rooms)
 const STRUCT_RUIN: i32 = 12; // a ruined keep / tower, broken walls, holds baddies
 const STRUCT_CITY: i32 = 13; // a larger settlement cluster (town / city)
 
+// Share of would-be villages (low byte 0..256) that grow into a city. Cities are the
+// only settlement that hosts the full profession chain, so they need to be findable in
+// normal exploration; settlements are already a small slice of all structures, so this
+// only lifts cities to "reliably encountered", not "everywhere".
+const STRUCT_CITY_UPGRADE_THRESH: u64 = 150;
+
 // Largest structure footprint reaches out from its anchor by this many blocks in
 // X and Z. The placement loop scans every structure cell within this reach of a
 // chunk so a structure spanning a chunk border is stamped identically into both
@@ -196,13 +202,19 @@ fn struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
         _ => STRUCT_CAIRN,
     };
 
-    // City clustering: a minority of would-be villages grow into a larger town /
-    // city (more buildings, a denser layout with a center and simple paths). Most
-    // settlements stay small villages. The roll is a stable per-cell hash slice so
-    // the same cell is always a city or always a village for a given seed. The city's
-    // buildings (huts / cabins) each carry their own foundation fill, so a city also
-    // conforms to sloped ground without floating.
-    let stype = if stype == STRUCT_VILLAGE && ((h2s >> 56) & 0xFF) < 70 {
+    // City clustering: a good share of would-be villages grow into a larger town /
+    // city (more buildings, a denser layout with a center and simple paths). The roll
+    // is a stable per-cell hash slice so the same cell is always a city or always a
+    // village for a given seed. The city's buildings (huts / cabins) each carry their
+    // own foundation fill, so a city also conforms to sloped ground without floating.
+    //
+    // Settlements (village + city) are themselves a small slice of all structures, so
+    // a low upgrade rate left cities far too rare to stumble onto in normal play (the
+    // player found plenty of structures but no city). Raising the cutoff to 150/256
+    // (~59% of would-be villages) roughly triples the city count without carpeting the
+    // world: cities still trail behind the many big structures and the remaining
+    // villages, so finding one stays a moment. See STRUCT_CITY_UPGRADE_THRESH.
+    let stype = if stype == STRUCT_VILLAGE && ((h2s >> 56) & 0xFF) < STRUCT_CITY_UPGRADE_THRESH {
         STRUCT_CITY
     } else {
         stype

@@ -1120,6 +1120,14 @@ pub fn worldgen_structure_marker_at(wx: i32, wz: i32, seed: u64) -> Option<i32> 
     None
 }
 
+/// True if a structure type id is a city (the only settlement that hosts the full
+/// villager profession chain). The settlement vs profession coupling lives here so the
+/// worldgen city upgrade is the single source of truth: world.rs asks this instead of
+/// hardcoding the STRUCT_CITY id.
+pub fn worldgen_is_city(typ: i32) -> bool {
+    typ == STRUCT_CITY
+}
+
 /// Returns (type, anchor_x, anchor_z, anchor_y). type==0 (STRUCT_NONE) leaves the
 /// other fields unspecified (caller should ignore them), matching the C++ contract
 /// where the out-params are untouched.
@@ -1211,6 +1219,53 @@ mod worldgen_tests {
             ChunkCoord { x: 10, y: 2, z: 7 },
         ] {
             assert_eq!(g1.content_hash(c), g2.content_hash(c), "seed {SEED} chunk {c:?}");
+        }
+    }
+
+    // Cities must be findable. A player who explores a reasonable area should reliably
+    // run into at least one city, and cities should turn up at a healthy share of all
+    // settlements (city + village) without carpeting the world. Scanning a wide area for
+    // several seeds, every seed must yield a city within a modest distance of origin and
+    // cities must be a substantial fraction of settlements (the #108 fix made them too
+    // rare). Guards against regressing STRUCT_CITY_UPGRADE_THRESH back down.
+    #[test]
+    fn cities_are_findable() {
+        for seed in [11u64, 1, 42, 7, 1234] {
+            let (mut cities, mut villages) = (0i64, 0i64);
+            let mut nearest_city2: i64 = i64::MAX;
+            let r = 200; // structure cells; 200*64 = 12800 blocks half-extent each way
+            for scz in -r..=r {
+                for scx in -r..=r {
+                    let sd = struct_for_cell(scx, scz, seed);
+                    if !sd.present {
+                        continue;
+                    }
+                    if sd.typ == STRUCT_CITY {
+                        cities += 1;
+                        let d2 = (sd.anchor_wx as i64).pow(2) + (sd.anchor_wz as i64).pow(2);
+                        if d2 < nearest_city2 {
+                            nearest_city2 = d2;
+                        }
+                    } else if sd.typ == STRUCT_VILLAGE {
+                        villages += 1;
+                    }
+                }
+            }
+            let settlements = cities + villages;
+            assert!(cities > 0, "seed {seed}: no cities found in scan");
+            // A city should sit within a few thousand blocks of origin for every seed.
+            let nearest = (nearest_city2 as f64).sqrt();
+            assert!(
+                nearest < 4000.0,
+                "seed {seed}: nearest city {nearest:.0} blocks from origin is too far"
+            );
+            // Cities should be a meaningful share of settlements (target ~55-60% per the
+            // tuned threshold), so a wandering player meets cities, not only villages.
+            let share = cities as f64 / settlements as f64;
+            assert!(
+                share > 0.4,
+                "seed {seed}: cities only {share:.2} of settlements ({cities}/{settlements}), too rare"
+            );
         }
     }
 

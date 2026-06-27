@@ -968,6 +968,87 @@ fn ruin_danger_site_is_clearable() {
     assert_eq!(w.debug_item_count(brick), brick_after, "ruin reward fires only once");
 }
 
+// ---------------------------------------------------------------------------
+// Villager profession chain gating (never strand the player).
+//
+// npc_id roster: 1 Elder, 2 Builder, 3 Herbalist (social), and the tool chain
+// 4 Woodcutter (wood) -> 5 Stone Mason (stone) -> 6 Blacksmith (iron). A higher
+// chain tier must never appear without all lower tiers present in the same
+// settlement: a city hosts the full chain, a village gets an ordered prefix.
+// ---------------------------------------------------------------------------
+
+const WOOD: i32 = 4;
+const STONE: i32 = 5;
+const IRON: i32 = 6;
+
+// Returns the chain tiers (4/5/6) present among the first `size` villagers of a
+// settlement, in the order the policy assigns them.
+fn chain_tiers(is_city: bool, size: i32) -> Vec<i32> {
+    let mut out = Vec::new();
+    for i in 0..size {
+        let role = World::debug_villager_npc_for_index(is_city, i);
+        if role == WOOD || role == STONE || role == IRON {
+            out.push(role);
+        }
+    }
+    out
+}
+
+// A city that has reached the villager cap must contain the FULL chain (wood, stone,
+// iron) and front-load it so progression can be completed early.
+#[test]
+fn city_hosts_full_profession_chain() {
+    let tiers = chain_tiers(true, 6);
+    assert!(tiers.contains(&WOOD), "city missing Woodcutter (wood): {tiers:?}");
+    assert!(tiers.contains(&STONE), "city missing Stone Mason (stone): {tiers:?}");
+    assert!(tiers.contains(&IRON), "city missing Blacksmith (iron): {tiers:?}");
+    let first_three = chain_tiers(true, 3);
+    assert_eq!(first_three, vec![WOOD, STONE, IRON], "city should front-load the chain");
+}
+
+// A village of ANY size must yield a chain that is a strict bottom-up prefix: stone
+// never appears without wood, iron never without stone. Checked at every size from a
+// lone hamlet up to past the cap.
+#[test]
+fn village_professions_are_a_chain_prefix() {
+    for size in 1..=8 {
+        let tiers = chain_tiers(false, size);
+        // The SET of chain tiers present must be a bottom-up prefix of [wood, stone, iron]:
+        // stone present implies wood present, iron present implies wood and stone present.
+        let have_wood = tiers.contains(&WOOD);
+        let have_stone = tiers.contains(&STONE);
+        let have_iron = tiers.contains(&IRON);
+        if have_stone {
+            assert!(have_wood, "village size {size}: Stone Mason without Woodcutter: {tiers:?}");
+        }
+        if have_iron {
+            assert!(
+                have_wood && have_stone,
+                "village size {size}: Blacksmith without wood+stone prerequisites: {tiers:?}"
+            );
+        }
+        // The first appearance of each tier must respect chain order: wood is introduced
+        // before stone, stone before iron (a higher tier never debuts first). Repeats of a
+        // lower tier afterwards are fine and do not strand the player.
+        let first_of = |tier: i32| tiers.iter().position(|&t| t == tier);
+        if let (Some(w), Some(s)) = (first_of(WOOD), first_of(STONE)) {
+            assert!(w < s, "village size {size}: Stone debuts before Wood: {tiers:?}");
+        }
+        if let (Some(s), Some(ir)) = (first_of(STONE), first_of(IRON)) {
+            assert!(s < ir, "village size {size}: Iron debuts before Stone: {tiers:?}");
+        }
+    }
+    // A lone village (one villager) must be a Woodcutter, never a stranded high tier.
+    assert_eq!(
+        World::debug_villager_npc_for_index(false, 0),
+        WOOD,
+        "a lone village villager must be a Woodcutter (bottom of the chain)"
+    );
+    // A two-villager village must not yet contain stone or iron (only wood + a social).
+    let two = chain_tiers(false, 2);
+    assert_eq!(two, vec![WOOD], "a 2-villager village has only the wood tier of the chain");
+}
+
 // read a NUL-terminated fixed byte buffer as a String slice.
 fn cstr_str(buf: &[u8]) -> String {
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());

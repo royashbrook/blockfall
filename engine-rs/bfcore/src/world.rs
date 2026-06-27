@@ -416,7 +416,6 @@ pub struct World<'c> {
     // not immediately respawn. See RuinSite / maintain_danger_sites.
     ruin_sites: HashMap<(i32, i32), RuinSite>,
     regrow_timer: f32,
-    villager_npc_next: i32,
     rng: u32,
     regions_restored: i32,
     creatures_befriended: i32,
@@ -514,7 +513,6 @@ impl<'c> World<'c> {
             danger_timer: 0.0,
             ruin_sites: HashMap::new(),
             regrow_timer: 3.0,
-            villager_npc_next: 0,
             rng: 0x1234567,
             regions_restored: 0,
             creatures_befriended: 0,
@@ -2581,6 +2579,37 @@ impl<'c> World<'c> {
         }
     }
 
+    // Profession (npc_id) for the villager at `idx` within a single settlement.
+    //
+    // The trade roles form a tool chain: Woodcutter (4, wood) -> Stone Mason (5, stone)
+    // -> Blacksmith (6, iron). A higher tier is useless without the ones below it, so a
+    // small village must never hand the player a stranded high tier. Roles 1..=3 (Elder,
+    // Builder, Herbalist) are social / quest givers and carry no chain requirement.
+    //
+    // Villages fill from the bottom of the chain up, interleaving social roles so a
+    // higher trade tier only appears at a later index than every lower tier. The result
+    // is always a chain prefix: a 1-villager hamlet has only a Woodcutter, and stone /
+    // iron arrive only once the settlement is large enough to have the tiers below them.
+    //
+    // Cities are the place to complete progression, so they front-load the full chain
+    // (wood, stone, iron in the first three slots); a city reliably reaches the cap, so
+    // all three tiers are guaranteed present.
+    //
+    // Both orders are pure functions of (is_city, idx): deterministic, no RNG, so the
+    // same villager index in the same settlement always gets the same role.
+    fn villager_npc_for_index(is_city: bool, idx: i32) -> i32 {
+        // npc_id roster: 1 Elder, 2 Builder, 3 Herbalist, 4 Woodcutter (wood),
+        // 5 Stone Mason (stone), 6 Blacksmith (iron).
+        let city_order = [4, 5, 6, 1, 2, 3];
+        let village_order = [4, 1, 5, 2, 6, 3];
+        let order = if is_city { &city_order } else { &village_order };
+        let i = if idx < 0 { 0 } else { idx as usize };
+        // Beyond the roster (a settlement bigger than 6 villagers) we cycle, which only
+        // ever repeats roles whose prerequisites are already present, so the prefix
+        // property still holds.
+        order[i % order.len()]
+    }
+
     fn spawn_villager_at(&mut self, ax: i32, ay: i32, az: i32, budget: i32) -> i32 {
         let pool: Vec<CreatureDefX> = match self.extra {
             Some(x) => x.creatures().iter().filter(|d| d.model == 20).cloned().collect(),
@@ -2589,6 +2618,20 @@ impl<'c> World<'c> {
         if pool.is_empty() || budget <= 0 {
             return 0;
         }
+        // Is this settlement a city? Cities host the full profession chain; villages get
+        // an ordered chain prefix. The structure type comes straight from worldgen so the
+        // worldgen city upgrade and the profession assignment stay in sync (one source of
+        // truth for "city vs village").
+        let (styp, _sx, _sz, _sy) = worldgen::worldgen_structure_near(ax, az, self.seed);
+        let is_city = worldgen::worldgen_is_city(styp);
+        // Index of the next villager within THIS settlement: count the ones already
+        // anchored at this home. Spawning is incremental, so this keeps the per-settlement
+        // role sequence stable as the village fills up over time.
+        let mut idx_in_settlement = self
+            .creatures
+            .iter()
+            .filter(|c| c.model == 20 && c.home_x == ax && c.home_z == az)
+            .count() as i32;
         let n = budget.min(1 + if self.rand01() < 0.5 { 1 } else { 0 });
         let mut made = 0;
         for _ in 0..n {
@@ -2607,8 +2650,8 @@ impl<'c> World<'c> {
             c.pos = V3::new(ox, gy as f32, oz);
             c.yaw = self.rand01() * 6.2831853;
             c.model = d.model;
-            c.npc_id = (self.villager_npc_next % 6) + 1;
-            self.villager_npc_next += 1;
+            c.npc_id = Self::villager_npc_for_index(is_city, idx_in_settlement);
+            idx_in_settlement += 1;
             c.home_x = ax;
             c.home_z = az;
             c.name = d.name.clone();
@@ -4437,6 +4480,12 @@ impl<'c> World<'c> {
     }
     pub fn debug_villager_count(&self) -> i32 {
         self.creatures.iter().filter(|c| c.model == 20).count() as i32
+    }
+    // Exposes the pure profession-assignment policy so tests can verify the chain rules
+    // (city = full chain, village = ordered prefix) without driving a full settlement
+    // spawn. Returns the npc_id role for the villager at `idx` within the settlement.
+    pub fn debug_villager_npc_for_index(is_city: bool, idx: i32) -> i32 {
+        Self::villager_npc_for_index(is_city, idx)
     }
     pub fn debug_boss_count(&self) -> i32 {
         self.creatures.iter().filter(|c| c.is_boss).count() as i32
