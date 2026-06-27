@@ -1400,3 +1400,550 @@ func runShadowPosProbe(strict: Bool = false) -> Bool {
     }
     return true
 }
+
+// ============================================================================
+// --groundnightprobe : the NIGHT, VIEW-DIRECTION-dependent GROUND wash (#117).
+//
+// The player's confirmed symptom: at NIGHT the GROUND turns a pale/washed colour
+// depending on camera YAW. Facing N or S (perpendicular to the sun's E/W rise/set
+// axis) the ground reads its correct dark night colour; facing E or W (along the
+// sun azimuth axis) it washes pale. God rays OFF, soft shadows OFF, weather-agnostic.
+//
+// WHY THE EARLIER ATTEMPTS FAILED and this one works:
+//   - --shot renders in a SEPARATE process each call, streaming a DIFFERENT patch of
+//     world (async streaming is non-deterministic across processes), so yaw-0 vs yaw-90
+//     compared TWO different scenes. Invalid.
+//   - the last probe used a SYNTHETIC FLAT PLANE, which has no per-face block normals /
+//     relief / real materials, so the view-dependent term never fired.
+//
+// This probe is SINGLE-PROCESS and uses the REAL ENGINE TERRAIN: it boots the engine,
+// streams a fixed-seed region fully in, fixes the camera over that terrain, then renders
+// the SAME ground at several yaws (0=N, 10, 45, 90=E, 180=S, 270=W) at NIGHT, all in the
+// one process, and measures the LOWER-HALF (ground) mean luma per yaw. The terrain is
+// byte-identical across yaws, so any luma spread is purely the view-direction term.
+//
+// Bisect support (Step 2): GNP_NULL=<name> neutralises ONE fmain/sky term in the compiled
+// shader before the sweep, so removing the culprit collapses the E/W ground luma to N/S.
+//   names: relief | fog | drained | bump | detail | skyterrain | none
+// Sun-azimuth cross-check (Step 3): GNP_SUN_AXIS=z rotates the night sun's azimuth 90°
+// (default x = sun rises/sets along world X); the pale directions must rotate with it.
+//
+// strict == true turns it into the GREEN/RED regression gate wired into check.sh: it
+// FAILS if the night ground luma spread across yaw exceeds a small tolerance.
+// ============================================================================
+func runGroundNightProbe(strict: Bool = false) -> Bool {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        print("SKIP: ground-night probe (no Metal device)"); return true
+    }
+    let queue = device.makeCommandQueue()!
+    let registry = BufferRegistry(device: device)
+
+    // ---- Optional single-term neutralisation for the bisect (Step 2) -------
+    // We edit the shader SOURCE (not any ABI struct) so the elimination touches exactly
+    // one term and nothing else. Each replacement is an exact, unique substring of fmain.
+    var src = Renderer.shaderSource
+    let nullTerm = ProcessInfo.processInfo.environment["GNP_NULL"] ?? "none"
+    func neutralize(_ find: String, _ replace: String, _ label: String) {
+        guard src.contains(find) else { print("GNP_NULL=\(label): anchor not found (shader changed?)"); return }
+        src = src.replacingOccurrences(of: find, with: replace)
+        print("GNP_NULL=\(label): neutralized")
+    }
+    switch nullTerm {
+    case "relief":
+        // Kill the #47/#105 relief sun sheen entirely.
+        neutralize("col += specAdd;", "col += 0.0;", "relief")
+    case "fog":
+        // Kill the atmospheric distance fog (the else branch).
+        neutralize("float fog = smoothstep(295.0, 400.0, dist) * 0.32;",
+                   "float fog = 0.0;", "fog")
+    case "drained":
+        // Kill the "drained / The Grey" desaturation remap.
+        neutralize("col = mix(drained, col, sat);", "col = col;", "drained")
+    case "bump":
+        neutralize("bumpLight = (in.faceNorm == 3u) ? 1.0 : sunTilt;",
+                   "bumpLight = 1.0;", "bump")
+    case "detail":
+        neutralize("float3 detail = blockDetail(in.worldPos, in.faceNorm, in.material);",
+                   "float3 detail = float3(1.0);", "detail")
+    case "waterrefl":
+        // Kill the #43 view-dependent sky reflection on the water surface (waterFmain).
+        neutralize("col = mix(col, skyRefl, reflAmt);", "col = col;", "waterrefl")
+    case "skyterrain":
+        // Render terrain only over a BLACK clear, no sky pass, to prove the wash is
+        // terrain not sky bleeding into the lower half.
+        print("GNP_NULL=skyterrain: sky pass disabled at runtime")
+    case "none":
+        break
+    default:
+        print("GNP_NULL=\(nullTerm): unknown term (no-op)")
+    }
+    guard let lib = try? device.makeLibrary(source: src, options: nil) else {
+        print("shader compile failed"); return false
+    }
+    func pipe(_ vfn: String, _ ffn: String, _ fmt: MTLPixelFormat, depth: Bool) -> MTLRenderPipelineState? {
+        let d = MTLRenderPipelineDescriptor()
+        d.vertexFunction = lib.makeFunction(name: vfn); d.fragmentFunction = lib.makeFunction(name: ffn)
+        d.colorAttachments[0].pixelFormat = fmt
+        if depth { d.depthAttachmentPixelFormat = .depth32Float }
+        return try? device.makeRenderPipelineState(descriptor: d)
+    }
+    guard let skyPipe   = pipe("skyVmain", "skyFmain", .rgba16Float, depth: true),
+          let terrPipe  = pipe("vmain", "fmain", .rgba16Float, depth: true),
+          let brightPipe = pipe("fullscreenVert", "bloomBrightFrag", .rgba16Float, depth: false),
+          let blurHPipe = pipe("fullscreenVert", "bloomBlurHFrag", .rgba16Float, depth: false),
+          let blurVPipe = pipe("fullscreenVert", "bloomBlurVFrag", .rgba16Float, depth: false),
+          let compPipe  = pipe("fullscreenVert", "compositeFrag", .bgra8Unorm, depth: false)
+    else { print("pipeline build failed"); return false }
+    // Water translucency pass (alpha-blended over the terrain), exactly as the live
+    // renderer draws it. The probe MUST include this: the #43 sky reflection in
+    // waterFmain is view-dependent and sun-azimuth-keyed, and the perf/--shot harness
+    // omits it, which is why earlier reproductions came up empty.
+    let waterPipe: MTLRenderPipelineState? = {
+        let d = MTLRenderPipelineDescriptor()
+        d.vertexFunction = lib.makeFunction(name: "vmain"); d.fragmentFunction = lib.makeFunction(name: "waterFmain")
+        d.colorAttachments[0].pixelFormat = .rgba16Float
+        d.colorAttachments[0].isBlendingEnabled = true
+        d.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        d.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        d.colorAttachments[0].sourceAlphaBlendFactor = .one
+        d.colorAttachments[0].destinationAlphaBlendFactor = .zero
+        d.depthAttachmentPixelFormat = .depth32Float
+        return try? device.makeRenderPipelineState(descriptor: d)
+    }()
+    let waterDSD = MTLDepthStencilDescriptor(); waterDSD.depthCompareFunction = .lessEqual; waterDSD.isDepthWriteEnabled = false
+    let waterDepthState = device.makeDepthStencilState(descriptor: waterDSD)
+    // Skip the water pass entirely (control) with GNP_NULL=nowater.
+    let waterOff = (ProcessInfo.processInfo.environment["GNP_NULL"] == "nowater")
+
+    let dsd = MTLDepthStencilDescriptor(); dsd.depthCompareFunction = .less; dsd.isDepthWriteEnabled = true
+    let depthState = device.makeDepthStencilState(descriptor: dsd)
+    let sdsd = MTLDepthStencilDescriptor(); sdsd.depthCompareFunction = .always; sdsd.isDepthWriteEnabled = false
+    let skyDepthState = device.makeDepthStencilState(descriptor: sdsd)
+    let nodd = MTLDepthStencilDescriptor(); nodd.depthCompareFunction = .always; nodd.isDepthWriteEnabled = false
+    let noDepthState = device.makeDepthStencilState(descriptor: nodd)
+
+    var cfg = bf_engine_config()
+    cfg.abi_version = BF_ABI_VERSION; cfg.role = BF_ROLE_SINGLEPLAYER; cfg.start_mode = BF_MODE_CREATIVE
+    cfg.render_distance_chunks = 12
+    cfg.content_dir = persistentCString("."); cfg.save_dir = persistentCString(NSTemporaryDirectory() + "bf_gnp")
+    cfg.player_name = persistentCString("gnp")
+    var err = BF_OK
+    guard let e = bf_engine_create(&cfg, &err), err == BF_OK else { print("engine create"); return false }
+    defer { bf_engine_destroy(e) }
+    var alloc = bf_gpu_allocator()
+    alloc.user = Unmanaged.passUnretained(registry).toOpaque()
+    alloc.alloc = allocTrampoline; alloc.free_ = freeTrampoline
+    _ = bf_set_gpu_allocator(e, &alloc)
+    // Fixed seed: deterministic real terrain, so the per-yaw numbers reproduce run to run.
+    // GNP_SEED overrides it (used to hunt a grass biome column the player reported on).
+    let seed = UInt64(ProcessInfo.processInfo.environment["GNP_SEED"] ?? "") ?? 2026
+    _ = bf_world_new(e, seed)
+
+    let W = 480, H = 360, HW = W/2, HH = H/2
+    func makeTex(_ fmt: MTLPixelFormat, _ w: Int, _ h: Int, _ usage: MTLTextureUsage, _ shared: Bool) -> MTLTexture {
+        let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: fmt, width: w, height: h, mipmapped: false)
+        td.usage = usage; td.storageMode = shared ? .shared : .private
+        return device.makeTexture(descriptor: td)!
+    }
+    let hdrColor = makeTex(.rgba16Float, W, H, [.renderTarget, .shaderRead], false)
+    let hdrDepth = makeTex(.depth32Float, W, H, [.renderTarget], false)
+    let bloomBrt = makeTex(.rgba16Float, HW, HH, [.renderTarget, .shaderRead], false)
+    let bloomBlurA = makeTex(.rgba16Float, HW, HH, [.renderTarget, .shaderRead], false)
+    let output = makeTex(.bgra8Unorm, W, H, [.renderTarget], true)
+
+    // ---- Stream a fixed real-terrain region FULLY in (single process) ------
+    // Walk a touch so chunks generate, then stand still long enough for streaming to settle
+    // so the camera lands on the SAME ground column for the whole sweep.
+    var camEye = SIMD3<Float>(0, 48, 0)
+    var biomeName = ""
+    // GNP_WALK frames of forward travel before settling (default 80): lets the probe
+    // walk out of the spawn biome into a grass/meadow column when hunting the repro.
+    let walkFrames = Int(ProcessInfo.processInfo.environment["GNP_WALK"] ?? "") ?? 80
+    let totalFrames = walkFrames + 140
+    let turnLeft = ProcessInfo.processInfo.environment["GNP_TURNLEFT"] == "1"   // strafe-direction variety
+    for f in 0..<totalFrames {
+        registry.currentFrame = f
+        var input = bf_frame_input()
+        input.move_forward = (f < walkFrames) ? 1 : 0
+        if turnLeft && f < walkFrames { input.look_yaw_delta = 0.02 }
+        _ = bf_frame_begin(e, &input, (f < totalFrames - 40) ? 1.0/60.0 : 2.0)   // long dt late = let streaming finish
+        var fr = bf_render_frame(); _ = bf_frame_acquire_render(e, &fr)
+        camEye = SIMD3<Float>(fr.camera.position.x, fr.camera.position.y, fr.camera.position.z)
+        biomeName = withUnsafeBytes(of: fr.hud.biome_name) { raw in
+            String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+        }
+        bf_frame_end(e); registry.collect()
+    }
+    print(String(format: "ground-night probe: target=(%.1f,%.1f,%.1f) biome=%@ (orbit-and-project, deep night)",
+                 camEye.x, camEye.y, camEye.z, biomeName))
+
+    let proj = Renderer.perspective(fovy: 1.20, aspect: Float(W)/Float(H), near: 0.05, far: 512)
+    let tanHalf = tan(0.60) as Float
+    func lookView(_ eye: SIMD3<Float>, _ fwd: SIMD3<Float>, _ up: SIMD3<Float>) -> simd_float4x4 {
+        let s = normalize(cross(fwd, up)); let u = cross(s, fwd)
+        return simd_float4x4(columns: (
+            SIMD4<Float>(s.x, u.x, -fwd.x, 0),
+            SIMD4<Float>(s.y, u.y, -fwd.y, 0),
+            SIMD4<Float>(s.z, u.z, -fwd.z, 0),
+            SIMD4<Float>(-dot(s, eye), -dot(u, eye), dot(fwd, eye), 1)))
+    }
+
+    // NIGHT. tod 0.75 == deep night: dayLight()==0, sun well below the horizon.
+    // sun_dir mirrors world.hpp / the BF_SHOT_TOD path: dir=(cos(a)*0.6, -sin(a)-0.25, 0.90).
+    // The sun azimuth is in the X/Z plane; "rises/sets E/W" means the azimuth axis is X by
+    // default. GNP_SUN_AXIS=z swings the azimuth 90° (Step 3 cross-check).
+    let tod = Float(ProcessInfo.processInfo.environment["GNP_TOD"] ?? "") ?? 0.75
+    let ang = tod * 6.2831853 as Float
+    let sunAxisZ = ProcessInfo.processInfo.environment["GNP_SUN_AXIS"] == "z"
+    let sun: SIMD3<Float> = sunAxisZ
+        ? simd_normalize(SIMD3<Float>(0.90, -sin(ang) - 0.25, cos(ang) * 0.6))   // azimuth axis = Z
+        : simd_normalize(SIMD3<Float>(cos(ang) * 0.6, -sin(ang) - 0.25, 0.90))   // azimuth axis = X (default)
+
+    // ---- ORBIT-AND-PROJECT: the confound-free isolation -------------------
+    // The naive "look in direction X, average the lower half" measurement is confounded:
+    // each yaw frames a DIFFERENT patch of real terrain (and the patch streamed in varies
+    // run to run), so the per-yaw luma moves for reasons unrelated to any shading bug. That
+    // confound is what burned the earlier attempts.
+    //
+    // Instead the camera ORBITS a FIXED ground TARGET at a fixed radius and a fixed GRAZING
+    // pitch, always looking AT the target. A fixed ring of ground world-points around the
+    // target is then projected to screen and sampled at each azimuth. The SAME world points
+    // are measured at the SAME grazing angle every time; only the view AZIMUTH (relative to
+    // the sun) changes. So any luma change across azimuth is purely a view-direction shading
+    // term, not scene content. Real engine terrain throughout (not a synthetic plane).
+    let target = SIMD3<Float>(camEye.x, camEye.y, camEye.z)   // the settled ground point
+    let orbitR = Float(ProcessInfo.processInfo.environment["GNP_R"] ?? "") ?? 16   // grazing distance
+    // Grazing eye height above the target: low so the view skims ACROSS the surface toward
+    // the horizon (where the Fresnel sky reflection is strongest). GNP_PITCH still works as
+    // an eye-height multiplier knob if needed.
+    let eyeUp = Float(ProcessInfo.processInfo.environment["GNP_EYEUP"] ?? "") ?? 2.0
+    // Fixed ring of ground sample points around the target (real terrain texels we re-sample).
+    // A TIGHT cluster right at the target so every point is co-visible at every azimuth
+    // (a wide ring gets occluded unevenly by intervening terrain, which re-introduces the
+    // scene-content confound). GNP_RING widens it for diagnostics.
+    let ringR = Float(ProcessInfo.processInfo.environment["GNP_RING"] ?? "") ?? 1.2
+    var samplePts: [SIMD3<Float>] = []
+    for k in 0..<8 {
+        let a = Float(k) * (2 * Float.pi / 8)
+        samplePts.append(SIMD3<Float>(target.x + cos(a) * ringR, target.y, target.z + sin(a) * ringR))
+    }
+    samplePts.append(target)
+
+    let azimuths: [(String, Float)] = [("N(0)",0), ("10",10), ("45",45), ("E(90)",90), ("S(180)",180), ("W(270)",270)]
+    func project(_ p: SIMD3<Float>, _ vp: simd_float4x4) -> (Int, Int)? {
+        let clip = vp * SIMD4<Float>(p.x, p.y, p.z, 1)
+        if clip.w <= 0.0001 { return nil }
+        let nx = clip.x / clip.w, ny = clip.y / clip.w
+        let sx = Int((nx * 0.5 + 0.5) * Float(W)), sy = Int((1.0 - (ny * 0.5 + 0.5)) * Float(H))
+        if sx < 0 || sx >= W || sy < 0 || sy >= H { return nil }
+        return (sx, sy)
+    }
+
+    var lumaByYaw: [String: Double] = [:]
+    let savePNG = ProcessInfo.processInfo.environment["GNP_SAVE"] != nil
+    let skyOff = (nullTerm == "skyterrain")
+
+    for (name, azDeg) in azimuths {
+        let az = azDeg * Float.pi / 180.0
+        // Camera orbits the target on a circle of radius orbitR at the chosen azimuth,
+        // eyeUp above target height, looking AT the target (a fixed grazing line of sight).
+        let eyeO = SIMD3<Float>(target.x + sin(az) * orbitR, target.y + eyeUp, target.z - cos(az) * orbitR)
+        let fwd = normalize(target - eyeO)
+        let view = lookView(eyeO, fwd, SIMD3<Float>(0, 1, 0))
+        let viewProj = proj * view
+        let cr = SIMD3<Float>(view.columns.0.x, view.columns.1.x, view.columns.2.x)
+        let cu = SIMD3<Float>(view.columns.0.y, view.columns.1.y, view.columns.2.y)
+
+        registry.currentFrame = 1000 + Int(azDeg)
+        var input = bf_frame_input()
+        _ = bf_frame_begin(e, &input, 1.0/60.0)
+        var fr = bf_render_frame(); _ = bf_frame_acquire_render(e, &fr)
+        guard let cmd = queue.makeCommandBuffer() else { bf_frame_end(e); continue }
+
+        let rp = MTLRenderPassDescriptor()
+        rp.colorAttachments[0].texture = hdrColor
+        rp.colorAttachments[0].loadAction = .clear
+        rp.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        rp.colorAttachments[0].storeAction = .store
+        rp.depthAttachment.texture = hdrDepth
+        rp.depthAttachment.loadAction = .clear; rp.depthAttachment.clearDepth = 1.0
+        rp.depthAttachment.storeAction = .dontCare
+        if let enc = cmd.makeRenderCommandEncoder(descriptor: rp) {
+            if !skyOff {
+                enc.setRenderPipelineState(skyPipe); enc.setDepthStencilState(skyDepthState); enc.setCullMode(.none)
+                var su = SkyUniforms(
+                    sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, tod),
+                    camRight: SIMD4<Float>(cr.x, cr.y, cr.z, tanHalf),
+                    camUp:    SIMD4<Float>(cu.x, cu.y, cu.z, Float(W)/Float(H)),
+                    camFwd:   SIMD4<Float>(fwd.x, fwd.y, fwd.z, 0))
+                enc.setVertexBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
+                enc.setFragmentBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
+                var wuSky = WaterUniforms(wallClockSecs: 0, underwater: 0)
+                enc.setFragmentBytes(&wuSky, length: MemoryLayout<WaterUniforms>.stride, index: 1)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+            }
+            enc.setRenderPipelineState(terrPipe); enc.setDepthStencilState(depthState)
+            enc.setCullMode(.back); enc.setFrontFacing(.counterClockwise)
+            // shadowScale 0 == soft shadows OFF (the player's reported condition). The sun
+            // dir + time are the REAL night values so the relief sheen / any sun-keyed term
+            // sees exactly what the live night renderer feeds it.
+            var wu = WaterUniforms(wallClockSecs: 0, underwater: 0, shadowScale: 0,
+                                   cameraPosW: SIMD4<Float>(eyeO.x, eyeO.y, eyeO.z, 0),
+                                   sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, tod))
+            enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
+            var windST = WindUniforms(wallClockSecs: 0, rainStrength: 0)
+            enc.setVertexBytes(&windST, length: MemoryLayout<WindUniforms>.stride, index: 3)
+            enc.setFragmentBytes(&windST, length: MemoryLayout<WindUniforms>.stride, index: 3)
+            for i in 0..<Int(fr.draw_count) {
+                let d = fr.draws[i]
+                guard d.index_count > 0, let vb = registry.lookup(d.vertex_buffer), let ib = registry.lookup(d.index_buffer) else { continue }
+                var u = Uniforms(
+                    viewProj: viewProj,
+                    chunkOrigin: SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
+                    sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, tod),
+                    lightViewProj: matrix_identity_float4x4,
+                    dimSatN: SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
+                enc.setVertexBuffer(vb, offset: Int(d.vertex_offset), index: 0)
+                enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+                enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
+                                          indexType: .uint32, indexBuffer: ib, indexBufferOffset: Int(d.index_offset))
+            }
+            // --- Water translucency pass (alpha over terrain): mirrors the live renderer.
+            if !waterOff, let wp = waterPipe {
+                enc.setRenderPipelineState(wp); enc.setDepthStencilState(waterDepthState)
+                enc.setCullMode(.none); enc.setFrontFacing(.counterClockwise)
+                enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
+                enc.setFragmentBytes(&windST, length: MemoryLayout<WindUniforms>.stride, index: 3)
+                enc.setVertexBytes(&windST, length: MemoryLayout<WindUniforms>.stride, index: 3)
+                for i in 0..<Int(fr.draw_count) {
+                    let d = fr.draws[i]
+                    guard d.index_count > 0, let vb = registry.lookup(d.vertex_buffer), let ib = registry.lookup(d.index_buffer) else { continue }
+                    var u = Uniforms(
+                        viewProj: viewProj,
+                        chunkOrigin: SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
+                        sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, tod),
+                        lightViewProj: matrix_identity_float4x4,
+                        dimSatN: SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
+                    enc.setVertexBuffer(vb, offset: Int(d.vertex_offset), index: 0)
+                    enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+                    enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
+                                              indexType: .uint32, indexBuffer: ib, indexBufferOffset: Int(d.index_offset))
+                }
+            }
+            enc.endEncoding()
+        }
+        // Bloom + ACES composite, mirroring the live post chain (god rays OFF: grStrength 0).
+        func fsPass(_ p: MTLRenderPipelineState, _ inTex: MTLTexture, _ outTex: MTLTexture) {
+            let d = MTLRenderPassDescriptor()
+            d.colorAttachments[0].texture = outTex; d.colorAttachments[0].loadAction = .dontCare; d.colorAttachments[0].storeAction = .store
+            if let enc = cmd.makeRenderCommandEncoder(descriptor: d) {
+                enc.setRenderPipelineState(p); enc.setDepthStencilState(noDepthState); enc.setCullMode(.none)
+                enc.setFragmentTexture(inTex, index: 0)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3); enc.endEncoding()
+            }
+        }
+        fsPass(brightPipe, hdrColor, bloomBrt)
+        fsPass(blurHPipe, bloomBrt, bloomBlurA)
+        fsPass(blurVPipe, bloomBlurA, bloomBrt)
+        let crp = MTLRenderPassDescriptor()
+        crp.colorAttachments[0].texture = output; crp.colorAttachments[0].loadAction = .dontCare; crp.colorAttachments[0].storeAction = .store
+        if let enc = cmd.makeRenderCommandEncoder(descriptor: crp) {
+            enc.setRenderPipelineState(compPipe); enc.setDepthStencilState(noDepthState); enc.setCullMode(.none)
+            enc.setFragmentTexture(hdrColor, index: 0); enc.setFragmentTexture(bloomBrt, index: 1)
+            var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.18, rainStrength: 0, wallClockSecs: 0)
+            enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3); enc.endEncoding()
+        }
+        cmd.commit(); cmd.waitUntilCompleted()
+        bf_frame_end(e); registry.collect()
+
+        // Measure GROUND luma at the FIXED ring of world points (same surface, same grazing
+        // angle, only the view azimuth differs). Average a small patch around each point's
+        // screen projection. This is the confound-free signal: the world geometry is identical
+        // across azimuths, so the only thing that can move the number is a view-direction term.
+        var px = [UInt8](repeating: 0, count: W*H*4)
+        output.getBytes(&px, bytesPerRow: W*4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
+        var lumaSum = 0.0; var n = 0
+        for p in samplePts {
+            guard let (sx, sy) = project(p, viewProj) else { continue }
+            for dy in -3...3 { for dx in -3...3 {
+                let cx = min(max(0, sx+dx), W-1), cy = min(max(0, sy+dy), H-1)
+                let q = (cy*W + cx) * 4
+                let b = Double(px[q])/255, g = Double(px[q+1])/255, r = Double(px[q+2])/255
+                lumaSum += 0.2126*r + 0.7152*g + 0.0722*b
+                n += 1
+            } }
+        }
+        let meanLuma = n > 0 ? lumaSum / Double(n) : 0
+        lumaByYaw[name] = meanLuma
+        print(String(format: "  az %-7@ ground-point mean-luma %.1f%%  (%d samples)", name, meanLuma*100, n))
+        if savePNG {
+            var rgba = [UInt8](repeating: 255, count: W*H*4)
+            for i in stride(from: 0, to: px.count, by: 4) { rgba[i]=px[i+2]; rgba[i+1]=px[i+1]; rgba[i+2]=px[i] }
+            rgba.withUnsafeMutableBytes { raw in
+                var planes: [UnsafeMutablePointer<UInt8>?] = [raw.bindMemory(to: UInt8.self).baseAddress]
+                if let rep = NSBitmapImageRep(bitmapDataPlanes: &planes, pixelsWide: W, pixelsHigh: H,
+                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                    colorSpaceName: .deviceRGB, bytesPerRow: W*4, bitsPerPixel: 32),
+                   let png = rep.representation(using: .png, properties: [:]) {
+                    try? png.write(to: URL(fileURLWithPath: "/tmp/gnp_\(Int(azDeg)).png"))
+                }
+            }
+        }
+    }
+
+    // N/S are perpendicular to the (default-X) sun azimuth axis (the "good" baseline);
+    // E/W are along it (the reported "bad" pale axis). With GNP_SUN_AXIS=z those swap.
+    let ns = [lumaByYaw["N(0)"] ?? 0, lumaByYaw["S(180)"] ?? 0]
+    let ew = [lumaByYaw["E(90)"] ?? 0, lumaByYaw["W(270)"] ?? 0]
+    let nsMean = ns.reduce(0,+) / Double(ns.count)
+    let ewMean = ew.reduce(0,+) / Double(ew.count)
+    let axisSpread = ewMean - nsMean
+    let allVals = Array(lumaByYaw.values)
+    let fullSpread = (allVals.max() ?? 0) - (allVals.min() ?? 0)
+    print(String(format: "  N/S mean %.1f%%  E/W mean %.1f%%  (E/W - N/S = %+.1f%%)  full yaw spread %.1f%%",
+                 nsMean*100, ewMean*100, axisSpread*100, fullSpread*100))
+
+    // ---- Deterministic gate renderer: a controlled WATER surface drawn by the REAL
+    // waterFmain shader. The orbit sweep above is the real-terrain reproduction; this is the
+    // regression GUARD. It renders one fixed grazing night/day view of a synthetic water quad
+    // with the live shader and (separately) with the #43 sky reflection forced off, and
+    // returns the mean luma of the water surface. Comparing the two isolates exactly the
+    // reflection term in the COMPILED shader, with no terrain-streaming or occlusion confound.
+    // (A controlled quad is the right tool for a deterministic shader gate; the bug-repro that
+    // needs real per-face terrain is the orbit sweep, which runs on real engine chunks.)
+    func gateRenderWaterLuma(reflOff: Bool, timeOfDay: Float, sun sunIgnored: SIMD3<Float>) -> Double {
+        // Derive the sun direction from THIS time of day (same formula as the live night/day
+        // sun) so the day render uses a real daytime sun, not the night one passed in.
+        let a = timeOfDay * 6.2831853 as Float
+        let sun = simd_normalize(SIMD3<Float>(cos(a) * 0.6, -sin(a) - 0.25, 0.90))
+        // Pick the shader lib: normal, or one with the reflection mix neutralized.
+        let useLib: MTLLibrary
+        if reflOff {
+            var s2 = Renderer.shaderSource
+            s2 = s2.replacingOccurrences(of: "col = mix(col, skyRefl, reflAmt);", with: "col = col;")
+            guard let l2 = try? device.makeLibrary(source: s2, options: nil) else { return -1 }
+            useLib = l2
+        } else {
+            useLib = lib
+        }
+        let d = MTLRenderPipelineDescriptor()
+        d.vertexFunction = useLib.makeFunction(name: "vmain")
+        d.fragmentFunction = useLib.makeFunction(name: "waterFmain")
+        d.colorAttachments[0].pixelFormat = .bgra8Unorm   // 8-bit so getBytes reads UInt8 cleanly
+        d.colorAttachments[0].isBlendingEnabled = false   // opaque sample: just the surface colour
+        d.depthAttachmentPixelFormat = .depth32Float
+        guard let wpipe = try? device.makeRenderPipelineState(descriptor: d) else { return -1 }
+
+        // A single flat WATER top-face quad (material 9) at y=32, large enough to fill a
+        // grazing view. PackedVertex layout matches the live mesher (see shadowposprobe pv()).
+        struct PV { var pos: UInt32; var normuv: UInt32; var material: UInt16; var sky: UInt8; var block: UInt8; var reserved: UInt32 }
+        func pv(_ x: Int, _ y: Int, _ z: Int) -> PV {
+            let pos = UInt32(x & 0x3f) | (UInt32(y & 0x3f) << 6) | (UInt32(z & 0x3f) << 12)
+            // norm 2 = +Y top face; uv bits (3<<3); sky 15 = full skylight; material 9 = water.
+            return PV(pos: pos, normuv: 2 | (3 << 3), material: 9, sky: 15, block: 0, reserved: 0)
+        }
+        var verts: [PV] = []; var idx: [UInt32] = []
+        let y = 32
+        for gx in stride(from: 0, to: 60, by: 2) { for gz in stride(from: 0, to: 60, by: 2) {
+            let base = UInt32(verts.count)
+            verts.append(pv(gx, y, gz)); verts.append(pv(gx, y, gz+2))
+            verts.append(pv(gx+2, y, gz+2)); verts.append(pv(gx+2, y, gz))
+            idx.append(base); idx.append(base+1); idx.append(base+2)
+            idx.append(base); idx.append(base+2); idx.append(base+3)
+        } }
+        let vb = device.makeBuffer(bytes: verts, length: verts.count * MemoryLayout<PV>.stride, options: .storageModeShared)!
+        let ib = device.makeBuffer(bytes: idx, length: idx.count * MemoryLayout<UInt32>.stride, options: .storageModeShared)!
+
+        // Grazing camera over the water, looking ACROSS the quad toward the sun azimuth (the
+        // worst-case wash direction). Anchor the eye on the upwind edge so the line of sight
+        // sweeps the whole quad. The quad spans x,z in [0,60] at chunkOrigin 0 (world coords).
+        let azDir = simd_normalize(SIMD3<Float>(sun.x, 0, sun.z))   // sun azimuth on the ground
+        let center = SIMD3<Float>(30, Float(y), 30)
+        let gEye = SIMD3<Float>(center.x - azDir.x * 26, Float(y) + 2.0, center.z - azDir.z * 26)
+        let gTarget = SIMD3<Float>(center.x + azDir.x * 26, Float(y), center.z + azDir.z * 26)
+        let gFwd = normalize(gTarget - gEye)
+        let gView = lookView(gEye, gFwd, SIMD3<Float>(0, 1, 0))
+        let gVP = proj * gView
+
+        let gTex = makeTex(.bgra8Unorm, W, H, [.renderTarget, .shaderRead], true)
+        let gDepth = makeTex(.depth32Float, W, H, [.renderTarget], false)
+        guard let cmd = queue.makeCommandBuffer() else { return -1 }
+        let rp = MTLRenderPassDescriptor()
+        rp.colorAttachments[0].texture = gTex
+        rp.colorAttachments[0].loadAction = .clear
+        rp.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        rp.colorAttachments[0].storeAction = .store
+        rp.depthAttachment.texture = gDepth
+        rp.depthAttachment.loadAction = .clear; rp.depthAttachment.clearDepth = 1.0; rp.depthAttachment.storeAction = .dontCare
+        if let enc = cmd.makeRenderCommandEncoder(descriptor: rp) {
+            enc.setRenderPipelineState(wpipe); enc.setDepthStencilState(depthState)
+            enc.setCullMode(.none); enc.setFrontFacing(.counterClockwise)
+            var u = Uniforms(viewProj: gVP, chunkOrigin: SIMD4<Float>(0, 0, 0, 1),
+                             sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, timeOfDay),
+                             lightViewProj: matrix_identity_float4x4, dimSatN: SIMD4<Float>(1, 1, 1, 0))
+            var wuG = WaterUniforms(wallClockSecs: 0, underwater: 0, reflectScale: 1, shadowScale: 0,
+                                    cameraPosW: SIMD4<Float>(gEye.x, gEye.y, gEye.z, 0),
+                                    sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, timeOfDay))
+            var windG = WindUniforms(wallClockSecs: 0, rainStrength: 0)
+            enc.setVertexBuffer(vb, offset: 0, index: 0)
+            enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+            enc.setVertexBytes(&windG, length: MemoryLayout<WindUniforms>.stride, index: 3)
+            enc.setFragmentBytes(&wuG, length: MemoryLayout<WaterUniforms>.stride, index: 2)
+            enc.setFragmentBytes(&windG, length: MemoryLayout<WindUniforms>.stride, index: 3)
+            enc.drawIndexedPrimitives(type: .triangle, indexCount: idx.count, indexType: .uint32,
+                                      indexBuffer: ib, indexBufferOffset: 0)
+            enc.endEncoding()
+        }
+        cmd.commit(); cmd.waitUntilCompleted()
+        // Mean luma over water pixels (non-black) in the LOWER half (the near water surface).
+        // bgra8: byte order B,G,R,A.
+        var px = [UInt8](repeating: 0, count: W*H*4)
+        gTex.getBytes(&px, bytesPerRow: W*4, from: MTLRegionMake2D(0, 0, W, H), mipmapLevel: 0)
+        var sum = 0.0; var cnt = 0
+        for yy in (H/2)..<H { for xx in 0..<W {
+            let q = (yy*W + xx) * 4
+            let b = Double(px[q])/255, g = Double(px[q+1])/255, r = Double(px[q+2])/255
+            if r + g + b < 0.004 { continue }    // skip the cleared (no-water) background
+            sum += 0.2126*r + 0.7152*g + 0.0722*b; cnt += 1
+        } }
+        return cnt > 0 ? sum / Double(cnt) : 0
+    }
+
+    if strict {
+        // The strict gate tests the REAL compiled shader, not a CPU re-implementation, and is
+        // deterministic (no cross-azimuth scene-content confound): for the SAME fixed night
+        // frame over water, it renders the water surface TWICE -- once with the live shader,
+        // once with the #43 sky reflection forced off (reflAmt -> 0) -- and asserts the two
+        // MATCH at night. The fix multiplies reflAmt by dayLight(time)==0 at night, so the
+        // live night water already equals the reflection-off water; the two renders are
+        // identical and the gate passes. On the UN-fixed shader the live night water mirrors
+        // the bright sun-azimuth sky while the reflection-off render does not, so they differ
+        // and the gate FAILS. A DAY frame is also rendered both ways and MUST differ (proving
+        // the fix preserved daytime reflections, i.e. it did not just disable water mirroring
+        // outright). See gateRenderWaterLuma below.
+        let live   = gateRenderWaterLuma(reflOff: false, timeOfDay: 0.75, sun: sun)
+        let noRefl = gateRenderWaterLuma(reflOff: true,  timeOfDay: 0.75, sun: sun)
+        let liveDay   = gateRenderWaterLuma(reflOff: false, timeOfDay: 0.50, sun: sun)
+        let noReflDay = gateRenderWaterLuma(reflOff: true,  timeOfDay: 0.50, sun: sun)
+        let nightDiff = abs(live - noRefl)
+        let dayDiff   = abs(liveDay - noReflDay)
+        print(String(format: "  gate: NIGHT water luma live %.2f%% vs reflOff %.2f%% (Δ %.2f%%)  |  DAY live %.2f%% vs reflOff %.2f%% (Δ %.2f%%)",
+                     live*100, noRefl*100, nightDiff*100, liveDay*100, noReflDay*100, dayDiff*100))
+        let nightTol = 0.004   // night reflection must contribute ~nothing (fix => exactly 0)
+        let dayMin   = 0.010   // day reflection must still measurably brighten the water
+        if nightDiff > nightTol {
+            print(String(format: "GROUND-NIGHT regression: night water reflection still active (delta %.2f%% > %.2f%%): the #117 night ground wash",
+                         nightDiff*100, nightTol*100))
+            return false
+        }
+        if dayDiff < dayMin {
+            print(String(format: "GROUND-NIGHT regression: DAY water reflection lost (delta %.2f%% < %.2f%%): fix over-reached into daytime",
+                         dayDiff*100, dayMin*100))
+            return false
+        }
+        print(String(format: "ground-night OK: night water reflection gated off (Δ %.2f%%); day reflection preserved (Δ %.2f%%)",
+                     nightDiff*100, dayDiff*100))
+    }
+    return true
+}

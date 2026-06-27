@@ -3425,7 +3425,18 @@ final class Renderer: NSObject, MTKViewDelegate {
                                           wu.sunDirTime.xyz, wu.sunDirTime.w, t);
             float ndv     = max(0.0, dot(-viewDir, perturbedN));
             float fres    = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);   // Schlick, F0≈0.02
-            float reflAmt = clamp(fres * 0.9 + 0.05, 0.0, 0.60) * wu.reflectScale;
+            // NIGHT GROUND-WASH FIX (#117): the Fresnel sky reflection was NOT gated by
+            // day/night. At night evalSkyColor returns a sky that is brighter toward the
+            // sun's azimuth (the moon halo + horizon haze + low-elevation stars all sit on
+            // the sun/moon E/W plane), so the reflected view ray hit that bright band only
+            // when the camera faced E/W. The water then washed pale toward E/W and stayed
+            // its dark night colour facing N/S -- the player's view-direction-dependent
+            // night "ground" wash (water surfaces over the terrain). Daytime is unaffected
+            // (dayLight==1), and a clear night sky has nothing bright to mirror anyway, so
+            // fade the reflection out with day brightness. The moon/star sky is still drawn
+            // by the sky pass; only the water MIRROR of it stops washing the surface.
+            float dayRefl = dayLight(wu.sunDirTime.w);   // 1 day .. 0 night (same gate as terrain)
+            float reflAmt = clamp(fres * 0.9 + 0.05, 0.0, 0.60) * wu.reflectScale * dayRefl;
             col = mix(col, skyRefl, reflAmt);
             col += float3(1.0, 0.98, 0.88) * spec * 0.45 * in.shade;
         }

@@ -38,6 +38,14 @@ fi
 if "$BIN" --shadowstabilitytest; then :; else
   FAIL=1; echo "   (SHADOW-STABILITY regression: cast shadows wipe with player position, #115)"
 fi
+# Ground-night regression (#117): at night the water sky-reflection was not day/night gated,
+# so water surfaces over the terrain washed pale toward the sun's E/W azimuth as the camera
+# turned (the player's view-direction-dependent night "ground" wash). Renders a fixed night
+# water view with the real shader vs the reflection forced off and FAILS if they differ at
+# night (the wash) or MATCH at day (daytime reflection lost). Needs a Metal device; self-skips.
+if "$BIN" --groundnighttest; then :; else
+  FAIL=1; echo "   (GROUND-NIGHT regression: night water reflection washes the ground by view direction, #117)"
+fi
 # Perf smoke: a short measured run (the full gate is a 10-min M1 Air run).
 if "$BIN" --perftest 5; then :; else
   echo "   (perf smoke failed or no Metal device — non-fatal in headless CI)"

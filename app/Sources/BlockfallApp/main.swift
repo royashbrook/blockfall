@@ -547,6 +547,21 @@ if CommandLine.arguments.contains("--shadowstabilitytest") {
     let ok = runShadowPosProbe(strict: true)
     exit(ok ? 0 : 1)
 }
+// --groundnightprobe: SINGLE-PROCESS REAL-TERRAIN night yaw sweep (#117). Boots the
+// engine, streams a fixed-seed region in, then renders the SAME ground at several yaws
+// at deep night and reports the lower-half ground mean luma per yaw. Reproduces the
+// player's view-direction-dependent night ground wash that the --shot harness could not
+// (each --shot is a separate process streaming a different patch of world). Verbose probe.
+if CommandLine.arguments.contains("--groundnightprobe") {
+    let ok = runGroundNightProbe(strict: false)
+    exit(ok ? 0 : 1)
+}
+// --groundnighttest: the GREEN/RED regression gate for #117. Same sweep; FAILS if the
+// night ground luma spread across yaw exceeds a small tolerance.
+if CommandLine.arguments.contains("--groundnighttest") {
+    let ok = runGroundNightProbe(strict: true)
+    exit(ok ? 0 : 1)
+}
 if let idx = CommandLine.arguments.firstIndex(of: "--screenshot"), idx + 1 < CommandLine.arguments.count {
     let ok = runRenderSelfTest(savePath: CommandLine.arguments[idx + 1], width: 960, height: 720)
     exit(ok ? 0 : 1)
