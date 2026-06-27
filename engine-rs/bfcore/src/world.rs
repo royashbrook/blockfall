@@ -214,6 +214,10 @@ struct Creature {
     npc_id: i32,
     home_x: i32,
     home_z: i32,
+    // Set for hostiles spawned at a ruined "danger site". These ignore the
+    // night/quest gate (a ruin is dangerous around the clock) and are capped
+    // separately so they never overwhelm the world.
+    from_ruin: bool,
     name: String,
 }
 impl Default for Creature {
@@ -239,6 +243,7 @@ impl Default for Creature {
             npc_id: 0,
             home_x: 0,
             home_z: 0,
+            from_ruin: false,
             name: String::new(),
         }
     }
@@ -384,6 +389,7 @@ pub struct World<'c> {
     entities: Vec<bf_entity_draw>,
     creature_timer: f32,
     villager_timer: f32,
+    danger_timer: f32,
     regrow_timer: f32,
     villager_npc_next: i32,
     rng: u32,
@@ -480,6 +486,7 @@ impl<'c> World<'c> {
             entities: Vec::new(),
             creature_timer: 0.0,
             villager_timer: 0.0,
+            danger_timer: 0.0,
             regrow_timer: 3.0,
             villager_npc_next: 0,
             rng: 0x1234567,
@@ -2293,14 +2300,20 @@ impl<'c> World<'c> {
                 > 6;
         let monsters_active = (night || dark_cave) && self.quests_completed > 0;
         if !monsters_active {
-            self.creatures.retain(|c| !c.hostile);
+            // Cull gated (night/cave) hostiles when the gate is closed, but keep the
+            // ruin "danger site" hostiles, which are dangerous around the clock.
+            self.creatures.retain(|c| !c.hostile || c.from_ruin);
         }
         let mut ambient = 0;
         let mut bosses = 0;
         let mut hostiles = 0;
         for c in &self.creatures {
             if c.hostile {
-                hostiles += 1;
+                // Ruin hostiles are managed by the danger-site pass, not the night
+                // cap, so they do not block normal night spawns.
+                if !c.from_ruin {
+                    hostiles += 1;
+                }
             } else if c.is_boss {
                 bosses += 1;
             } else if c.model != 20 {
@@ -2324,6 +2337,101 @@ impl<'c> World<'c> {
         if fish < 4 && self.rand01() < 0.5 {
             self.spawn_fish(6.0, 22.0);
         }
+    }
+
+    // Ruined structures are localized "danger sites": when the player is near one,
+    // a hostile or two spawn at it regardless of the night/quest gate (so ruins feel
+    // dangerous in the daytime too). Capped to a small number so it never becomes an
+    // ambush. Deterministic site lookup; the spawn jitter uses the normal rng like
+    // the other spawners.
+    fn maintain_danger_sites(&mut self, dt: f32) {
+        if self.gen.is_none() || self.store.resident_count() < 20 {
+            return;
+        }
+        // Only meaningful in survival (hostiles do not act in creative).
+        if self.mode != bf_game_mode::BF_MODE_SURVIVAL {
+            return;
+        }
+        self.danger_timer -= dt;
+        if self.danger_timer > 0.0 {
+            return;
+        }
+        self.danger_timer = 3.0;
+
+        // Global cap on ruin hostiles so several nearby ruins cannot pile up.
+        const RUIN_HOSTILE_CAP: i32 = 3;
+        let ruin_hostiles = self.creatures.iter().filter(|c| c.hostile && c.from_ruin).count() as i32;
+        if ruin_hostiles >= RUIN_HOSTILE_CAP {
+            return;
+        }
+
+        let px = Self::ifloor(self.pos.x);
+        let pz = Self::ifloor(self.pos.z);
+        // Find the nearest ruin within a reasonable radius of the player.
+        let site = worldgen::worldgen_dangerous_site_near(px, pz, 48, self.seed);
+        let (ax, ay, az) = match site {
+            Some(s) => s,
+            None => return,
+        };
+        // Only spawn once the ruin's chunk is actually resident (avoids spawning into
+        // ungenerated space).
+        if !self.store.is_resident(Self::to_chunk(IVec3 { x: ax, y: ay, z: az })) {
+            return;
+        }
+        // Do not stack: if a ruin hostile is already loitering at this site, skip.
+        let near_site = self.creatures.iter().any(|c| {
+            c.hostile
+                && c.from_ruin
+                && (c.pos.x - ax as f32).abs() < 8.0
+                && (c.pos.z - az as f32).abs() < 8.0
+        });
+        if near_site {
+            return;
+        }
+        self.spawn_hostile_at(ax, ay, az);
+    }
+
+    // Spawn a single ruin "danger site" hostile near (ax,ay,az). Mirrors the body of
+    // spawn_hostile but anchors at the site and marks the creature from_ruin so the
+    // night/quest gate does not cull it. Returns true on success.
+    fn spawn_hostile_at(&mut self, ax: i32, ay: i32, az: i32) -> bool {
+        let ox = ax as f32 + (self.rand01() * 6.0 - 3.0);
+        let oz = az as f32 + (self.rand01() * 6.0 - 3.0);
+        let gy = self.floor_below(Self::ifloor(ox), ay + 5, Self::ifloor(oz));
+        if gy == NO_FLOOR {
+            return false;
+        }
+        let mut c = Creature::default();
+        c.pos = V3::new(ox, gy as f32, oz);
+        c.yaw = self.rand01() * 6.2831853;
+        c.hostile = true;
+        c.from_ruin = true;
+        c.scale = 1.0;
+        let pool: Vec<CreatureDefX> = self
+            .extra
+            .map(|x| x.creatures().iter().filter(|d| d.disposition == "hostile").cloned().collect())
+            .unwrap_or_default();
+        if !pool.is_empty() {
+            let pick = (self.rand01() * pool.len() as f32) as usize % pool.len();
+            let d = &pool[pick];
+            c.name = d.name.clone();
+            c.model = d.model;
+            c.speed = if d.move_speed > 0.0 { d.move_speed } else { 2.6 };
+            c.hp = if d.max_health > 0 { d.max_health as i32 } else { 6 };
+            c.color = Self::color_for("hostile", d.id);
+        } else {
+            c.speed = 2.6;
+            c.hp = 6;
+            c.shape = if self.rand01() < 0.5 { 1 } else { 0 };
+            c.color = if c.shape == 1 {
+                V3::new(0.16, 0.13, 0.20)
+            } else {
+                V3::new(0.12, 0.10, 0.16)
+            };
+            c.name = if c.shape == 1 { "lurker".into() } else { "monster".into() };
+        }
+        self.creatures.push(c);
+        true
     }
 
     fn maintain_villagers(&mut self, dt: f32) {
@@ -3522,6 +3630,7 @@ impl<'c> World<'c> {
         }
 
         self.maintain_creatures(dtf);
+        self.maintain_danger_sites(dtf);
         self.maintain_villagers(dtf);
         self.maintain_regrowth(dtf);
         self.update_creatures(dtf);
@@ -4243,6 +4352,11 @@ impl<'c> World<'c> {
     }
     pub fn debug_hostile_count(&self) -> i32 {
         self.creatures.iter().filter(|c| c.hostile).count() as i32
+    }
+    // tests: count only the ruin "danger site" hostiles (spawned independent of the
+    // night/quest gate).
+    pub fn debug_ruin_hostile_count(&self) -> i32 {
+        self.creatures.iter().filter(|c| c.hostile && c.from_ruin).count() as i32
     }
     pub fn debug_health(&self) -> f32 {
         self.health

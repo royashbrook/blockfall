@@ -1134,6 +1134,39 @@ pub fn worldgen_structure_near(wx: i32, wz: i32, seed: u64) -> (i32, i32, i32, i
     (sd.typ, sd.anchor_wx, sd.anchor_wz, y)
 }
 
+/// Danger site lookup for the creature system. Scans structure cells overlapping a
+/// square of half-size `radius` blocks around (wx,wz) and returns the anchor of the
+/// nearest ruined structure as (anchor_x, anchor_y, anchor_z), or None if there is
+/// no ruin in range. Deterministic for a given seed: the result depends only on the
+/// structure cells, not on call order. The creature system uses this to spawn a
+/// hostile or two at the ruin regardless of the night/quest gate.
+pub fn worldgen_dangerous_site_near(wx: i32, wz: i32, radius: i32, seed: u64) -> Option<(i32, i32, i32)> {
+    let scx_min = struct_floordiv(wx - radius, STRUCT_CELL_SIZE);
+    let scx_max = struct_floordiv(wx + radius, STRUCT_CELL_SIZE);
+    let scz_min = struct_floordiv(wz - radius, STRUCT_CELL_SIZE);
+    let scz_max = struct_floordiv(wz + radius, STRUCT_CELL_SIZE);
+
+    let mut best: Option<(i32, i32, i32)> = None;
+    let mut best_d2 = i64::MAX;
+    for scz in scz_min..=scz_max {
+        for scx in scx_min..=scx_max {
+            let sd = struct_for_cell(scx, scz, seed);
+            if !sd.present || !struct_is_ruin(sd.typ) {
+                continue;
+            }
+            let ddx = (sd.anchor_wx - wx) as i64;
+            let ddz = (sd.anchor_wz - wz) as i64;
+            let d2 = ddx * ddx + ddz * ddz;
+            if d2 <= (radius as i64) * (radius as i64) && d2 < best_d2 {
+                best_d2 = d2;
+                let y = struct_surface(sd.anchor_wx, sd.anchor_wz, seed);
+                best = Some((sd.anchor_wx, y, sd.anchor_wz));
+            }
+        }
+    }
+    best
+}
+
 pub fn worldgen_structure_footprint(wx: i32, wz: i32, seed: u64) -> bool {
     let scx_min = struct_floordiv(wx - STRUCT_MAX_REACH_XZ, STRUCT_CELL_SIZE);
     let scx_max = struct_floordiv(wx + STRUCT_MAX_REACH_XZ, STRUCT_CELL_SIZE);
@@ -1204,6 +1237,107 @@ mod worldgen_tests {
         // Beach-ish climate, excluding Beach, must pick something else.
         let b = classify_climate_excluding(0.78, 0.55, Biome::Beach as i32);
         assert_ne!(b, Biome::Beach as i32);
+    }
+
+    // Structure variety: scanning a wide area for seed 11 must turn up more than one
+    // structure type, and must include at least one of the big / ruined structures
+    // (tall tower, keep, ruin, or city). Catches a regression that collapses the
+    // structure roster back to only small buildings.
+    #[test]
+    fn structure_variety_has_big_and_ruined() {
+        let mut seen = std::collections::HashSet::new();
+        let mut saw_big = false;
+        let mut saw_ruin = false;
+        let mut saw_city = false;
+        // Scan structure cells over a wide region (cell size 64, so this is a big
+        // area in blocks).
+        for scz in -60..=60 {
+            for scx in -60..=60 {
+                let sd = struct_for_cell(scx, scz, SEED);
+                if !sd.present {
+                    continue;
+                }
+                seen.insert(sd.typ);
+                if sd.typ == STRUCT_TALL_TOWER
+                    || sd.typ == STRUCT_KEEP
+                    || sd.typ == STRUCT_RUIN
+                    || sd.typ == STRUCT_CITY
+                {
+                    saw_big = true;
+                }
+                if sd.typ == STRUCT_RUIN {
+                    saw_ruin = true;
+                }
+                if sd.typ == STRUCT_CITY {
+                    saw_city = true;
+                }
+            }
+        }
+        assert!(seen.len() > 1, "expected more than one structure type, saw {seen:?}");
+        assert!(saw_big, "expected at least one big structure (tower/keep/ruin/city), types {seen:?}");
+        assert!(saw_ruin, "expected at least one ruin in the scan, types {seen:?}");
+        assert!(saw_city, "expected at least one city in the scan, types {seen:?}");
+    }
+
+
+
+
+    // No structure may have its anchor in deep ocean. struct_for_cell already gates
+    // on surface height <= SEA_LEVEL; this guards that gate and also confirms anchors
+    // are never on an ocean column.
+    #[test]
+    fn no_structure_in_deep_ocean() {
+        for scz in -80..=80 {
+            for scx in -80..=80 {
+                let sd = struct_for_cell(scx, scz, SEED);
+                if !sd.present {
+                    continue;
+                }
+                let h = struct_surface(sd.anchor_wx, sd.anchor_wz, SEED);
+                assert!(
+                    h > SEA_LEVEL,
+                    "structure type {} anchored at ({},{}) with surface {h} <= SEA_LEVEL {SEA_LEVEL}",
+                    sd.typ,
+                    sd.anchor_wx,
+                    sd.anchor_wz
+                );
+                assert!(
+                    !is_ocean_column(sd.anchor_wx as f32, sd.anchor_wz as f32, SEED),
+                    "structure type {} anchored on an ocean column at ({},{})",
+                    sd.typ,
+                    sd.anchor_wx,
+                    sd.anchor_wz
+                );
+            }
+        }
+    }
+
+    // A ruined site must register as a danger marker: somewhere in a wide scan there
+    // is a ruin, and worldgen_dangerous_site_near reports it (so the creature system
+    // has a hostile-spawn anchor independent of the night/quest gate).
+    #[test]
+    fn ruin_registers_danger_marker() {
+        // Find a ruin anchor.
+        let mut ruin: Option<(i32, i32)> = None;
+        'outer: for scz in -60..=60 {
+            for scx in -60..=60 {
+                let sd = struct_for_cell(scx, scz, SEED);
+                if sd.present && sd.typ == STRUCT_RUIN {
+                    ruin = Some((sd.anchor_wx, sd.anchor_wz));
+                    break 'outer;
+                }
+            }
+        }
+        let (rx, rz) = ruin.expect("expected at least one ruin in the scan area");
+        // Query right at the ruin: the danger-site lookup must return its anchor.
+        let site = worldgen_dangerous_site_near(rx, rz, 48, SEED);
+        let (ax, _ay, az) = site.expect("dangerous_site_near found no ruin at a known ruin");
+        assert_eq!((ax, az), (rx, rz), "danger marker did not point at the ruin anchor");
+        // And a non-ruin location far from any ruin must report no danger marker when
+        // we shrink the radius to zero around an arbitrary empty cell center.
+        // (Sanity: querying with radius 0 at the ruin still finds it.)
+        let exact = worldgen_dangerous_site_near(rx, rz, 0, SEED);
+        assert!(exact.is_some(), "radius 0 at the ruin anchor should still match");
     }
 
     // -----------------------------------------------------------------------

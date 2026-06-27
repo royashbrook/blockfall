@@ -21,8 +21,18 @@ const STRUCT_CAIRN: i32 = 6;
 const STRUCT_WELL: i32 = 7;
 const STRUCT_VILLAGE: i32 = 8;
 const STRUCT_SHRINE: i32 = 9;
+// New bigger / varied structures (#variety work).
+const STRUCT_TALL_TOWER: i32 = 10; // a tall intact tower (mage-tower style)
+const STRUCT_KEEP: i32 = 11; // a small keep / castle (walls + a few rooms)
+const STRUCT_RUIN: i32 = 12; // a ruined keep / tower, broken walls, holds baddies
+const STRUCT_CITY: i32 = 13; // a larger settlement cluster (town / city)
 
-const STRUCT_MAX_REACH_XZ: i32 = 7;
+// Largest structure footprint reaches out from its anchor by this many blocks in
+// X and Z. The placement loop scans every structure cell within this reach of a
+// chunk so a structure spanning a chunk border is stamped identically into both
+// chunks (seam safe). Must be >= the biggest structure half-extent below: the city
+// is the widest (huts on a ring out to ~22 plus a hut radius of 1).
+const STRUCT_MAX_REACH_XZ: i32 = 26;
 
 #[derive(Clone, Copy)]
 struct StructDesc {
@@ -31,6 +41,14 @@ struct StructDesc {
     typ: i32,
     cell_hash: u64,
     present: bool,
+}
+
+// True for the ruined structure type, which the creature system treats as a
+// localized "danger site" (spawns a hostile or two regardless of the night/quest
+// gate). Kept here so the rule lives in one place.
+#[inline]
+fn struct_is_ruin(typ: i32) -> bool {
+    typ == STRUCT_RUIN
 }
 
 #[inline]
@@ -61,8 +79,34 @@ fn struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
     let dom = voronoi_biome(ax, az, seed);
 
     let h = struct_surface(ax, az, seed);
-    if h <= SEA_LEVEL {
+    // Keep structures out of open water. Require the anchor column to sit clearly on
+    // land: a margin above sea level (not at the waterline), and not on an ocean or
+    // river column (continentalness / river-channel fields). Oceans + rivers were
+    // added after the original structure system, so this gate is what keeps the new
+    // bigger structures (and the old ones) from spawning in the sea.
+    if h <= SEA_LEVEL + 1
+        || is_ocean_column(ax as f32, az as f32, seed)
+        || river_channel_t(ax as f32, az as f32, seed) > 0.4
+    {
         return StructDesc { anchor_wx: 0, anchor_wz: 0, typ: STRUCT_NONE, cell_hash: 0, present: false };
+    }
+
+    // Big / rare structures. A minority of present cells become a large structure
+    // (a tall tower, a small keep, or a ruin) instead of the usual biome pick. They
+    // are rarer than the small buildings: only when this byte is low. The split
+    // among the three big types is driven by a separate slice of the hash so the
+    // choice is stable per cell and deterministic.
+    let big_roll = (h2s >> 48) & 0xFF;
+    if big_roll < 36 {
+        let big_pick = (h2s >> 40) & 0x3;
+        let stype = match big_pick {
+            0 => STRUCT_TALL_TOWER,
+            1 => STRUCT_KEEP,
+            // Two of four buckets are ruins so danger sites are reasonably common
+            // among the big structures (about half of them).
+            _ => STRUCT_RUIN,
+        };
+        return StructDesc { anchor_wx: ax, anchor_wz: az, typ: stype, cell_hash: h2s, present: true };
     }
 
     let type_bits = (h2s >> 32) & 0x7;
@@ -142,6 +186,16 @@ fn struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
             }
         }
         _ => STRUCT_CAIRN,
+    };
+
+    // City clustering: a minority of would-be villages grow into a larger town /
+    // city (more buildings, a denser layout with a center and simple paths). Most
+    // settlements stay small villages. The roll is a stable per-cell hash slice so
+    // the same cell is always a city or always a village for a given seed.
+    let stype = if stype == STRUCT_VILLAGE && ((h2s >> 56) & 0xFF) < 70 {
+        STRUCT_CITY
+    } else {
+        stype
     };
 
     StructDesc { anchor_wx: ax, anchor_wz: az, typ: stype, cell_hash: h2s, present: true }
@@ -646,6 +700,285 @@ fn place_shrine<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
 
+// A tall intact tower: a 5x5 stone-brick keep base topped by a slimmer 3x3 shaft
+// that climbs ~13 to 19 blocks, with a battlemented crown and a lamp at the top.
+// Bigger and clearly taller than the watchtower. Max XZ half-extent is 2 (well
+// within STRUCT_MAX_REACH_XZ).
+fn place_tall_tower<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
+    // Foundation: take the highest column under the 5x5 footprint so the tower sits
+    // on the ground no matter the slope (then we fill any gap below each column).
+    let mut base_h = -1000000;
+    for dz in -2..=2 {
+        for dx in -2..=2 {
+            let sh = struct_surface(ax + dx, az + dz, seed);
+            if sh > base_h {
+                base_h = sh;
+            }
+        }
+    }
+
+    let shaft_h = 13 + ((h >> 4) % 7) as i32; // 13..19 tall
+    let top_y = base_h + shaft_h;
+
+    // Solid 5x5 plinth one block tall, filling any slope gap below.
+    for dz in -2..=2 {
+        for dx in -2..=2 {
+            struct_fill_col(chunk, ax + dx, az + dz, base_h, seed, wx_min, wy_min, wz_min, STONE);
+            struct_set(chunk, ax + dx, base_h + 1, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
+        }
+    }
+
+    // 3x3 hollow shaft of stone brick from base+2 up to top_y.
+    for wy in (base_h + 2)..=top_y {
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let wall = dx == -1 || dx == 1 || dz == -1 || dz == 1;
+                if wall {
+                    struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
+                } else {
+                    // Hollow interior; carve to air so the tower is enterable.
+                    struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, AIR);
+                }
+            }
+        }
+    }
+
+    // Doorway on the south face at the base of the shaft.
+    struct_set(chunk, ax, base_h + 2, az - 1, wx_min, wy_min, wz_min, OAK_DOOR);
+    struct_set(chunk, ax, base_h + 3, az - 1, wx_min, wy_min, wz_min, OAK_DOOR);
+
+    // Slit windows partway up.
+    let mid = base_h + 2 + shaft_h / 2;
+    struct_set(chunk, ax + 1, mid, az, wx_min, wy_min, wz_min, GLASS_PANE);
+    struct_set(chunk, ax - 1, mid, az, wx_min, wy_min, wz_min, GLASS_PANE);
+
+    // Crenellated crown: a ring of cobble one above the top, alternating merlons.
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let rim = dx == -1 || dx == 1 || dz == -1 || dz == 1;
+            if !rim {
+                continue;
+            }
+            struct_set(chunk, ax + dx, top_y + 1, az + dz, wx_min, wy_min, wz_min, COBBLESTONE);
+            let corner = dx != 0 && dz != 0;
+            if corner {
+                struct_set(chunk, ax + dx, top_y + 2, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
+            }
+        }
+    }
+    // Beacon at the very top so the tower reads from a distance.
+    struct_set(chunk, ax, top_y + 1, az, wx_min, wy_min, wz_min, CRYSTAL_LAMP);
+    struct_set(chunk, ax, base_h + 2, az, wx_min, wy_min, wz_min, GLOW_BLOCK);
+
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
+}
+
+// A small keep / castle: a square stone-brick curtain wall (9x9 footprint, half
+// extent 4) with a corner turret on each corner, a gated south wall, and a small
+// inner hall. Max XZ half-extent is 4.
+fn place_keep<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
+    let mut base_h = -1000000;
+    for dz in -4..=4 {
+        for dx in -4..=4 {
+            let sh = struct_surface(ax + dx, az + dz, seed);
+            if sh > base_h {
+                base_h = sh;
+            }
+        }
+    }
+
+    let r = 4;
+    let wall_h = 4 + ((h >> 4) & 1) as i32; // 4 or 5 tall, varied per cell
+    let wall_top = base_h + wall_h;
+
+    // Levelled courtyard floor.
+    for dz in -r..=r {
+        for dx in -r..=r {
+            struct_fill_col(chunk, ax + dx, az + dz, base_h, seed, wx_min, wy_min, wz_min, COBBLESTONE);
+        }
+    }
+
+    // Curtain wall around the perimeter with a south gate (2 wide) at dz = -r.
+    for dz in -r..=r {
+        for dx in -r..=r {
+            let on_x = dx == -r || dx == r;
+            let on_z = dz == -r || dz == r;
+            if !(on_x || on_z) {
+                continue;
+            }
+            let corner = on_x && on_z;
+            let gate = dz == -r && (dx == 0 || dx == -1);
+            for wy in (base_h + 1)..=wall_top {
+                if gate && wy <= base_h + 2 {
+                    continue; // gate opening
+                }
+                struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
+            }
+            // Crenellation row on the wall top (skip every other cell).
+            if !corner && ((dx + dz) & 1) == 0 {
+                struct_set(chunk, ax + dx, wall_top + 1, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
+            }
+        }
+    }
+
+    // Corner turrets, two blocks taller than the wall.
+    let turret = [[-r, -r], [r, -r], [-r, r], [r, r]];
+    for t in turret.iter() {
+        for wy in (base_h + 1)..=(wall_top + 2) {
+            struct_set(chunk, ax + t[0], wy, az + t[1], wx_min, wy_min, wz_min, STONE_BRICK);
+        }
+        struct_set(chunk, ax + t[0], wall_top + 3, az + t[1], wx_min, wy_min, wz_min, COBBLESTONE);
+    }
+
+    // Inner hall: a 3x3 room at the keep center with a door and a roof.
+    let hall = 1;
+    let hall_top = base_h + 4;
+    for dz in -hall..=hall {
+        for dx in -hall..=hall {
+            let on_x = dx == -hall || dx == hall;
+            let on_z = dz == -hall || dz == hall;
+            let is_door = dz == -hall && dx == 0;
+            if on_x || on_z {
+                for wy in (base_h + 1)..=hall_top {
+                    if is_door && wy <= base_h + 2 {
+                        struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, OAK_DOOR);
+                    } else {
+                        struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
+                    }
+                }
+            }
+            // Flat roof over the hall.
+            struct_set(chunk, ax + dx, hall_top + 1, az + dz, wx_min, wy_min, wz_min, OAK_PLANKS);
+        }
+    }
+    struct_set(chunk, ax, base_h + 1, az, wx_min, wy_min, wz_min, CHEST);
+    struct_set(chunk, ax, base_h + 2, az, wx_min, wy_min, wz_min, GLOW_BLOCK);
+    // Gate torches.
+    struct_set(chunk, ax - 1, base_h + 3, az - r, wx_min, wy_min, wz_min, TORCH);
+    struct_set(chunk, ax + 1, base_h + 3, az - r, wx_min, wy_min, wz_min, TORCH);
+
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
+}
+
+// A ruined keep / tower: like the keep but broken. Walls are partial (random gaps),
+// some blocks are missing, mossy stone and rubble replace clean brick, and a bit of
+// overgrowth (mushrooms / mossy rubble) sits inside. This type is marked as a danger
+// site so the creature system spawns a hostile or two near it. Half extent 4.
+fn place_ruin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
+    let mut base_h = -1000000;
+    for dz in -4..=4 {
+        for dx in -4..=4 {
+            let sh = struct_surface(ax + dx, az + dz, seed);
+            if sh > base_h {
+                base_h = sh;
+            }
+        }
+    }
+
+    let r = 4;
+    // Per-column deterministic rubble: a cracked stone floor with gaps.
+    for dz in -r..=r {
+        for dx in -r..=r {
+            let fh = fmix64(h ^ (((dx + 9) * 131 + (dz + 9) * 17) as u64));
+            if (fh & 0x7) == 0 {
+                continue; // a hole in the floor
+            }
+            let col_h = struct_surface(ax + dx, az + dz, seed);
+            let b = if fh & 0x10 != 0 { MOSSY_STONE } else { COBBLESTONE };
+            struct_set(chunk, ax + dx, col_h, az + dz, wx_min, wy_min, wz_min, b);
+        }
+    }
+
+    // Broken curtain wall: each perimeter column rises to a random ragged height
+    // (0..wall_h), so the wall is full of gaps and looks collapsed.
+    let wall_h = 4;
+    for dz in -r..=r {
+        for dx in -r..=r {
+            let on_x = dx == -r || dx == r;
+            let on_z = dz == -r || dz == r;
+            if !(on_x || on_z) {
+                continue;
+            }
+            let wh = fmix64(h ^ (((dx + 20) * 73 + (dz + 20) * 911) as u64));
+            let rise = (wh % (wall_h as u64 + 1)) as i32; // 0..wall_h
+            let corner = on_x && on_z;
+            // Corners stand a touch taller (broken turret stubs).
+            let rise = if corner { (rise + 2).min(wall_h + 2) } else { rise };
+            for wy in 1..=rise {
+                let b = if (wh >> (wy as u32 + 4)) & 1 != 0 { MOSSY_STONE } else { STONE_BRICK };
+                struct_set(chunk, ax + dx, base_h + wy, az + dz, wx_min, wy_min, wz_min, b);
+            }
+        }
+    }
+
+    // A broken inner stub: a couple of standing pillars and toppled rubble.
+    let pillars = [[-2, 2], [2, -2], [1, 1]];
+    for (i, p) in pillars.iter().enumerate() {
+        let ph = fmix64(h ^ ((i as u64).wrapping_mul(0x9E37).wrapping_add(5)));
+        let ph_top = base_h + 1 + (ph % 4) as i32;
+        for wy in (base_h + 1)..=ph_top {
+            let b = if (ph >> (wy as u32)) & 1 != 0 { MOSSY_STONE } else { STONE_BRICK };
+            struct_set(chunk, ax + p[0], wy, az + p[1], wx_min, wy_min, wz_min, b);
+        }
+    }
+
+    // Overgrowth + a hint of treasure inside the ruin.
+    struct_set(chunk, ax, base_h + 1, az, wx_min, wy_min, wz_min, MUSHROOM);
+    struct_set(chunk, ax - 1, base_h + 1, az, wx_min, wy_min, wz_min, MOSSY_STONE);
+    if (h >> 33) & 1 != 0 {
+        struct_set(chunk, ax + 1, base_h + 1, az - 1, wx_min, wy_min, wz_min, CHEST);
+    }
+
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
+}
+
+// A city: a scaled-up village. A central plaza (paved, lamp-lit well at its core)
+// with simple cross roads, ringed by many huts on two rings plus a couple of bigger
+// cabins. Reuses place_hut / place_cabin for the buildings. Widest ring is at +/-22
+// (a hut adds 1), so half-extent is ~23, under STRUCT_MAX_REACH_XZ.
+fn place_city<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
+    // Paved central plaza, 5x5, with a marker / lamp core.
+    for dz in -2..=2 {
+        for dx in -2..=2 {
+            let col_h = struct_surface(ax + dx, az + dz, seed);
+            let centre = dx == 0 && dz == 0;
+            let b = if centre { GLOW_BLOCK } else { STONE_BRICK };
+            struct_set(chunk, ax + dx, col_h + if centre { 1 } else { 0 }, az + dz, wx_min, wy_min, wz_min, b);
+        }
+    }
+
+    // Simple cross roads of cobblestone radiating from the plaza out to the rings.
+    for d in 3..=22 {
+        for &(sx, sz) in &[(d, 0), (-d, 0), (0, d), (0, -d)] {
+            let col_h = struct_surface(ax + sx, az + sz, seed);
+            struct_set(chunk, ax + sx, col_h, az + sz, wx_min, wy_min, wz_min, COBBLESTONE);
+        }
+    }
+
+    // Inner ring of huts.
+    let inner = [[-8, -6], [8, 6], [0, 9], [9, -6], [-9, 6], [-8, 0], [8, -1]];
+    for (i, hpos) in inner.iter().enumerate() {
+        let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x2545F4914F6CDD1D).wrapping_add(71)));
+        place_hut(ax + hpos[0], az + hpos[1], hh, seed, chunk, wx_min, wy_min, wz_min);
+    }
+
+    // Outer ring: more huts plus two bigger cabins as "town hall" style anchors.
+    let outer = [[-16, -12], [16, 12], [-16, 12], [16, -12], [0, 18], [0, -18], [18, 0], [-18, 0]];
+    for (i, hpos) in outer.iter().enumerate() {
+        let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(131)));
+        if i < 2 {
+            place_cabin(ax + hpos[0], az + hpos[1], hh, seed, chunk, wx_min, wy_min, wz_min);
+        } else {
+            place_hut(ax + hpos[0], az + hpos[1], hh, seed, chunk, wx_min, wy_min, wz_min);
+        }
+    }
+
+    // A well at the plaza edge for flavour.
+    place_well(ax + 3, az + 3, h, seed, chunk, wx_min, wy_min, wz_min);
+
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
+}
+
 fn place_structure<C: Chunk>(sd: &StructDesc, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
     match sd.typ {
         x if x == STRUCT_CABIN => place_cabin(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
@@ -657,6 +990,10 @@ fn place_structure<C: Chunk>(sd: &StructDesc, seed: u64, chunk: &mut C, wx_min: 
         x if x == STRUCT_CAIRN => place_cairn(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
         x if x == STRUCT_VILLAGE => place_village(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
         x if x == STRUCT_SHRINE => place_shrine(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
+        x if x == STRUCT_TALL_TOWER => place_tall_tower(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
+        x if x == STRUCT_KEEP => place_keep(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
+        x if x == STRUCT_RUIN => place_ruin(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
+        x if x == STRUCT_CITY => place_city(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
         _ => {}
     }
 }

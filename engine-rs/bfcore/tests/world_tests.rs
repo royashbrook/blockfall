@@ -740,6 +740,59 @@ fn hostiles_spawn_at_night_on_surface() {
     assert_eq!(day.debug_hostile_count(), 0, "no hostiles in daylight on the surface");
 }
 
+// A ruined structure is a localized "danger site": a hostile or two spawn at it in
+// broad daylight, before any quest is done (independent of the night/quest gate that
+// governs the normal night spawns). Seed 10 has a ruin in plains at (184,76).
+#[test]
+fn ruin_spawns_daytime_danger() {
+    let mut content = ContentRegistry::new();
+    assert!(content.load(CONTENT), "content load");
+
+    let mut w = World::new(Some(TerrainGen::new()));
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_content(&content);
+    w.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    w.init_world(10);
+    // Deliberately do NOT complete a quest and keep it bright daytime: the normal
+    // night/quest gate is shut, so any hostile that appears must be a ruin spawn.
+    w.debug_set_day_time(0.30); // bright morning
+
+    // Confirm the seed actually has a ruin near our stand point (guards the fixture).
+    let site = worldgen::worldgen_dangerous_site_near(184, 76, 48, 10);
+    assert!(site.is_some(), "seed 10 should have a ruin near (184,76)");
+    let (rx, ry, rz) = site.unwrap();
+
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    // Stand right at the ruin so its chunk is resident and within danger radius.
+    w.debug_set_camera(rx as f32 + 0.5, ry as f32 + 2.0, rz as f32 + 0.5, 0.0, 0.0);
+    for _ in 0..30 {
+        w.update(&zero, 0.05);
+    }
+    w.debug_set_camera(rx as f32 + 0.5, ry as f32 + 2.0, rz as f32 + 0.5, 0.0, 0.0);
+
+    let mut i = 0;
+    while i < 600 && w.debug_ruin_hostile_count() == 0 {
+        w.update(&zero, 0.05);
+        i += 1;
+    }
+    assert!(
+        w.debug_ruin_hostile_count() > 0,
+        "a ruin should spawn a daytime danger hostile (day_time = {}, quests not done)",
+        w.debug_day_time()
+    );
+
+    // It must stay capped: pump a long time and the ruin-hostile count never runs away.
+    for _ in 0..2000 {
+        w.update(&zero, 0.05);
+    }
+    assert!(
+        w.debug_ruin_hostile_count() <= 3,
+        "ruin danger hostiles stay capped, saw {}",
+        w.debug_ruin_hostile_count()
+    );
+}
+
 // ============================================================================
 // #25 async streaming: the LIVE (sync_stream == false) worker-pool path fills the
 // world over a few frames. This exercises the gen + mesh worker pool end to end:
