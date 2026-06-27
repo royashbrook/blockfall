@@ -1,7 +1,7 @@
 //! Blockfall engine C ABI, ported to Rust #[repr(C)].
 //!
 //! This is a faithful, byte-for-byte port of `contract/engine_c_api.h` (the
-//! frozen C ABI, BF_ABI_VERSION 17). Every typedef, enum, and struct here
+//! frozen C ABI, BF_ABI_VERSION 18). Every typedef, enum, and struct here
 //! mirrors the C declaration: same field names, same types, same order. The
 //! layout must match the C structs exactly so the Swift app reads the same
 //! bytes whether the engine is the C++ core or this Rust port.
@@ -23,8 +23,9 @@ use core::ffi::{c_char, c_void};
 // ABI version
 // ---------------------------------------------------------------------------
 
-/// Bumped on ANY breaking change to the header. v17.
-pub const BF_ABI_VERSION: u32 = 17;
+/// Bumped on ANY breaking change to the header. v18.
+/// v18: appended BF_ACT_SET_TIME_MODE (no struct layout change; append-only).
+pub const BF_ABI_VERSION: u32 = 18;
 
 // ---------------------------------------------------------------------------
 // Primitive types
@@ -163,6 +164,11 @@ pub enum bf_action_kind {
     BF_ACT_MODE_TOGGLE = 11,
     BF_ACT_ATTACK = 12,
     BF_ACT_GIVE_ITEM = 13,
+    // v18: pin the day/night clock for lighting tests (see World::set_time_mode).
+    // arg_i: 0 = auto (normal advance), 1 = always-day, 2 = always-night.
+    // Append-only: kept last so existing values and bf_action's layout are
+    // unchanged and the ABI parity tests stay valid.
+    BF_ACT_SET_TIME_MODE = 14,
 }
 
 #[repr(C)]

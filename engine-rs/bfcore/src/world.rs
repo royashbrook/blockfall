@@ -390,6 +390,9 @@ pub struct World<'c> {
     bob_phase: f32,
     bob_amt: f32,
     world_clock: f64,
+    // Day/night pin for lighting tests: 0 = auto (clock advances normally),
+    // 1 = always-day, 2 = always-night. Set via BF_ACT_SET_TIME_MODE.
+    time_mode: i32,
     weather: i32,
     spawn: V3,
     hurt_cd: f32,
@@ -494,6 +497,7 @@ impl<'c> World<'c> {
             bob_phase: 0.0,
             bob_amt: 0.0,
             world_clock: 0.0,
+            time_mode: 0,
             weather: 0,
             spawn: V3::new(0.0, 12.0, 0.0),
             hurt_cd: 0.0,
@@ -3605,6 +3609,8 @@ impl<'c> World<'c> {
         let dtf = dt as f32;
         self.moving = (input.move_forward.abs() + input.move_strafe.abs() + (input.jump as f32).abs()) > 0.1;
         self.world_clock += dt;
+        // Hold the sun fixed when always-day / always-night is active (no-op in auto).
+        self.apply_time_pin();
         if self.hurt_cd > 0.0 {
             self.hurt_cd -= dtf;
         }
@@ -3896,6 +3902,48 @@ impl<'c> World<'c> {
                     bf_game_mode::BF_MODE_CREATIVE
                 };
             }
+            BF_ACT_SET_TIME_MODE => self.set_time_mode(a.arg_i),
+        }
+    }
+
+    // Representative day/night phases (in day_time's 0..1 space) used to pin the
+    // sun for lighting tests. day_time feeds sun_dir as y = -sin(2*pi*t) - 0.25:
+    // sin peaks at t = 0.25 (sun highest, brightest day) and bottoms at t = 0.75
+    // (sun below the horizon, deepest night).
+    const TIME_PHASE_DAY: f32 = 0.25;
+    const TIME_PHASE_NIGHT: f32 = 0.75;
+
+    // Invert day_time (phase = (clock * 0.00175 + 0.30) % 1.0) to the smallest
+    // non-negative world_clock that yields the given phase. Mirrors the math in
+    // debug_set_day_time so the pinned clock reads back as exactly `phase`.
+    fn clock_for_phase(phase: f32) -> f64 {
+        let p = phase.rem_euclid(1.0) as f64;
+        let frac = (p - 0.30).rem_euclid(1.0);
+        frac / 0.00175
+    }
+
+    // Set the day/night pin: 0 = auto (clock advances normally), 1 = always-day,
+    // 2 = always-night. Driven purely by player input, never by wall-clock, so
+    // the headless/sync path is untouched unless the action is sent. When a pin
+    // is selected we snap the clock immediately so the change is visible without
+    // waiting for the next tick; update() then holds it there each frame.
+    fn set_time_mode(&mut self, mode: i32) {
+        self.time_mode = mode;
+        match mode {
+            1 => self.world_clock = Self::clock_for_phase(Self::TIME_PHASE_DAY),
+            2 => self.world_clock = Self::clock_for_phase(Self::TIME_PHASE_NIGHT),
+            _ => self.time_mode = 0, // auto: leave the clock where it is
+        }
+    }
+
+    // Re-pin the clock when a day/night mode is active. Called each tick after
+    // the normal advance so always-day / always-night hold a fixed sun; in auto
+    // mode this is a no-op and time advances as usual.
+    fn apply_time_pin(&mut self) {
+        match self.time_mode {
+            1 => self.world_clock = Self::clock_for_phase(Self::TIME_PHASE_DAY),
+            2 => self.world_clock = Self::clock_for_phase(Self::TIME_PHASE_NIGHT),
+            _ => {}
         }
     }
 
@@ -4627,5 +4675,77 @@ impl<'a> ByteReader<'a> {
     }
     fn f32(&mut self) -> Option<f32> {
         Some(f32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+}
+
+#[cfg(test)]
+mod time_mode_tests {
+    use super::*;
+
+    fn set_mode(w: &mut World, mode: i32) {
+        let act = bf_action {
+            kind: bf_action_kind::BF_ACT_SET_TIME_MODE,
+            arg_i: mode,
+            arg_j: 0,
+            arg_k: 0,
+        };
+        w.action(&act);
+    }
+
+    fn tick(w: &mut World) {
+        let input = bf_frame_input {
+            move_forward: 0.0,
+            move_strafe: 0.0,
+            look_yaw_delta: 0.0,
+            look_pitch_delta: 0.0,
+            jump: 0,
+            sneak: 0,
+            sprint: 0,
+            fly_ascend: 0,
+            fly_descend: 0,
+            _pad: [0; 3],
+        };
+        w.update(&input, 0.016);
+    }
+
+    // Always-day (mode 1) pins day_time to the representative daytime phase and
+    // holds it there across ticks; the sun never drifts toward night.
+    #[test]
+    fn always_day_pins_clock_high_noon() {
+        let mut w = World::new(None);
+        set_mode(&mut w, 1);
+        assert!((w.debug_day_time() - World::TIME_PHASE_DAY).abs() < 1e-4);
+        for _ in 0..20 {
+            tick(&mut w);
+        }
+        assert!((w.debug_day_time() - World::TIME_PHASE_DAY).abs() < 1e-4);
+    }
+
+    // Always-night (mode 2) pins day_time to the representative night phase and
+    // holds it there across ticks.
+    #[test]
+    fn always_night_pins_clock_below_horizon() {
+        let mut w = World::new(None);
+        set_mode(&mut w, 2);
+        assert!((w.debug_day_time() - World::TIME_PHASE_NIGHT).abs() < 1e-4);
+        for _ in 0..20 {
+            tick(&mut w);
+        }
+        assert!((w.debug_day_time() - World::TIME_PHASE_NIGHT).abs() < 1e-4);
+    }
+
+    // Auto (mode 0) resumes the normal advance: after pinning to night, switching
+    // back to auto lets the clock move forward again on the next ticks.
+    #[test]
+    fn auto_resumes_normal_advance() {
+        let mut w = World::new(None);
+        set_mode(&mut w, 2); // pin night first
+        set_mode(&mut w, 0); // back to auto: clock left where it was
+        let before = w.world_clock;
+        for _ in 0..10 {
+            tick(&mut w);
+        }
+        // 10 ticks of 0.016 s advance the clock by ~0.16 units in auto mode.
+        assert!(w.world_clock > before + 0.1);
     }
 }

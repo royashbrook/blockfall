@@ -88,6 +88,27 @@ final class GameView: MTKView {
     // Trash an inventory slot.
     func enqueueDestroy(_ slot: Int) { queue(BF_ACT_DROP_ITEM, Int32(slot)) }
 
+    // Day/night pin for testing lighting: 0 = auto, 1 = always-day, 2 = always-night.
+    // Mutually exclusive by construction (a single mode value). Surfaced to the HUD
+    // via onTimeModeChanged so an indicator / settings control can mirror the state.
+    private(set) var timeMode: Int32 = 0
+    var onTimeModeChanged: ((Int32) -> Void)?
+
+    // Cycle auto -> always-day -> always-night -> auto. Bound to 'T'.
+    private func cycleTimeMode() {
+        setTimeMode((timeMode + 1) % 3)
+    }
+
+    // Set the day/night pin directly (used by 'T' and by any settings control that
+    // wants to drive it). Sends BF_ACT_SET_TIME_MODE so the engine pins the clock.
+    func setTimeMode(_ mode: Int32) {
+        timeMode = mode
+        queue(BF_ACT_SET_TIME_MODE, mode)
+        let label = ["auto (normal day/night)", "always day", "always night"][Int(mode)]
+        NSLog("Blockfall: time mode = \(label)")
+        onTimeModeChanged?(mode)
+    }
+
     // Inventory move from the HUD (BF_ACT_INV_MOVE: from, to, count).
     func enqueueMove(from: Int, to: Int, count: Int) {
         var a = bf_action(); a.kind = BF_ACT_INV_MOVE
@@ -117,6 +138,7 @@ final class GameView: MTKView {
             NSLog("Blockfall: invert Y (up/down) = \(invertY)"); return }
         if e.keyCode == 4  { onHost?(); return }                // 'H' — host LAN co-op
         if e.keyCode == 38 { onJoin?(); return }                // 'J' — join a LAN host
+        if e.keyCode == 17 { cycleTimeMode(); return }          // 'T' — auto/day/night pin
         // Number keys: craft the Nth craftable recipe when the inventory is
         // open, otherwise select the hotbar slot.
         let nums: [UInt16: Int32] = [18:0, 19:1, 20:2, 21:3, 23:4, 22:5, 26:6, 28:7, 25:8]
