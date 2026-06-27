@@ -348,6 +348,11 @@ final class HUDView: NSView {
         if changed && hud.inventory_open == 0 { needsDisplay = true }
     }
 
+    // Day/night pin indicator: 0 auto, 1 always-day, 2 always-night. Set from
+    // GameView's T key so the player gets visible confirmation the pin is active.
+    var timeMode: Int32 = 0
+    func setTimeMode(_ m: Int32) { if m != timeMode { timeMode = m; needsDisplay = true } }
+
     // Map time-of-day [0,1) to a (label, glyph). Day ≈ [0.25,0.75]; the ~0.05
     // bands at each transition read as Dawn (sunrise ~0.25) / Dusk (sunset ~0.75).
     private func timePhase(_ t: Float) -> (String, String) {
@@ -827,6 +832,12 @@ final class HUDView: NSView {
         // Index of the time line within `lines`, so we can underlay a progress
         // bar at exactly its row after the box is laid out below.
         let timeLineIdx = lines.count - 1
+        // Day/night pin (T key) indicator, so the player can see the pin is on.
+        if timeMode != 0 {
+            lines.append(StatusLine(text: timeMode == 1 ? "[ALWAYS DAY] (T)" : "[ALWAYS NIGHT] (T)",
+                                    color: NSColor(srgbRed: 1.0, green: 0.55, blue: 0.85, alpha: 1),
+                                    bold: true))
+        }
 
         // FPS (#29) — rounded smoothed value. Shows "—" until the first delta.
         let fpsText = smoothedFPS > 0 ? "\(Int(smoothedFPS.rounded())) FPS" : "— FPS"

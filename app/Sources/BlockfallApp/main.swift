@@ -130,6 +130,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // #42: 'L' in GameView flips the quest-log overlay in the HUD.
         mtkView.onToggleQuestLog = { [weak h] in h?.toggleQuestLog() }
+        // 'T' day/night pin: show a visible indicator so the player can confirm it.
+        mtkView.onTimeModeChanged = { [weak h] m in h?.setTimeMode(m) }
         // #: apply the persisted HUD options (text size + visibility) so they
         // stick between sessions.
         h.hudScale = AppDelegate.loadHUDScale()
