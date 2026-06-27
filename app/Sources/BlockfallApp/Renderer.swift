@@ -3844,17 +3844,26 @@ final class Renderer: NSObject, MTKViewDelegate {
             for (int i = 0; i < 24; ++i) {
                 p += delta;
                 float3 c = hdrTex.sample(s, clamp(p, 0.0, 1.0)).rgb;
-                // Only the very brightest pixels (the sun disc itself) seed rays, not the
-                // broad bright sky. A low threshold turned god rays into a screen-wide wash
-                // that washed out the view toward the sun's E/W arc (#: washout). 0.85 keeps
-                // them as tight shafts from the sun.
-                illum += max(0.0, dot(c, float3(0.2126, 0.7152, 0.0722)) - 0.85) * decay;
+                // GROUND-WHITEOUT FIX (dusk/low-sun, yaw-dependent): the seed threshold must
+                // sit ABOVE the brightest sky, or the broad warm dusk horizon band (capped at
+                // ~0.92 luma in evalSkyColor, plus the sunset haze) seeds the march and floods
+                // the ground with a warm wash whenever the camera looks across it toward the
+                // low sun on the horizon (exactly the E/W-vs-S yaw dependence the player saw).
+                // The old 0.85 floor was BELOW that 0.92 sky, so the whole dusk sky qualified.
+                // Raise to 0.95 so only the sun disc/inner core (the intended shaft source,
+                // which alone exceeds the sky cap) seeds rays. Daytime shafts are unaffected:
+                // the disc is far brighter than 0.95 and the broad day sky sits ~0.7-0.92.
+                illum += max(0.0, dot(c, float3(0.2126, 0.7152, 0.0722)) - 0.95) * decay;
                 decay *= 0.92;
             }
             illum *= (1.0 / 24.0);
             float edge = 1.0 - smoothstep(0.5, 1.1, max(abs(sunUV.x - 0.5), abs(sunUV.y - 0.5)) * 2.0);
             float3 sunCol = float3(pu.sunColorR, pu.sunColorG, pu.sunColorB);
-            hdr += sunCol * (illum * pu.godrayStrength * edge * 1.0);  // gentler gain (was 2.2)
+            // CLAMP the additive per channel (mirrors the bloom clamp below). Even with a
+            // clean seed, a long march that grazes the disc must never lift the ground to a
+            // flat bright wash. 0.10 keeps a visible shaft glow but can never white out terrain.
+            float3 grayAdd = sunCol * (illum * pu.godrayStrength * edge);
+            hdr += clamp(grayAdd, 0.0, 0.10);
         }
 
         // Clamp the bloom contribution per-channel so a large bright region (sun disc,
@@ -5090,8 +5099,55 @@ func runWashoutTest() -> Bool {
     print(String(format: "    night-spec gate: day glint %.3f (want >0.05), night glint %.3f (want ~0): %@",
                  dayGlint, nightGlint, specGateOK ? "OK" : "FAIL"))
 
+    // GOD-RAY GROUND-WHITEOUT GUARD (the dusk/low-sun, yaw-dependent terrain wash).
+    // The main full-scene sweep above composites with god rays OFF (godrayStrength
+    // default 0) and over a bright SAND floor whose own brightness drowns the additive,
+    // so it never exercised the actual bug: the live god-ray composite (Renderer
+    // pass 4 / compositeFrag) marches every GROUND pixel toward the sun's screen
+    // position and ADDS sunCol*illum. At a LOW sun (in frame at the horizon) the seed
+    // threshold (old 0.85) sat BELOW the broad warm dusk sky (luma ~0.89, capped at
+    // ~0.92 in evalSkyColor), so the whole sky band along the march seeded the rays and
+    // dumped a warm wash onto a DARK grass ground — but only when the camera looked
+    // across the ground toward the sun's azimuth (E/W), not away (S). That is the exact
+    // yaw-dependent ground whiteout players saw. This guard mirrors the compositeFrag
+    // god-ray accumulation on the CPU (same precedent as the night-spec gate above) for
+    // the worst case and asserts the additive a dark ground receives is tiny, while a
+    // legitimate SUN-DISC shaft is preserved. Deterministic; no scene/streaming confound.
+    func godrayAdd(seedLuma: Float, seedFloor: Float, clampMax: Float) -> Float {
+        // compositeFrag march: 24 steps from a ground pixel toward the sun; each step
+        // accumulates max(0, sampleLuma - seedFloor) * decay, decay *= 0.92, then the sum
+        // is scaled by 1/24, godrayStrength (dayT*0.45 at this low sun) and edge (~1 with
+        // the sun well inside the frame). Worst case: every sample sits in the bright band.
+        let dayT = Renderer.dayLight(0.50)
+        let godStrength = dayT * 0.45
+        var decay: Float = 1, illum: Float = 0
+        for _ in 0..<24 { illum += max(0, seedLuma - seedFloor) * decay; decay *= 0.92 }
+        illum *= (1.0 / 24.0)
+        let edge: Float = 1.0
+        // sunCol green channel is the brightest non-red channel; use luma of the warm sun
+        // colour as a representative per-pixel additive magnitude.
+        let sunCol = SIMD3<Float>(1.0, 0.6 + 0.35 * dayT, 0.3 + 0.5 * dayT)
+        let addV = sunCol * (illum * godStrength * edge)
+        // The shader clamps the additive per channel (clampMax). 0 (= no clamp) reproduces
+        // the OLD code; the FIX clamps to 0.10.
+        let clamped = clampMax > 0 ? simd_clamp(addV, SIMD3<Float>(repeating: 0), SIMD3<Float>(repeating: clampMax)) : addV
+        return simd_dot(clamped, SIMD3<Float>(0.2126, 0.7152, 0.0722))
+    }
+    // The broad warm dusk SKY band (luma ~0.89). With the FIX it must NOT flood the ground:
+    // seed floor 0.95 (> sky), clamp 0.10. Result ~0 → no yaw-dependent ground wash.
+    let skyFloodFixed = godrayAdd(seedLuma: 0.89, seedFloor: 0.95, clampMax: 0.10)
+    // Same broad sky through the OLD shader (floor 0.85, no clamp) — what the bug did.
+    let skyFloodOld   = godrayAdd(seedLuma: 0.89, seedFloor: 0.85, clampMax: 0.0)
+    // The legitimate SUN DISC (luma ~3.0) must STILL seed a visible shaft with the fix.
+    let discShaftFixed = godrayAdd(seedLuma: 3.0,  seedFloor: 0.95, clampMax: 0.10)
+    // Guard: the fixed broad-sky flood onto the ground is negligible (< 1% luma), it is a
+    // large reduction vs the old behaviour, and the disc shaft survives.
+    let grGroundOK = skyFloodFixed < 0.01 && skyFloodFixed < skyFloodOld * 0.34 && discShaftFixed > 0.02
+    print(String(format: "    god-ray ground guard: dusk-sky flood onto dark ground FIXED %.3f vs OLD %.3f (want FIXED<0.01 and <1/3 OLD); sun-disc shaft %.3f (want >0.02): %@",
+                 skyFloodFixed, skyFloodOld, discShaftFixed, grGroundOK ? "OK" : "FAIL"))
+
     let thresh = 0.30, caveThresh = 0.30, deltaThresh = 0.12
-    let pass = worstWash < thresh && caveMaxLuma < caveThresh && maxLumaDelta < deltaThresh && specGateOK
+    let pass = worstWash < thresh && caveMaxLuma < caveThresh && maxLumaDelta < deltaThresh && specGateOK && grGroundOK
     print(String(format: "%@ washout test — worst washed %.1f%% (%@); turn-brightening Δluma %.1f%% (%@, max %.0f%%); cave sky max-luma %.0f%%",
                  pass ? "OK:" : "FAIL:", worstWash*100, worstAt, maxLumaDelta*100, maxLumaDeltaAt, deltaThresh*100, caveMaxLuma*100))
     return pass

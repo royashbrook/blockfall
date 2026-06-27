@@ -423,8 +423,26 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 enc.setRenderPipelineState(cp); enc.setDepthStencilState(noDepthState); enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor, index: 0)
                 enc.setFragmentTexture(bloomBrt, index: 1)
+                // God rays (#44): mirror the LIVE renderer so the headless --shot composites
+                // the same scattered sun shafts. The harness previously left these off
+                // (godrayStrength defaulted to 0), so the screenshot path could not reproduce
+                // the live dusk ground-whiteout the rays cause. Match the live formula.
+                let dayT  = Renderer.dayLight(f.camera.time_of_day)
+                let toSun = simd_normalize(SIMD3<Float>(-sun.x, -sun.y, -sun.z))
+                let sunClip = viewProj * SIMD4<Float>(camPosW.x + toSun.x * 2000,
+                                                      camPosW.y + toSun.y * 2000,
+                                                      camPosW.z + toSun.z * 2000, 1)
+                var grStrength: Float = 0, sunSX: Float = 0, sunSY: Float = 0
+                let godOff = ProcessInfo.processInfo.environment["BF_SHOT_NOGODRAY"] == "1"
+                if sunClip.w > 0.001 && !godOff {
+                    sunSX = (sunClip.x / sunClip.w) * 0.5 + 0.5
+                    sunSY = 0.5 - (sunClip.y / sunClip.w) * 0.5
+                    grStrength = dayT * 0.45
+                }
                 var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.30,
-                                      rainStrength: 0, wallClockSecs: 0)
+                                      rainStrength: 0, wallClockSecs: 0,
+                                      godrayStrength: grStrength, sunScreenX: sunSX, sunScreenY: sunSY,
+                                      sunColorR: 1.0, sunColorG: 0.6 + 0.35 * dayT, sunColorB: 0.3 + 0.5 * dayT)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 enc.endEncoding()
