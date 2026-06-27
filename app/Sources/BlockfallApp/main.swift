@@ -532,6 +532,19 @@ if CommandLine.arguments.contains("--shadowprobe") {
     let ok = runShadowYawProbe()
     exit(ok ? 0 : 1)
 }
+// --shadowposprobe: the POSITION + SUN probe. Tall occluder, high vs low sun, sweep the
+// camera POSITION and check a FIXED world point's shadow stays constant (the wipe test).
+if CommandLine.arguments.contains("--shadowposprobe") {
+    let ok = runShadowPosProbe()
+    exit(ok ? 0 : 1)
+}
+// --shadowstabilitytest: GREEN/RED gate for the #115 position+sun shadow wipe. Walks the
+// player past a tall occluder at high AND low sun and FAILS if a fixed world point's shadow
+// factor moves more than a small tolerance (so the cascade-union fix cannot silently regress).
+if CommandLine.arguments.contains("--shadowstabilitytest") {
+    let ok = runShadowPosProbe(strict: true)
+    exit(ok ? 0 : 1)
+}
 if let idx = CommandLine.arguments.firstIndex(of: "--screenshot"), idx + 1 < CommandLine.arguments.count {
     let ok = runRenderSelfTest(savePath: CommandLine.arguments[idx + 1], width: 960, height: 720)
     exit(ok ? 0 : 1)

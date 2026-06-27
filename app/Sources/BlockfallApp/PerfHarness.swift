@@ -949,3 +949,454 @@ func runShadowYawProbe() -> Bool {
                  oldMax - oldMin, newMax - newMin))
     return true
 }
+
+// ============================================================================
+// --shadowposprobe : the POSITION + SUN probe (the player's actual report).
+//
+// The reported wipe depends on PLAYER POSITION and SUN POSITION, not yaw, and it
+// gets worse as the sun climbs and big occluders (mountains, tall trees) throw
+// large shadows. This probe builds a synthetic scene with a TALL occluder (a
+// mountain-height pillar reaching world y ~50) on a wide ground plane, renders the
+// REAL shadow pipeline (shadowVmain / vmain / fmain / sampleShadowPCF), and then:
+//
+//   - sweeps the CAMERA POSITION through several world offsets (and a couple yaws),
+//   - at a HIGH (midday) sun AND a LOW (morning) sun,
+//   - samples the shadow factor at a set of FIXED world points each time,
+//   - dumps the light-matrix params (ortho extents R/Ry, near/far, eye, and the
+//     depth-along-L of the TALL caster's top + each probe point), the depth-map
+//     hash, and the shadow factor per fixed point.
+//
+// A fixed world point's shadow factor MUST be constant as the camera position moves
+// (the sun and geometry did not change). If it changes, that IS the wipe, and the
+// dumped frustum params show why (depth slab clips the tall caster, box too small,
+// or translation not snapped).
+// ============================================================================
+// strict == true turns this into a GREEN/RED regression gate (used by check.sh): it returns
+// false if a fixed world point's shadow factor moves more than a small tolerance as the
+// player walks (the #115 wipe). strict == false is the verbose investigation probe.
+func runShadowPosProbe(strict: Bool = false) -> Bool {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        // No Metal device (headless CI): cannot run; treat as non-fatal skip.
+        log("no Metal device (shadow stability test skipped)"); return true
+    }
+    let queue = device.makeCommandQueue()!
+    guard let lib = try? device.makeLibrary(source: Renderer.shaderSource, options: nil) else {
+        log("shader compile failed"); return false
+    }
+    func pipe(_ v: String, _ frag: String?, color: MTLPixelFormat?, depth: Bool) -> MTLRenderPipelineState? {
+        let d = MTLRenderPipelineDescriptor()
+        d.vertexFunction = lib.makeFunction(name: v)
+        d.fragmentFunction = frag.flatMap { lib.makeFunction(name: $0) }
+        if let c = color { d.colorAttachments[0].pixelFormat = c }
+        if depth { d.depthAttachmentPixelFormat = .depth32Float }
+        return try? device.makeRenderPipelineState(descriptor: d)
+    }
+    guard let shadowPipe = pipe("shadowVmain", nil, color: nil, depth: true),
+          let terrainPipe = pipe("vmain", "fmain", color: .bgra8Unorm, depth: true) else {
+        log("pipeline build failed"); return false
+    }
+    let shDSD = MTLDepthStencilDescriptor(); shDSD.depthCompareFunction = .lessEqual; shDSD.isDepthWriteEnabled = true
+    let shadowDepthState = device.makeDepthStencilState(descriptor: shDSD)
+    let dsd = MTLDepthStencilDescriptor(); dsd.depthCompareFunction = .less; dsd.isDepthWriteEnabled = true
+    let depthState = device.makeDepthStencilState(descriptor: dsd)
+    let ssd = MTLSamplerDescriptor()
+    ssd.minFilter = .linear; ssd.magFilter = .linear
+    ssd.sAddressMode = .clampToEdge; ssd.tAddressMode = .clampToEdge
+    ssd.compareFunction = .lessEqual
+    let shadowSampler = device.makeSamplerState(descriptor: ssd)!
+
+    // ---- Synthetic scene as PackedVertex triangles. The PackedVertex voxel coord is
+    // 6 bits per axis (0..63), so we can reach world y ~50 for a tall caster. The ground
+    // is a single wide chunk; the tall pillar is built from stacked 64-high columns.
+    struct PV { var pos: UInt32; var normuv: UInt32; var material: UInt16; var sky: UInt8; var block: UInt8; var reserved: UInt32 }
+    func pv(_ x: Int, _ y: Int, _ z: Int, _ norm: UInt32, _ mat: UInt16) -> PV {
+        let pos = UInt32(x & 0x3f) | (UInt32(y & 0x3f) << 6) | (UInt32(z & 0x3f) << 12)
+        return PV(pos: pos, normuv: norm | (3 << 3), material: mat, sky: 15, block: 0, reserved: 0)
+    }
+    var verts: [PV] = []; var idx: [UInt32] = []
+    func quad(_ a: PV, _ b: PV, _ c: PV, _ d: PV) {
+        let base = UInt32(verts.count)
+        verts.append(a); verts.append(b); verts.append(c); verts.append(d)
+        idx.append(base); idx.append(base+1); idx.append(base+2)
+        idx.append(base); idx.append(base+2); idx.append(base+3)
+    }
+    // Ground: top faces (+Y, norm 2) at y=0 spanning x,z in [0,63] (one chunk's worth).
+    let gMat: UInt16 = 3
+    for gx in 0..<63 { for gz in 0..<63 {
+        quad(pv(gx, 0, gz, 2, gMat), pv(gx, 0, gz+1, 2, gMat),
+             pv(gx+1, 0, gz+1, 2, gMat), pv(gx+1, 0, gz, 2, gMat))
+    } }
+    // TALL occluder: a 3x3 column from y=1 to y=50 (mountain / tall-tree height). Four
+    // side faces per layer cast a long shadow across the ground at a high sun.
+    let px0 = 30, px1 = 33, pz0 = 30, pz1 = 33, pTop = 50, pMat: UInt16 = 3
+    for y in 1..<pTop {
+        quad(pv(px1, y, pz0, 0, pMat), pv(px1, y, pz1, 0, pMat), pv(px1, y+1, pz1, 0, pMat), pv(px1, y+1, pz0, 0, pMat))
+        quad(pv(px0, y, pz1, 1, pMat), pv(px0, y, pz0, 1, pMat), pv(px0, y+1, pz0, 1, pMat), pv(px0, y+1, pz1, 1, pMat))
+        quad(pv(px0, y, pz1, 4, pMat), pv(px1, y, pz1, 4, pMat), pv(px1, y+1, pz1, 4, pMat), pv(px0, y+1, pz1, 4, pMat))
+        quad(pv(px1, y, pz0, 5, pMat), pv(px0, y, pz0, 5, pMat), pv(px0, y+1, pz0, 5, pMat), pv(px1, y+1, pz0, 5, pMat))
+    }
+    let vbuf = device.makeBuffer(bytes: verts, length: verts.count * MemoryLayout<PV>.stride, options: .storageModeShared)!
+    let ibuf = device.makeBuffer(bytes: idx, length: idx.count * MemoryLayout<UInt32>.stride, options: .storageModeShared)!
+
+    let W = 1200, H = 900
+    let kShadowRes = 1536
+    func tex(_ fmt: MTLPixelFormat, _ w: Int, _ h: Int, _ usage: MTLTextureUsage, _ shared: Bool) -> MTLTexture {
+        let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: fmt, width: w, height: h, mipmapped: false)
+        td.usage = usage; td.storageMode = shared ? .shared : .private
+        return device.makeTexture(descriptor: td)!
+    }
+    let shadowTexN = tex(.depth32Float, kShadowRes, kShadowRes, [.renderTarget, .shaderRead], true)
+    let shadowTexF = tex(.depth32Float, kShadowRes, kShadowRes, [.renderTarget, .shaderRead], true)
+    let outTex   = tex(.bgra8Unorm, W, H, [.renderTarget, .shaderRead], true)
+    let outDepth = tex(.depth32Float, W, H, [.renderTarget], false)
+
+    func readPixel(_ t: MTLTexture, _ x: Int, _ y: Int, half: Int = 4) -> SIMD3<Float> {
+        var acc = SIMD3<Float>(0, 0, 0); var n: Float = 0
+        for dy in -half...half { for dx in -half...half {
+            let cx = min(max(0, x + dx), t.width - 1), cy = min(max(0, y + dy), t.height - 1)
+            var px = [UInt8](repeating: 0, count: 4)
+            t.getBytes(&px, bytesPerRow: t.width * 4, from: MTLRegionMake2D(cx, cy, 1, 1), mipmapLevel: 0)
+            acc += SIMD3<Float>(Float(px[2]) / 255.0, Float(px[1]) / 255.0, Float(px[0]) / 255.0)
+            n += 1
+        } }
+        return acc / n
+    }
+    func project(_ p: SIMD3<Float>, _ vp: simd_float4x4) -> (Int, Int) {
+        let clip = vp * SIMD4<Float>(p.x, p.y, p.z, 1)
+        let ndc = SIMD3<Float>(clip.x/clip.w, clip.y/clip.w, clip.z/clip.w)
+        return (Int((ndc.x * 0.5 + 0.5) * Float(W)), Int((1.0 - (ndc.y * 0.5 + 0.5)) * Float(H)))
+    }
+    // Top-down-ish view at an arbitrary camera position + yaw so every fixed probe point
+    // is on screen at every offset.
+    func viewMatrix(_ camPos: SIMD3<Float>, yawDeg: Float) -> simd_float4x4 {
+        let yaw = yawDeg * Float.pi / 180.0, pitch: Float = -1.35
+        let cp = cos(pitch), sp = sin(pitch), cy = cos(yaw), sy = sin(yaw)
+        let fwd = simd_normalize(SIMD3<Float>(sy * cp, sp, -cy * cp))
+        let right = simd_normalize(simd_cross(fwd, SIMD3<Float>(0, 1, 0)))
+        let up = simd_cross(right, fwd)
+        let r = right, u = up, f = -fwd
+        return simd_float4x4(columns: (
+            SIMD4<Float>(r.x, u.x, f.x, 0), SIMD4<Float>(r.y, u.y, f.y, 0),
+            SIMD4<Float>(r.z, u.z, f.z, 0),
+            SIMD4<Float>(-simd_dot(r, camPos), -simd_dot(u, camPos), -simd_dot(f, camPos), 1)))
+    }
+    let proj = Renderer.perspective(fovy: 1.30, aspect: Float(W)/Float(H), near: 0.05, far: 600)
+
+    // FIXED world points on the ground in the tall pillar's shadow direction. The sun
+    // points toward +X/+Z, so the shadow lands toward +X/+Z of the pillar (x>33,z>33).
+    // We march out far enough to span both cascades and the radial fade.
+    func probePoints(_ sun: SIMD3<Float>) -> [SIMD3<Float>] {
+        let dir = simd_normalize(SIMD3<Float>(sun.x, 0, sun.z))
+        var pts: [SIMD3<Float>] = []
+        for k in 0..<10 {
+            let t = 4.0 + Float(k) * 6.0
+            pts.append(SIMD3<Float>(33.5 + dir.x * t, 0.05, 33.5 + dir.z * t))
+        }
+        return pts
+    }
+    // Pillar top centre: the tall caster point whose depth-along-L we watch for clipping.
+    let pillarTop = SIMD3<Float>(31.5, Float(pTop), 31.5)
+
+    // Two suns: HIGH (near midday, steep) and LOW (early morning, shallow). Both point
+    // toward +X/+Z so the shadow falls the same direction for both.
+    let sunHigh = simd_normalize(SIMD3<Float>(0.30, -1.40, 0.25))
+    let sunLow  = simd_normalize(SIMD3<Float>(0.85, -0.42, 0.55))
+
+    // Camera position offsets: the player walking around the SAME scene. The fixed probe
+    // points do not move; only the camera does.
+    // Player walks around the SAME scene near the tall occluder. Eye ~ a couple blocks up
+    // (a real player height), translating across the ground. The fixed probe points (the
+    // pillar's cast shadow streak) do not move; only the player does.
+    let baseCam = SIMD3<Float>(20, 8, 20)
+    let offsets: [(SIMD3<Float>, Float)] = [
+        (SIMD3<Float>(  0, 0,   0), 0),
+        (SIMD3<Float>(  8, 0,   4), 0),
+        (SIMD3<Float>( 16, 0,   8), 0),
+        (SIMD3<Float>( 26, 1,  14), 0),
+        (SIMD3<Float>( 36, 2,  20), 0),
+        (SIMD3<Float>( 16, 0,   8), 60),   // a view-yaw too, to confirm yaw still does not matter
+    ]
+
+    // The VIEW eye is FIXED (a high overhead camera that always frames the whole scene), so
+    // a fixed world point projects to the same on-screen ground texel at every offset and is
+    // never lost off-screen. Only `playerPos` (what the in-game light matrix + shadow
+    // distance code key off of) varies. That isolates the ONE variable the player reported:
+    // moving through the world. If a fixed point's shadow changes, it is purely because the
+    // light matrix / cascade selection changed with player position.
+    let viewEye = SIMD3<Float>(48, 95, 48)
+    // PROBE_ONE_CASCADE=1 makes the near radius equal the far radius so both cascades are the
+    // SAME map -> isolates whether the wipe is cascade DISAGREEMENT (gone if this stabilizes).
+    let oneCascade = ProcessInfo.processInfo.environment["PROBE_ONE_CASCADE"] == "1"
+    // PROBE_BIAS overrides the shadow-caster depth-bias slopeScale (default 2.0).
+    let biasSlope = Float(ProcessInfo.processInfo.environment["PROBE_BIAS"] ?? "") ?? 2.0
+    let probeFarR = Float(ProcessInfo.processInfo.environment["PROBE_FARR"] ?? "") ?? 150
+    // Light matrices last used by renderAt, so the analytic sampler can use the exact ones.
+    var lastLvpN = matrix_identity_float4x4
+    var lastLvpF = matrix_identity_float4x4
+    func renderAt(_ playerPos: SIMD3<Float>, viewYawDeg: Float, sun: SIMD3<Float>, debug: Bool) {
+        let probeNearR = Float(ProcessInfo.processInfo.environment["PROBE_NEARR"] ?? "") ?? 48
+        let kNearR: Float = oneCascade ? probeFarR : probeNearR, kFarR: Float = probeFarR
+        let lvpN = Renderer.buildLightMatrix(sunDir: sun, camPos: playerPos, radius: kNearR, res: Float(kShadowRes))
+        let lvpF = Renderer.buildLightMatrix(sunDir: sun, camPos: playerPos, radius: kFarR,  res: Float(kShadowRes))
+        lastLvpN = lvpN; lastLvpF = lvpF
+        let viewProj = proj * viewMatrix(viewEye, yawDeg: viewYawDeg)
+        let cmd = queue.makeCommandBuffer()!
+        func shadowPass(_ map: MTLTexture, _ m: simd_float4x4) {
+            let srp = MTLRenderPassDescriptor()
+            srp.depthAttachment.texture = map; srp.depthAttachment.loadAction = .clear
+            srp.depthAttachment.storeAction = .store; srp.depthAttachment.clearDepth = 1.0
+            if let enc = cmd.makeRenderCommandEncoder(descriptor: srp) {
+                enc.setRenderPipelineState(shadowPipe); enc.setDepthStencilState(shadowDepthState)
+                enc.setCullMode(.front); enc.setDepthBias(2.0, slopeScale: biasSlope, clamp: 0.0)
+                var su = ShadowVertUniforms(lightViewProj: m, chunkOrigin: SIMD4<Float>(0, 0, 0, 0))
+                var wind = WindUniforms(wallClockSecs: 0, rainStrength: 0)
+                enc.setVertexBuffer(vbuf, offset: 0, index: 0)
+                enc.setVertexBytes(&su, length: MemoryLayout<ShadowVertUniforms>.stride, index: 1)
+                enc.setVertexBytes(&wind, length: MemoryLayout<WindUniforms>.stride, index: 2)
+                enc.drawIndexedPrimitives(type: .triangle, indexCount: idx.count, indexType: .uint32, indexBuffer: ibuf, indexBufferOffset: 0)
+                enc.endEncoding()
+            }
+        }
+        shadowPass(shadowTexN, lvpN); shadowPass(shadowTexF, lvpF)
+        let rp = MTLRenderPassDescriptor()
+        rp.colorAttachments[0].texture = outTex
+        rp.colorAttachments[0].loadAction = .clear; rp.colorAttachments[0].storeAction = .store
+        rp.colorAttachments[0].clearColor = MTLClearColor(red: 0.45, green: 0.62, blue: 0.86, alpha: 1)
+        rp.depthAttachment.texture = outDepth
+        rp.depthAttachment.loadAction = .clear; rp.depthAttachment.clearDepth = 1.0; rp.depthAttachment.storeAction = .dontCare
+        if let enc = cmd.makeRenderCommandEncoder(descriptor: rp) {
+            enc.setRenderPipelineState(terrainPipe); enc.setDepthStencilState(depthState)
+            enc.setCullMode(.back); enc.setFrontFacing(.counterClockwise)
+            var u = Uniforms(viewProj: viewProj, chunkOrigin: SIMD4<Float>(0, 0, 0, 1),
+                             sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, 0.25),
+                             lightViewProj: lvpN, dimSatN: SIMD4<Float>(1, 1, 1, 0),
+                             lightViewProjF: lvpF)
+            // cameraPosW = the PLAYER position (drives distFade + cascade nearBlend in fmain),
+            // NOT the fixed view eye.
+            var wu = WaterUniforms(wallClockSecs: 0, underwater: 0, shadowScale: debug ? 2.0 : 1.0,
+                                   cameraPosW: SIMD4<Float>(playerPos.x, playerPos.y, playerPos.z, 0),
+                                   sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, 0.25))
+            var wind = WindUniforms(wallClockSecs: 0, rainStrength: 0)
+            enc.setVertexBuffer(vbuf, offset: 0, index: 0)
+            enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+            enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
+            enc.setVertexBytes(&wind, length: MemoryLayout<WindUniforms>.stride, index: 3)
+            enc.setFragmentBytes(&wind, length: MemoryLayout<WindUniforms>.stride, index: 3)
+            enc.setFragmentTexture(shadowTexN, index: 0)
+            enc.setFragmentTexture(shadowTexF, index: 1)
+            enc.setFragmentSamplerState(shadowSampler, index: 0)
+            enc.drawIndexedPrimitives(type: .triangle, indexCount: idx.count, indexType: .uint32, indexBuffer: ibuf, indexBufferOffset: 0)
+            enc.endEncoding()
+        }
+        cmd.commit(); cmd.waitUntilCompleted()
+    }
+    func mapHash(_ t: MTLTexture) -> UInt64 {
+        let n = kShadowRes * kShadowRes
+        var buf = [Float](repeating: 0, count: n)
+        t.getBytes(&buf, bytesPerRow: kShadowRes * 4, from: MTLRegionMake2D(0, 0, kShadowRes, kShadowRes), mipmapLevel: 0)
+        var h: UInt64 = 1469598103934665603
+        for v in buf { h = (h ^ UInt64(v.bitPattern)) &* 1099511628211 }
+        return h
+    }
+
+    // Read the rendered shadow depth map back ONCE into a CPU buffer so a world point can be
+    // PCF-sampled analytically (exactly like sampleShadowPCF in fmain), with NO dependence on
+    // the screen view / projection. This is the clean measurement: a fixed world point's
+    // shadow factor as a pure function of (depth map, lightVP, playerPos) only.
+    func readDepthMap(_ t: MTLTexture) -> [Float] {
+        var buf = [Float](repeating: 0, count: kShadowRes * kShadowRes)
+        t.getBytes(&buf, bytesPerRow: kShadowRes * 4, from: MTLRegionMake2D(0, 0, kShadowRes, kShadowRes), mipmapLevel: 0)
+        return buf
+    }
+    // Mirror of fmain's sampleShadowPCF (5x5 PCF, edge fade, same bias). depthBuf is the
+    // CPU copy of the rendered map; lvp is the matrix used to render it.
+    func analyticPCF(_ depthBuf: [Float], _ lvp: simd_float4x4, _ p: SIMD3<Float>, bias: Float) -> Float {
+        let clip = lvp * SIMD4<Float>(p.x, p.y, p.z, 1)
+        let ndc = SIMD3<Float>(clip.x/clip.w, clip.y/clip.w, clip.z/clip.w)
+        var uv = SIMD2<Float>(ndc.x * 0.5 + 0.5, ndc.y * 0.5 + 0.5)
+        uv.y = 1.0 - uv.y
+        let depth = ndc.z - bias
+        if uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1 { return 1.0 }
+        if depth >= 1.0 { return 1.0 }
+        let eDist = SIMD2<Float>(min(uv.x, 1 - uv.x), min(uv.y, 1 - uv.y))
+        let e = min(eDist.x, eDist.y)
+        let edgeFade: Float = e <= 0 ? 0 : (e >= 0.14 ? 1 : (e/0.14) * (e/0.14) * (3 - 2 * (e/0.14)))
+        let texelSize: Float = 1.0 / 1536.0
+        var shadow: Float = 0
+        for dy in -2...2 { for dx in -2...2 {
+            let su = uv.x + Float(dx) * texelSize, sv = uv.y + Float(dy) * texelSize
+            let tx = min(max(0, Int(su * Float(kShadowRes))), kShadowRes - 1)
+            let ty = min(max(0, Int(sv * Float(kShadowRes))), kShadowRes - 1)
+            let stored = depthBuf[ty * kShadowRes + tx]
+            shadow += (depth <= stored) ? 1.0 : 0.0   // lessEqual compare (1=lit)
+        } }
+        shadow /= 25.0
+        return 1.0 * (1 - edgeFade) + shadow * edgeFade
+    }
+
+    // The shadow factor for a fixed world point, sampled analytically against the maps
+    // rendered by the most recent renderAt(), with the SAME cascade blend + radial distFade
+    // fmain uses. View-independent (no screen readback), so it measures only the real signal.
+    func shadowFactorAt(_ depthN: [Float], _ depthF: [Float], _ p: SIMD3<Float>, playerPos: SIMD3<Float>) -> Float {
+        let distToCam = simd_length(p - playerPos)
+        let t = max(0, min(1, (distToCam - 30) / 12))
+        let nearBlend = 1.0 - (t * t * (3 - 2 * t))          // smoothstep(30,42)
+        // PROBE_OLDBLEND=1 reproduces the pre-#115 linear cascade blend (the bug) for the
+        // before/after comparison; default mirrors the shipped #115 UNION (min) of cascades.
+        let oldBlend = ProcessInfo.processInfo.environment["PROBE_OLDBLEND"] == "1"
+        _ = nearBlend
+        let rn = analyticPCF(depthN, lastLvpN, p, bias: 0.0028)
+        let rf = analyticPCF(depthF, lastLvpF, p, bias: 0.0050)
+        var raw: Float
+        if oldBlend {
+            if nearBlend >= 0.999 { raw = rn }
+            else if nearBlend <= 0.001 { raw = rf }
+            else { raw = rf * (1 - nearBlend) + rn * nearBlend }
+        } else {
+            raw = min(rn, rf)   // #115 union
+        }
+        let td = max(0, min(1, (distToCam - 135) / 14))
+        let distFade = 1.0 - (td * td * (3 - 2 * td))        // smoothstep(135,149)
+        return 1.0 * (1 - distFade) + raw * distFade
+    }
+
+    // In the strict gate, suppress the verbose investigation tables (keep check.sh clean).
+    func log(_ s: String) { if !strict { print(s) } }
+
+    // First, a SWEEP of sun elevations so we can see where the position-spread peaks across
+    // the day (the player reports it worsens as the sun climbs). Pure measurement.
+    log("=== sun-elevation sweep: worst fixed-point position-spread vs sun elevation ===")
+    log("elevDeg | farRy | worst position-spread (0=stable)")
+    var sweepWorst: Float = 0
+    for elevDeg in stride(from: Float(15), through: 80, by: 5) {
+        let e = elevDeg * Float.pi / 180.0
+        // azimuth toward +X/+Z so the streak direction is consistent
+        let sun = simd_normalize(SIMD3<Float>(cos(e) * 0.7, -sin(e), cos(e) * 0.5))
+        let pts = probePoints(sun)
+        let (_, dbg) = Renderer.buildLightMatrixD(sunDir: sun, camPos: baseCam, radius: 150, res: Float(kShadowRes))
+        var worst: Float = 0
+        var rows = [[Float]](repeating: [Float](repeating: 0, count: offsets.count), count: pts.count)
+        for (oi, off) in offsets.enumerated() {
+            let playerPos = baseCam + off.0
+            renderAt(playerPos, viewYawDeg: off.1, sun: sun, debug: true)
+            let dN = readDepthMap(shadowTexN), dF = readDepthMap(shadowTexF)
+            for (pi, p) in pts.enumerated() {
+                rows[pi][oi] = shadowFactorAt(dN, dF, p, playerPos: playerPos)
+            }
+        }
+        for r in rows { worst = max(worst, (r.max() ?? 0) - (r.min() ?? 0)) }
+        sweepWorst = max(sweepWorst, worst)
+        log(String(format: "  %5.0f | %5.1f | %.4f", elevDeg, dbg.Ry, worst))
+    }
+    log(String(format: "sweep worst position-spread across all sun elevations = %.4f", sweepWorst))
+
+    var worstSpreadHigh: Float = 0
+    var worstSpreadLow: Float = 0
+    for (sunName, sun) in [("HIGH", sunHigh), ("LOW", sunLow)] {
+        let pts = probePoints(sun)
+        log("")
+        log("================ SUN \(sunName)  dir=\(String(format: "%.2f %.2f %.2f", sun.x, sun.y, sun.z)) ================")
+        // Per offset: dump the FAR-cascade frustum params + tall-caster depth slab check.
+        log("offset(dx,dz,yaw) | nearR/farR Ry(far) | far-cascade eye | depthL(pillarTop) vs [near,far] | mapHashN")
+        var table = [[Float]](repeating: [Float](repeating: 0, count: offsets.count), count: pts.count)
+        // shaderTable holds the ACTUAL rendered shader shadow value (fixed view) for the gate.
+        var shaderTable = [[Float]](repeating: [Float](repeating: 0, count: offsets.count), count: pts.count)
+        // Does a world point fall inside the FAR cascade's ortho XY box? (|ndc.x|,|ndc.y|<=1)
+        func inBox(_ vp: simd_float4x4, _ p: SIMD3<Float>) -> Bool {
+            let c = vp * SIMD4<Float>(p.x, p.y, p.z, 1)
+            return abs(c.x/c.w) <= 1.0 && abs(c.y/c.w) <= 1.0
+        }
+        for (oi, off) in offsets.enumerated() {
+            let playerPos = baseCam + off.0
+            let (vpF, dbgF) = Renderer.buildLightMatrixD(sunDir: sun, camPos: playerPos, radius: 150, res: Float(kShadowRes))
+            let dL = dbgF.depthAlongL(pillarTop)
+            let inSlab = (dL >= dbgF.near && dL <= dbgF.far) ? "IN " : "OUT"
+            // Is the tall caster's top INSIDE the far cascade's ortho XY box at this offset?
+            let pillarInBox = inBox(vpF, pillarTop) ? "pillarBOX:IN " : "pillarBOX:OUT"
+            let p0 = pts[0], p4 = pts[min(4, pts.count-1)]
+            let p0b = inBox(vpF, p0) ? "p0:IN " : "p0:OUT"
+            let p4b = inBox(vpF, p4) ? "p4:IN " : "p4:OUT"
+            // Is the pillar (the CASTER) inside the NEAR cascade's box? If not, the near map
+            // holds no pillar -> contact shadows vanish for points using the near cascade.
+            let vpN = Renderer.buildLightMatrix(sunDir: sun, camPos: playerPos, radius: 48, res: Float(kShadowRes))
+            let pillarTopNear = inBox(vpN, pillarTop) ? "pillarNEARtop:IN " : "pillarNEARtop:OUT"
+            let pillarBaseNear = inBox(vpN, SIMD3<Float>(31.5, 1, 31.5)) ? "base:IN " : "base:OUT"
+            renderAt(playerPos, viewYawDeg: off.1, sun: sun, debug: true)
+            let hN = mapHash(shadowTexN)
+            log(String(format: "player(%5.0f,%5.0f,%3.0f) | %@ %@ | %@ %@ %@ | %016llx",
+                         off.0.x, off.0.z, off.1,
+                         pillarTopNear, pillarBaseNear,
+                         pillarInBox, p0b, p4b, hN))
+            // VIEW-INDEPENDENT analytic shadow sample of the fixed world points (mirrors
+            // fmain, fast, view-free).
+            let dN = readDepthMap(shadowTexN), dF = readDepthMap(shadowTexF)
+            for (pi, p) in pts.enumerated() {
+                table[pi][oi] = shadowFactorAt(dN, dF, p, playerPos: playerPos)
+            }
+            // ALSO read the ACTUAL shader output (debug grayscale = raw shadow) at the fixed
+            // view, so the strict gate tests the REAL shipped fmain blend (not just the Swift
+            // replica). The view is identical for all NON-yaw offsets, so a fixed world point
+            // maps to the same screen pixel -> any change is purely the shader's shadow value.
+            if off.1 == 0 {
+                let viewProj = proj * viewMatrix(viewEye, yawDeg: 0)
+                for (pi, p) in pts.enumerated() {
+                    let (sx, sy) = project(p, viewProj)
+                    shaderTable[pi][oi] = readPixel(outTex, sx, sy).x
+                }
+            } else {
+                for pi in 0..<pts.count { shaderTable[pi][oi] = shaderTable[pi][0] } // skip yaw col
+            }
+            if !strict { writeTexturePNG(outTex, to: String(format: "/tmp/sposprobe_%@_%d.png", sunName, oi)) }
+        }
+        log("")
+        log("fixed worldPoint (x,z) | shadowDbg across camera offsets | max-min (POSITION-dependence)")
+        var worst: Float = 0
+        for (pi, p) in pts.enumerated() {
+            let row = table[pi]
+            let spread = (row.max() ?? 0) - (row.min() ?? 0)
+            worst = max(worst, spread)
+            var s = String(format: "(%5.1f,%5.1f) |", p.x, p.z)
+            for v in row { s += String(format: " %.3f", v) }
+            s += String(format: " | %.4f", spread)
+            log(s)
+        }
+        // Also fold in the spread of the ACTUAL rendered shader value (position offsets only,
+        // fixed view) so the gate validates the shipped fmain blend, not just the replica.
+        var shaderWorst: Float = 0
+        for pi in 0..<pts.count {
+            let row = Array(shaderTable[pi].prefix(5))   // first 5 are the position offsets
+            shaderWorst = max(shaderWorst, (row.max() ?? 0) - (row.min() ?? 0))
+        }
+        log(String(format: "  (rendered-shader spread, fixed view, position offsets) = %.4f", shaderWorst))
+        worst = max(worst, shaderWorst)
+        // distToCam per point per offset: which fade band (cascade 30..42, radial 135..149)
+        // does each flip cross? This correlates the shadow change with a camera-relative fade.
+        log("fixed worldPoint (x,z) | distToCam across offsets (cascade 30..42, radial 135..149)")
+        for p in pts {
+            var s = String(format: "(%5.1f,%5.1f) |", p.x, p.z)
+            for off in offsets {
+                let cam = baseCam + off.0
+                let d = simd_length(cam - SIMD3<Float>(p.x, 0.05, p.z))
+                s += String(format: " %5.0f", d)
+            }
+            log(s)
+        }
+        log(String(format: "VERDICT SUN %@: worst fixed-point shadow spread across camera POSITION = %.4f", sunName, worst))
+        if sunName == "HIGH" { worstSpreadHigh = worst } else { worstSpreadLow = worst }
+    }
+    log("")
+    print(String(format: "SUMMARY: worst position-spread HIGH sun = %.4f   LOW sun = %.4f   (0 = stable, the goal)",
+                 worstSpreadHigh, worstSpreadLow))
+    if strict {
+        // The fix drives both to 0.0000; allow a small tolerance for PCF/quantization noise.
+        // The pre-fix bug was ~0.40, so this catches any reintroduction with wide margin.
+        let tol: Float = 0.08
+        let worst = max(sweepWorst, max(worstSpreadHigh, worstSpreadLow))
+        if worst > tol {
+            print(String(format: "SHADOW-STABILITY regression: worst position-spread %.4f > tol %.2f (the #115 wipe)", worst, tol))
+            return false
+        }
+        print(String(format: "shadow-stability OK: worst position-spread %.4f <= %.2f", worst, tol))
+    }
+    return true
+}

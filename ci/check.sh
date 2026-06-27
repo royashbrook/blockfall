@@ -31,6 +31,13 @@ fi
 if "$BIN" --washouttest; then :; else
   FAIL=1; echo "   (WASHOUT regression — sun shading washes out the frame)"
 fi
+# Shadow-stability regression (#115): walk the player past a tall occluder at high AND low
+# sun; FAIL if a fixed world point's cast shadow moves with player position (the position+sun
+# "wipe"). Guards the cascade-union fix so a future change can't silently bring the wipe back.
+# Needs a Metal device; self-skips (returns 0) where none is present.
+if "$BIN" --shadowstabilitytest; then :; else
+  FAIL=1; echo "   (SHADOW-STABILITY regression: cast shadows wipe with player position, #115)"
+fi
 # Perf smoke: a short measured run (the full gate is a 10-min M1 Air run).
 if "$BIN" --perftest 5; then :; else
   echo "   (perf smoke failed or no Metal device — non-fatal in headless CI)"

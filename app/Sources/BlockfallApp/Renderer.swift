@@ -1968,8 +1968,29 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// Build a sun orthographic light-space VP matrix centred on the camera.
     /// L = normalize(sunDir) points FROM sun downward into the scene.
     /// We place the eye 120 units "up" along L from a point 40 units in front of the camera.
+    // Light-frustum params, exposed for the position+sun shadow probe so a test can check
+    // whether a tall caster's depth along L falls inside [near,far] and whether a world
+    // point lands inside the ortho box. Pure data; no behaviour change.
+    struct LightFrustumDebug {
+        var r: SIMD3<Float>           // light right (world)
+        var u: SIMD3<Float>           // light up (world)
+        var L: SIMD3<Float>           // light forward (sun dir, normalized)
+        var eye: SIMD3<Float>         // light eye (world)
+        var R: Float                  // right half-extent (world units)
+        var Ry: Float                 // up half-extent (world, sun-tilt compensated)
+        var near: Float
+        var far: Float
+        // Depth of a world point from the light eye along +L (what near/far clip against).
+        func depthAlongL(_ p: SIMD3<Float>) -> Float { return simd_dot(p - eye, L) }
+    }
+
     static func buildLightMatrix(sunDir: SIMD3<Float>, camPos: SIMD3<Float>,
                                  radius R: Float, res: Float) -> simd_float4x4 {
+        return buildLightMatrixD(sunDir: sunDir, camPos: camPos, radius: R, res: res).0
+    }
+
+    static func buildLightMatrixD(sunDir: SIMD3<Float>, camPos: SIMD3<Float>,
+                                  radius R: Float, res: Float) -> (simd_float4x4, LightFrustumDebug) {
         let L = normalize(sunDir)                         // points downward from sun
         // Light-space basis depends ONLY on the sun direction (f = L), so it's stable
         // frame-to-frame regardless of where the camera is.
@@ -2018,7 +2039,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             SIMD4<Float>(0,    0,     1/(near-far),            0),
             SIMD4<Float>(0,    0,     near/(near-far),         1)))
 
-        return lightProj * lightView
+        let dbg = LightFrustumDebug(r: r, u: u, L: L, eye: eye, R: R, Ry: Ry, near: near, far: far)
+        return (lightProj * lightView, dbg)
     }
 
     // MARK: - Shaders (MSL, runtime compiled)
@@ -2943,20 +2965,26 @@ final class Renderer: NSObject, MTKViewDelegate {
             float distToCam = length(in.worldPos - UW_CAM_POS(wu));
             // Higher depth bias than before to kill self-shadow acne on the stepped /
             // terraced terrain (continentalness made more near-sea-level terraces).
-            // #49 the near/far cascade used to switch HARD at 36 units, a crisp-vs-coarse
-            // seam ring you scan as you turn (the "wipe"). Blend the two across a band so
-            // there is no hard boundary; only the band samples both maps.
-            float nearBlend = 1.0 - smoothstep(30.0, 42.0, distToCam);   // 1 near .. 0 far
-            float raw;
-            if (nearBlend >= 0.999) {
-                raw = sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos,  dayFactor, 0.0028);
-            } else if (nearBlend <= 0.001) {
-                raw = sampleShadowPCF(shadowFar, shadowSamp, in.shadowPosF, dayFactor, 0.0050);
-            } else {
-                float rn = sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos,  dayFactor, 0.0028);
-                float rf = sampleShadowPCF(shadowFar, shadowSamp, in.shadowPosF, dayFactor, 0.0050);
-                raw = mix(rf, rn, nearBlend);
-            }
+            // #115 THE position+sun wipe: the near cascade's box is small (R=48, centred on
+            // the player). At a low / mid sun a tall caster (mountain, tree) throws a LONG
+            // shadow; the far end of that shadow reaches ground near the player but the
+            // CASTER itself sits beyond the near box, so the near map never rasterised it and
+            // the near cascade reads that ground as LIT. The far cascade (R=150) DID capture
+            // the caster and reads it SHADOWED. The old code used the near cascade alone when
+            // distToCam < 30, so as the player walked a fixed ground point crossed the 30..42
+            // band and flipped far(shadowed) <-> near(lit): the shadow wiped in/out with
+            // player position, worst at low/mid sun (long shadows), exactly as reported.
+            // Measured (--shadowposprobe): a fixed point's shadow factor swung 0.40 across
+            // player offsets at a mid sun; the UNION below drives that to 0.0000.
+            //
+            // Fix: take the UNION (min == more-shadowed) of the two cascades. A shadow that
+            // EITHER map captured is shown, so the small near box can never wipe away a long
+            // shadow the far box holds. The near map still supplies crisp contact shadows;
+            // the far map is the coverage floor. Both maps cover any point within the far
+            // radius, so the union is well-defined everywhere shadows are drawn.
+            float rn = sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos,  dayFactor, 0.0028);
+            float rf = sampleShadowPCF(shadowFar, shadowSamp, in.shadowPosF, dayFactor, 0.0050);
+            float raw = min(rn, rf);
             // #72 the real wipe fix: the shadow map is a sun-aligned SQUARE, whose straight
             // edges (corners reach ~1.4x farther than edge-midpoints) read as a line that
             // sweeps across the view as you turn. Fade shadows out by RADIAL DISTANCE from
