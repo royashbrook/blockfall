@@ -124,5 +124,18 @@
     "textures": {
       "all": "crystal_lamp"
     }
+  },
+  {
+    "id": 52,
+    "name": "bed",
+    "display_name": "Bed",
+    "hardness": 4,
+    "required_tier": 0,
+    "preferred_tool": "none",
+    "textures": {
+      "top": "wool_white",
+      "side": "oak_log_side",
+      "bottom": "oak_planks"
+    }
   }
 ]

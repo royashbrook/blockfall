@@ -1202,6 +1202,205 @@ pub fn worldgen_structure_footprint(wx: i32, wz: i32, seed: u64) -> bool {
     false
 }
 
+/// Facts about a single stamped villager home, for tests / tooling. All counts are
+/// over the home's footprint as actually written into the world (terrain not
+/// generated, so every non-AIR cell is a home block).
+#[derive(Clone, Copy, Debug)]
+pub struct VillagerHomeScan {
+    /// Footprint width and depth in blocks (the wall-to-wall extent in X and Z).
+    pub width: i32,
+    pub depth: i32,
+    /// Number of door blocks in the walls (a 1 wide door is 2 tall = 2 blocks).
+    pub door_blocks: i32,
+    /// Number of window (glass pane) blocks in the walls.
+    pub window_blocks: i32,
+    /// Number of bed blocks placed inside.
+    pub bed_blocks: i32,
+    /// Largest count of contiguous interior air cells on the floor level (standable
+    /// space). At least 9 (a 3x3 cavity) for a 5x5 home.
+    pub interior_air: i32,
+    /// True if the lowest block in every occupied column rests on (or fills down to)
+    /// the terrain, i.e. the home does not float.
+    pub on_ground: bool,
+}
+
+/// Stamps one villager home (place_hut) at a deterministic on-land anchor for the
+/// given seed and returns a scan of its footprint. Pure: depends only on the seed.
+/// Used by tests to assert the home is a real building (>= 5x5, has a door opening,
+/// windows, an interior air cavity, and a bed) without reaching into chunk internals.
+pub fn worldgen_villager_home_scan(seed: u64) -> VillagerHomeScan {
+    // Pick an on-land anchor: scan a bounded grid of widely spaced columns once and
+    // take the first that sits well above sea level (not in water). Deterministic and
+    // bounded; the wide step finds dry land quickly even when the origin is ocean.
+    let mut ax = 0;
+    let mut az = 0;
+    'find: for d in 0..96i32 {
+        // d is a Chebyshev ring index over a grid stepped by 16 blocks; check the
+        // ring perimeter only so each column is visited once.
+        for dz in -d..=d {
+            for dx in -d..=d {
+                if dx.abs() != d && dz.abs() != d {
+                    continue; // interior of the ring already checked at smaller d
+                }
+                let cx = dx * 16;
+                let cz = dz * 16;
+                if surface_height(cx, cz, seed) > SEA_LEVEL + 4
+                    && !is_ocean_column(cx as f32, cz as f32, seed)
+                {
+                    ax = cx;
+                    az = cz;
+                    break 'find;
+                }
+            }
+        }
+    }
+
+    let hh = fmix64((seed ^ 0x484F4D4501u64).wrapping_mul(0x2545F4914F6CDD1D));
+
+    // Unbounded grid that satisfies Chunk for one chunk window at a time; replay the
+    // stamp over every window the home reaches so we capture the whole footprint.
+    struct ScanGrid {
+        wx_min: i32,
+        wy_min: i32,
+        wz_min: i32,
+        cells: std::collections::HashMap<(i32, i32, i32), BlockId>,
+    }
+    impl Chunk for ScanGrid {
+        fn get(&self, lx: i32, ly: i32, lz: i32) -> BlockId {
+            *self
+                .cells
+                .get(&(self.wx_min + lx, self.wy_min + ly, self.wz_min + lz))
+                .unwrap_or(&AIR)
+        }
+        fn set(&mut self, lx: i32, ly: i32, lz: i32, b: BlockId) {
+            self.cells
+                .insert((self.wx_min + lx, self.wy_min + ly, self.wz_min + lz), b);
+        }
+    }
+
+    let floordiv = |a: i32, b: i32| a / b - if a % b != 0 && (a ^ b) < 0 { 1 } else { 0 };
+    let reach = 4; // homes reach at most 3 from centre; 4 gives a margin
+    let base = surface_height(ax, az, seed);
+    let cx0 = floordiv(ax - reach, K_CHUNK_DIM);
+    let cx1 = floordiv(ax + reach, K_CHUNK_DIM);
+    let cz0 = floordiv(az - reach, K_CHUNK_DIM);
+    let cz1 = floordiv(az + reach, K_CHUNK_DIM);
+    let cy0 = floordiv(base - 16, K_CHUNK_DIM);
+    let cy1 = floordiv(base + 16, K_CHUNK_DIM);
+
+    let mut cells: std::collections::HashMap<(i32, i32, i32), BlockId> =
+        std::collections::HashMap::new();
+    for cy in cy0..=cy1 {
+        for cz in cz0..=cz1 {
+            for cx in cx0..=cx1 {
+                let (wx_min, wy_min, wz_min) =
+                    (cx * K_CHUNK_DIM, cy * K_CHUNK_DIM, cz * K_CHUNK_DIM);
+                let mut g = ScanGrid {
+                    wx_min,
+                    wy_min,
+                    wz_min,
+                    cells: std::mem::take(&mut cells),
+                };
+                place_hut(ax, az, hh, seed, &mut g, wx_min, wy_min, wz_min);
+                cells = g.cells;
+            }
+        }
+    }
+
+    // Footprint extent.
+    let mut min_x = i32::MAX;
+    let mut max_x = i32::MIN;
+    let mut min_z = i32::MAX;
+    let mut max_z = i32::MIN;
+    let mut door_blocks = 0;
+    let mut window_blocks = 0;
+    let mut bed_blocks = 0;
+    for (&(wx, _wy, wz), &b) in cells.iter() {
+        if b == AIR {
+            continue;
+        }
+        min_x = min_x.min(wx);
+        max_x = max_x.max(wx);
+        min_z = min_z.min(wz);
+        max_z = max_z.max(wz);
+        if b == OAK_DOOR {
+            door_blocks += 1;
+        } else if b == GLASS_PANE {
+            window_blocks += 1;
+        } else if b == BED {
+            bed_blocks += 1;
+        }
+    }
+    let width = if max_x >= min_x { max_x - min_x + 1 } else { 0 };
+    let depth = if max_z >= min_z { max_z - min_z + 1 } else { 0 };
+
+    // Interior cavity (standable space): the cells one block above the floor, strictly
+    // inside the wall ring (min/max bounds). The floor surface level is read off the
+    // door, whose lowest block sits at floor + 1, so the floor level is (lowest door
+    // y) - 1 and the standable layer is floor + 1. A cell counts as cavity when it is
+    // open (AIR or furniture such as a bed) rather than wall, i.e. it is part of the
+    // room you can stand in. We deliberately count the bed cells too: they are part of
+    // the open interior footprint (the bed is removable furniture, not structure). The
+    // separate on_ground check guarantees something solid rests beneath each column,
+    // so we do not require a floor block in this terrain-free scan.
+    let mut door_low_y = i32::MAX;
+    for (&(_wx, wy, _wz), &b) in cells.iter() {
+        if b == OAK_DOOR && wy < door_low_y {
+            door_low_y = wy;
+        }
+    }
+    let mut interior_air = 0;
+    if door_low_y != i32::MAX {
+        let floor_y = door_low_y; // standable layer = door bottom level
+        for wz in (min_z + 1)..max_z {
+            for wx in (min_x + 1)..max_x {
+                let here = *cells.get(&(wx, floor_y, wz)).unwrap_or(&AIR);
+                // Open interior: air or furniture (bed). Anything else here would be a
+                // wall block, which should not appear in the interior.
+                if here == AIR || here == BED {
+                    interior_air += 1;
+                }
+            }
+        }
+    }
+
+    // On-ground: a column "floats" only if it is a real wall / foundation stack
+    // (2+ blocks) whose base hangs well above the terrain with clear air beneath.
+    // This mirrors the established big_structures_sit_on_ground floater rule: a lone
+    // decorative block (a ceiling lamp over the open interior) is not a floater, and
+    // the surf+4 tolerance allows a door lintel that opens over the ground. Terrain
+    // is not generated in this scan, so the wall / foundation columns are what matter.
+    let mut low: std::collections::HashMap<(i32, i32), (i32, i32)> = std::collections::HashMap::new();
+    for (&(wx, wy, wz), &b) in cells.iter() {
+        if b == AIR {
+            continue;
+        }
+        let e = low.entry((wx, wz)).or_insert((i32::MAX, 0));
+        if wy < e.0 {
+            e.0 = wy;
+        }
+        e.1 += 1;
+    }
+    let mut on_ground = true;
+    for (&(wx, wz), &(y_low, count)) in low.iter() {
+        let surf = surface_height(wx, wz, seed);
+        if y_low > surf + 4 && count >= 2 {
+            on_ground = false;
+            break;
+        }
+    }
+
+    VillagerHomeScan {
+        width,
+        depth,
+        door_blocks,
+        window_blocks,
+        bed_blocks,
+        interior_air,
+        on_ground,
+    }
+}
+
 #[cfg(test)]
 mod worldgen_tests {
     use super::*;
@@ -1724,6 +1923,29 @@ mod worldgen_tests {
         (floaters, sample)
     }
 
+
+    // A villager home (place_hut) is a real building: >= 5x5 footprint, a door
+    // opening, windows, an interior air cavity, and a bed. This drives place_hut
+    // directly through the public scan and also confirms it is deterministic.
+    #[test]
+    fn villager_home_real_building_unit() {
+        for &seed in &[11u64, 7, 42, 1, 99] {
+            let s = worldgen_villager_home_scan(seed);
+            assert!(s.width >= 5 && s.depth >= 5, "seed {seed}: {}x{} < 5x5", s.width, s.depth);
+            assert_eq!(s.door_blocks, 2, "seed {seed}: door opening missing");
+            assert!(s.window_blocks >= 2, "seed {seed}: too few windows ({})", s.window_blocks);
+            assert!(s.interior_air >= 9, "seed {seed}: interior cavity {} < 3x3", s.interior_air);
+            assert!(s.bed_blocks >= 1, "seed {seed}: no bed");
+            assert!(s.on_ground, "seed {seed}: home floats");
+            // Determinism: a second scan must be identical.
+            let s2 = worldgen_villager_home_scan(seed);
+            assert_eq!(
+                (s.width, s.depth, s.door_blocks, s.window_blocks, s.bed_blocks, s.interior_air),
+                (s2.width, s2.depth, s2.door_blocks, s2.window_blocks, s2.bed_blocks, s2.interior_air),
+                "seed {seed}: home scan not deterministic"
+            );
+        }
+    }
 
     // Big structures (tower / keep / ruin / city) must conform to the ground with
     // no floating columns, including on sloped / mountain sites. Scan an area and

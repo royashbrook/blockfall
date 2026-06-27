@@ -902,12 +902,14 @@ mod tests {
     use super::*;
     const CONTENT: &str = "/Users/roy/gh/blockfall/content";
 
-    // Golden counts + records from the verified C++ dump (full record diff was IDENTICAL).
+    // Golden counts + records from the verified C++ dump (the full record diff was IDENTICAL at
+    // the port). Counts may legitimately grow past the C++ baseline as we add content post-port:
+    // block_count went 51 to 52 when the bed block (id 52) was added for villager home interiors.
     #[test]
     fn loads_with_cpp_parity_counts() {
         let mut reg = ContentRegistry::new();
         assert!(reg.load(CONTENT));
-        assert_eq!(reg.block_count(), 51);
+        assert_eq!(reg.block_count(), 52);
         assert_eq!(reg.item_count(), 60);
         assert_eq!(reg.recipe_count(), 34);
         let oak = reg.block_by_name("oak_log").expect("oak_log");

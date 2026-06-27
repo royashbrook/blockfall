@@ -107,6 +107,7 @@ const MOSSY_STONE: BlockId = 29;
 const CHEST: BlockId = 31;
 const TORCH: BlockId = 32;
 const OAK_DOOR: BlockId = 33;
+const BED: BlockId = 52; // simple furniture bed (wool top, log frame); see content/blocks/functional.json
 const CRYSTAL_LAMP: BlockId = 35;
 const FLOWER_RED: BlockId = 36;
 const FLOWER_YELLOW: BlockId = 37;

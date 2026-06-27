@@ -1054,3 +1054,54 @@ fn cstr_str(buf: &[u8]) -> String {
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(&buf[..end]).to_string()
 }
+
+// A villager home must be a real, enterable building: a footprint of at least 5x5,
+// a door opening (a 2 tall door = 2 door blocks), at least two windows, a standable
+// interior air cavity (>= 3x3 = 9 cells), a bed inside, and it must sit on the
+// ground (no floaters). Checked across several seeds so the variety in size /
+// orientation is exercised. Block id 52 is the bed added to content/blocks.
+#[test]
+fn villager_home_is_a_real_building() {
+    const BED_BLOCK: bfcore::types::BlockId = 52;
+    let mut homes_with_6 = 0;
+    for &seed in &[11u64, 7, 42, 1, 99] {
+        let s = worldgen::worldgen_villager_home_scan(seed);
+
+        assert!(
+            s.width >= 5 && s.depth >= 5,
+            "seed {seed}: home footprint {}x{} is smaller than 5x5",
+            s.width,
+            s.depth
+        );
+        assert_eq!(
+            s.door_blocks, 2,
+            "seed {seed}: home should have a 1 wide, 2 tall door opening (2 door blocks), got {}",
+            s.door_blocks
+        );
+        assert!(
+            s.window_blocks >= 2,
+            "seed {seed}: home should have at least two windows, got {}",
+            s.window_blocks
+        );
+        assert!(
+            s.interior_air >= 9,
+            "seed {seed}: home interior cavity {} is smaller than a 3x3 standable space",
+            s.interior_air
+        );
+        assert!(
+            s.bed_blocks >= 1,
+            "seed {seed}: home is missing a bed (block {BED_BLOCK})"
+        );
+        assert!(s.on_ground, "seed {seed}: home floats off the ground");
+
+        if s.width >= 6 || s.depth >= 6 {
+            homes_with_6 += 1;
+        }
+    }
+    // Homes vary in size: across the seeds at least one is bigger than the minimum
+    // 5x5 (a 6 wide footprint), proving they are not all identical boxes.
+    assert!(
+        homes_with_6 > 0,
+        "expected at least one home larger than 5x5 across the seeds (size variety)"
+    );
+}

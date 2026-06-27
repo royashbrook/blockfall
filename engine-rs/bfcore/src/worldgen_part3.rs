@@ -37,7 +37,9 @@ const STRUCT_CITY_UPGRADE_THRESH: u64 = 150;
 // X and Z. The placement loop scans every structure cell within this reach of a
 // chunk so a structure spanning a chunk border is stamped identically into both
 // chunks (seam safe). Must be >= the biggest structure half-extent below: the city
-// is the widest (huts on a ring out to ~22 plus a hut radius of 1).
+// is the widest (huts on a ring out to +/-18 plus a villager-home radius of up to 3,
+// so ~21; the bare cross-road cobble runs to 22 but those are single blocks). 26
+// leaves headroom over the 21 footprint reach so a home is never clipped at a border.
 const STRUCT_MAX_REACH_XZ: i32 = 26;
 
 #[derive(Clone, Copy)]
@@ -593,66 +595,136 @@ fn place_cairn<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
 
+// A villager home: a real little building with an interior you can stand in, not
+// the old empty 3x3 box. The footprint is at least 5x5 (half extent 2) and may be
+// 5x6 or 6x6 for variety, which always leaves an interior cavity of at least 3x3 of
+// air. Each home has a 1 wide door, at least two windows, a flat roof, and basic
+// furniture (a bed plus a light), with the centre floor left open for future chests
+// / crafting tables.
+//
+// All blocks go through struct_set / struct_fill_col so a home spanning a chunk
+// border stamps identically into every chunk it touches (seam safe), and every
+// column's foundation fills down to its own terrain so the home sits flush on a
+// slope (no floaters). Everything is derived from (cx, cz, hh) so generation is
+// deterministic per cell. Max XZ half extent is 3 (rx / rz <= 3), well within
+// STRUCT_MAX_REACH_XZ.
 fn place_hut<C: Chunk>(cx: i32, cz: i32, hh: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
+    // Footprint half extents: 2 (5 wide) or 3 (6 wide) on each axis, varied per home.
+    let rx = 2 + ((hh >> 5) & 1) as i32; // 2 or 3 -> 5 or 6 wide in X
+    let rz = 2 + ((hh >> 6) & 1) as i32; // 2 or 3 -> 5 or 6 wide in Z
+
+    // Foundation reference: the highest terrain column under the footprint so the
+    // floor is level; per column we still fill the gap down to that column's own
+    // terrain so the home conforms to a slope without floating.
     let mut floor_h = -1000000;
-    for dz in -1..=1 {
-        for dx in -1..=1 {
+    for dz in -rz..=rz {
+        for dx in -rx..=rx {
             let sh = struct_surface(cx + dx, cz + dz, seed);
             if sh > floor_h {
                 floor_h = sh;
             }
         }
     }
-    let cobble = (hh & 1) != 0;
-    let wall = if cobble { COBBLESTONE } else { OAK_PLANKS };
-    let wall_h = 2;
+
+    // Material palette varies per home so a village does not look stamped from one
+    // mould: timber, cobble, stone, or birch shells, each with a matching roof.
+    let palette = (hh >> 2) & 0x3;
+    let (wall, roof) = match palette {
+        0 => (OAK_PLANKS, BIRCH_PLANKS),
+        1 => (COBBLESTONE, STONE_BRICK),
+        2 => (STONE_BRICK, COBBLESTONE),
+        _ => (BIRCH_PLANKS, OAK_PLANKS),
+    };
+
+    // Walls are 3 tall so the interior is a genuine 2 high standable cavity with a
+    // block of headroom above the door.
+    let wall_h = 3;
     let wall_top = floor_h + wall_h;
 
-    for dz in -1..=1 {
-        for dx in -1..=1 {
+    // Plank floor: fill each column from its terrain up to the floor level.
+    for dz in -rz..=rz {
+        for dx in -rx..=rx {
             struct_fill_col(chunk, cx + dx, cz + dz, floor_h, seed, wx_min, wy_min, wz_min, OAK_PLANKS);
         }
     }
 
+    // Door wall: 0 = +X, 1 = -X, 2 = +Z, 3 = -Z. The door sits in the middle of
+    // that wall (offset 0 along the wall), so the opening is always flanked by wall.
     let dir = ((hh >> 1) & 0x3) as i32;
-    let door_dx = if dir == 0 {
-        1
-    } else if dir == 1 {
-        -1
-    } else {
-        0
-    };
-    let door_dz = if dir == 2 {
-        1
-    } else if dir == 3 {
-        -1
-    } else {
-        0
-    };
 
-    for dz in -1..=1 {
-        for dx in -1..=1 {
-            let ring = dx == -1 || dx == 1 || dz == -1 || dz == 1;
-            if !ring {
-                continue;
+    // Build the four walls. A wall cell is on the perimeter ring of the footprint.
+    for dz in -rz..=rz {
+        for dx in -rx..=rx {
+            let on_x_edge = dx == -rx || dx == rx;
+            let on_z_edge = dz == -rz || dz == rz;
+            if !on_x_edge && !on_z_edge {
+                continue; // interior column, leave as air above the floor
             }
-            if dx == door_dx && dz == door_dz {
-                struct_set(chunk, cx + dx, floor_h + 1, cz + dz, wx_min, wy_min, wz_min, OAK_DOOR);
-                continue;
-            }
-            let window = dx == -door_dx && dz == -door_dz;
+
+            // Is this the single door cell? The door is centred on the chosen wall.
+            let is_door = match dir {
+                0 => dx == rx && dz == 0,
+                1 => dx == -rx && dz == 0,
+                2 => dz == rz && dx == 0,
+                _ => dz == -rz && dx == 0,
+            };
+
+            // Windows: the centre cell of each non door wall gets a glass pane at
+            // eye height. This yields at least two windows on every home (the three
+            // walls without the door), more on the longer walls of a rectangular
+            // home where a second centre-ish cell also qualifies.
+            let is_window_center = !is_door
+                && ((on_x_edge && dz == 0 && !on_z_edge) || (on_z_edge && dx == 0 && !on_x_edge));
+            // Extra windows on longer walls so a 6 wide wall is not blank.
+            let is_window_side = !is_door
+                && ((on_x_edge && !on_z_edge && (dz == -1 || dz == 1) && rz == 3)
+                    || (on_z_edge && !on_x_edge && (dx == -1 || dx == 1) && rx == 3));
+
             for wy in (floor_h + 1)..=wall_top {
-                let b = if window && wy == floor_h + 1 { GLASS_PANE } else { wall };
+                let local = wy - floor_h; // 1 at the base, wall_h at the top
+                if is_door && local <= 2 {
+                    // Two tall door opening; the cell above (local 3) stays wall as a lintel.
+                    struct_set(chunk, cx + dx, wy, cz + dz, wx_min, wy_min, wz_min, OAK_DOOR);
+                    continue;
+                }
+                let is_glass = (is_window_center || is_window_side) && local == 2;
+                let b = if is_glass { GLASS_PANE } else { wall };
                 struct_set(chunk, cx + dx, wy, cz + dz, wx_min, wy_min, wz_min, b);
             }
         }
     }
-    for dz in -1..=1 {
-        for dx in -1..=1 {
-            struct_set(chunk, cx + dx, wall_top + 1, cz + dz, wx_min, wy_min, wz_min, if cobble { STONE_BRICK } else { BIRCH_PLANKS });
+
+    // Flat roof one block above the wall top covering the whole footprint.
+    for dz in -rz..=rz {
+        for dx in -rx..=rx {
+            struct_set(chunk, cx + dx, wall_top + 1, cz + dz, wx_min, wy_min, wz_min, roof);
         }
     }
-    struct_set(chunk, cx, floor_h + 1, cz, wx_min, wy_min, wz_min, GLOW_BLOCK);
+
+    // ---- Interior furnishing -------------------------------------------------
+    // Place a bed in a back corner (the corner diagonally opposite the door) so it
+    // never blocks the doorway, and leave the centre of the floor open for future
+    // chests / crafting tables. The bed is two cells (head + foot) laid along a
+    // wall, both sitting on the floor (local y = floor_h + 1).
+    let bed_y = floor_h + 1;
+    // Back corner interior cell coordinates (one block in from the walls).
+    let ix = rx - 1; // interior extent in X
+    let iz = rz - 1; // interior extent in Z
+    // Pick the corner away from the door wall.
+    let (bcx, bcz) = match dir {
+        0 => (-ix, -iz), // door +X -> bed at -X,-Z
+        1 => (ix, iz),   // door -X -> bed at +X,+Z
+        2 => (-ix, -iz), // door +Z -> bed at -X,-Z
+        _ => (ix, iz),   // door -Z -> bed at +X,+Z
+    };
+    // Lay the bed along the longer interior axis so the two cells stay inside.
+    let (bed_dx, bed_dz) = if ix >= iz { (if bcx >= 0 { -1 } else { 1 }, 0) } else { (0, if bcz >= 0 { -1 } else { 1 }) };
+    struct_set(chunk, cx + bcx, bed_y, cz + bcz, wx_min, wy_min, wz_min, BED);
+    struct_set(chunk, cx + bcx + bed_dx, bed_y, cz + bcz + bed_dz, wx_min, wy_min, wz_min, BED);
+
+    // A light source: a glow block at the centre of the ceiling (top interior layer)
+    // so it lights the whole room and stays clear of the open floor and the bed.
+    struct_set(chunk, cx, wall_top, cz, wx_min, wy_min, wz_min, GLOW_BLOCK);
 }
 
 fn place_village<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
@@ -962,8 +1034,9 @@ fn place_ruin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
 
 // A city: a scaled-up village. A central plaza (paved, lamp-lit well at its core)
 // with simple cross roads, ringed by many huts on two rings plus a couple of bigger
-// cabins. Reuses place_hut / place_cabin for the buildings. Widest ring is at +/-22
-// (a hut adds 1), so half-extent is ~23, under STRUCT_MAX_REACH_XZ.
+// cabins. Reuses place_hut / place_cabin for the buildings. Widest hut ring is at
+// +/-18 and a villager home reaches up to 3 from its centre, so the home footprint
+// extent is ~21, under STRUCT_MAX_REACH_XZ (26).
 fn place_city<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
     // Paved central plaza, 5x5, with a marker / lamp core.
     for dz in -2..=2 {
