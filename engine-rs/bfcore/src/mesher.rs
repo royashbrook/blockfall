@@ -282,8 +282,15 @@ fn neighbour_block<S: ChunkStore>(
     }
 }
 
-// Light (sky, block) of the air cell adjacent to a face. That cell is the
-// visible side, so its light is what the face shows.
+// Light (sky, block) of the cell adjacent to a face. That cell is the visible
+// side, so its light is what the face shows.
+//
+// Leaf neighbours are special: the mesher does not cube-mesh leaves, so a solid
+// face that borders a leaf is visible, yet the lighting pass treats leaves as
+// opaque and stores no light in the leaf cell (sky=0, block=0). Reading that cell
+// directly paints the face near-black where it meets foliage. To avoid that we
+// step PAST a run of leaf cells along the face normal and read the light of the
+// first non-leaf cell beyond them (the lit air the foliage sits in front of).
 fn neighbour_light<S: ChunkStore>(
     current_chunk: &S::Chunk,
     cc: ChunkCoord,
@@ -293,21 +300,60 @@ fn neighbour_light<S: ChunkStore>(
     y: i32,
     z: i32,
 ) -> (u8, u8) {
-    let (mut nx, mut ny, mut nz) = (x, y, z);
-    if fd.axis == 0 {
-        nx += fd.sign;
-    } else if fd.axis == 1 {
-        ny += fd.sign;
-    } else {
-        nz += fd.sign;
+    let cur = Some(current_chunk);
+
+    // Walk outward along the face normal: one step to the immediate neighbour,
+    // then keep stepping while we are inside a leaf cell. Bounded so a solid wall
+    // of foliage cannot loop unreasonably; in practice a couple of steps suffice.
+    let mut step = 1;
+    const MAX_LEAF_SKIP: i32 = 4;
+    loop {
+        let (mut nx, mut ny, mut nz) = (x, y, z);
+        if fd.axis == 0 {
+            nx += fd.sign * step;
+        } else if fd.axis == 1 {
+            ny += fd.sign * step;
+        } else {
+            nz += fd.sign * step;
+        }
+
+        let (sky, blk) = light_at::<S>(cur, cc, store, nx, ny, nz);
+
+        // Stop once we have looked far enough, or the cell is not a leaf. The
+        // first probe (step 1) is the normal path for every non-foliage face.
+        if step > MAX_LEAF_SKIP {
+            return (sky, blk);
+        }
+        let nb = sample_block::<S>(cur, cc, store, nx, ny, nz);
+        if !is_leaf(nb) {
+            return (sky, blk);
+        }
+        step += 1;
     }
-    if nx >= 0 && nx < KCHUNK_DIM && ny >= 0 && ny < KCHUNK_DIM && nz >= 0 && nz < KCHUNK_DIM {
-        return (
-            current_chunk.sky_light(nx as usize, ny as usize, nz as usize),
-            current_chunk.block_light(nx as usize, ny as usize, nz as usize),
-        );
+}
+
+// Read (sky, block) light at an arbitrary cell offset, resolving cross-chunk
+// lookups the same way sample_block does. Cells outside the loaded area read as
+// open sky (15, 0), matching the prior neighbour_light fallback.
+fn light_at<S: ChunkStore>(
+    current_chunk: Option<&S::Chunk>,
+    cc: ChunkCoord,
+    store: &S,
+    x: i32,
+    y: i32,
+    z: i32,
+) -> (u8, u8) {
+    if x >= 0 && x < KCHUNK_DIM && y >= 0 && y < KCHUNK_DIM && z >= 0 && z < KCHUNK_DIM {
+        return match current_chunk {
+            None => (15, 0),
+            Some(ch) => (
+                ch.sky_light(x as usize, y as usize, z as usize),
+                ch.block_light(x as usize, y as usize, z as usize),
+            ),
+        };
     }
     let mut nc = cc;
+    let (mut nx, mut ny, mut nz) = (x, y, z);
     if nx < 0 {
         nc.x -= 1;
         nx += KCHUNK_DIM;
@@ -353,6 +399,18 @@ fn is_subvoxel_prop(id: BlockId) -> bool {
 #[inline]
 fn is_tree_prop(id: BlockId) -> bool {
     id == 5 || id == 27 || id == 48 || id == 21 || id == 22 || id == 49
+}
+// Leaf blocks (oak 5, birch 27, pine 48). The mesher draws no cube geometry for
+// these (they are instanced foliage), so a solid block's face that borders a leaf
+// IS emitted. But the lighting pass (lighting.rs light_plant) treats leaves as
+// opaque so the canopy casts shade, which means a leaf cell itself stores no light
+// (sky=0, block=0). A visible solid face reads its light from the neighbour cell;
+// if that neighbour is a leaf, it would read 0/0 and render near-black. So when we
+// light such a face we must look PAST the leaf to the lit air beyond it. Mirrors
+// the "plants on the ground" case, where ground props are non-opaque and lit.
+#[inline]
+fn is_leaf(id: BlockId) -> bool {
+    id == 5 || id == 27 || id == 48
 }
 // Blocks the renderer draws as instanced models, so the mesher emits no geometry.
 #[inline]
@@ -1211,6 +1269,14 @@ mod tests {
         fn set(&mut self, x: usize, y: usize, z: usize, b: BlockId) {
             self.blocks[Self::idx(x, y, z)] = b;
         }
+        // Set explicit per-cell light (also flips `lit` so the arrays are honored
+        // instead of the unlit defaults).
+        fn set_light(&mut self, x: usize, y: usize, z: usize, sky: u8, block: u8) {
+            self.lit = true;
+            let i = Self::idx(x, y, z);
+            self.sky[i] = sky;
+            self.block[i] = block;
+        }
     }
 
     impl Chunk for TestChunk {
@@ -1319,6 +1385,74 @@ mod tests {
         assert_eq!(vtx.len(), 24 * 16);
         assert_eq!(idx.len(), 36 * 4);
         assert!(!res.empty);
+    }
+
+    // Decode a packed vertex stream into (normal, sky_light, block_light) tuples,
+    // one per vertex. Normal is normal_uv bits [0:3]; sky/block are bytes 10/11.
+    fn decode_vertices(vtx: &[u8]) -> Vec<(u32, u8, u8)> {
+        let mut out = Vec::new();
+        for chunk in vtx.chunks_exact(16) {
+            let normal_uv = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+            let normal = normal_uv & 0x7;
+            let sky = chunk[10];
+            let block = chunk[11];
+            out.push((normal, sky, block));
+        }
+        out
+    }
+
+    #[test]
+    fn stone_face_against_leaf_is_emitted() {
+        // A solid stone block with a leaf in +X. The mesher does not cube-mesh the
+        // leaf, so the stone's +X face must still be emitted (not culled into the
+        // foliage). All six stone faces should be present.
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(8, 8, 8, 1); // stone
+        ch.set(9, 8, 8, 48); // pine leaves directly against the +X face
+        store.chunks.insert(ChunkCoord::default(), ch);
+        let m = GreedyMesher::new();
+        let (res, vtx, _) = m.mesh(ChunkCoord::default(), &store, false);
+
+        // Leaves emit no cube geometry, so only the stone's 6 faces exist.
+        assert_eq!(res.index_count, 36, "stone should keep all six faces");
+        let faces = decode_vertices(&vtx);
+        assert!(
+            faces.iter().any(|&(n, _, _)| n == BF_NX_POS),
+            "the +X stone face (touching the leaf) must be emitted"
+        );
+    }
+
+    #[test]
+    fn stone_face_against_leaf_reads_light_past_the_leaf() {
+        // Regression for the black-foliage bug: leaves are lighting-opaque (the
+        // canopy casts shade) so a leaf cell stores no light. The stone face that
+        // borders the leaf must NOT read the leaf cell's 0/0 light (which renders
+        // near-black); it should look past the leaf to the lit air beyond.
+        //
+        // Layout along +X at y=8,z=8:  stone(8) | leaf(9) | air(10)
+        // Leaf cell light = 0/0 (shadowed), air-beyond light = sky 15.
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(8, 8, 8, 1); // stone
+        ch.set(9, 8, 8, 48); // pine leaves
+        // Light: leaf cell dark, the air just past it fully sky-lit.
+        ch.set_light(9, 8, 8, 0, 0); // leaf cell: no light (would paint black)
+        ch.set_light(10, 8, 8, 15, 0); // lit air beyond the foliage
+        store.chunks.insert(ChunkCoord::default(), ch);
+
+        let m = GreedyMesher::new();
+        let (_, vtx, _) = m.mesh(ChunkCoord::default(), &store, false);
+
+        let faces = decode_vertices(&vtx);
+        let px = faces
+            .iter()
+            .find(|&&(n, _, _)| n == BF_NX_POS)
+            .expect("stone +X face must exist");
+        assert_eq!(
+            px.1, 15,
+            "the leaf-facing stone face must inherit the lit air past the leaf, not the leaf's dark cell"
+        );
     }
 
     #[test]
