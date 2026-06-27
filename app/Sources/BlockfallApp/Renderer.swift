@@ -3203,10 +3203,17 @@ final class Renderer: NSObject, MTKViewDelegate {
             float3 Ld = normalize(-wu.sunDirTime.xyz);
             // Sun-only relief term: highlights where the perturbed normal faces the sun more
             // than the flat face does. No camera term, so turning never moves it.
+            // NIGHT FIX: Ld = normalize(-sunDir) points DOWN once the sun is below the
+            // horizon, so a face turned toward the sun's azimuth (e.g. a +X wall at midnight)
+            // still scored a big dot(pN, Ld) and pow()'d into a bright glint AT NIGHT. Gate it
+            // by sunAbove (sunDir.y < 0 == sun up; >0 == set), so the relief sheen only fires
+            // while the sun is actually above the horizon and fades to zero through dusk.
+            float sunAbove = smoothstep(0.0, -0.12, wu.sunDirTime.y);   // 1 sun up .. 0 sun set
             float specBase = pow(max(0.0, dot(pN, Ld)), 18.0);
             float baseLum  = dot(in.color, float3(0.299, 0.587, 0.114));
             // mid/dark materials only — bright snow/sand get none (would wash white).
             specAdd = specBase * 0.14 * clamp(in.shade * 1.4, 0.0, 1.0) * shadowFactor
+                    * sunAbove
                     * (1.0 - smoothstep(0.55, 0.85, baseLum));
         }
 
@@ -3356,7 +3363,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         ) * 4.0;
         float3 perturbedN = normalize(float3(nAB.x, 1.4, nAB.y));
         float3 sunDir3 = normalize(-wu.sunDirTime.xyz);   // real sun, so glint lands correctly (#43)
-        float spec = pow(max(0.0, dot(perturbedN, sunDir3)), 22.0);
+        // NIGHT FIX (mirror of fmain): gate the sun glint so it cannot glow once the sun
+        // is below the horizon (sunDir.y > 0 means the sun has set).
+        float sunAbove = smoothstep(0.0, -0.12, wu.sunDirTime.y);   // 1 sun up .. 0 sun set
+        float spec = pow(max(0.0, dot(perturbedN, sunDir3)), 22.0) * sunAbove;
 
         // Shadow + AO
         float aoFactor = mix(0.45, 1.0, in.ao);
@@ -4838,12 +4848,19 @@ func runWashoutTest() -> Bool {
     // elevation at noon, so the sun sits in-frame at eye level all day when you face
     // its azimuth. Earlier scenarios used a 70° "noon" (overhead, out of frame) and
     // never reproduced the daytime washout. These match the real arc.
+    // Night scenarios (sun BELOW the horizon, elevation < 0) catch the night whiteout:
+    // a view-dependent over-brightness that only shows when the sun has set. The earlier
+    // sweep stopped at +7° (sun still up) so true night was never exercised; a sun-only
+    // specular that glows at night, or a view-keyed sky/reflection term, would slip past.
+    // tod is set so dayLight()==0 (full night) for these.
     let scenarios: [(String, Float, Float)] = [
         ("midday",    20, 0.50),
         ("morning",   16, 0.36),
         ("afternoon", 14, 0.64),
         ("dawn",      10, 0.25),
         ("dusk",       7, 0.78),
+        ("nightfall", -6, 0.84),
+        ("midnight", -20, 0.75),
     ]
     let yawSteps = 24
     var worstWash: Double = 0, worstAt = ""
@@ -4981,6 +4998,8 @@ func runWashoutTest() -> Bool {
             if frac > worstWash { worstWash = frac; worstAt = "\(label)@yaw\(Int(phi*180/Float.pi))°" }
         }
         let delta = scMaxLuma - scMinLuma
+        print(String(format: "    %@: mean-luma yaw range %.1f%%..%.1f%% (Δ %.1f%%)",
+                     label, scMinLuma*100, scMaxLuma*100, delta*100))
         if delta > maxLumaDelta { maxLumaDelta = delta; maxLumaDeltaAt = label }
     }
     // #33 cave-darkness: when the eye is underground (camFwd.w = 1), the sky must be
@@ -5040,8 +5059,39 @@ func runWashoutTest() -> Bool {
         }
     }
 
+    // NIGHT RELIEF-SPECULAR GATE (regression guard for the #47/#105 sun sheen at night).
+    // The full-scene night sweep above is viewed top-down over flat terrain (top faces,
+    // dot(N,sun)<0) and the night ambient (in.shade≈0.15) crushes the term, so the scene
+    // cannot exercise the worst case: a WALL turned toward the sun's azimuth after the sun
+    // has set. Ld=normalize(-sunDir) points DOWN once the sun is below the horizon, so such
+    // a wall scored a big dot(pN,Ld) and pow()'d into a glint AT NIGHT. This mirrors the
+    // exact fmain formula on the CPU for that worst case and asserts the sun-above gate
+    // kills it. A day reference (sun up) must keep a healthy glint so the fix only touches
+    // night. Deterministic; no scene/streaming confound.
+    func smoothstepF(_ e0: Float, _ e1: Float, _ x: Float) -> Float {
+        let t = max(0, min(1, (x - e0) / (e1 - e0)))
+        return t * t * (3 - 2 * t)
+    }
+    func reliefSpec(sunDirY: Float, wallToward sx: Float) -> Float {
+        // Worst-case: perturbed normal == the wall normal, pointing toward the sun azimuth.
+        let pN = SIMD3<Float>(sx, 0, 0)
+        let sunDir = SIMD3<Float>(-sx * abs(sx), sunDirY, 0)   // sun behind the wall's facing dir
+        let Ld = simd_normalize(-sunDir)
+        // Same gate the shader uses: smoothstep(0.0, -0.12, sunDir.y); 1 sun up, 0 sun set.
+        let sunAbove = smoothstepF(0.0, -0.12, sunDirY)
+        let base = pow(max(0, simd_dot(pN, Ld)), 18.0)
+        return base * sunAbove
+    }
+    // Sun WELL up (sunDir.y = -0.30): the sheen must still fire (fix preserves daytime).
+    let dayGlint   = reliefSpec(sunDirY: -0.30, wallToward: 1.0)
+    // Sun SET (sunDir.y = +0.34, the midnight value): the sheen must be ~0 (the fix).
+    let nightGlint = reliefSpec(sunDirY:  0.34, wallToward: 1.0)
+    let specGateOK = dayGlint > 0.05 && nightGlint < 0.001
+    print(String(format: "    night-spec gate: day glint %.3f (want >0.05), night glint %.3f (want ~0): %@",
+                 dayGlint, nightGlint, specGateOK ? "OK" : "FAIL"))
+
     let thresh = 0.30, caveThresh = 0.30, deltaThresh = 0.12
-    let pass = worstWash < thresh && caveMaxLuma < caveThresh && maxLumaDelta < deltaThresh
+    let pass = worstWash < thresh && caveMaxLuma < caveThresh && maxLumaDelta < deltaThresh && specGateOK
     print(String(format: "%@ washout test — worst washed %.1f%% (%@); turn-brightening Δluma %.1f%% (%@, max %.0f%%); cave sky max-luma %.0f%%",
                  pass ? "OK:" : "FAIL:", worstWash*100, worstAt, maxLumaDelta*100, maxLumaDeltaAt, deltaThresh*100, caveMaxLuma*100))
     return pass

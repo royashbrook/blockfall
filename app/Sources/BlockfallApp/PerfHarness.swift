@@ -446,7 +446,13 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         let treeMode = ProcessInfo.processInfo.environment["BF_SHOT_TREES"] == "1"
         let travel = treeMode ? 320 : 700
         for _ in 0..<travel { renderOneFrame(yaw: 0) }       // travel STRAIGHT to cross into grass/forest
-        if skyMode {
+        // BF_SHOT_PITCH=<total radians> aims the camera up/down before the capture
+        // (positive = up into more sky). Lets the night yaw sweep frame the horizon/sky,
+        // where a view-dependent night over-brightness shows up, instead of the default
+        // ground-down framing.
+        if let pStr = ProcessInfo.processInfo.environment["BF_SHOT_PITCH"], let pTot = Float(pStr) {
+            for _ in 0..<30 { renderOneFrame(pitch: pTot / 30.0, yaw: 0) }
+        } else if skyMode {
             for _ in 0..<30 { renderOneFrame(pitch: 0.02, yaw: 0) }  // tilt UP into clear sky for the moon
         } else if treeMode {
             for _ in 0..<12 { renderOneFrame(pitch: 0.012, yaw: 0) } // look level/up to frame trees ahead
