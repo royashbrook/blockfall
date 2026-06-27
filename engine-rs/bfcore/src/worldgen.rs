@@ -742,6 +742,16 @@ fn continentalness(fwx: f32, fwz: f32, seed: u64) -> f32 {
 const OCEAN_DEPTH: f32 = 26.0; // max blocks below the land base out in deep ocean
 const LAND_LIFT: f32 = 7.0; // max blocks lifted on solid land
 
+// Continentalness thresholds for fading out the bumpy biome detail noise as a
+// column goes from shore (no fade) to deep ocean (full fade). Both are negative
+// (ocean side). The fade is smooth so the sea floor settles into a deep basin
+// without a seam-violating step.
+const OCEAN_SHORE_C: f32 = -0.04; // start fading detail just past the shoreline
+const OCEAN_FLOOR_C: f32 = -0.45; // fully faded (smooth deep basin) out here
+// How much detail noise survives in the deepest ocean (a little floor texture so
+// the sea bed is not a perfect plane).
+const OCEAN_DETAIL_FLOOR: f32 = 0.12;
+
 fn continent_offset(fwx: f32, fwz: f32, seed: u64) -> f32 {
     let cont = continentalness(fwx, fwz, seed);
     if cont >= 0.0 {
@@ -814,7 +824,15 @@ fn surface_height_raw(wx: i32, wz: i32, seed: u64, weights: &[f32; NUM_BIOMES]) 
 
     let swell = regional_swell(fwx, fwz, seed);
 
-    let mut blended_h = 0.0f32;
+    // Keep the smooth biome base floor apart from the bumpy per-biome detail noise.
+    // In open ocean we fade out the detail (which carries the big mountain/forest
+    // amplitude) so the sea floor is a smooth, deep basin driven by the low
+    // frequency continent offset instead of a field of near surface ridges. The
+    // continent field is smooth, so the faded floor flows through the Lipschitz
+    // limiter cleanly and stays deep (the old jagged floor read as shallow lakes
+    // because peaks poked up near sea level between the limiter's anchors).
+    let mut base_blend = 0.0f32;
+    let mut detail_blend = 0.0f32;
 
     for i in 0..NUM_BIOMES {
         if weights[i] < 1e-4 {
@@ -837,9 +855,22 @@ fn surface_height_raw(wx: i32, wz: i32, seed: u64, weights: &[f32; NUM_BIOMES]) 
 
         let biome_is = Biome::from_index(i as i32);
         let biome_swell = if biome_is != Biome::Plains && biome_is != Biome::Swamp { swell } else { 0.0 };
-        let h = p.base_y + (n * 2.0 - 1.0) * p.amp + biome_swell;
-        blended_h += weights[i] * h;
+        base_blend += weights[i] * p.base_y;
+        detail_blend += weights[i] * ((n * 2.0 - 1.0) * p.amp + biome_swell);
     }
+
+    // Ocean factor: 0 on land and at the shore, ramping smoothly to 1 in deep
+    // ocean. Drives how much of the bumpy detail noise we keep, so the transition
+    // from a normal coastline into a smooth deep basin is gradual (no cliff).
+    let cont_raw = continentalness(fwx, fwz, seed);
+    let ocean_t = {
+        // c in [OCEAN_FLOOR_C .. OCEAN_SHORE_C] maps to [1 .. 0].
+        let t = ((OCEAN_SHORE_C - cont_raw) / (OCEAN_SHORE_C - OCEAN_FLOOR_C)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t) // smootherstep
+    };
+    // Keep a little floor texture even in deep ocean so it is not glassy flat.
+    let detail_keep = 1.0 - ocean_t * (1.0 - OCEAN_DETAIL_FLOOR);
+    let mut blended_h = base_blend + detail_blend * detail_keep;
 
     // Continent offset: lifts land, sinks oceans. This is the field that creates
     // the large-scale ocean/land split. Swamps stay near sea level (they should

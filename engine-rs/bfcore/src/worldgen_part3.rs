@@ -61,6 +61,7 @@ fn struct_surface(wx: i32, wz: i32, seed: u64) -> i32 {
     surface_height(wx, wz, seed)
 }
 
+
 fn struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
     let sseed = fmix64(seed ^ STRUCT_SEED_MIX);
     let h = hash2(scx, scz, sseed);
@@ -96,6 +97,13 @@ fn struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
     // are rarer than the small buildings: only when this byte is low. The split
     // among the three big types is driven by a separate slice of the hash so the
     // choice is stable per cell and deterministic.
+    // Big structures (9x9 footprint, half extent 4). Each one levels its footprint
+    // with a per-column foundation that fills the slope gap down to every column's
+    // own terrain (see place_tall_tower / place_keep / place_ruin), so they sit flush
+    // on the ground on a slope instead of floating (#108). We deliberately do NOT
+    // reject sloped sites here: the foundation fill makes any site safe, and gating
+    // on slope would change which cells become big structures (breaking the
+    // structure-placement contract other systems / tests rely on).
     let big_roll = (h2s >> 48) & 0xFF;
     if big_roll < 36 {
         let big_pick = (h2s >> 40) & 0x3;
@@ -191,7 +199,9 @@ fn struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
     // City clustering: a minority of would-be villages grow into a larger town /
     // city (more buildings, a denser layout with a center and simple paths). Most
     // settlements stay small villages. The roll is a stable per-cell hash slice so
-    // the same cell is always a city or always a village for a given seed.
+    // the same cell is always a city or always a village for a given seed. The city's
+    // buildings (huts / cabins) each carry their own foundation fill, so a city also
+    // conforms to sloped ground without floating.
     let stype = if stype == STRUCT_VILLAGE && ((h2s >> 56) & 0xFF) < 70 {
         STRUCT_CITY
     } else {
@@ -876,21 +886,27 @@ fn place_ruin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
     }
 
     let r = 4;
-    // Per-column deterministic rubble: a cracked stone floor with gaps.
+    // Per-column rubble floor at the LEVELLED base height, with a foundation that
+    // fills the slope gap down to each column's own terrain so nothing floats on a
+    // hillside (#108). The floor still has random holes for the ruined look, but a
+    // hole only removes the top floor block: the foundation underneath stays so the
+    // wall/pillar columns above it always rest on solid ground.
     for dz in -r..=r {
         for dx in -r..=r {
+            // Fill from this column's terrain up to just below the levelled floor.
+            struct_fill_col(chunk, ax + dx, az + dz, base_h - 1, seed, wx_min, wy_min, wz_min, COBBLESTONE);
             let fh = fmix64(h ^ (((dx + 9) * 131 + (dz + 9) * 17) as u64));
             if (fh & 0x7) == 0 {
-                continue; // a hole in the floor
+                continue; // a hole in the floor surface (foundation below remains)
             }
-            let col_h = struct_surface(ax + dx, az + dz, seed);
             let b = if fh & 0x10 != 0 { MOSSY_STONE } else { COBBLESTONE };
-            struct_set(chunk, ax + dx, col_h, az + dz, wx_min, wy_min, wz_min, b);
+            struct_set(chunk, ax + dx, base_h, az + dz, wx_min, wy_min, wz_min, b);
         }
     }
 
     // Broken curtain wall: each perimeter column rises to a random ragged height
-    // (0..wall_h), so the wall is full of gaps and looks collapsed.
+    // (0..wall_h) on top of the levelled base, so the wall is full of gaps and
+    // looks collapsed but is anchored to the filled foundation (never floats).
     let wall_h = 4;
     for dz in -r..=r {
         for dx in -r..=r {

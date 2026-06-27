@@ -1482,6 +1482,181 @@ mod worldgen_tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Structures sit on the ground (#108 floating-structures regression).
+    //
+    // We stamp a single structure into an unbounded HashMap-backed grid by
+    // running place_structure across every chunk window its footprint can reach
+    // (terrain is NOT generated into these windows, so every non-AIR cell is a
+    // structure block). Then, per column, we find the lowest structure block and
+    // require it to rest on the terrain surface (no air gap beneath it). The
+    // terrain top for a column is worldgen_surface_height(); a foundation column
+    // that fills down to its own terrain has its lowest block at surface+1, so a
+    // structure conforms when every occupied column's lowest block is at or below
+    // surface+1. A block left floating in the air (lowest > surface+1) is a
+    // floater. This catches the regression on sloped / mountain sites where a big
+    // structure stamped at a single flat base Y leaves its downhill columns
+    // hanging.
+    // -----------------------------------------------------------------------
+
+    // An unbounded grid that satisfies the Chunk trait for one fixed chunk window
+    // at a time. place_* writes through struct_set, which clamps to [wx_min..],
+    // so we re-point the window and replay to capture the whole footprint.
+    struct GridChunk {
+        wx_min: i32,
+        wy_min: i32,
+        wz_min: i32,
+        cells: std::collections::HashMap<(i32, i32, i32), BlockId>,
+    }
+    impl Chunk for GridChunk {
+        fn get(&self, lx: i32, ly: i32, lz: i32) -> BlockId {
+            *self
+                .cells
+                .get(&(self.wx_min + lx, self.wy_min + ly, self.wz_min + lz))
+                .unwrap_or(&AIR)
+        }
+        fn set(&mut self, lx: i32, ly: i32, lz: i32, b: BlockId) {
+            self.cells
+                .insert((self.wx_min + lx, self.wy_min + ly, self.wz_min + lz), b);
+        }
+    }
+
+    // Stamp one structure into a global cell map by sweeping every chunk window
+    // (x,z and the full vertical span) that its reach can touch.
+    fn stamp_structure(sd: &StructDesc, seed: u64) -> std::collections::HashMap<(i32, i32, i32), BlockId> {
+        let mut cells: std::collections::HashMap<(i32, i32, i32), BlockId> = std::collections::HashMap::new();
+        let cx0 = seam_floordiv_pub(sd.anchor_wx - STRUCT_MAX_REACH_XZ, K_CHUNK_DIM);
+        let cx1 = seam_floordiv_pub(sd.anchor_wx + STRUCT_MAX_REACH_XZ, K_CHUNK_DIM);
+        let cz0 = seam_floordiv_pub(sd.anchor_wz - STRUCT_MAX_REACH_XZ, K_CHUNK_DIM);
+        let cz1 = seam_floordiv_pub(sd.anchor_wz + STRUCT_MAX_REACH_XZ, K_CHUNK_DIM);
+        // Vertical: structures rise well above terrain; cover a generous band of
+        // chunk layers around the anchor surface.
+        let base = struct_surface(sd.anchor_wx, sd.anchor_wz, seed);
+        // Cover the foundation fill below (down to footprint terrain) and the tallest
+        // crown above. Towers rise ~19, foundations fill at most a footprint spread.
+        let cy0 = seam_floordiv_pub(base - 24, K_CHUNK_DIM);
+        let cy1 = seam_floordiv_pub(base + 28, K_CHUNK_DIM);
+        for cy in cy0..=cy1 {
+            for cz in cz0..=cz1 {
+                for cx in cx0..=cx1 {
+                    let (wx_min, wy_min, wz_min) =
+                        (cx * K_CHUNK_DIM, cy * K_CHUNK_DIM, cz * K_CHUNK_DIM);
+                    let mut g = GridChunk {
+                        wx_min,
+                        wy_min,
+                        wz_min,
+                        cells: std::mem::take(&mut cells),
+                    };
+                    place_structure(sd, seed, &mut g, wx_min, wy_min, wz_min);
+                    cells = g.cells;
+                }
+            }
+        }
+        cells
+    }
+
+    // floordiv helper available to tests (mirrors the private seam_floordiv).
+    fn seam_floordiv_pub(a: i32, b: i32) -> i32 {
+        a / b - if a % b != 0 && (a ^ b) < 0 { 1 } else { 0 }
+    }
+
+    // Returns the number of floating columns and a sample (typ, wx, wz, lowest_y,
+    // surface) for the first floater found.
+    fn structure_floaters(sd: &StructDesc, seed: u64) -> (i32, Option<(i32, i32, i32, i32, i32)>) {
+        let cells = stamp_structure(sd, seed);
+        // Per (wx,wz) column: lowest solid structure block and how many solid
+        // blocks it has.
+        let mut low: std::collections::HashMap<(i32, i32), (i32, i32)> = std::collections::HashMap::new();
+        for (&(wx, wy, wz), &b) in cells.iter() {
+            if b == AIR {
+                continue;
+            }
+            let e = low.entry((wx, wz)).or_insert((i32::MAX, 0));
+            if wy < e.0 {
+                e.0 = wy;
+            }
+            e.1 += 1;
+        }
+        let mut floaters = 0;
+        let mut sample = None;
+        for (&(wx, wz), &(y_low, count)) in low.iter() {
+            let surf = worldgen_surface_height(wx, wz, seed);
+            // A genuine floater is a wall / foundation element (a stack of 2+ blocks)
+            // whose base hangs well above the terrain with clear air beneath it. We
+            // require:
+            //  - lowest block more than a door-height above terrain (surf+4 tolerates
+            //    a doorway / gate lintel that opens over existing ground), and
+            //  - at least 2 blocks in the column, which excludes the deliberate
+            //    single-block roof eave overhang every cabin / hut has (and which the
+            //    player confirmed reads fine).
+            if y_low > surf + 4 && count >= 2 {
+                floaters += 1;
+                if sample.is_none() {
+                    sample = Some((sd.typ, wx, wz, y_low, surf));
+                }
+            }
+        }
+        (floaters, sample)
+    }
+
+
+    // Big structures (tower / keep / ruin / city) must conform to the ground with
+    // no floating columns, including on sloped / mountain sites. Scan an area and
+    // stamp every tower / keep / ruin (the #108 regression structures); cities are
+    // mostly huts / cabins whose foundation logic is shared, so we cap how many we
+    // stamp (each city is large and slow to stamp) while still exercising several.
+    #[test]
+    fn big_structures_sit_on_ground() {
+        let mut total_cities = 0;
+        let mut total_mountains = 0;
+        for &seed in &[11u64, 7, 42] {
+            let mut checked = 0;
+            let mut mountain_checked = 0;
+            let mut cities_checked = 0;
+            const CITY_CAP: i32 = 2;
+            for scz in -14..=14 {
+                for scx in -14..=14 {
+                    let sd = struct_for_cell(scx, scz, seed);
+                    if !sd.present {
+                        continue;
+                    }
+                    let small_big = sd.typ == STRUCT_TALL_TOWER
+                        || sd.typ == STRUCT_KEEP
+                        || sd.typ == STRUCT_RUIN;
+                    let is_city = sd.typ == STRUCT_CITY;
+                    if !small_big && !is_city {
+                        continue;
+                    }
+                    if is_city {
+                        if cities_checked >= CITY_CAP {
+                            continue;
+                        }
+                        cities_checked += 1;
+                    }
+                    checked += 1;
+                    if voronoi_biome(sd.anchor_wx, sd.anchor_wz, seed) == Biome::Mountains {
+                        mountain_checked += 1;
+                    }
+                    let (floaters, sample) = structure_floaters(&sd, seed);
+                    assert_eq!(
+                        floaters, 0,
+                        "seed {seed}: structure {sample:?} has {floaters} floating columns"
+                    );
+                }
+            }
+            assert!(checked > 0, "seed {seed}: found no big structures to check");
+            total_cities += cities_checked;
+            total_mountains += mountain_checked;
+            println!(
+                "seed {seed}: {checked} big structures checked ({mountain_checked} in mountains, {cities_checked} cities), 0 floaters"
+            );
+        }
+        // Across the seeds we must have exercised the city path and several mountain
+        // (sloped) sites, so the no-floater guarantee covers the hard cases.
+        assert!(total_cities > 0, "no city was exercised across the seeds");
+        assert!(total_mountains >= 3, "too few mountain sites exercised ({total_mountains})");
+    }
+
     // Regression: seed 11 must have a large ocean, rivers that reach the sea, and a
     // playable land fraction. Numbers are deliberately loose so terrain re-tuning
     // does not make this brittle, while still catching "no real ocean" or "world
@@ -1559,6 +1734,88 @@ mod worldgen_tests {
         assert!(
             river_to_sea > 0,
             "no river channel reaches the ocean (river_cells={river_cells})"
+        );
+
+        // DEPTH: the ocean must be a real, deep sea, not a sheet of shallow water.
+        // The original "no real oceans" bug passed this test because it only checked
+        // area (h <= SEA_LEVEL) and never depth: the limiter left the sea floor as a
+        // field of near surface ridges, so the water was everywhere shallow. Guard
+        // both the peak depth and that the deep core is coherently deep at FULL
+        // resolution (not just at the coarse grid points, which can alias over the
+        // bumps the bug produced).
+        let mut max_depth = 0;
+        let mut deep_cells = 0; // ocean grid cells deeper than 10 blocks
+        let mut deepest = (0i32, 0i32, 0i32);
+        for gz in 0..n {
+            for gx in 0..n {
+                if ocean[(gz * n + gx) as usize] == 0 {
+                    let wx = (gx - half) * OR_STEP;
+                    let wz = (gz - half) * OR_STEP;
+                    let d = SEA_LEVEL - worldgen_surface_height(wx, wz, seed);
+                    if d > max_depth {
+                        max_depth = d;
+                        deepest = (d, wx, wz);
+                    }
+                    if d >= 10 {
+                        deep_cells += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            max_depth >= 16,
+            "ocean too shallow: deepest point only {max_depth} blocks below sea level"
+        );
+        assert!(
+            deep_cells >= 500,
+            "too little deep sea: only {deep_cells} ocean cells deeper than 10 blocks"
+        );
+        // Full-resolution check of the deep core: scan a 64x64 window of blocks
+        // around the deepest point and require the MINIMUM depth there to stay deep.
+        // The bug left this minimum near zero (ridges poking to the surface); a real
+        // basin keeps a deep floor across its core.
+        let mut core_min = i32::MAX;
+        for dz in -32..=32 {
+            for dx in -32..=32 {
+                let d = SEA_LEVEL - worldgen_surface_height(deepest.1 + dx, deepest.2 + dz, seed);
+                if d < core_min {
+                    core_min = d;
+                }
+            }
+        }
+        assert!(
+            core_min >= 8,
+            "ocean core is not coherently deep: a {}-block-deep point sits within the deep core (bumpy floor regression)",
+            core_min
+        );
+
+        // The basin must actually be FILLED with water (not just low terrain): generate
+        // the real chunk stack at the deepest column and count its WATER blocks. This
+        // confirms the SEA_LEVEL fill reaches the deep floor, i.e. a real sea, not a dry
+        // pit. Generate from the floor chunk up to the sea-surface chunk.
+        let mut g = TerrainGen::new();
+        g.seed(seed);
+        let (dwx, dwz) = (deepest.1, deepest.2);
+        let floor_h = worldgen_surface_height(dwx, dwz, seed);
+        let cy_lo = (floor_h - 2).div_euclid(K_CHUNK_DIM);
+        let cy_hi = SEA_LEVEL.div_euclid(K_CHUNK_DIM);
+        let mut water_in_col = 0;
+        for cy in cy_lo..=cy_hi {
+            let cx = dwx.div_euclid(K_CHUNK_DIM);
+            let cz = dwz.div_euclid(K_CHUNK_DIM);
+            let mut chunk = DenseChunk::new(AIR);
+            g.generate(ChunkCoord { x: cx, y: cy, z: cz }, &mut chunk);
+            let lx = dwx.rem_euclid(K_CHUNK_DIM);
+            let lz = dwz.rem_euclid(K_CHUNK_DIM);
+            for ly in 0..K_CHUNK_DIM {
+                if chunk.get(lx, ly, lz) == WATER {
+                    water_in_col += 1;
+                }
+            }
+        }
+        assert!(
+            water_in_col >= 12,
+            "deepest ocean column holds only {water_in_col} water blocks; basin is not a filled deep sea"
         );
     }
 
