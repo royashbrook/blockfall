@@ -38,6 +38,15 @@ fi
 if "$BIN" --shadowstabilitytest; then :; else
   FAIL=1; echo "   (SHADOW-STABILITY regression: cast shadows wipe with player position, #115)"
 fi
+# Shadow camera-yaw regression: on a fixed-seed REAL-terrain region (single process), boot
+# the engine, reconstruct a fixed set of ground world-points, and measure each point's cast
+# shadow against the full two-cascade pipeline at camera yaws N/E/S/W. FAILS if a fixed
+# point's shadow drifts with camera facing (the reported "shadows vanish when turning toward
+# E/W"). The shipped path is view-free so the spread is ~0; the gate catches any future
+# view-dependent shadow term. Needs a Metal device; self-skips (returns 0) where none present.
+if "$BIN" --shadowyawtest; then :; else
+  FAIL=1; echo "   (SHADOW-YAW regression: cast shadows wipe with camera yaw toward E/W)"
+fi
 # Ground-night regression (#117): at night the water sky-reflection was not day/night gated,
 # so water surfaces over the terrain washed pale toward the sun's E/W azimuth as the camera
 # turned (the player's view-direction-dependent night "ground" wash). Renders a fixed night

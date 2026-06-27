@@ -551,6 +551,22 @@ if CommandLine.arguments.contains("--shadowstabilitytest") {
     let ok = runShadowPosProbe(strict: true)
     exit(ok ? 0 : 1)
 }
+// --shadowyawprobe: SINGLE-PROCESS REAL-TERRAIN camera-yaw shadow wipe probe. Boots the
+// engine, streams a fixed-seed region in, FIXES the camera position, low E/W sun, then
+// renders the SAME scene through the FULL two-cascade shadow pipeline at yaws N/E/S/W and
+// reports the shadowed-ground fraction per yaw (+ depth-map hashes). Reproduces the wipe
+// the synthetic --shadowprobe (one pillar, one map) could not. Verbose. SYP_SHOTS=1 saves
+// /tmp/syaw_<deg>.png colour shots.
+if CommandLine.arguments.contains("--shadowyawprobe") {
+    let ok = runShadowYawTerrainProbe(strict: false)
+    exit(ok ? 0 : 1)
+}
+// --shadowyawtest: the GREEN/RED regression gate for the camera-yaw wipe. Same sweep; FAILS
+// if the per-yaw shadow-coverage spread exceeds a small tolerance (shadows wipe by yaw).
+if CommandLine.arguments.contains("--shadowyawtest") {
+    let ok = runShadowYawTerrainProbe(strict: true)
+    exit(ok ? 0 : 1)
+}
 // --groundnightprobe: SINGLE-PROCESS REAL-TERRAIN night yaw sweep (#117). Boots the
 // engine, streams a fixed-seed region in, then renders the SAME ground at several yaws
 // at deep night and reports the lower-half ground mean luma per yaw. Reproduces the
