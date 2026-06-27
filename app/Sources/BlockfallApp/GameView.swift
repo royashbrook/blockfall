@@ -26,17 +26,8 @@ final class GameView: MTKView {
     // #42: quest-log overlay hook (wired to HUDView). Flips the log open/closed.
     // GameView tracks its own questLogOpen so Esc can close it before pausing.
     var onToggleQuestLog: (() -> Void)?
-    // Debug overlay (#): the app shell flips the on-HUD gfx toggles via this hook.
-    // onDebugClick is given the raw mouse-down event and returns true if it landed
-    // on a debug toggle row (so GameView swallows the click rather than re-grabbing
-    // the pointer or starting a mine).
-    var onToggleDebugHud: (() -> Void)?
-    var onDebugClick: ((NSEvent) -> Bool)?
 
     private var gamePaused = false
-    // True while the debug overlay is showing: the pointer is freed so the player
-    // can click the on-HUD toggles, and mouse-look is suspended (WASD still works).
-    private var debugHudActive = false
     func releaseMouse() { releasePointer() }
     func grabMouse() { capturePointer() }
     // Clear all held input. Called when the app loses focus (Cmd-Tab / Cmd-H):
@@ -48,17 +39,6 @@ final class GameView: MTKView {
     }
     func setPaused(_ b: Bool) { gamePaused = b; if b { releasePointer() } }
     var worldIsPaused: Bool { gamePaused }   // #77: renderer freezes the sim while paused (single-player)
-
-    // Enter / leave the debug overlay. The world keeps running; we only change
-    // pointer state: ON frees + shows the cursor (so the HUD toggles are
-    // clickable) and suspends mouse-look; OFF re-grabs the pointer for FPS look.
-    // WASD movement is unaffected either way.
-    func setDebugHudActive(_ active: Bool) {
-        guard active != debugHudActive else { return }
-        debugHudActive = active
-        if active { releasePointer() }
-        else if !gamePaused && !invOpen && !questLogOpen { capturePointer() }
-    }
 
     // Accumulated mouse look since the last frame (consumed by Renderer).
     private(set) var lookDX: Float = 0
@@ -159,7 +139,6 @@ final class GameView: MTKView {
         if e.keyCode == 4  { onHost?(); return }                // 'H' — host LAN co-op
         if e.keyCode == 38 { onJoin?(); return }                // 'J' — join a LAN host
         if e.keyCode == 17 { cycleTimeMode(); return }          // 'T' — auto/day/night pin
-        if e.keyCode == 42 { onToggleDebugHud?(); return }      // '\' — debug overlay (on-HUD gfx toggles)
         // Number keys: craft the Nth craftable recipe when the inventory is
         // open, otherwise select the hotbar slot.
         let nums: [UInt16: Int32] = [18:0, 19:1, 20:2, 21:3, 23:4, 22:5, 26:6, 28:7, 25:8]
@@ -204,10 +183,6 @@ final class GameView: MTKView {
     // ---- mouse -------------------------------------------------------------
     override func mouseDown(with e: NSEvent) {
         if gamePaused { return }               // let the pause overlay get clicks
-        // Debug overlay: the pointer is free so the player can click HUD toggles.
-        // A hit flips the effect (handled by the app shell); a miss is ignored so
-        // we don't re-grab the cursor mid-A/B-test. The world keeps running.
-        if debugHudActive { _ = onDebugClick?(e); return }
         if !captured { capturePointer() } else { queue(BF_ACT_MINE_START) }
     }
     override func mouseUp(with e: NSEvent) { if captured { queue(BF_ACT_MINE_STOP) } }
@@ -218,10 +193,6 @@ final class GameView: MTKView {
 
     private var cursorHidden = false   // keep hide/unhide balanced so the cursor never gets stuck
     private func capturePointer() {
-        // While the debug overlay is up the pointer must stay free so its toggles
-        // are clickable; ignore capture requests from inventory/quest-log/resume
-        // transitions until debug is turned off (which calls capture itself).
-        if debugHudActive { return }
         captured = true
         CGAssociateMouseAndMouseCursorPosition(0)
         if !cursorHidden { NSCursor.hide(); cursorHidden = true }

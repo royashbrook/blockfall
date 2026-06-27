@@ -132,31 +132,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mtkView.onToggleQuestLog = { [weak h] in h?.toggleQuestLog() }
         // 'T' day/night pin: show a visible indicator so the player can confirm it.
         mtkView.onTimeModeChanged = { [weak h] m in h?.setTimeMode(m) }
-        // #: debug overlay — '\' (or the pause-menu checkbox) flips the on-HUD gfx
-        // toggles. Releasing/grabbing the cursor is handled in GameView so the
-        // toggles are clickable while the world keeps running.
-        mtkView.onToggleDebugHud = { [weak self] in self?.toggleDebugHud() }
-        // A click while the overlay is up: convert to HUD coords and hit-test the
-        // toggle rows. Returns true if it landed on a toggle (so GameView swallows it).
-        mtkView.onDebugClick = { [weak h] e in
-            guard let h = h else { return false }
-            let p = h.convert(e.locationInWindow, from: nil)
-            return h.hitDebugToggle(at: p)
-        }
-        // A debug row click flips the effect via the same path the pause menu uses
-        // (live renderer flag + UserDefaults), keeping HUD and pause menu in sync.
-        h.onGfxToggle = { [weak self] index, on in self?.applyGfxToggle(index: index, on: on) }
-        // The debug "Time" row cycles the day/night pin just like the 'T' key.
-        h.onCycleTimeMode = { [weak mtkView] in
-            guard let mv = mtkView else { return }
-            mv.setTimeMode((mv.timeMode + 1) % 3)
-        }
         // #: apply the persisted HUD options (text size + visibility) so they
         // stick between sessions.
         h.hudScale = AppDelegate.loadHUDScale()
         h.hudVisible = AppDelegate.loadHUDVisible()
-        h.debugHud = r.gfxDebugHud
-        mtkView.setDebugHudActive(r.gfxDebugHud)
         r.hud = h
 
         let container = NSView(frame: frame)
@@ -237,7 +216,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             gfxCheckbox("God Rays",          tag: 2, on: renderer?.gfxGodRays ?? true),
             gfxCheckbox("Pollen Motes",      tag: 3, on: renderer?.gfxPollen  ?? true),
             gfxCheckbox("Soft Shadows",      tag: 4, on: renderer?.gfxShadows ?? false),
-            debugHudCheckbox(on: renderer?.gfxDebugHud ?? false),
         ])
         fxStack.orientation = .vertical; fxStack.spacing = 8; fxStack.alignment = .leading
 
@@ -494,30 +472,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ])
         return b
     }
-    // #: the debug-overlay checkbox. Separate target/action from the gfx effects
-    // because it controls the on-HUD toggle panel (not a renderer effect flag).
-    private func debugHudCheckbox(on: Bool) -> NSButton {
-        let title = "Debug Overlay (\\)"
-        let b = NSButton(checkboxWithTitle: title, target: self, action: #selector(debugHudCheckboxChanged(_:)))
-        b.state = on ? .on : .off
-        b.contentTintColor = .white
-        b.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.white,
-        ])
-        return b
-    }
     // #: graphics toggle → live renderer + persisted. Tags match gfxCheckbox order.
     @objc private func gfxToggleChanged(_ sender: NSButton) {
-        applyGfxToggle(index: sender.tag, on: sender.state == .on)
-    }
-    // Single funnel for the 5 gfx effects: write the live renderer flag AND persist
-    // it under the shared key. Used by both the pause-menu checkboxes and the
-    // on-HUD debug toggles so the two stay in sync. Index 0..4 (see HUDView.kGfxKeys).
-    private func applyGfxToggle(index: Int, on: Bool) {
-        let keys = HUDView.kGfxKeys
-        guard index >= 0 && index < keys.count else { return }
-        UserDefaults.standard.set(on, forKey: keys[index])
-        switch index {
+        let on = (sender.state == .on)
+        let keys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows"]
+        guard sender.tag >= 0 && sender.tag < keys.count else { return }
+        UserDefaults.standard.set(on, forKey: keys[sender.tag])
+        switch sender.tag {
         case 0: renderer?.gfxFoliage = on
         case 1: renderer?.gfxWater   = on
         case 2: renderer?.gfxGodRays = on
@@ -525,21 +486,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case 4: renderer?.gfxShadows = on
         default: break
         }
-    }
-    // #: toggle the on-HUD debug overlay. Persists the flag, mirrors it onto the
-    // live renderer + HUD, and tells GameView to free / re-grab the cursor. The
-    // world is NOT paused. Driven by '\' and by the pause-menu checkbox.
-    private func setDebugHud(_ on: Bool) {
-        UserDefaults.standard.set(on, forKey: "gfxDebugHud")
-        renderer?.gfxDebugHud = on
-        hud?.debugHud = on
-        gameView?.setDebugHudActive(on)
-    }
-    private func toggleDebugHud() {
-        setDebugHud(!(renderer?.gfxDebugHud ?? false))
-    }
-    @objc private func debugHudCheckboxChanged(_ sender: NSButton) {
-        setDebugHud(sender.state == .on)
     }
     @objc private func quitToMenu() {
         pauseOverlay?.removeFromSuperview(); pauseOverlay = nil

@@ -368,10 +368,6 @@ final class Renderer: NSObject, MTKViewDelegate {
     var gfxGodRays = UserDefaults.standard.object(forKey: "gfxGodRays") as? Bool ?? true
     var gfxPollen  = UserDefaults.standard.object(forKey: "gfxPollen")  as? Bool ?? true
     var gfxShadows = UserDefaults.standard.object(forKey: "gfxShadows") as? Bool ?? false  // default OFF (residual sun-angle bug; kids prefer it off)
-    // #: in-game debug overlay — when ON the HUD draws the 5 gfx toggles (plus the
-    // day/night pin) as clickable rows so they can be flipped without opening the
-    // pause menu (fast A/B testing + screenshots). Default OFF. Persisted.
-    var gfxDebugHud = UserDefaults.standard.object(forKey: "gfxDebugHud") as? Bool ?? false
     // World-space precipitation (rain streaks / snow flakes) — renderer-owned,
     // instanced billboards in a volume around the camera. Drives off frame.camera.weather.
     private var precipPipeline: MTLRenderPipelineState!
