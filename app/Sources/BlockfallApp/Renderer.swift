@@ -3336,7 +3336,14 @@ final class Renderer: NSObject, MTKViewDelegate {
             float3 camPos3 = UW_CAM_POS(wu);
             float dist = length(in.worldPos - camPos3);
             float fog = smoothstep(295.0, 400.0, dist) * 0.32;
-            float3 horizFogColor = float3(0.46, 0.56, 0.70);   // muted blue haze
+            // Gate the haze colour by day/night. Ungated, this muted-blue haze stayed bright
+            // at night, so the far render edge washed PALE/WHITE over dark night terrain (the
+            // long-hunted night "white ground": worst looking E/W across open distance, which
+            // is just where the most far terrain is visible). Fade it to a dark night haze so
+            // distant terrain blends into the night instead of glowing. (0.12 floor keeps a
+            // faint dark haze rather than pure black.)
+            float fogDay = 0.12 + 0.88 * dayLight(wu.sunDirTime.w);
+            float3 horizFogColor = float3(0.46, 0.56, 0.70) * fogDay;
             col = mix(col, horizFogColor, fog);
         }
 
