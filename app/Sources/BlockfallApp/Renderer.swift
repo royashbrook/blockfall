@@ -425,8 +425,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     //   far  cascade = wide radius  → shadows out toward the horizon
     private let kShadowRes  = 1536
     private let kShadowNearR: Float = 48   // near cascade half-extent (world units)
-    private let kShadowFarR:  Float = 150  // far cascade half-extent (#72: wider so the
-                                           // faded boundary sits well past the play area)
+    private let kShadowFarR:  Float = 300  // far cascade half-extent. Covers most of the 384-block
+                                           // render distance (up to where fog starts ~295) so cast
+                                           // shadows do not vanish at range. The engine occluder
+                                           // radius (world.rs kshadow_r) must be >= this.
     private let kCascadeSplit: Float = 36  // camera-distance split between cascades
     private var shadowMap: MTLTexture!     // depth32Float — near cascade
     private var shadowMapFar: MTLTexture!  // depth32Float — far cascade
@@ -2991,7 +2993,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             // the player instead, so the cutoff is a smooth circle (same in every
             // direction) that sits inside the square's minimum reach — no straight edge can
             // ever show, so turning never wipes a side.
-            float distFade = 1.0 - smoothstep(135.0, 149.0, distToCam);
+            float distFade = 1.0 - smoothstep(275.0, 298.0, distToCam);
             raw = mix(1.0, raw, distFade);
             // #72 DEBUG: shadowScale == 2 (harness sentinel) outputs the shadow factor as
             // grayscale (white = lit, black = shadowed) so coverage is unmistakable headless.
