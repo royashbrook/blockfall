@@ -260,6 +260,53 @@ final class HUDView: NSView {
     // text element honours the option.
     private func fs(_ base: CGFloat) -> CGFloat { base * hudScale }
 
+    // --- Debug overlay (#: on-HUD graphics-effect toggles) ---
+    // When ON, the status box grows extra clickable rows for the 5 graphics
+    // effects plus the day/night pin, so they can be flipped live (no pause
+    // menu) for fast A/B testing and screenshots. Toggled from the pause menu
+    // or the backslash key. The app shell releases the mouse while this is on
+    // (see GameView) and routes clicks here via hitDebugToggle.
+    var debugHud: Bool = false {
+        didSet { if debugHud != oldValue { needsDisplay = true } }
+    }
+    // Live state + persistence for the 5 gfx toggles share the exact mapping the
+    // pause menu uses. Index 0..4 = Foliage, Water, God Rays, Pollen, Shadows.
+    static let kGfxKeys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows"]
+    private static let kGfxLabels = ["Waving Foliage", "Water Reflections", "God Rays", "Pollen Motes", "Soft Shadows"]
+    private static let kGfxDefaults: [Bool] = [false, true, true, true, false]
+    // The app wires these so a click on a debug row reaches the live renderer +
+    // UserDefaults via the same path the pause-menu checkboxes use. onGfxToggle
+    // receives (index, newValue); onCycleTimeMode advances the day/night pin.
+    var onGfxToggle: ((Int, Bool) -> Void)?
+    var onCycleTimeMode: (() -> Void)?
+    // Hit-test rects for the rows drawn this frame, parallel to a tag:
+    //   0..4 = gfx effect index, -1 = the day/night pin row.
+    private var debugRowRects: [(rect: NSRect, tag: Int)] = []
+
+    // Current persisted state of a gfx effect (the source of truth the pause
+    // menu also writes). Read fresh so the row always mirrors reality.
+    private func gfxState(_ index: Int) -> Bool {
+        UserDefaults.standard.object(forKey: HUDView.kGfxKeys[index]) as? Bool ?? HUDView.kGfxDefaults[index]
+    }
+
+    // Map a click (view coords) to a debug toggle row and flip it live.
+    // Returns true if a row was hit (so the caller can swallow the click).
+    // Called by GameView while the debug overlay is on and the pointer is free.
+    func hitDebugToggle(at point: NSPoint) -> Bool {
+        guard debugHud else { return false }
+        for row in debugRowRects where row.rect.contains(point) {
+            if row.tag == -1 {
+                onCycleTimeMode?()
+            } else {
+                let next = !gfxState(row.tag)
+                onGfxToggle?(row.tag, next)
+            }
+            needsDisplay = true
+            return true
+        }
+        return false
+    }
+
     // --- #42: Quest/progression log overlay ---
     // Full quest chain, fetched by the Renderer (which owns the engine handle)
     // and pushed in via setQuests while the log is open. Toggled by 'L' in
@@ -558,6 +605,7 @@ final class HUDView: NSView {
         // overlays (hotbar, hearts, quest, status box, hints, toasts, etc.).
         // The crosshair stays so the player can still aim.
         if !hudVisible {
+            debugRowRects.removeAll(keepingCapacity: true)   // no status box -> no clickable rows
             if crosshair {
                 let cx = b.midX, cy = b.midY, s: CGFloat = 8
                 NSColor.white.withAlphaComponent(0.85).setStroke()
@@ -810,8 +858,11 @@ final class HUDView: NSView {
     // panel. The view is non-flipped: +x right, +y up.
     private func drawStatusBox(in b: NSRect) {
         // One status line = text + colour. Built top-to-bottom in reading order.
-        struct StatusLine { let text: String; let color: NSColor; let bold: Bool }
+        // debugTag != nil marks a clickable debug-overlay row (0..4 = gfx effect,
+        // -1 = the day/night pin); its rect is recorded during layout below.
+        struct StatusLine { let text: String; let color: NSColor; let bold: Bool; var debugTag: Int? = nil }
         var lines: [StatusLine] = []
+        debugRowRects.removeAll(keepingCapacity: true)
 
         // Game mode — keep the existing teal/orange colour cue.
         let creative = (hud.mode == BF_MODE_CREATIVE)
@@ -852,6 +903,27 @@ final class HUDView: NSView {
         default: weather = ("Weather: Clear", NSColor.white.withAlphaComponent(0.85))
         }
         lines.append(StatusLine(text: weather.0, color: weather.1, bold: false))
+
+        // --- Debug overlay rows (#): the 5 gfx toggles + the day/night pin, drawn
+        // directly under the weather line as clickable rows. Each shows its live
+        // state ([x]/[ ]). Only present when the debug overlay is on. ---
+        if debugHud {
+            lines.append(StatusLine(text: "— Debug (\\) —",
+                                    color: NSColor(srgbRed: 0.55, green: 0.95, blue: 0.75, alpha: 1), bold: true))
+            for i in 0..<HUDView.kGfxKeys.count {
+                let on = gfxState(i)
+                lines.append(StatusLine(
+                    text: "\(on ? "[x]" : "[ ]") \(HUDView.kGfxLabels[i])",
+                    color: on ? NSColor(srgbRed: 0.70, green: 1.0, blue: 0.80, alpha: 1)
+                              : NSColor.white.withAlphaComponent(0.70),
+                    bold: false, debugTag: i))
+            }
+            // Day/night pin (auto/day/night) as a labeled, clickable testing row.
+            let modeName = ["Auto", "Always Day", "Always Night"][Int(max(0, min(2, timeMode)))]
+            lines.append(StatusLine(text: "↻ Time: \(modeName)",
+                                    color: NSColor(srgbRed: 1.0, green: 0.75, blue: 0.92, alpha: 1),
+                                    bold: false, debugTag: -1))
+        }
 
         // "In the Grey" indicator (#28). Make the Grey state obvious (that's the
         // whole point); when restored, show a quiet rainbow line so the contrast
@@ -913,6 +985,14 @@ final class HUDView: NSView {
         // Draw lines top-to-bottom inside the box.
         var ly = box.maxY - pad - lineH
         for (i, l) in lines.enumerated() {
+            // Record a hit rect for clickable debug rows (full row width so the
+            // label and the [x]/[ ] box are both an easy target).
+            if let tag = l.debugTag {
+                debugRowRects.append((rect: NSRect(x: box.minX, y: ly - lineGap / 2,
+                                                   width: box.width,
+                                                   height: lineH + lineGap),
+                                      tag: tag))
+            }
             (l.text as NSString).draw(at: NSPoint(x: box.minX + pad, y: ly),
                                       withAttributes: attrs(l))
             // #30: draw a thin day/night progress bar tucked under the time line,
