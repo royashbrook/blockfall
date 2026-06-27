@@ -4088,7 +4088,11 @@ impl<'c> World<'c> {
 
         // Shadow occluders: resident meshes, no cone cull, bounded radius.
         shadow_draws.clear();
-        let kshadow_r = 320.0f32; // must cover the renderer far shadow cascade (kShadowFarR 300) so distant shadows have casters
+        // #118 must be >= the renderer far shadow cascade (kShadowFarR 380) plus a margin so a
+        // tall caster just outside the cascade still throws its shadow inward. Was 320 (when the
+        // cascade ended at 300, mid-vista); now 400 so occluders exist all the way to the render
+        // edge and the coverage circle lands in the distance haze instead of cutting the vista.
+        let kshadow_r = 400.0f32;
         for cc in &mesh_coords {
             let (has_buffers, index_count, vbuf_h, ibuf_h) = {
                 let rec = &self.meshes[cc];

@@ -582,6 +582,23 @@ if CommandLine.arguments.contains("--groundnighttest") {
     let ok = runGroundNightProbe(strict: true)
     exit(ok ? 0 : 1)
 }
+// --vistaprobe: #118 LONG-VIEW vista shadow-sweep probe. HIGH camera over real terrain
+// looking across a large expanse; renders the SAME vista at several yaws through the FULL
+// two-cascade pipeline, saves color + grayscale-shadow PNGs, and reports the radial shadow
+// cutoff distance per yaw. Set BF_VISTA_FARR / BF_VISTA_FADE_END to render the OLD (300/298)
+// vs NEW (380/380) behaviour from one binary for a true before/after.
+if CommandLine.arguments.contains("--vistaprobe") {
+    let ok = runVistaProbe()
+    exit(ok ? 0 : 1)
+}
+// --vistatest: #118 GREEN/RED gate for the long-view shadow sweep. Boots a fixed-seed real
+// terrain, perches HIGH over a long vista, renders several yaws through the full two-cascade
+// pipeline, and FAILS if the post-fog shadow-coverage fade forms a perceptible ring (the
+// boundary that swept across the land when turning). Needs a Metal device; self-skips otherwise.
+if CommandLine.arguments.contains("--vistatest") {
+    let ok = runVistaProbe(strict: true)
+    exit(ok ? 0 : 1)
+}
 if let idx = CommandLine.arguments.firstIndex(of: "--screenshot"), idx + 1 < CommandLine.arguments.count {
     let ok = runRenderSelfTest(savePath: CommandLine.arguments[idx + 1], width: 960, height: 720)
     exit(ok ? 0 : 1)

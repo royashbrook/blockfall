@@ -2363,3 +2363,478 @@ func runShadowYawTerrainProbe(strict: Bool = false) -> Bool {
     }
     return true
 }
+
+// ============================================================================
+// #118 LONG-VIEW VISTA SHADOW-SWEEP PROBE (--vistaprobe)
+//
+// The reported bug: from a mountain or while flying, looking across a large
+// expanse, TURNING the camera makes a shadow-coverage boundary pan across the
+// vista (the shadow circle's edge sweeps through the view). The cause: shadows
+// faded out at a fixed radius (~298) that sat MID-VISTA in clear air, well
+// inside the 384-block render distance, so the cutoff was plainly visible and
+// moved as you turned.
+//
+// This probe reproduces THAT condition - a HIGH camera over real terrain looking
+// across a wide expanse - and renders the SAME vista at several yaws through the
+// FULL two-cascade pipeline. It saves color + grayscale-shadow PNGs and measures
+// the radial distance at which shadows stop (the cutoff). The key signal:
+//   * BEFORE (cutoff ~298, in clear air): cutoff sits far inside render distance,
+//     a hard boundary is visible mid-vista.
+//   * AFTER (cutoff ~380, at the render edge in haze): cutoff is pushed out to
+//     where terrain fades into fog, so no mid-vista boundary sweeps when turning.
+//
+// To produce a genuine BEFORE/AFTER from ONE built binary, the cascade far
+// radius and the distFade end are overridable per run:
+//   BF_VISTA_FARR=300  BF_VISTA_FADE_END=298   (the OLD / before behaviour)
+//   BF_VISTA_FARR=380  BF_VISTA_FADE_END=380   (the NEW / shipped behaviour)
+// Default (no env) uses the shipped values so the probe matches the game.
+// BF_VISTA_DIR sets an output directory for the PNGs (default /tmp).
+// ============================================================================
+func runVistaProbe(strict: Bool = false) -> Bool {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        print("SKIP: vista probe (no Metal device)"); return true
+    }
+    let queue = device.makeCommandQueue()!
+    let registry = BufferRegistry(device: device)
+    guard let lib = try? device.makeLibrary(source: Renderer.shaderSource, options: nil) else {
+        print("shader compile failed"); return false
+    }
+    func pipe(_ vfn: String, _ ffn: String?, _ fmt: MTLPixelFormat?, depth: Bool) -> MTLRenderPipelineState? {
+        let d = MTLRenderPipelineDescriptor()
+        d.vertexFunction = lib.makeFunction(name: vfn)
+        d.fragmentFunction = ffn.flatMap { lib.makeFunction(name: $0) }
+        if let f = fmt { d.colorAttachments[0].pixelFormat = f }
+        if depth { d.depthAttachmentPixelFormat = .depth32Float }
+        return try? device.makeRenderPipelineState(descriptor: d)
+    }
+    guard let shadowPipe = pipe("shadowVmain", nil, nil, depth: true),
+          let propShadowPipe = pipe("propInstVmain", nil, nil, depth: true),
+          let terrPipe = pipe("vmain", "fmain", .bgra8Unorm, depth: true)
+    else { print("pipeline build failed"); return false }
+    let propModelTable = Renderer.makePropModelTable(device: device)
+    var propInstBuf: MTLBuffer? = nil
+
+    let shDSD = MTLDepthStencilDescriptor(); shDSD.depthCompareFunction = .lessEqual; shDSD.isDepthWriteEnabled = true
+    let shadowDepthState = device.makeDepthStencilState(descriptor: shDSD)
+    let dsd = MTLDepthStencilDescriptor(); dsd.depthCompareFunction = .less; dsd.isDepthWriteEnabled = true
+    let depthState = device.makeDepthStencilState(descriptor: dsd)
+    let ssd = MTLSamplerDescriptor()
+    ssd.minFilter = .linear; ssd.magFilter = .linear
+    ssd.sAddressMode = .clampToEdge; ssd.tAddressMode = .clampToEdge
+    ssd.compareFunction = .lessEqual
+    let shadowSampler = device.makeSamplerState(descriptor: ssd)!
+
+    // BEFORE / AFTER knobs (default = shipped values).
+    let farR     = Float(ProcessInfo.processInfo.environment["BF_VISTA_FARR"]     ?? "") ?? 380
+    let fadeEnd  = Float(ProcessInfo.processInfo.environment["BF_VISTA_FADE_END"] ?? "") ?? 380
+    let nearR: Float = 48
+    let outDir   = ProcessInfo.processInfo.environment["BF_VISTA_DIR"] ?? "/tmp"
+    let tag      = ProcessInfo.processInfo.environment["BF_VISTA_TAG"] ?? "vista"
+    print(String(format: "VISTA probe: farR=%.0f fadeEnd=%.0f  out=%@/%@_*", farR, fadeEnd, outDir, tag))
+
+    // Engine + fixed-seed real terrain at the GAME render distance (384 blocks) so the
+    // vista is as long as the player actually sees.
+    var cfg = bf_engine_config()
+    cfg.abi_version = BF_ABI_VERSION; cfg.role = BF_ROLE_SINGLEPLAYER; cfg.start_mode = BF_MODE_CREATIVE
+    cfg.render_distance_chunks = 24                       // 24 chunks = 384 blocks, the game default
+    cfg.content_dir = persistentCString("."); cfg.save_dir = persistentCString(NSTemporaryDirectory() + "bf_vista")
+    cfg.player_name = persistentCString("vista")
+    var err = BF_OK
+    guard let e = bf_engine_create(&cfg, &err), err == BF_OK else { print("engine create"); return false }
+    defer { bf_engine_destroy(e) }
+    var alloc = bf_gpu_allocator()
+    alloc.user = Unmanaged.passUnretained(registry).toOpaque()
+    alloc.alloc = allocTrampoline; alloc.free_ = freeTrampoline
+    _ = bf_set_gpu_allocator(e, &alloc)
+    // The strict GATE uses a fixed seed / vantage / sun known to frame far shadows over a long
+    // vista, so the fade-ring measurement is repeatable. Diagnostic runs default to seed 2026
+    // and accept env overrides.
+    let seed = UInt64(ProcessInfo.processInfo.environment["BF_VISTA_SEED"] ?? "") ?? (strict ? 200 : 2026)
+    _ = bf_world_new(e, seed)
+
+    let W = 960, H = 540
+    let kShadowRes = 1536
+    func makeTex(_ fmt: MTLPixelFormat, _ w: Int, _ h: Int, _ usage: MTLTextureUsage, _ shared: Bool) -> MTLTexture {
+        let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: fmt, width: w, height: h, mipmapped: false)
+        td.usage = usage; td.storageMode = shared ? .shared : .private
+        return device.makeTexture(descriptor: td)!
+    }
+    let shadowTexN = makeTex(.depth32Float, kShadowRes, kShadowRes, [.renderTarget, .shaderRead], true)
+    let shadowTexF = makeTex(.depth32Float, kShadowRes, kShadowRes, [.renderTarget, .shaderRead], true)
+    let outTex   = makeTex(.bgra8Unorm, W, H, [.renderTarget, .shaderRead], true)
+    let outDepth = makeTex(.depth32Float, W, H, [.renderTarget, .shaderRead], true)
+
+    // Walk a while to reach continuous land away from the origin, then STAND STILL for a long
+    // settle so the engine async-streams its FULL render-distance bubble (384 blocks) around the
+    // vantage - otherwise only the small bubble traced along the walk is resident and the "vista"
+    // is just sky. We track the highest ground column so we can perch on a rise (the mountain
+    // case) and report the resident draw count so we know the bubble actually filled.
+    var camGround = SIMD3<Float>(0, 48, 0)
+    var highest = SIMD3<Float>(0, -1e9, 0)
+    let walkFrames   = Int(ProcessInfo.processInfo.environment["BF_VISTA_WALK"]   ?? "") ?? (strict ? 600 : 300)
+    let settleFrames = Int(ProcessInfo.processInfo.environment["BF_VISTA_SETTLE"] ?? "") ?? 1600
+    var lastDraws = 0
+    for f in 0..<(walkFrames + settleFrames) {
+        registry.currentFrame = f
+        var input = bf_frame_input()
+        input.move_forward = (f < walkFrames) ? 1 : 0
+        // Real per-frame dt during walk + settle so the worker pool keeps generating; a couple
+        // of big-dt ticks at the very end flush the last meshes.
+        let dt: Double = (f >= walkFrames + settleFrames - 8) ? 2.0 : 1.0/60.0
+        _ = bf_frame_begin(e, &input, dt)
+        var fr = bf_render_frame(); _ = bf_frame_acquire_render(e, &fr)
+        let p = SIMD3<Float>(fr.camera.position.x, fr.camera.position.y, fr.camera.position.z)
+        camGround = p
+        // Track the highest ground only once we have stopped walking (so the perch sits in the
+        // settled bubble, not somewhere back along the trail).
+        if f >= walkFrames && p.y > highest.y { highest = p }
+        lastDraws = Int(fr.draw_count)
+        bf_frame_end(e); registry.collect()
+    }
+    if highest.y < -1e8 { highest = camGround }
+    // Perch the eye above the settled ground and aim DOWN across the expanse so terrain fills
+    // most of the frame (the coverage edge is in view across the whole vista). The bubble is
+    // centred on camGround, so the eye stays over it. BF_VISTA_HIGH / BF_VISTA_PITCH override.
+    let extraHigh = Float(ProcessInfo.processInfo.environment["BF_VISTA_HIGH"] ?? "") ?? (strict ? 100 : 30)
+    let eye = SIMD3<Float>(camGround.x, max(highest.y, camGround.y) + extraHigh, camGround.z)
+    print(String(format: "VISTA camera eye=(%.1f,%.1f,%.1f)  resident draws=%d  (settled ground=(%.1f,%.1f,%.1f))",
+                 eye.x, eye.y, eye.z, lastDraws, camGround.x, camGround.y, camGround.z))
+
+    // Low-ish morning sun on the X (E/W) azimuth: long ground shadows, the exact axis the
+    // player turns toward when the sweep shows. BF_VISTA_SUN overrides. The gate uses a sun that
+    // casts shadows out across the distance so the fade band is actually populated.
+    var sun = strict ? simd_normalize(SIMD3<Float>(0.80, -0.30, 0.30))
+                     : simd_normalize(SIMD3<Float>(0.72, -0.50, 0.18))
+    if let s = ProcessInfo.processInfo.environment["BF_VISTA_SUN"] {
+        let p = s.split(separator: ",").compactMap { Float($0) }
+        if p.count == 3 { sun = simd_normalize(SIMD3<Float>(p[0], p[1], p[2])) }
+    }
+    let tod: Float = 0.30
+
+    let aspect = Float(W)/Float(H), fovy: Float = 1.20
+    let proj = Renderer.perspective(fovy: fovy, aspect: aspect, near: 0.05, far: 768)
+
+    // Hold ONE engine frame (the region is fixed) and re-render it from each yaw.
+    registry.currentFrame = 9000
+    var rfi = bf_frame_input()
+    _ = bf_frame_begin(e, &rfi, 1.0/60.0)
+    var fr = bf_render_frame(); _ = bf_frame_acquire_render(e, &fr)
+    let dayBright = 0.30 + 0.70 * Renderer.dayLight(tod)
+    let propN = Int(fr.prop_instance_count)
+    if propN > 0, let insts = fr.prop_instances {
+        let need = propN * MemoryLayout<bf_prop_instance>.stride
+        propInstBuf = device.makeBuffer(length: max(need, 65536), options: .storageModeShared)
+        memcpy(propInstBuf!.contents(), insts, need)
+    }
+    let kPropVertsPerInstance = 4 * 36
+
+    func lookView(_ ey: SIMD3<Float>, _ fwd: SIMD3<Float>) -> simd_float4x4 {
+        let s = normalize(cross(fwd, SIMD3<Float>(0, 1, 0))); let u = cross(s, fwd)
+        return simd_float4x4(columns: (
+            SIMD4<Float>(s.x, u.x, -fwd.x, 0),
+            SIMD4<Float>(s.y, u.y, -fwd.y, 0),
+            SIMD4<Float>(s.z, u.z, -fwd.z, 0),
+            SIMD4<Float>(-dot(s, ey), -dot(u, ey), dot(fwd, ey), 1)))
+    }
+
+    // Render the engine occluder list into a cascade map. Mirrors renderShadowCascade,
+    // including the #118 per-cascade horizontal cull so the near map only takes nearby
+    // occluders (the far map takes the full set).
+    func runCascade(_ map: MTLTexture, _ m: simd_float4x4, cullR: Float, camHX: Float, camHZ: Float) {
+        let cmd = queue.makeCommandBuffer()!
+        let srp = MTLRenderPassDescriptor()
+        srp.depthAttachment.texture = map; srp.depthAttachment.loadAction = .clear
+        srp.depthAttachment.storeAction = .store; srp.depthAttachment.clearDepth = 1.0
+        let cullR2 = cullR.isFinite ? (cullR + 14.0) * (cullR + 14.0) : Float.infinity
+        if let enc = cmd.makeRenderCommandEncoder(descriptor: srp) {
+            enc.setRenderPipelineState(shadowPipe); enc.setDepthStencilState(shadowDepthState)
+            enc.setCullMode(.front); enc.setDepthBias(2.0, slopeScale: 2.0, clamp: 0.0)
+            var wind = WindUniforms(wallClockSecs: 0, rainStrength: 0)
+            enc.setVertexBytes(&wind, length: MemoryLayout<WindUniforms>.stride, index: 2)
+            let sN = Int(fr.shadow_draw_count); let sD = fr.shadow_draws
+            let useS = (sN > 0 && sD != nil)
+            for i in 0..<(useS ? sN : Int(fr.draw_count)) {
+                let d = useS ? sD![i] : fr.draws[i]
+                guard d.index_count > 0, let vb = registry.lookup(d.vertex_buffer),
+                      let ib = registry.lookup(d.index_buffer) else { continue }
+                if cullR2.isFinite {
+                    let ccx = Float(d.chunk_origin.x) + 8.0 - camHX
+                    let ccz = Float(d.chunk_origin.z) + 8.0 - camHZ
+                    if ccx*ccx + ccz*ccz > cullR2 { continue }
+                }
+                var su = ShadowVertUniforms(lightViewProj: m,
+                    chunkOrigin: SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), 0))
+                enc.setVertexBuffer(vb, offset: Int(d.vertex_offset), index: 0)
+                enc.setVertexBytes(&su, length: MemoryLayout<ShadowVertUniforms>.stride, index: 1)
+                enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
+                                          indexType: .uint32, indexBuffer: ib, indexBufferOffset: Int(d.index_offset))
+            }
+            if propN > 0, let ib = propInstBuf {
+                enc.setRenderPipelineState(propShadowPipe); enc.setCullMode(.front)
+                enc.setDepthBias(2.0, slopeScale: 2.0, clamp: 0.0)
+                var psu = PropUniforms(viewProj: m, params: SIMD4<Float>(dayBright, 0, 0, 0))
+                enc.setVertexBuffer(ib, offset: 0, index: 0)
+                enc.setVertexBytes(&psu, length: MemoryLayout<PropUniforms>.stride, index: 1)
+                enc.setVertexBuffer(propModelTable, offset: 0, index: 2)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: kPropVertsPerInstance, instanceCount: propN)
+            }
+            enc.endEncoding()
+        }
+        cmd.commit(); cmd.waitUntilCompleted()
+    }
+    func readDepthMap(_ t: MTLTexture) -> [Float] {
+        var buf = [Float](repeating: 0, count: kShadowRes*kShadowRes)
+        t.getBytes(&buf, bytesPerRow: kShadowRes*4, from: MTLRegionMake2D(0,0,kShadowRes,kShadowRes), mipmapLevel: 0)
+        return buf
+    }
+    // Analytic PCF mirror of fmain (5x5, edge fade), matching the BEFORE/AFTER fade end.
+    func analyticPCF(_ depthBuf: [Float], _ lvp: simd_float4x4, _ p: SIMD3<Float>, bias: Float) -> Float {
+        let clip = lvp * SIMD4<Float>(p.x, p.y, p.z, 1)
+        if clip.w <= 0 { return 1.0 }
+        let ndc = SIMD3<Float>(clip.x/clip.w, clip.y/clip.w, clip.z/clip.w)
+        var uv = SIMD2<Float>(ndc.x * 0.5 + 0.5, ndc.y * 0.5 + 0.5); uv.y = 1.0 - uv.y
+        let depth = ndc.z - bias
+        if uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1 { return 1.0 }
+        if depth >= 1.0 { return 1.0 }
+        let eDist = min(min(uv.x, 1 - uv.x), min(uv.y, 1 - uv.y))
+        let t = max(0, min(1, eDist/0.14)); let edgeFade = t*t*(3-2*t)
+        let texelSize: Float = 1.0/Float(kShadowRes)
+        var shadow: Float = 0
+        for dy in -2...2 { for dx in -2...2 {
+            let su = uv.x + Float(dx)*texelSize, sv = uv.y + Float(dy)*texelSize
+            let tx = min(max(0, Int(su*Float(kShadowRes))), kShadowRes-1)
+            let ty = min(max(0, Int(sv*Float(kShadowRes))), kShadowRes-1)
+            shadow += (depth <= depthBuf[ty*kShadowRes+tx]) ? 1.0 : 0.0
+        } }
+        shadow /= 25.0
+        return 1.0*(1-edgeFade) + shadow*edgeFade
+    }
+    func shadowFactorAt(_ dN: [Float], _ dF: [Float], _ lvpN: simd_float4x4, _ lvpF: simd_float4x4,
+                        _ p: SIMD3<Float>, camPos: SIMD3<Float>) -> Float {
+        let rn = analyticPCF(dN, lvpN, p, bias: 0.0028)
+        let rf = analyticPCF(dF, lvpF, p, bias: 0.0075)
+        var raw = min(rn, rf)
+        let distToCam = simd_length(p - camPos)
+        // Mirror fmain's fade band exactly (so the cutoff metric matches the rendered shots).
+        let fadeStart = (fadeEnd >= 360.0) ? Float(345.0) : (fadeEnd - 35.0)
+        let td = max(0, min(1, (distToCam - fadeStart)/(fadeEnd - fadeStart)))
+        let distFade = 1.0 - (td*td*(3-2*td))
+        raw = 1.0*(1-distFade) + raw*distFade
+        return raw
+    }
+
+    // Render one yaw. The two cascades are centred on THIS eye (live behaviour). The far
+    // cascade radius and the distFade end (carried in cameraPosW.w) follow the BEFORE/AFTER
+    // knobs so a single binary can render both behaviours.
+    func renderYaw(_ yawDeg: Float)
+        -> (viewProj: simd_float4x4, lvpN: simd_float4x4, lvpF: simd_float4x4,
+            depthN: [Float], depthF: [Float], sceneDepth: [Float]) {
+        let yaw = yawDeg * Float.pi / 180.0
+        // Aim DOWN across the expanse so terrain fills the frame (not sky). The mountain/aerial
+        // case: you look out and slightly down at the land stretching to the horizon.
+        let pitch = Float(ProcessInfo.processInfo.environment["BF_VISTA_PITCH"] ?? "") ?? (strict ? -0.55 : -0.42)
+        let fwd = normalize(SIMD3<Float>(sin(yaw)*cos(pitch), sin(pitch), -cos(yaw)*cos(pitch)))
+        let viewProj = proj * lookView(eye, fwd)
+        let lvpN = Renderer.buildLightMatrix(sunDir: sun, camPos: eye, radius: nearR, res: Float(kShadowRes))
+        let lvpF = Renderer.buildLightMatrix(sunDir: sun, camPos: eye, radius: farR,  res: Float(kShadowRes))
+        runCascade(shadowTexN, lvpN, cullR: nearR + 96.0, camHX: eye.x, camHZ: eye.z)
+        runCascade(shadowTexF, lvpF, cullR: .infinity, camHX: eye.x, camHZ: eye.z)
+        func draw(debug: Bool, storeDepth: Bool) {
+            let cmd = queue.makeCommandBuffer()!
+            let rp = MTLRenderPassDescriptor()
+            rp.colorAttachments[0].texture = outTex
+            rp.colorAttachments[0].loadAction = .clear; rp.colorAttachments[0].storeAction = .store
+            // Sky-ish clear so the horizon reads as sky, not blue debug fill.
+            rp.colorAttachments[0].clearColor = MTLClearColor(red: 0.55, green: 0.70, blue: 0.92, alpha: 1)
+            rp.depthAttachment.texture = outDepth
+            rp.depthAttachment.loadAction = .clear; rp.depthAttachment.clearDepth = 1.0
+            rp.depthAttachment.storeAction = storeDepth ? .store : .dontCare
+            if let enc = cmd.makeRenderCommandEncoder(descriptor: rp) {
+                enc.setRenderPipelineState(terrPipe); enc.setDepthStencilState(depthState)
+                enc.setCullMode(.back); enc.setFrontFacing(.counterClockwise)
+                var wu = WaterUniforms(wallClockSecs: 0, underwater: 0, shadowScale: debug ? 2.0 : 1.0,
+                                       cameraPosW: SIMD4<Float>(eye.x, eye.y, eye.z, fadeEnd),
+                                       sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, tod))
+                var wind = WindUniforms(wallClockSecs: 0, rainStrength: 0)
+                enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
+                enc.setVertexBytes(&wind, length: MemoryLayout<WindUniforms>.stride, index: 3)
+                enc.setFragmentBytes(&wind, length: MemoryLayout<WindUniforms>.stride, index: 3)
+                enc.setFragmentTexture(shadowTexN, index: 0)
+                enc.setFragmentTexture(shadowTexF, index: 1)
+                enc.setFragmentSamplerState(shadowSampler, index: 0)
+                for i in 0..<Int(fr.draw_count) {
+                    let d = fr.draws[i]
+                    guard d.index_count > 0, let vb = registry.lookup(d.vertex_buffer),
+                          let ib = registry.lookup(d.index_buffer) else { continue }
+                    var u = Uniforms(viewProj: viewProj,
+                        chunkOrigin: SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
+                        sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, tod),
+                        lightViewProj: lvpN, dimSatN: SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0),
+                        lightViewProjF: lvpF)
+                    enc.setVertexBuffer(vb, offset: Int(d.vertex_offset), index: 0)
+                    enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
+                    enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
+                                              indexType: .uint32, indexBuffer: ib, indexBufferOffset: Int(d.index_offset))
+                }
+                enc.endEncoding()
+            }
+            cmd.commit(); cmd.waitUntilCompleted()
+        }
+        draw(debug: true, storeDepth: true)
+        var sceneDepth = [Float](repeating: 1, count: W*H)
+        outDepth.getBytes(&sceneDepth, bytesPerRow: W*4, from: MTLRegionMake2D(0,0,W,H), mipmapLevel: 0)
+        if !strict {
+            // grayscale shadow-debug shot
+            writeTexturePNG(outTex, to: "\(outDir)/\(tag)_yaw\(Int(yawDeg))_shadow.png")
+            // color shot
+            draw(debug: false, storeDepth: false)
+            writeTexturePNG(outTex, to: "\(outDir)/\(tag)_yaw\(Int(yawDeg))_color.png")
+        }
+        return (viewProj, lvpN, lvpF, readDepthMap(shadowTexN), readDepthMap(shadowTexF), sceneDepth)
+    }
+
+    // Measure the radial shadow cutoff for one yaw: reconstruct ground world points from the
+    // scene depth across the lower-mid screen, bin them by horizontal distance from the eye,
+    // and find the farthest distance bin that still holds shadowed ground. That distance IS
+    // the visible coverage edge - the boundary the player sees sweep.
+    let nBins = 40
+    let binW: Float = 12.0   // each bin = 12 world units of distance
+    func cutoffDistance(_ vp: simd_float4x4, _ lvpN: simd_float4x4, _ lvpF: simd_float4x4,
+                        _ dN: [Float], _ dF: [Float], _ sceneDepth: [Float]) -> Float {
+        let inv = vp.inverse
+        var shadowedInBin = [Int](repeating: 0, count: nBins)
+        var totalInBin = [Int](repeating: 0, count: nBins)
+        for sy in stride(from: H/2, to: H-4, by: 4) {
+            for sx in stride(from: 4, to: W-4, by: 4) {
+                let d = sceneDepth[sy*W + sx]
+                if d >= 0.9999 { continue }           // sky
+                let ndc = SIMD4<Float>(Float(sx)/Float(W)*2-1, (1 - Float(sy)/Float(H))*2-1, d, 1)
+                let wp = inv * ndc
+                if abs(wp.w) < 1e-5 { continue }
+                let p = SIMD3<Float>(wp.x/wp.w, wp.y/wp.w, wp.z/wp.w)
+                let horiz = simd_length(SIMD3<Float>(p.x - eye.x, 0, p.z - eye.z))
+                let bin = Int(horiz / binW)
+                if bin < 0 || bin >= nBins { continue }
+                let fac = shadowFactorAt(dN, dF, lvpN, lvpF, p, camPos: eye)
+                totalInBin[bin] += 1
+                if fac < 0.85 { shadowedInBin[bin] += 1 }
+            }
+        }
+        // The cutoff = farthest bin where >=5% of ground is shadowed (real shadows present).
+        var cutoff: Float = 0
+        for b in 0..<nBins {
+            if totalInBin[b] >= 8 {
+                let frac = Double(shadowedInBin[b]) / Double(totalInBin[b])
+                if frac >= 0.05 { cutoff = Float(b) * binW + binW }
+            }
+        }
+        return cutoff
+    }
+
+    // The PERCEPTIBILITY metric. A ring is only visible if the on-land darkening changes
+    // abruptly across distance. For each distance bin compute the mean POST-FOG shadow
+    // darkening = how much darker the shadow makes the final pixel AFTER the distance haze has
+    // washed it toward the fog colour. (fog matches Renderer's #118 two-part haze.) Then report
+    // the largest jump between adjacent bins: that IS the sharpest shadow ring a panning camera
+    // would reveal. Small (<~0.06) => no perceptible boundary to sweep.
+    func smoothstepF(_ e0: Float, _ e1: Float, _ x: Float) -> Float {
+        let t = max(0, min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t)
+    }
+    func fogAt(_ dist: Float) -> Float {
+        let baseFog = (smoothstepF(295, 400, dist)) * 0.22
+        var edgeFog = smoothstepF(340, 384, dist); edgeFog = edgeFog * edgeFog * 0.78
+        return min(0.92, baseFog + edgeFog)
+    }
+    // Raw (un-faded) shadow factor: the cascade union WITHOUT the radial distFade. The fade
+    // RING is the difference between this and the faded result - i.e. light the fade removes.
+    func rawShadowAt(_ dN: [Float], _ dF: [Float], _ lvpN: simd_float4x4, _ lvpF: simd_float4x4,
+                     _ p: SIMD3<Float>) -> Float {
+        let rn = analyticPCF(dN, lvpN, p, bias: 0.0028)
+        let rf = analyticPCF(dF, lvpF, p, bias: 0.0075)
+        return min(rn, rf)
+    }
+    func ringVisibility(_ vp: simd_float4x4, _ lvpN: simd_float4x4, _ lvpF: simd_float4x4,
+                        _ dN: [Float], _ dF: [Float], _ sceneDepth: [Float]) -> (maxDelta: Float, atDist: Float) {
+        let inv = vp.inverse
+        // We isolate the FADE-attributable darkening change: (rawShadow - fadedShadow) post-fog.
+        // This is the light the radial fade removes, and ONLY the fade - real terrain shadows
+        // cancel out. Its gradient across distance is the visible ring a panning camera reveals;
+        // natural shadow clumps do not contribute. Small gradient => imperceptible ring.
+        var sumFadeDark = [Float](repeating: 0, count: nBins)
+        var cnt = [Int](repeating: 0, count: nBins)
+        for sy in stride(from: H/2, to: H-4, by: 3) {
+            for sx in stride(from: 4, to: W-4, by: 3) {
+                let d = sceneDepth[sy*W + sx]
+                if d >= 0.9999 { continue }
+                let ndc = SIMD4<Float>(Float(sx)/Float(W)*2-1, (1 - Float(sy)/Float(H))*2-1, d, 1)
+                let wp = inv * ndc
+                if abs(wp.w) < 1e-5 { continue }
+                let p = SIMD3<Float>(wp.x/wp.w, wp.y/wp.w, wp.z/wp.w)
+                let dist = simd_length(p - eye)
+                let bin = Int(simd_length(SIMD3<Float>(p.x - eye.x, 0, p.z - eye.z)) / binW)
+                if bin < 0 || bin >= nBins { continue }
+                let faded = shadowFactorAt(dN, dF, lvpN, lvpF, p, camPos: eye)
+                let raw   = rawShadowAt(dN, dF, lvpN, lvpF, p)
+                // Light the fade ADDS BACK (faded is lighter than raw where the fade acts),
+                // attenuated by haze that would hide it.
+                let fadeReveal = max(0, faded - raw) * (1.0 - fogAt(dist))
+                sumFadeDark[bin] += fadeReveal; cnt[bin] += 1
+            }
+        }
+        var mean = [Float](repeating: 0, count: nBins)
+        for b in 0..<nBins where cnt[b] >= 8 { mean[b] = sumFadeDark[b] / Float(cnt[b]) }
+        var maxDelta: Float = 0, at: Float = 0
+        for b in 1..<nBins where cnt[b] >= 8 && cnt[b-1] >= 8 {
+            let dlt = abs(mean[b] - mean[b-1])
+            if dlt > maxDelta { maxDelta = dlt; at = Float(b) * binW }
+        }
+        return (maxDelta, at)
+    }
+
+    let yaws: [Float] = [0, 45, 90, 135, 180, 225, 270, 315]
+    var cutoffs: [Float] = []
+    var maxRing: Float = 0
+    print("yaw | shadow cutoff dist | sharpest visible shadow ring (post-fog) @ dist")
+    for y in yaws {
+        let f = renderYaw(y)
+        let c = cutoffDistance(f.viewProj, f.lvpN, f.lvpF, f.depthN, f.depthF, f.sceneDepth)
+        let rv = ringVisibility(f.viewProj, f.lvpN, f.lvpF, f.depthN, f.depthF, f.sceneDepth)
+        cutoffs.append(c)
+        maxRing = max(maxRing, rv.maxDelta)
+        print(String(format: "  %3.0f   %5.0f          %.3f  @ %.0f", y, c, rv.maxDelta, rv.atDist))
+    }
+    bf_frame_end(e); registry.collect()
+    print(String(format: "VISTA: sharpest post-fog shadow ring across all yaws = %.3f  (<0.06 => no perceptible boundary to sweep when turning)", maxRing))
+
+    let cmin = cutoffs.min() ?? 0, cmax = cutoffs.max() ?? 0
+    let spread = cmax - cmin
+    // render distance = 384 blocks; fog onset ~295. A cutoff sitting well inside that (in
+    // clear air) is the visible mid-vista boundary. A cutoff out near 384 sits in the haze.
+    print(String(format: "VISTA: cutoff across yaws min=%.0f max=%.0f spread=%.0f  (render edge ~384, fog onset ~295)",
+                 cmin, cmax, spread))
+    // Cosmetic label only; the real pass/fail is the post-fog fade-ring metric above. The cutoff
+    // wobbles a little run-to-run with async streaming, so judge coverage at ~300 (the old fade
+    // ended at 298, fully in clear air; the fix carries it out to ~380 into the haze).
+    if cmax < 300 {
+        print("VISTA VERDICT: coverage edge sits MID-VISTA in clear air (<300) - a boundary is visible and will sweep when turning (the BUG).")
+    } else {
+        print("VISTA VERDICT: coverage edge reaches the render/haze band (>=300) - no mid-vista boundary to sweep (FIXED).")
+    }
+
+    if strict {
+        // Self-skip if this seed/vantage produced no real far shadows to test (no yaw saw a
+        // fade band) - the gate must not flake to RED on a shadow-free framing.
+        if maxRing <= 0.0001 && cmax < 100 {
+            print("vista gate: SKIP (no far shadows framed at this vantage)"); return true
+        }
+        // The post-fog fade ring is the boundary a panning camera reveals. Keep it below the
+        // just-perceptible threshold so no shadow edge sweeps across a long vista when turning.
+        let tol: Float = 0.06
+        if maxRing > tol {
+            print(String(format: "VISTA regression: post-fog shadow ring %.3f > tol %.2f (the long-view shadow sweep is back)", maxRing, tol))
+            return false
+        }
+        print(String(format: "vista gate OK: post-fog shadow ring %.3f <= %.2f (no perceptible sweep)", maxRing, tol))
+    }
+    return true
+}

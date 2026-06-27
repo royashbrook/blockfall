@@ -55,6 +55,14 @@ fi
 if "$BIN" --groundnighttest; then :; else
   FAIL=1; echo "   (GROUND-NIGHT regression: night water reflection washes the ground by view direction, #117)"
 fi
+# Long-view shadow-sweep regression (#118): perch HIGH over fixed-seed real terrain and render a
+# long vista at several yaws through the full two-cascade pipeline. FAILS if the shadow-coverage
+# fade forms a perceptible post-fog ring (the boundary that swept across the land when turning).
+# The fix pushes the coverage to the render edge and dissolves the fade into the distance haze.
+# Needs a Metal device; self-skips (returns 0) where none is present.
+if "$BIN" --vistatest; then :; else
+  FAIL=1; echo "   (VISTA regression: long-view shadow coverage edge sweeps across the vista when turning, #118)"
+fi
 # Perf smoke: a short measured run (the full gate is a 10-min M1 Air run).
 if "$BIN" --perftest 5; then :; else
   echo "   (perf smoke failed or no Metal device — non-fatal in headless CI)"
