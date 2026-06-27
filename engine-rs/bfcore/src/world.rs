@@ -3957,7 +3957,8 @@ impl<'c> World<'c> {
         draws: &mut Vec<bf_draw_item>,
         shadow_draws: &mut Vec<bf_draw_item>,
         prop_instances: &mut Vec<bf_prop_instance>,
-        clock: f64,
+        _clock: f64, // engine wall clock; render day/night uses self.world_clock so the
+        // T time-mode pin (which pins world_clock) actually moves the rendered sun.
     ) {
         self.remesh_dirty();
         draws.clear();
@@ -4027,7 +4028,7 @@ impl<'c> World<'c> {
         out.camera.proj.m = proj;
         out.camera.position = bf_vec3 { x: eye.x, y: eye.y, z: eye.z };
         out.camera.forward = bf_vec3 { x: fwd.x, y: fwd.y, z: fwd.z };
-        let t = Self::day_time(clock);
+        let t = Self::day_time(self.world_clock);
         out.camera.time_of_day = t;
         let ang = t * 6.2831853;
         out.camera.sun_dir = bf_vec3 { x: ang.cos() * 0.6, y: -ang.sin() - 0.25, z: 0.90 };
