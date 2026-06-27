@@ -1513,7 +1513,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // keep their async-present timing.
         if wantShot, let rb = screenshotReadback {
             cmd.waitUntilCompleted()
-            captureScreenshot(gameTexture: rb)
+            captureScreenshot(gameTexture: rb, meta: shotMetaString(frame.camera, frame.hud))
         }
 
         // Audio: drive day/evening music + splash when entering water.
@@ -1556,7 +1556,33 @@ final class Renderer: NSObject, MTKViewDelegate {
     // into an NSBitmapImageRep via the standard AppKit cacheDisplay path (no Screen
     // Recording permission, no deprecated CGWindowList call). Both are drawn into one
     // CGContext at the drawable's pixel size and encoded with writeCGImagePNG.
-    private func captureScreenshot(gameTexture: MTLTexture) {
+    // Build a filename-safe metadata tag (coords, compass facing, day/night phase,
+    // biome) so the screenshot filename alone carries the context, no need to read the
+    // HUD text off the image. Mirrors HUDView.cardinal()/timePhase() so it matches the
+    // on-screen readout.
+    private func shotMetaString(_ cam: bf_camera, _ hud: bf_hud_state) -> String {
+        let x = Int(cam.position.x.rounded()), y = Int(cam.position.y.rounded()), z = Int(cam.position.z.rounded())
+        let names = ["S", "SW", "W", "NW", "N", "NE", "E", "SE"]
+        var deg = Double(atan2(cam.forward.x, cam.forward.z)) * 180.0 / .pi
+        deg = deg.truncatingRemainder(dividingBy: 360); if deg < 0 { deg += 360 }
+        let face = names[Int((deg / 45.0).rounded()) % 8]
+        let phase: String
+        switch cam.time_of_day {
+        case 0.23..<0.30: phase = "dawn"
+        case 0.30..<0.70: phase = "day"
+        case 0.70..<0.77: phase = "dusk"
+        default:          phase = "night"
+        }
+        let biome = withUnsafeBytes(of: hud.biome_name) { raw -> String in
+            String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+        }
+        let bsafe = String(biome.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
+        var parts = ["x\(x)y\(y)z\(z)", face, phase]
+        if !bsafe.isEmpty { parts.append(bsafe) }
+        return parts.joined(separator: "_")
+    }
+
+    private func captureScreenshot(gameTexture: MTLTexture, meta: String) {
         let w = gameTexture.width, h = gameTexture.height
         guard let gameImg = cgImageFromTexture(gameTexture) else {
             NSLog("Blockfall: screenshot failed (could not read game texture)"); return
@@ -1599,7 +1625,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         try? fm.createDirectory(atPath: Renderer.screenshotDir, withIntermediateDirectories: true)
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyyMMdd_HHmmss_SSS"
-        let name = "shot_\(fmt.string(from: Date())).png"
+        let name = "shot_\(fmt.string(from: Date()))_\(meta).png"
         let path = (Renderer.screenshotDir as NSString).appendingPathComponent(name)
         if writeCGImagePNG(composite, to: path) {
             NSLog("Blockfall: screenshot saved -> %@", path)
