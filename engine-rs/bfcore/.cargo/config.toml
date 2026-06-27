@@ -1,0 +1,6 @@
+# Build the engine staticlib for the same minimum macOS the Swift app links against
+# (Info.plist LSMinimumSystemVersion 14.0). Without this, rustc/LLVM stamp the host
+# SDK version (e.g. 26.0) into the .a objects, and linking the app (target 14.0)
+# floods the build with "object file was built for newer macOS version" ld warnings.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "14.0"

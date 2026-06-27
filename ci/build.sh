@@ -30,6 +30,11 @@ cp "$ROOT/contract/engine_c_api.h" \
 echo "==> [3/4] Swift app ($CONFIG)"
 SWIFT_FLAGS=()
 [ "$CONFIG" = release ] && SWIFT_FLAGS+=(-c release)
+# Silence the benign "object file built for newer macOS version" ld warnings. They come
+# from Rust's PRECOMPILED std (std/core/alloc/compiler_builtins/backtrace) bundled into
+# libbfcore.a, stamped with the host SDK min-version; our own code targets 14.0 via
+# engine-rs/bfcore/.cargo/config.toml. Retargeting std would need nightly -Z build-std.
+SWIFT_FLAGS+=(-Xlinker -w)
 ( cd "$ROOT/app" && BLOCKCORE_LIB_DIR="$LIB_DIR" swift build ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} )
 BIN="$ROOT/app/.build/$CONFIG/BlockfallApp"
 [ -f "$BIN" ] || { echo "ERROR: app binary missing at $BIN"; exit 1; }

@@ -1323,10 +1323,10 @@ func runShadowPosProbe(strict: Bool = false) -> Bool {
             let pillarBaseNear = inBox(vpN, SIMD3<Float>(31.5, 1, 31.5)) ? "base:IN " : "base:OUT"
             renderAt(playerPos, viewYawDeg: off.1, sun: sun, debug: true)
             let hN = mapHash(shadowTexN)
-            log(String(format: "player(%5.0f,%5.0f,%3.0f) | %@ %@ | %@ %@ %@ | %016llx",
+            log(String(format: "player(%5.0f,%5.0f,%3.0f) | %@ %@ | %@ %@ %@ %@ | %016llx",
                          off.0.x, off.0.z, off.1,
                          pillarTopNear, pillarBaseNear,
-                         pillarInBox, p0b, p4b, hN))
+                         inSlab, pillarInBox, p0b, p4b, hN))
             // VIEW-INDEPENDENT analytic shadow sample of the fixed world points (mirrors
             // fmain, fast, view-free).
             let dN = readDepthMap(shadowTexN), dF = readDepthMap(shadowTexF)
