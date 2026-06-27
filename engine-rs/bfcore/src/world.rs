@@ -249,6 +249,27 @@ impl Default for Creature {
     }
 }
 
+// Per-ruin "danger site" state so a ruin is CLEARABLE rather than an endless spawner.
+// Keyed in the world by the ruin anchor (ax, az). A site spawns a small fixed number
+// of defenders exactly once. Once the player kills them the site is marked cleared and
+// does NOT respawn while the player stays put; it only re-arms after a long cooldown
+// AND once the player has moved well away (so you cannot farm it by camping on top of
+// it, and a cleared ruin you walked away from can become dangerous again much later).
+#[derive(Clone, Default)]
+struct RuinSite {
+    // Number of defenders spawned for this site so far in the current (armed) cycle.
+    spawned: i32,
+    // True once this site's defenders have all been killed. Blocks respawns until the
+    // re-arm conditions below are met.
+    cleared: bool,
+    // Seconds remaining before a cleared site may re-arm. Counts down only while the
+    // player is far from the site.
+    rearm_cd: f32,
+    // True once the clear reward has been granted for this ruin. The reward fires only
+    // the first time the ruin is cleared, never again (even after a re-arm + reclear).
+    rewarded: bool,
+}
+
 // A block in mid air: undermined sand/gravel, or logs from a felled tree.
 #[derive(Clone)]
 struct FallingBlock {
@@ -390,6 +411,10 @@ pub struct World<'c> {
     creature_timer: f32,
     villager_timer: f32,
     danger_timer: f32,
+    // Per-ruin "danger site" state, keyed by the ruin anchor (ax, az). A ruin is
+    // clearable: it spawns its defenders once, and once the player kills them it does
+    // not immediately respawn. See RuinSite / maintain_danger_sites.
+    ruin_sites: HashMap<(i32, i32), RuinSite>,
     regrow_timer: f32,
     villager_npc_next: i32,
     rng: u32,
@@ -487,6 +512,7 @@ impl<'c> World<'c> {
             creature_timer: 0.0,
             villager_timer: 0.0,
             danger_timer: 0.0,
+            ruin_sites: HashMap::new(),
             regrow_timer: 3.0,
             villager_npc_next: 0,
             rng: 0x1234567,
@@ -2022,6 +2048,20 @@ impl<'c> World<'c> {
         let pv = self.player_voxel();
         self.fx(7, pv, 0);
     }
+    // Reward for clearing a ruin "danger site": a small bundle of worthwhile items
+    // granted once when the last defender falls. Reuses give_loot (the same path
+    // creatures use to drop loot on death), so it respects the existing inventory
+    // behavior. Item ids are sensible existing content (food + a material + a block).
+    fn drop_ruin_clear_reward(&mut self) {
+        if self.inv.is_none() {
+            return;
+        }
+        self.give_loot("honey_cake", 2); // food
+        self.give_loot("iron_ingot", 2); // useful material
+        self.give_loot("stone_brick", 4); // building block
+        let pv = self.player_voxel();
+        self.fx(7, pv, 0);
+    }
     fn give_loot(&mut self, nm: &str, n: i32) {
         let id = self.item_id_by_name(nm);
         if id != 0 {
@@ -2339,12 +2379,21 @@ impl<'c> World<'c> {
         }
     }
 
-    // Ruined structures are localized "danger sites": when the player is near one,
-    // a hostile or two spawn at it regardless of the night/quest gate (so ruins feel
-    // dangerous in the daytime too). Capped to a small number so it never becomes an
-    // ambush. Deterministic site lookup; the spawn jitter uses the normal rng like
-    // the other spawners.
+    // Ruined structures are localized "danger sites": when the player is near one, a
+    // small fixed band of defenders spawns at it regardless of the night/quest gate (so
+    // ruins feel dangerous in the daytime too). A ruin is CLEARABLE: each site spawns
+    // its defenders at most once, and once the player kills them they do NOT immediately
+    // respawn. A cleared site only re-arms after a long cooldown AND once the player has
+    // moved well away, so killing the defenders actually clears the ruin instead of
+    // refilling a global cap. Per-site state is keyed on the deterministic ruin anchor.
     fn maintain_danger_sites(&mut self, dt: f32) {
+        // Re-arm cooldown for a cleared ruin, and how far the player must be for the
+        // cooldown to tick / a respawn to be allowed.
+        const REARM_COOLDOWN: f32 = 300.0; // several minutes
+        const AWAY_DIST: f32 = 64.0;
+        // Defenders per ruin site (a small fixed number).
+        const DEFENDERS_PER_SITE: i32 = 3;
+
         if self.gen.is_none() || self.store.resident_count() < 20 {
             return;
         }
@@ -2358,15 +2407,29 @@ impl<'c> World<'c> {
         }
         self.danger_timer = 3.0;
 
-        // Global cap on ruin hostiles so several nearby ruins cannot pile up.
-        const RUIN_HOSTILE_CAP: i32 = 3;
-        let ruin_hostiles = self.creatures.iter().filter(|c| c.hostile && c.from_ruin).count() as i32;
-        if ruin_hostiles >= RUIN_HOSTILE_CAP {
-            return;
-        }
-
         let px = Self::ifloor(self.pos.x);
         let pz = Self::ifloor(self.pos.z);
+
+        // Advance re-arm cooldowns for cleared sites the player is away from, and re-arm
+        // any whose cooldown has elapsed. We only re-arm far-away sites so a cleared
+        // ruin cannot reload under the player's feet. One fixed danger tick of time.
+        let tick = self.danger_timer;
+        for (&(sx, sz), st) in self.ruin_sites.iter_mut() {
+            if !st.cleared {
+                continue;
+            }
+            let far = ((sx - px) as f32).abs() >= AWAY_DIST || ((sz - pz) as f32).abs() >= AWAY_DIST;
+            if !far {
+                continue;
+            }
+            st.rearm_cd -= tick;
+            if st.rearm_cd <= 0.0 {
+                st.cleared = false;
+                st.spawned = 0;
+                st.rearm_cd = 0.0;
+            }
+        }
+
         // Find the nearest ruin within a reasonable radius of the player.
         let site = worldgen::worldgen_dangerous_site_near(px, pz, 48, self.seed);
         let (ax, ay, az) = match site {
@@ -2378,22 +2441,50 @@ impl<'c> World<'c> {
         if !self.store.is_resident(Self::to_chunk(IVec3 { x: ax, y: ay, z: az })) {
             return;
         }
-        // Do not stack: if a ruin hostile is already loitering at this site, skip.
-        let near_site = self.creatures.iter().any(|c| {
-            c.hostile
-                && c.from_ruin
-                && (c.pos.x - ax as f32).abs() < 8.0
-                && (c.pos.z - az as f32).abs() < 8.0
-        });
-        if near_site {
+
+        let key = (ax, az);
+        let st = self.ruin_sites.entry(key).or_default();
+        // A cleared site stays cleared until it re-arms (handled above). Do not respawn.
+        if st.cleared {
             return;
         }
-        self.spawn_hostile_at(ax, ay, az);
+        // This site has already spawned its full band of defenders for this cycle. If
+        // they are all dead, mark it cleared (one-shot until re-arm); otherwise wait.
+        if st.spawned >= DEFENDERS_PER_SITE {
+            let alive = self.creatures.iter().any(|c| {
+                c.hostile && c.from_ruin && c.home_x == ax && c.home_z == az
+            });
+            if !alive {
+                let already_rewarded = {
+                    let st = self.ruin_sites.get_mut(&key).expect("site present");
+                    st.cleared = true;
+                    st.rearm_cd = REARM_COOLDOWN;
+                    st.rewarded
+                };
+                // Reward the player for clearing the ruin, once per site (never on a
+                // re-cleared site). Reuses the same loot path creatures use on death.
+                if !already_rewarded {
+                    self.drop_ruin_clear_reward();
+                    let st = self.ruin_sites.get_mut(&key).expect("site present");
+                    st.rewarded = true;
+                }
+            }
+            return;
+        }
+        // Still arming: spawn one defender per tick (the 3s danger_timer spaces them out)
+        // up to the fixed band. Each defender jitters within a few blocks of the anchor,
+        // so they do not stack on one spot.
+        if self.spawn_hostile_at(ax, ay, az) {
+            let st = self.ruin_sites.get_mut(&key).expect("site present");
+            st.spawned += 1;
+        }
     }
 
     // Spawn a single ruin "danger site" hostile near (ax,ay,az). Mirrors the body of
     // spawn_hostile but anchors at the site and marks the creature from_ruin so the
-    // night/quest gate does not cull it. Returns true on success.
+    // night/quest gate does not cull it. The anchor is recorded in home_x/home_z so the
+    // danger-site pass can tell which ruin a defender belongs to. Returns true on
+    // success.
     fn spawn_hostile_at(&mut self, ax: i32, ay: i32, az: i32) -> bool {
         let ox = ax as f32 + (self.rand01() * 6.0 - 3.0);
         let oz = az as f32 + (self.rand01() * 6.0 - 3.0);
@@ -2406,6 +2497,10 @@ impl<'c> World<'c> {
         c.yaw = self.rand01() * 6.2831853;
         c.hostile = true;
         c.from_ruin = true;
+        // Record the ruin anchor so the danger-site pass can tell which site this
+        // defender belongs to (used to detect a cleared ruin).
+        c.home_x = ax;
+        c.home_z = az;
         c.scale = 1.0;
         let pool: Vec<CreatureDefX> = self
             .extra
@@ -3516,7 +3611,9 @@ impl<'c> World<'c> {
         let flat = normalize(V3::new(fwd.x, 0.0, fwd.z));
         let right = normalize(cross(flat, V3::new(0.0, 1.0, 0.0)));
         let base_spd = if self.mode == bf_game_mode::BF_MODE_CREATIVE { 8.0 } else { 5.0 };
-        let sprint_spd = if self.mode == bf_game_mode::BF_MODE_CREATIVE { 16.0 } else { 8.5 };
+        // Creative sprint is a fast fly/run for building and exploring: roughly 5x the
+        // survival sprint speed (survival sprint stays at 8.5; 8.5 * 5 = 42.5).
+        let sprint_spd = if self.mode == bf_game_mode::BF_MODE_CREATIVE { 42.5 } else { 8.5 };
         let speed = (if input.sprint != 0 { sprint_spd } else { base_spd }) * dtf;
         let hmove = flat * (input.move_forward * speed) + right * (input.move_strafe * speed);
         if self.mode == bf_game_mode::BF_MODE_CREATIVE {
@@ -4358,8 +4455,29 @@ impl<'c> World<'c> {
     pub fn debug_ruin_hostile_count(&self) -> i32 {
         self.creatures.iter().filter(|c| c.hostile && c.from_ruin).count() as i32
     }
+    // tests: simulate the player clearing a ruin by removing all of its defenders.
+    // Returns how many were removed.
+    pub fn debug_kill_ruin_hostiles(&mut self) -> i32 {
+        let before = self.creatures.len();
+        self.creatures.retain(|c| !(c.hostile && c.from_ruin));
+        (before - self.creatures.len()) as i32
+    }
+    // tests: true once the ruin site at anchor (ax, az) has been recorded as cleared
+    // (its defenders were all killed and it has not yet re-armed).
+    pub fn debug_ruin_site_cleared(&self, ax: i32, az: i32) -> bool {
+        self.ruin_sites.get(&(ax, az)).map(|s| s.cleared).unwrap_or(false)
+    }
     pub fn debug_health(&self) -> f32 {
         self.health
+    }
+    // tests: per-second sprint speed for the current game mode (creative sprint is a
+    // fast fly/run ~5x the survival sprint).
+    pub fn debug_sprint_speed(&self) -> f32 {
+        if self.mode == bf_game_mode::BF_MODE_CREATIVE {
+            42.5
+        } else {
+            8.5
+        }
     }
     pub fn debug_day_time(&self) -> f32 {
         Self::day_time(self.world_clock)

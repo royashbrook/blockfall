@@ -835,6 +835,139 @@ fn async_streaming_fills_world() {
     );
 }
 
+// ============================================================================
+// Fix 1 (#creative-sprint): creative sprint is a fast fly/run, ~5x survival sprint.
+// ============================================================================
+#[test]
+fn creative_sprint_is_five_x_survival_sprint() {
+    let mut w = World::new(None);
+
+    w.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    let survival = w.debug_sprint_speed();
+
+    w.set_mode(bf_game_mode::BF_MODE_CREATIVE);
+    let creative = w.debug_sprint_speed();
+
+    let ratio = creative / survival;
+    assert!(
+        (ratio - 5.0).abs() < 0.01,
+        "creative sprint should be ~5x survival sprint (survival {survival}, creative {creative}, ratio {ratio})"
+    );
+    // And it must clearly beat survival sprint (not just nominally faster).
+    assert!(creative > survival * 4.0, "creative sprint clearly faster than survival sprint");
+}
+
+// ============================================================================
+// Fix 2 (#108 follow-up): ruin "danger sites" are CLEARABLE. A ruin spawns a small
+// fixed band of defenders once; once the player kills them they do not immediately
+// respawn while the player stays put.
+// ============================================================================
+#[test]
+fn ruin_danger_site_is_clearable() {
+    let mut content = ContentRegistry::new();
+    assert!(content.load(CONTENT), "content load");
+    let mut extra = ContentExtra::new();
+    assert!(extra.load(CONTENT), "extra load");
+
+    const SEED: u64 = 11;
+
+    // Find the nearest ruin anchor by querying the deterministic danger-site lookup on
+    // a grid (radius 64 == one struct cell, step 64 so no cell is skipped).
+    let mut anchor: Option<(i32, i32, i32)> = None;
+    let mut best_d2 = i64::MAX;
+    for gz in (-3000..=3000).step_by(64) {
+        for gx in (-3000..=3000).step_by(64) {
+            if let Some(s @ (ax, _, az)) = worldgen::worldgen_dangerous_site_near(gx, gz, 64, SEED) {
+                let d2 = (ax as i64) * (ax as i64) + (az as i64) * (az as i64);
+                if d2 < best_d2 {
+                    best_d2 = d2;
+                    anchor = Some(s);
+                }
+            }
+        }
+    }
+    let (ax, ay, az) = anchor.expect("expected at least one ruin for seed 11");
+
+    let mut w = World::new(Some(TerrainGen::new()));
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_content(&content);
+    w.set_extra(&extra);
+    w.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    w.init_world(SEED);
+
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+
+    // Stand the player right on the ruin so its chunk streams in and the danger-site
+    // pass targets this anchor.
+    w.debug_set_camera(ax as f32 + 0.5, ay as f32 + 8.0, az as f32 + 0.5, 0.0, 0.0);
+
+    // Pump frames until the site has spawned its band of defenders. danger_timer fires
+    // every 3s, so 0.5s steps give it room to spawn one per ~6 steps.
+    let mut i = 0;
+    while i < 400 && w.debug_ruin_hostile_count() < 2 {
+        w.update(&zero, 0.5);
+        i += 1;
+    }
+    let spawned = w.debug_ruin_hostile_count();
+    assert!(spawned >= 2, "ruin spawned its defenders (got {spawned})");
+
+    // Let it finish arming, then confirm the count is small + fixed (does not grow
+    // without bound).
+    for _ in 0..40 {
+        w.update(&zero, 0.5);
+    }
+    let armed = w.debug_ruin_hostile_count();
+    assert!(armed <= 3, "ruin defender band stays small/fixed (got {armed}, expected <= 3)");
+
+    // Reward item ids (granted once when the ruin is cleared).
+    let cake = w.debug_item_id("honey_cake");
+    let ingot = w.debug_item_id("iron_ingot");
+    let brick = w.debug_item_id("stone_brick");
+    assert!(cake != 0 && ingot != 0 && brick != 0, "reward items exist in content");
+    // No reward yet (ruin not cleared).
+    assert_eq!(w.debug_item_count(cake), 0, "no reward before the ruin is cleared");
+    let ingot_before = w.debug_item_count(ingot);
+    let brick_before = w.debug_item_count(brick);
+
+    // Player clears the ruin: kill every defender.
+    let killed = w.debug_kill_ruin_hostiles();
+    assert!(killed >= 2, "cleared the ruin defenders (removed {killed})");
+    assert_eq!(w.debug_ruin_hostile_count(), 0, "no ruin hostiles left after clearing");
+
+    // The danger-site pass needs one tick to notice the defenders are gone, mark the
+    // site cleared, and grant the reward. Stay put and keep pumping: the ruin must NOT
+    // respawn its defenders, and the reward must land exactly once.
+    for _ in 0..120 {
+        w.update(&zero, 0.5);
+    }
+    assert_eq!(
+        w.debug_ruin_hostile_count(),
+        0,
+        "cleared ruin does not respawn defenders while the player stays put"
+    );
+    assert!(
+        w.debug_ruin_site_cleared(ax, az),
+        "the ruin site is recorded as cleared"
+    );
+
+    // Reward dropped exactly once: a handful of each item, and it does not keep growing
+    // as we keep pumping frames on the cleared site.
+    let cake_after = w.debug_item_count(cake);
+    let ingot_after = w.debug_item_count(ingot);
+    let brick_after = w.debug_item_count(brick);
+    assert_eq!(cake_after, 2, "clearing the ruin dropped the food reward once");
+    assert_eq!(ingot_after - ingot_before, 2, "clearing the ruin dropped the material reward once");
+    assert_eq!(brick_after - brick_before, 4, "clearing the ruin dropped the block reward once");
+
+    // Pump more frames on the cleared site: the reward does not fire again.
+    for _ in 0..40 {
+        w.update(&zero, 0.5);
+    }
+    assert_eq!(w.debug_item_count(cake), cake_after, "ruin reward fires only once");
+    assert_eq!(w.debug_item_count(brick), brick_after, "ruin reward fires only once");
+}
+
 // read a NUL-terminated fixed byte buffer as a String slice.
 fn cstr_str(buf: &[u8]) -> String {
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
