@@ -3900,7 +3900,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             illum *= (1.0 / 24.0);
             float edge = 1.0 - smoothstep(0.5, 1.1, max(abs(sunUV.x - 0.5), abs(sunUV.y - 0.5)) * 2.0);
             float3 sunCol = float3(pu.sunColorR, pu.sunColorG, pu.sunColorB);
-            hdr += sunCol * (illum * pu.godrayStrength * edge * 1.0);  // gentler gain (was 2.2)
+            hdr += sunCol * (illum * pu.godrayStrength * edge * 3.5);  // pronounced shafts so they actually read (was 1.0, invisible)
         }
 
         // Clamp the bloom contribution per-channel so a large bright region (sun disc,

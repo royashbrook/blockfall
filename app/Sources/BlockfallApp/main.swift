@@ -161,7 +161,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // ---- pause menu (Esc) ----
     @objc private func pauseGame() {
-        guard pauseOverlay == nil, let container = gameContainer else { return }
+        // ESC toggles: if the pause overlay is already up, ESC resumes (keep playing)
+        // instead of being a no-op. Lets the player open the pause menu, click a graphics
+        // checkbox, and ESC straight back to the game without reaching for the mouse.
+        if pauseOverlay != nil { resumeGame(); return }
+        guard let container = gameContainer else { return }
         gameView?.setPaused(true)
         let ov = NSView(frame: container.bounds)
         ov.autoresizingMask = [.width, .height]
