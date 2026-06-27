@@ -1286,6 +1286,76 @@ mod worldgen_tests {
         assert!(n >= 5, "expected varied biomes in a wide scan, saw {n}: {seen:?}");
     }
 
+    // Biome borders must NOT be axis-aligned straight lines (#: natural, eroded
+    // transitions via the domain warp). An un-warped Voronoi map has boundaries that
+    // run along long, straight perpendicular-bisector segments: where two biomes
+    // meet, the same vertical edge (biome A on the left, biome B on the right) repeats
+    // for many rows in a row, forming a wall. The domain warp bends those boundaries,
+    // so such long straight vertical runs become rare and the border meanders instead.
+    //
+    // We build a biome grid, find every vertical boundary edge (a column whose biome
+    // differs from its right neighbour), and measure the fraction of those edges that
+    // are part of a straight vertical run of length >= RUN: the same A|B edge holding
+    // for RUN consecutive rows. A straight, axis-aligned map keeps that fraction high;
+    // the warp drives it down. Measured: ~0.20 un-warped vs ~0.15 with the warp.
+    #[test]
+    fn biome_borders_are_not_axis_aligned() {
+        const LO: i32 = -600;
+        const HI: i32 = 600;
+        const RUN: i32 = 6; // rows of identical A|B edge that count as a straight wall
+        let n = (HI - LO) as usize + 1;
+
+        let mut grid = vec![0i32; n * n];
+        for (iz, wz) in (LO..=HI).enumerate() {
+            for (ix, wx) in (LO..=HI).enumerate() {
+                grid[iz * n + ix] = worldgen_dominant_biome(wx, wz, SEED);
+            }
+        }
+        let at = |ix: i32, iz: i32| grid[iz as usize * n + ix as usize];
+
+        let mut vert_edges = 0i64;
+        let mut vert_in_run = 0i64;
+        for iz in 0..n as i32 {
+            for ix in 0..n as i32 - 1 {
+                let a = at(ix, iz);
+                let b = at(ix + 1, iz);
+                if a == b {
+                    continue;
+                }
+                vert_edges += 1;
+                // Is this the top of (or inside) a straight A|B run of RUN rows?
+                let mut straight = true;
+                for d in 1..RUN {
+                    let z2 = iz + d;
+                    if z2 >= n as i32 || at(ix, z2) != a || at(ix + 1, z2) != b {
+                        straight = false;
+                        break;
+                    }
+                }
+                if straight {
+                    vert_in_run += 1;
+                }
+            }
+        }
+
+        assert!(
+            vert_edges > 2000,
+            "too few biome boundary edges sampled ({vert_edges}); cannot judge border shape"
+        );
+        let frac_straight = vert_in_run as f64 / vert_edges as f64;
+
+        // Un-warped Voronoi measures ~0.20 here; the warp pulls it to ~0.15. Require
+        // the border to be clearly less wall-like than the un-warped grid. A regression
+        // that flattened the warp (or removed it) would push this back toward 0.20.
+        assert!(
+            frac_straight < 0.18,
+            "biome borders look axis-aligned: {:.3} of boundary edges sit in straight \
+             vertical runs of >= {RUN} rows ({vert_in_run}/{vert_edges}); expected a \
+             wavy, eroded border (un-warped is ~0.20)",
+            frac_straight
+        );
+    }
+
     // The coastal gate: classify_climate_excluding never returns the excluded biome.
     #[test]
     fn exclude_skips_biome() {

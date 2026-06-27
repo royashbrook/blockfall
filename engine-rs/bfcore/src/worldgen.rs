@@ -526,6 +526,63 @@ fn regional_swell(fwx: f32, fwz: f32, seed: u64) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
+// Biome domain warp (#: natural, eroded biome borders)
+//
+// Both the discrete Voronoi biome and the continuous climate field that drives
+// height blending are functions of a world column (wx, wz). Sampled on the bare
+// grid they produce straight, axis-aligned borders (Voronoi cell edges and grid
+// aligned climate contours) that read from a mountaintop as someone having
+// "cleared the land" in big rectangles.
+//
+// The fix is a domain warp: before a column is turned into a biome, we offset its
+// sample point by a low-frequency fBm vector. Cell boundaries and climate contours
+// then follow that wavy offset and come out organically eroded (irregular, finger
+// like) instead of straight. The warp is a pure, seeded function of (wx, wz), so:
+//   * it is deterministic (no global state, content_hash stays stable),
+//   * it is single valued per column (every query of the biome at a column sees
+//     the same offset, so terrain-height blending, the discrete biome, and
+//     structure / tree / beach placement all agree; no chunk seams),
+//   * it is smooth (low frequency fBm), so the warped climate field still flows
+//     through the Lipschitz height limiter without making a cliff at the edge.
+//
+// Two octaves at WARP_FREQ bend the borders into irregular fingers; WARP_AMP (in
+// blocks) is well under a biome cell (BIOME_CELL = 132) so borders wave and
+// interlock without shredding biomes into noise or shrinking them back to tiny
+// patches. Two distinct seeds (x vs z) keep the offset vector from collapsing onto
+// the diagonal.
+//
+// WARP_FREQ is deliberately a fair bit finer than the biome cell. A very low warp
+// frequency bent each biome band into one long tongue all pointing the same way,
+// which clustered a bright biome (e.g. a desert band) into a single compass
+// direction near a given spot; that read as a directional brightness swing (it
+// tripped the render washout guard). A finer warp breaks each border into several
+// shorter fingers that fan out in many directions, so the biome mix a viewer sees
+// stays balanced across yaw while the borders are still clearly wavy.
+//
+// WARP_AMP is kept moderate: because sample_climate is warped too, the biome blend
+// (and so the base terrain height) follows the warp. Too large an amplitude can
+// shove a near-shore column's blend across the land/sea line, relocating a coast by
+// many blocks. This amplitude bends the borders well (measured straightness ~0.20
+// un-warped vs ~0.15 here, lower = more natural) while keeping coasts roughly put.
+// ---------------------------------------------------------------------------
+const WARP_FREQ: f32 = 1.0 / 70.0; // finer than BIOME_CELL so fingers fan in many directions
+const WARP_AMP: f32 = 24.0; // blocks of displacement; < BIOME_CELL so biomes stay large
+const WARP_SEED_MIX_X: u64 = 0x57A6E11D03A11A57;
+const WARP_SEED_MIX_Z: u64 = 0x11A57D03E11D57A6;
+
+// Deterministic warp offset (in blocks) for a world column. Added to (fwx, fwz)
+// before any biome / climate lookup so the boundaries become wavy and natural.
+#[inline]
+fn domain_warp(fwx: f32, fwz: f32, seed: u64) -> (f32, f32) {
+    let xseed = fmix64(seed ^ WARP_SEED_MIX_X);
+    let zseed = fmix64(seed ^ WARP_SEED_MIX_Z);
+    // fbm2 returns [0,1]; centre to [-1,1] so the offset is symmetric (no net drift).
+    let nx = fbm2(fwx, fwz, xseed, 2, WARP_FREQ, 2.0, 0.5) * 2.0 - 1.0;
+    let nz = fbm2(fwx, fwz, zseed, 2, WARP_FREQ, 2.0, 0.5) * 2.0 - 1.0;
+    (fwx + nx * WARP_AMP, fwz + nz * WARP_AMP)
+}
+
+// ---------------------------------------------------------------------------
 // Climate spread + sampling
 // ---------------------------------------------------------------------------
 fn climate_spread(v: f32) -> f32 {
@@ -539,8 +596,10 @@ fn climate_spread(v: f32) -> f32 {
 fn sample_climate(wx: i32, wz: i32, seed: u64) -> (f32, f32) {
     let tseed = fmix64(seed ^ 0xB10E5EED00000001);
     let mseed = fmix64(seed ^ 0xB10E5EED00000002);
-    let fwx = wx as f32;
-    let fwz = wz as f32;
+    // Domain warp the sample point so the climate contours (and therefore the
+    // biome-blend weights that drive terrain height) follow the same wavy
+    // boundary as the discrete Voronoi biome. Height and biome stay in agreement.
+    let (fwx, fwz) = domain_warp(wx as f32, wz as f32, seed);
     // #: bigger biomes. The climate field varies ~3x more slowly (was 1/72) so each
     // biome covers a much larger contiguous area and has its own identity, instead of
     // small biomes stepping on each other. Pairs with the larger BIOME_CELL below.
@@ -672,11 +731,16 @@ fn voronoi_cell_compute(cx: i32, cz: i32, vseed: u64, seed: u64) -> VoronoiCell 
 
 fn voronoi_biome(wx: i32, wz: i32, seed: u64) -> Biome {
     let vseed = fmix64(seed ^ VORONOI_SEED_MIX);
-    let cx = voronoi_floordiv(wx, BIOME_CELL);
-    let cz = voronoi_floordiv(wz, BIOME_CELL);
 
-    let fwx = wx as f32;
-    let fwz = wz as f32;
+    // Domain warp the query point before the nearest-site search. The cell sites
+    // stay on their fixed lattice, but the point that gets matched to them moves
+    // along the wavy warp field, so the Voronoi boundaries come out irregular and
+    // eroded instead of straight. Derive the search cell from the WARPED point so
+    // the 3x3 neighbour window stays centred on it (WARP_AMP is well under
+    // BIOME_CELL, so the true nearest site is always inside the window).
+    let (fwx, fwz) = domain_warp(wx as f32, wz as f32, seed);
+    let cx = voronoi_floordiv(fwx.floor() as i32, BIOME_CELL);
+    let cz = voronoi_floordiv(fwz.floor() as i32, BIOME_CELL);
 
     let mut best_d2 = 1e30f32;
     let mut best_biome = 0i32;
