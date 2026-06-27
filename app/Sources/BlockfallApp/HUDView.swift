@@ -281,6 +281,42 @@ final class HUDView: NSView {
     // Renderer pushes the freshly-fetched quest list each frame while open.
     func setQuests(_ rows: [QuestRow]) { quests = rows; if questLogOpen { needsDisplay = true } }
 
+    // Screenshot confirmation flash (backslash key). A brief, non-blocking toast in
+    // the corner so the player gets visible feedback that a shot was captured. Never
+    // pauses the game. Set by the Renderer after a successful save; auto-clears.
+    private var screenshotFlashUntil: TimeInterval = 0
+    func flashScreenshot() {
+        screenshotFlashUntil = Date().timeIntervalSinceReferenceDate + 1.2
+        needsDisplay = true
+        // Schedule a redraw after the flash window so it disappears even if the HUD
+        // would not otherwise repaint (e.g. the player is standing still).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { [weak self] in
+            self?.needsDisplay = true
+        }
+    }
+
+    // Draw the fading "Screenshot saved" toast near the top-center. Fades out over
+    // its lifetime; a no-op once expired.
+    private func drawScreenshotFlash(in b: NSRect) {
+        let now = Date().timeIntervalSinceReferenceDate
+        guard now < screenshotFlashUntil else { return }
+        let a = CGFloat(min(1, (screenshotFlashUntil - now) / 1.2))   // 1 -> 0
+        let msg = "📸 Screenshot saved"
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: fs(15)),
+            .foregroundColor: NSColor.white.withAlphaComponent(a),
+            .strokeColor: NSColor.black.withAlphaComponent(a), .strokeWidth: -3.0,
+        ]
+        let sz = (msg as NSString).size(withAttributes: attrs)
+        let pad: CGFloat = 10
+        let bx = b.midX - sz.width / 2 - pad
+        let by = b.maxY - 64 - sz.height
+        let bg = NSRect(x: bx, y: by - 6, width: sz.width + pad * 2, height: sz.height + 12)
+        NSColor.black.withAlphaComponent(0.55 * a).setFill()
+        NSBezierPath(roundedRect: bg, xRadius: 8, yRadius: 8).fill()
+        (msg as NSString).draw(at: NSPoint(x: b.midX - sz.width / 2, y: by), withAttributes: attrs)
+    }
+
     override var isFlipped: Bool { false }
     override var isOpaque: Bool { false }
 
@@ -545,6 +581,11 @@ final class HUDView: NSView {
             }
             prevHealth = hud.health
         }
+
+        // Screenshot confirmation toast (drawn in every HUD state, including over the
+        // inventory / quest log, so the backslash key always gives feedback). Set by
+        // the Renderer AFTER the captured frame, so it never appears in the saved PNG.
+        drawScreenshotFlash(in: b)
 
         // When the inventory is open it replaces the in-world HUD.
         if hud.inventory_open != 0 { drawInventory(in: b); return }

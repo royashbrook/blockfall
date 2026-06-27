@@ -17,23 +17,36 @@ import Darwin
 import ImageIO
 import CoreGraphics
 
-// Write a (shared-storage) bgra8 texture to a PNG. Used by the headless --shot mode
-// so visuals can be verified from the terminal without taking over the desktop. (#52)
-private func writeTexturePNG(_ tex: MTLTexture, to path: String) {
+// Build a CGImage from a (shared-storage) bgra8 texture by reading its bytes back to
+// the CPU. Shared by the headless --shot mode and the in-game backslash screenshot
+// (Renderer.captureScreenshot), so both use the exact same texture-readback path.
+func cgImageFromTexture(_ tex: MTLTexture) -> CGImage? {
     let w = tex.width, h = tex.height
     var data = [UInt8](repeating: 0, count: w * h * 4)
     tex.getBytes(&data, bytesPerRow: w * 4, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
     let cs = CGColorSpaceCreateDeviceRGB()
     let bi = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
     guard let ctx = CGContext(data: &data, width: w, height: h, bitsPerComponent: 8,
-                              bytesPerRow: w * 4, space: cs, bitmapInfo: bi.rawValue),
-          let img = ctx.makeImage(),
-          let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL,
+                              bytesPerRow: w * 4, space: cs, bitmapInfo: bi.rawValue) else { return nil }
+    return ctx.makeImage()
+}
+
+// Encode a CGImage to a PNG file. Used by writeTexturePNG and the screenshot path.
+func writeCGImagePNG(_ img: CGImage, to path: String) -> Bool {
+    guard let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL,
                                                      "public.png" as CFString, 1, nil) else {
-        print("shot: failed to encode PNG"); return
+        return false
     }
     CGImageDestinationAddImage(dest, img, nil)
-    CGImageDestinationFinalize(dest)
+    return CGImageDestinationFinalize(dest)
+}
+
+// Write a (shared-storage) bgra8 texture to a PNG. Used by the headless --shot mode
+// so visuals can be verified from the terminal without taking over the desktop. (#52)
+private func writeTexturePNG(_ tex: MTLTexture, to path: String) {
+    guard let img = cgImageFromTexture(tex), writeCGImagePNG(img, to: path) else {
+        print("shot: failed to encode PNG"); return
+    }
     print("wrote shot: \(path)")
 }
 

@@ -27,6 +27,16 @@ final class GameView: MTKView {
     // GameView tracks its own questLogOpen so Esc can close it before pausing.
     var onToggleQuestLog: (() -> Void)?
 
+    // Screenshot request: set by the backslash key (keyCode 42), consumed by the
+    // Renderer's draw loop AFTER the frame is presented (so the drawable is valid).
+    // A simple flag rather than a closure because the capture must run on the render
+    // thread where the Metal command queue + valid drawable live.
+    private var screenshotPending = false
+    func consumeScreenshotRequest() -> Bool {
+        if screenshotPending { screenshotPending = false; return true }
+        return false
+    }
+
     private var gamePaused = false
     func releaseMouse() { releasePointer() }
     func grabMouse() { capturePointer() }
@@ -125,6 +135,12 @@ final class GameView: MTKView {
             else { onPause?() }
             return
         }
+        // Backslash (keyCode 42): request an in-game screenshot. Handled before the
+        // pause guard so a shot can be grabbed at any time; it only sets a flag (no
+        // game-state side effect) and never re-captures the mouse, so it is safe even
+        // while the pause overlay is up. The Renderer performs the capture after the
+        // next frame is drawn, then NSLogs the saved path.
+        if e.keyCode == 42 { screenshotPending = true; return }
         // While paused, no game key should act — 'E' especially would re-capture the
         // mouse and make the pause overlay buttons unclickable.
         guard !gamePaused else { return }

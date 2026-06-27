@@ -437,6 +437,14 @@ final class Renderer: NSObject, MTKViewDelegate {
     // ---- No-write depth state (sky + bloom quads) ----------------------------
     private var noDepthState: MTLDepthStencilState!
 
+    // ---- In-game screenshot (backslash key) ---------------------------------
+    // A shared-storage bgra8 texture the screenshot path composites the final
+    // scene into so the CPU can read it back (the swapchain drawable is
+    // framebufferOnly and cannot be getBytes'd). Lazily sized to the drawable.
+    // The HUD (a separate AppKit NSView) is composited on top on the CPU, so the
+    // saved PNG matches exactly what the player sees, overlay included.
+    private var screenshotReadback: MTLTexture?
+
     init(view: MTKView, device: MTLDevice, saveDir: String, audio: GameAudio?,
          fresh: Bool = false, seed: UInt64 = 0) {
         self.device = device
@@ -1458,6 +1466,34 @@ final class Renderer: NSObject, MTKViewDelegate {
             }
         }
 
+        // In-game screenshot (backslash): if requested, composite the final scene
+        // into a CPU-readable texture in THIS command buffer (the drawable itself is
+        // framebufferOnly and cannot be read back). The same compositePipeline + post
+        // uniforms as the on-screen frame are reused, so the captured image is the
+        // real frame, not an approximation. The HUD overlay is added on the CPU after
+        // the GPU finishes (see captureScreenshot). Needs no Screen Recording
+        // permission and uses no deprecated API.
+        let wantShot = gameView?.consumeScreenshotRequest() ?? false
+        if wantShot {
+            let rb = screenshotTexture(width: drawable.texture.width, height: drawable.texture.height)
+            if let rb = rb {
+                let srp = MTLRenderPassDescriptor()
+                srp.colorAttachments[0].texture     = rb
+                srp.colorAttachments[0].loadAction  = .dontCare
+                srp.colorAttachments[0].storeAction = .store
+                if let enc = cmd.makeRenderCommandEncoder(descriptor: srp) {
+                    enc.setRenderPipelineState(compositePipeline)
+                    enc.setDepthStencilState(noDepthState)
+                    enc.setCullMode(.none)
+                    enc.setFragmentTexture(hdrColor,    index: 0)
+                    enc.setFragmentTexture(bloomBright, index: 1)
+                    enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+                    enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+                    enc.endEncoding()
+                }
+            }
+        }
+
         // Present inside the Core Animation transaction so the AppKit HUD overlay
         // (hotbar, hearts, inventory) composites ON TOP of the Metal layer. With
         // the default async present the metal content draws over the overlay and
@@ -1472,6 +1508,14 @@ final class Renderer: NSObject, MTKViewDelegate {
             cmd.commit()
         }
 
+        // Finish the screenshot once the GPU has produced the readback texture. We
+        // only block on completion for the (rare) screenshot frame, so normal frames
+        // keep their async-present timing.
+        if wantShot, let rb = screenshotReadback {
+            cmd.waitUntilCompleted()
+            captureScreenshot(gameTexture: rb)
+        }
+
         // Audio: drive day/evening music + splash when entering water.
         audio?.setTimeOfDay(frame.camera.time_of_day)
         audio?.tickGrey(inGrey: frame.hud.in_dim != 0, dt: Float(dt))   // #88 darker music in the grey
@@ -1482,6 +1526,87 @@ final class Renderer: NSObject, MTKViewDelegate {
         hud?.update(from: frame.hud)
         bf_frame_end(e)
         registry.collect()
+    }
+
+    // ---- In-game screenshot (backslash key) ---------------------------------
+    // Directory every screenshot is written to. A stable absolute path under the
+    // user's home directory (~/blockfall-shots) so it is the same no matter how the
+    // .app was launched (Finder, `open`, play.sh) — the running bundle has no
+    // reliable notion of the source repo root, and the save-game dir is per-world.
+    // Created on first use. Documented and .gitignore'd.
+    private static let screenshotDir: String =
+        (NSHomeDirectory() as NSString).appendingPathComponent("blockfall-shots")
+
+    // Lazily create / resize the CPU-readable bgra8 texture the screenshot composite
+    // renders into. Shared storage so getBytes works; .renderTarget so the composite
+    // pass can write it.
+    private func screenshotTexture(width: Int, height: Int) -> MTLTexture? {
+        if let t = screenshotReadback, t.width == width, t.height == height { return t }
+        let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
+                                                          width: width, height: height, mipmapped: false)
+        td.usage = [.renderTarget, .shaderRead]
+        td.storageMode = .shared
+        screenshotReadback = device.makeTexture(descriptor: td)
+        return screenshotReadback
+    }
+
+    // Compose the captured game texture with the live AppKit HUD overlay and write a
+    // timestamped PNG. The game image comes from the readback texture (the same
+    // PNG-readback path PerfHarness.cgImageFromTexture uses); the HUD is rendered
+    // into an NSBitmapImageRep via the standard AppKit cacheDisplay path (no Screen
+    // Recording permission, no deprecated CGWindowList call). Both are drawn into one
+    // CGContext at the drawable's pixel size and encoded with writeCGImagePNG.
+    private func captureScreenshot(gameTexture: MTLTexture) {
+        let w = gameTexture.width, h = gameTexture.height
+        guard let gameImg = cgImageFromTexture(gameTexture) else {
+            NSLog("Blockfall: screenshot failed (could not read game texture)"); return
+        }
+
+        // Render the HUD NSView into a bitmap. bitmapImageRepForCachingDisplay sizes
+        // the backing store in PIXELS for the view's bounds at the current backing
+        // scale, so a Retina HUD comes back at the same pixel size as the drawable.
+        var hudImg: CGImage? = nil
+        if let hudView = hud, hudView.bounds.width > 0, hudView.bounds.height > 0,
+           let rep = hudView.bitmapImageRepForCachingDisplay(in: hudView.bounds) {
+            hudView.cacheDisplay(in: hudView.bounds, to: rep)
+            hudImg = rep.cgImage
+        }
+
+        // Composite game first, HUD on top, at the drawable pixel size. Both the
+        // Metal readback CGImage and the AppKit-cached HUD CGImage are drawn with the
+        // default CTM: CGContext.draw + makeImage apply Core Graphics' bottom-left
+        // origin symmetrically, so an image drawn straight is reproduced in the same
+        // memory order (this is why the headless writeTexturePNG path is upright with
+        // no flip). Drawing the HUD second layers it on top, matching the on-screen
+        // z-order (Metal layer below, AppKit HUD above).
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let bi = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: cs, bitmapInfo: bi) else {
+            NSLog("Blockfall: screenshot failed (could not allocate composite context)"); return
+        }
+        let full = CGRect(x: 0, y: 0, width: w, height: h)
+        ctx.draw(gameImg, in: full)             // game scene (Metal readback)
+        if let hudImg = hudImg {
+            ctx.draw(hudImg, in: full)          // HUD overlay on top (matches on-screen z-order)
+        }
+        guard let composite = ctx.makeImage() else {
+            NSLog("Blockfall: screenshot failed (could not build composite image)"); return
+        }
+
+        // Write to <screenshotDir>/shot_<timestamp>.png, creating the dir if needed.
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: Renderer.screenshotDir, withIntermediateDirectories: true)
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyyMMdd_HHmmss_SSS"
+        let name = "shot_\(fmt.string(from: Date())).png"
+        let path = (Renderer.screenshotDir as NSString).appendingPathComponent(name)
+        if writeCGImagePNG(composite, to: path) {
+            NSLog("Blockfall: screenshot saved -> %@", path)
+            hud?.flashScreenshot()   // brief on-screen confirmation (does not pause)
+        } else {
+            NSLog("Blockfall: screenshot failed to encode PNG at %@", path)
+        }
     }
 
     // ---- #13: Multiplayer compass builder -----------------------------------

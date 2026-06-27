@@ -11,6 +11,12 @@ app/Sources/CBlockcore/include/engine_c_api.h
 *.blockfall_save/
 .DS_Store
 
+# In-game screenshots (backslash key). Saved to ~/blockfall-shots (outside the
+# repo), but ignore any in-repo copies/symlinks too so shots are never committed.
+blockfall-shots/
+shots/
+shot_*.png
+
 # Python
 __pycache__/
 *.pyc
