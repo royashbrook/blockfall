@@ -183,6 +183,10 @@ final class EntityRenderer {
     // analytically in the fragment shader, no per-entity shadow map.
     private let groundShadowPipeline: MTLRenderPipelineState
     private let groundShadowDepth:    MTLDepthStencilState
+    // Opaque depth for the creature body pass (less, writes depth) so parts occlude each other.
+    // The ground-shadow pass above binds a no-write state, so we must restore this before bodies,
+    // otherwise face parts (drawn after the head) render through the head from behind.
+    private let bodyDepth:            MTLDepthStencilState
     private var shadowInstBuf:        MTLBuffer?
     private var shadowInsts:          [EntityShadowInstance] = []
     // Current shadow uniforms + occupancy textures for THIS encode (set at top of encode()).
@@ -326,6 +330,11 @@ final class EntityRenderer {
         gds.depthCompareFunction = .lessEqual
         gds.isDepthWriteEnabled  = false   // blend onto the ground without writing depth
         groundShadowDepth = device.makeDepthStencilState(descriptor: gds)!
+
+        let bds = MTLDepthStencilDescriptor()
+        bds.depthCompareFunction = .less
+        bds.isDepthWriteEnabled  = true    // bodies write depth so parts occlude each other
+        bodyDepth = device.makeDepthStencilState(descriptor: bds)!
     }
 
     // -----------------------------------------------------------------------
@@ -355,6 +364,9 @@ final class EntityRenderer {
         }
 
         enc.setRenderPipelineState(pipeline)
+        // Restore opaque write-enabled depth: the ground-shadow pass above leaves a no-write state
+        // bound, which would let face parts show through the head from behind (#116 regression).
+        enc.setDepthStencilState(bodyDepth)
         enc.setVertexBuffer(cubeVB, offset: 0, index: 0)
         // Bind shadow uniforms + occupancy once for all cubes this encode (RECEIVE pass, Part 1).
         var su = curShadow

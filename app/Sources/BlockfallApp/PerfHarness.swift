@@ -575,6 +575,11 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                     ee.sat = 1.0
                     ee.color = bf_vec3(x: 0.7, y: 0.55, z: 0.35)
                     ee.yaw = atan2(-fwdH.x, -fwdH.z)   // face the camera
+                    // BF_SHOT_TCFACEAWAY=1 turns the creature to face away (back to camera), to
+                    // verify face parts do not show through the head from behind (#116 depth fix).
+                    if ProcessInfo.processInfo.environment["BF_SHOT_TCFACEAWAY"] == "1" {
+                        ee.yaw = atan2(fwdH.x, fwdH.z)
+                    }
                     return ee
                 }
                 // Main creature dead ahead; a second one to the side (for the tree-shade test the
