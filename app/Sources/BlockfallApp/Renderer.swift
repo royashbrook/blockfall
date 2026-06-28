@@ -209,29 +209,31 @@ func makeViewModelArm(skin: SIMD3<Float> = SIMD3<Float>(0.85, 0.66, 0.52),
 // tinted cube. Returns nil for non-block items (they fall back to the per-id tint).
 func heldBlockColor(_ id: Int) -> SIMD3<Float>? {
     switch id {
-    case 1:  return SIMD3(0.42, 0.62, 0.28)   // grass
-    case 2:  return SIMD3(0.45, 0.32, 0.20)   // dirt
-    case 3:  return SIMD3(0.52, 0.52, 0.55)   // stone
-    case 4:  return SIMD3(0.66, 0.50, 0.30)   // oak planks
-    case 5, 27: return SIMD3(0.33, 0.54, 0.24)// oak/birch leaves
-    case 6:  return SIMD3(0.84, 0.78, 0.55)   // sand
-    case 7:  return SIMD3(0.96, 0.88, 0.45)   // glow
-    case 8:  return SIMD3(0.55, 0.55, 0.57)   // stone brick
-    case 9:  return SIMD3(0.25, 0.45, 0.78)   // water
-    case 10: return SIMD3(0.48, 0.48, 0.50)   // cobblestone
-    case 12: return SIMD3(0.92, 0.95, 0.97)   // snow
-    case 13: return SIMD3(0.66, 0.82, 0.90)   // ice
-    case 21, 51: return SIMD3(0.45, 0.32, 0.18) // oak log / wood beam
-    case 22: return SIMD3(0.80, 0.78, 0.70)   // birch log
-    case 23: return SIMD3(0.82, 0.74, 0.55)   // birch planks
-    case 24: return SIMD3(0.72, 0.42, 0.30)   // clay brick
-    case 25: return SIMD3(0.70, 0.82, 0.88)   // glass
-    case 26: return SIMD3(0.50, 0.70, 0.85)   // coloured glass
-    case 28: return SIMD3(0.92, 0.92, 0.92)   // wool
-    case 29: return SIMD3(0.40, 0.48, 0.36)   // mossy stone
-    case 31: return SIMD3(0.55, 0.40, 0.22)   // chest
-    case 48: return SIMD3(0.20, 0.40, 0.24)   // pine needles
-    case 49: return SIMD3(0.34, 0.22, 0.14)   // pine log
+    // #51: kept in step with the cohesive world palette (materialColor) so a held block
+    // reads as the same colour it places.
+    case 1:  return SIMD3(0.34, 0.72, 0.26)   // grass
+    case 2:  return SIMD3(0.52, 0.35, 0.20)   // dirt
+    case 3:  return SIMD3(0.50, 0.51, 0.56)   // stone
+    case 4:  return SIMD3(0.74, 0.53, 0.28)   // oak planks
+    case 5, 27: return SIMD3(0.34, 0.66, 0.28)// oak/birch leaves
+    case 6:  return SIMD3(0.88, 0.76, 0.44)   // sand
+    case 7:  return SIMD3(1.00, 0.92, 0.42)   // glow
+    case 8:  return SIMD3(0.56, 0.57, 0.62)   // stone brick
+    case 9:  return SIMD3(0.10, 0.40, 0.85)   // water
+    case 10: return SIMD3(0.42, 0.43, 0.46)   // cobblestone
+    case 12: return SIMD3(0.95, 0.97, 1.00)   // snow
+    case 13: return SIMD3(0.66, 0.84, 1.00)   // ice
+    case 21, 51: return SIMD3(0.47, 0.31, 0.16) // oak log / wood beam
+    case 22: return SIMD3(0.83, 0.80, 0.68)   // birch log
+    case 23: return SIMD3(0.84, 0.74, 0.52)   // birch planks
+    case 24: return SIMD3(0.78, 0.36, 0.26)   // clay brick
+    case 25: return SIMD3(0.74, 0.92, 1.00)   // glass
+    case 26: return SIMD3(0.24, 0.82, 0.74)   // coloured glass
+    case 28: return SIMD3(0.95, 0.93, 0.88)   // wool
+    case 29: return SIMD3(0.40, 0.54, 0.34)   // mossy stone
+    case 31: return SIMD3(0.78, 0.58, 0.26)   // chest
+    case 48: return SIMD3(0.18, 0.42, 0.24)   // pine needles
+    case 49: return SIMD3(0.40, 0.25, 0.15)   // pine log
     default: return nil
     }
 }
@@ -2631,49 +2633,76 @@ final class Renderer: NSObject, MTKViewDelegate {
         return clamp(p - 1.0, 0.0, 1.0) * 0.5 + 0.4;
     }
 
-    // Full per-block colour table (ids 1–40, same as before).
+    // Full per-block colour table (ids 1-40).
+    //
+    // #51 milestone 4: a deliberate, COHESIVE bold-toy palette tuned as one family
+    // rather than ad-hoc per-block hues. The look it has to sit under is the cel grade
+    // (#130: 4-band toon lighting + ink outlines), which crushes mids and bands the
+    // shading, so washy pastel bases drained to a flat sameness (water read like snow,
+    // stone like sand). The retune gives the family a consistent saturation/value
+    // language so it reads as Blockfall's own art style:
+    //   * naturals (grass, sand, stone, water, leaves) get a clear saturation lift and
+    //     are pulled apart in VALUE so each material owns a band under the toon ramp;
+    //   * each block still reads instantly as itself and stays cheerful/kid-friendly;
+    //   * whites (snow, glass, wool) keep a faint cool/warm tint so they never read as
+    //     the same flat white and so snow separates from the pale water reflection.
+    // Bases are kept a touch below full so the cel highlight band has room to pop and
+    // the bright sun-facing faces do not clip.
     static float3 materialColor(uint m) {
         switch (m) {
-            case  1u: return float3(0.35, 0.75, 0.28);
-            case  2u: return float3(0.54, 0.38, 0.24);
-            case  3u: return float3(0.55, 0.55, 0.58);
-            case  6u: return float3(0.80, 0.72, 0.50);   // sand — pulled down so deserts don't bleach
-            case  9u: return float3(0.14, 0.42, 0.82);
-            case 10u: return float3(0.44, 0.44, 0.46);
-            case 11u: return float3(0.50, 0.47, 0.42);
-            case 12u: return float3(0.93, 0.96, 1.00);
-            case 13u: return float3(0.72, 0.86, 1.00);
-            case 14u: return float3(0.60, 0.66, 0.78);
-            case 15u: return float3(0.28, 0.24, 0.36);
-            case 16u: return float3(0.32, 0.22, 0.18);
-            case  4u: return float3(0.72, 0.54, 0.30);
-            case  5u: return float3(0.28, 0.60, 0.24);
-            case  8u: return float3(0.58, 0.58, 0.64);
-            case 21u: return float3(0.46, 0.32, 0.18);
-            case 22u: return float3(0.80, 0.78, 0.68);
-            case 23u: return float3(0.82, 0.76, 0.58);
-            case 24u: return float3(0.76, 0.38, 0.28);
-            case 25u: return float3(0.75, 0.93, 1.00);
-            case 26u: return float3(0.30, 0.85, 0.75);
-            case 27u: return float3(0.55, 0.80, 0.35);
-            case 28u: return float3(0.94, 0.92, 0.88);
-            case 29u: return float3(0.42, 0.52, 0.38);
-            case 17u: return float3(0.40, 0.40, 0.42);
-            case 18u: return float3(0.65, 0.44, 0.30);
-            case 19u: return float3(0.60, 0.58, 0.54);
-            case 20u: return float3(0.52, 0.44, 0.72);
-            case  7u: return float3(1.00, 0.92, 0.45);
-            case 30u: return float3(0.60, 0.42, 0.22);
-            case 31u: return float3(0.75, 0.58, 0.28);
-            case 32u: return float3(1.00, 0.70, 0.20);
-            case 33u: return float3(0.65, 0.48, 0.28);
-            case 34u: return float3(0.60, 0.96, 0.98);
-            case 35u: return float3(0.80, 0.70, 1.00);
-            case 36u: return float3(0.95, 0.18, 0.18);
-            case 37u: return float3(1.00, 0.90, 0.10);
-            case 38u: return float3(0.40, 0.78, 0.25);
-            case 39u: return float3(0.58, 0.38, 0.22);
-            case 40u: return float3(0.95, 0.50, 0.90);
+            // ---- GROUND naturals: the screen-filling family, value-separated --------
+            case  1u: return float3(0.34, 0.72, 0.26);   // grass: punchy spring green, high sat
+            case  2u: return float3(0.52, 0.35, 0.20);   // dirt: warm chocolate, sits darker than sand
+            case  3u: return float3(0.50, 0.51, 0.56);   // stone: cool neutral grey, slight blue lean
+            case  6u: return float3(0.88, 0.76, 0.44);   // sand: warm golden tan, clearly warmer/brighter than stone
+            case 11u: return float3(0.52, 0.50, 0.47);   // gravel: warm grey, between stone and dirt
+            case 14u: return float3(0.58, 0.66, 0.74);   // clay: cool blue-grey, distinct from stone
+            // ---- WATER ----------------------------------------------------------------
+            case  9u: return float3(0.10, 0.40, 0.85);   // water: deep saturated cerulean (submerged base)
+            // ---- SNOW / ICE: cool whites, not flat white ------------------------------
+            case 12u: return float3(0.95, 0.97, 1.00);   // snow: bright with a whisper of blue
+            case 13u: return float3(0.66, 0.84, 1.00);   // ice: clean glacial blue, more saturated than snow
+            // ---- DARK / DIM terrain ---------------------------------------------------
+            case 15u: return float3(0.26, 0.23, 0.34);   // dim stone: deep cool violet-grey
+            case 16u: return float3(0.30, 0.21, 0.16);   // dim dirt: deep umber
+            // ---- WOOD family: a coherent warm-brown ladder ----------------------------
+            case  4u: return float3(0.74, 0.53, 0.28);   // oak planks: warm honey
+            case 21u: return float3(0.47, 0.31, 0.16);   // oak log: rich dark bark
+            case 22u: return float3(0.83, 0.80, 0.68);   // birch log: pale cream bark
+            case 23u: return float3(0.84, 0.74, 0.52);   // birch planks: light sandy wood
+            case 49u: return float3(0.40, 0.25, 0.15);   // pine log: dark reddish bark
+            // ---- LEAVES: greens pushed apart from grass so canopy reads distinct -------
+            case  5u: return float3(0.26, 0.58, 0.22);   // oak leaves: deep forest green
+            case 27u: return float3(0.52, 0.78, 0.30);   // birch leaves: bright lime
+            case 48u: return float3(0.18, 0.42, 0.24);   // pine needles: dark blue-green
+            // ---- WORKED STONE / BRICK -------------------------------------------------
+            case  8u: return float3(0.56, 0.57, 0.62);   // stone brick: slightly lighter/cooler than raw stone
+            case 10u: return float3(0.42, 0.43, 0.46);   // cobblestone: darker grey so it separates from stone
+            case 24u: return float3(0.78, 0.36, 0.26);   // clay brick: warm terracotta red
+            case 29u: return float3(0.40, 0.54, 0.34);   // mossy stone: grey-green
+            // ---- ORES: each owns a vivid hue against the grey stone matrix -------------
+            case 17u: return float3(0.32, 0.33, 0.37);   // coal ore: dark charcoal grey
+            case 18u: return float3(0.78, 0.46, 0.26);   // copper ore: warm orange-bronze
+            case 19u: return float3(0.62, 0.60, 0.55);   // iron ore: pale tan-grey
+            case 20u: return float3(0.55, 0.40, 0.82);   // crystal ore: vivid amethyst purple
+            // ---- GLASS / WOOL / GLOW --------------------------------------------------
+            case 25u: return float3(0.74, 0.92, 1.00);   // glass: cool pale tint
+            case 26u: return float3(0.24, 0.82, 0.74);   // coloured glass: bold teal
+            case 28u: return float3(0.95, 0.93, 0.88);   // wool: warm soft white
+            case  7u: return float3(1.00, 0.92, 0.42);   // glow block: warm lamp yellow
+            // ---- FUNCTIONAL props -----------------------------------------------------
+            case 30u: return float3(0.62, 0.42, 0.20);   // crafting table: warm worked wood
+            case 31u: return float3(0.78, 0.58, 0.26);   // chest: golden oak
+            case 32u: return float3(1.00, 0.68, 0.16);   // torch: hot ember orange
+            case 33u: return float3(0.66, 0.46, 0.24);   // oak door: medium wood
+            case 34u: return float3(0.52, 0.95, 0.98);   // beacon: glowing cyan
+            case 35u: return float3(0.80, 0.66, 1.00);   // crystal lamp: soft lilac
+            // ---- DECOR accents: kept vivid and saturated ------------------------------
+            case 36u: return float3(0.96, 0.20, 0.20);   // red flower
+            case 37u: return float3(1.00, 0.88, 0.12);   // yellow flower
+            case 38u: return float3(0.42, 0.76, 0.24);   // tall grass: matches grass family
+            case 39u: return float3(0.60, 0.38, 0.22);   // mushroom block
+            case 40u: return float3(0.98, 0.46, 0.90);   // colour crystal: candy pink
             default:  return hashColor(m);
         }
     }
@@ -2798,13 +2827,15 @@ final class Renderer: NSObject, MTKViewDelegate {
             float stBase = mix(0.84, 1.14, mot);
             // Soft vein: a second low-freq term, thresholded gently into a vein region.
             float vein  = smoothstep(0.62, 0.80, smoothDetail(uv * 4.0 + float2(vH * 5.0, 1.3)));
-            // Each ore gets a distinct hue push on the vein
+            // Each ore gets a distinct hue push on the vein. Hues match the actual
+            // content ores (#51 palette pass): coal/copper/iron/crystal, not the old
+            // mislabeled silver/gold/emerald set.
             float3 oreHue;
-            if      (matID == 17u) oreHue = float3(0.6, 0.6, 0.7);   // silver/iron
-            else if (matID == 18u) oreHue = float3(0.9, 0.7, 0.3);   // gold
-            else if (matID == 19u) oreHue = float3(0.5, 0.8, 0.6);   // emerald
-            else if (matID == 20u) oreHue = float3(0.7, 0.5, 1.0);   // amethyst
-            else                   oreHue = float3(0.5, 0.8, 0.5);   // moss ore (29)
+            if      (matID == 17u) oreHue = float3(0.32, 0.32, 0.36);  // coal: dark charcoal flecks
+            else if (matID == 18u) oreHue = float3(0.95, 0.55, 0.28);  // copper: warm orange-bronze
+            else if (matID == 19u) oreHue = float3(0.80, 0.74, 0.62);  // iron: pale warm metal
+            else if (matID == 20u) oreHue = float3(0.70, 0.45, 1.05);  // crystal: vivid amethyst
+            else                   oreHue = float3(0.45, 0.85, 0.45);  // mossy stone (29)
             float3 col = float3(clamp(stBase, 0.80, 1.16));
             col = mix(col, col * oreHue * 1.30, vein * 0.55);
             return clamp(col, 0.76, 1.26);
@@ -2838,11 +2869,14 @@ final class Renderer: NSObject, MTKViewDelegate {
                 // Soft clumpy grass patches with a gentle green/yellow hue drift.
                 // One low-freq term for brightness, the same term reused for hue
                 // (no separate high-freq blade noise).
+                // #51: calmer brightness range so the bold green base carries the look,
+                // with the patch term steered into a clean green/yellow hue drift instead
+                // of a grey light/dark wash (keeps the toy palette saturated, not muddy).
                 float patch = smoothDetail(uv * 2.6 + float2(vH * 3.0, 0.9));
-                float bri   = mix(0.86, 1.16, patch);
-                float hue   = (patch - 0.5) * 0.14;   // lighter patches yellow slightly
-                float3 col  = float3(bri - hue * 0.03, bri - hue * 0.06, bri + hue * 0.01);
-                return clamp(col, 0.80, 1.20);
+                float bri   = mix(0.90, 1.12, patch);
+                float hue   = (patch - 0.5) * 0.16;   // lighter patches warm toward lime
+                float3 col  = float3(bri + hue * 0.06, bri + hue * 0.02, bri - hue * 0.06);
+                return clamp(col, 0.82, 1.18);
             } else {
                 // Side: smooth dirt base with a grassy fringe at the top edge.
                 float dirt = smoothDetail(uv * 2.6 + float2(vH * 1.5, 0.7));
@@ -2861,10 +2895,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         if (matID == 6u) {
             // Calm dune ripples (one sine band) over a soft low-freq tone. Cheaper
             // than the prior two-sine + two-noise grain and reads cleaner.
+            // #51: tighter brightness range so the bold golden tan stays bold and clean;
+            // ripples weighted lower than tone so dunes read as a calm hint, not stripes.
             float ripple = sin((uv.x * 0.95 + uv.y * 0.30) * 9.0) * 0.5 + 0.5;
             float tone   = smoothDetail(uv * 2.2 + float2(vH * 4.0, 1.7));
-            float bri    = mix(0.88, 1.12, ripple * 0.5 + tone * 0.5);
-            return float3(clamp(bri, 0.84, 1.14));
+            float bri    = mix(0.90, 1.10, ripple * 0.4 + tone * 0.6);
+            return float3(clamp(bri, 0.86, 1.12));
         }
 
         // ---- WOOD LOGS  (21, 22) ----------------------------------------------
@@ -2904,19 +2940,22 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // ---- LEAVES  (5, 27) --------------------------------------------------
         if (matID==5u||matID==27u) {
-            // Clustered leafy blotches: large low-freq + medium detail + fine speck
+            // #51: lean on the big blotches and drop the fine speck so canopies read as
+            // bold solid green masses (toy look) instead of busy per-pixel grain. The
+            // brightness range is calmed too, with the leftover variation steered into a
+            // clean green/yellow hue drift rather than light/dark noise.
             float blotch1 = noise2(uv * 3.5 + float2(vH * 2.5, 1.1));
             float blotch2 = noise2(uv * 7.0 + float2(1.7, vH * 1.8));
             float speck   = noise2(uv * 16.0 + float2(vH * 4.0, 2.3));
-            float leaf    = blotch1 * 0.50 + blotch2 * 0.35 + speck * 0.15;
-            // Hue: lighter patches are yellow-green, darker are deep green
-            float bri     = mix(0.78, 1.22, leaf);
+            float leaf    = blotch1 * 0.62 + blotch2 * 0.32 + speck * 0.06;
+            float bri     = mix(0.84, 1.16, leaf);
             float3 col    = float3(bri);
-            float yellowing = (leaf - 0.5) * 0.14;
-            col.r += yellowing * 0.8;
-            col.g += yellowing * 0.1;
+            // Lighter clumps warm toward lime, darker clumps deepen, hue stays green.
+            float yellowing = (leaf - 0.5) * 0.16;
+            col.r += yellowing * 0.7;
+            col.g += yellowing * 0.2;
             col.b -= yellowing * 0.5;
-            return clamp(col, 0.75, 1.25);
+            return clamp(col, 0.80, 1.20);
         }
 
         // ---- SNOW  (12) -------------------------------------------------------
