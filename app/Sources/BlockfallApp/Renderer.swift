@@ -137,6 +137,7 @@ struct PostUniforms {
     var greyHaze:       Float = 0   // #: 0..1 The-Grey screen wash (0 in test paths)
     var celShade:       Float = 0   // #130 1 = draw ink outlines + punchier cel grade
     var lensFlareStr:   Float = 0   // #132 lens-flare master strength (0 = off; folds toggle + daylight + look-at-sun)
+    var celOutlineStr:  Float = 1   // #136 cel ink-outline intensity (0..1) scaling CEL_OUTLINE_DARK
 }
 
 /// #119 Volumetric god-ray uniforms — composite pass, buffer(1).
@@ -404,6 +405,25 @@ final class Renderer: NSObject, MTKViewDelegate {
     // new intended look so it defaults ON; OFF cleanly restores the prior smooth render for
     // A/B comparison. Drives both the terrain banding (fmain) and the composite ink/edge pass.
     var gfxCelShade = UserDefaults.standard.object(forKey: "gfxCelShade") as? Bool ?? true
+    // #136 per-effect intensity (0..1) for the effects that have a meaningful strength
+    // knob, each beside its on/off checkbox in the pause menu and persisted alongside its
+    // toggle. The fraction multiplies that effect's shader strength:
+    //   gfxGodRayStr  -> scales kGodRayStrength (the god-ray master). Default 0.5 so the
+    //                    out-of-the-box look is HALF the old full strength (the old build
+    //                    ran the equivalent of 1.0, which read too strong); 1.0 restores it.
+    //   gfxBloomStr   -> scales the composite bloom add. Default 0.5 (the previous fixed
+    //                    look maps to ~0.5 on this 0..2x range; 1.0 doubles the glow).
+    //   gfxCelOutlineStr -> scales the cel ink-outline darkness. Default 1.0 (current look).
+    // BF_GODRAY_STR (0..1) overrides the persisted/default god-ray slider, so the headless
+    // --shot harness can render the rays at a fixed intensity for the 0/50/100 verification.
+    var gfxGodRayStr: Float = {
+        if let s = ProcessInfo.processInfo.environment["BF_GODRAY_STR"], let v = Float(s) {
+            return max(0, min(1, v))
+        }
+        return Float(UserDefaults.standard.object(forKey: "gfxGodRayStr") as? Double ?? 0.5)
+    }()
+    var gfxBloomStr      = Float(UserDefaults.standard.object(forKey: "gfxBloomStr")      as? Double ?? 0.5)
+    var gfxCelOutlineStr = Float(UserDefaults.standard.object(forKey: "gfxCelOutlineStr") as? Double ?? 1.0)
     // World-space precipitation (rain streaks / snow flakes) — renderer-owned,
     // instanced billboards in a volume around the camera. Drives off frame.camera.weather.
     private var precipPipeline: MTLRenderPipelineState!
@@ -420,6 +440,14 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Engine state
     private var engine: OpaquePointer?
     private var lastTime: CFTimeInterval = CACurrentMediaTime()
+    // #127 cosmetic animation clock. Drives grass sway, creature/leaf wiggle, pollen,
+    // ambient sprites, and precipitation. It accumulates frame dt ONLY when the world is
+    // not paused, so on pause every cosmetic motion freezes in place and on unpause it
+    // resumes from the exact same value (no jump). This replaces the old wall-clock read
+    // (CACurrentMediaTime), which kept ticking through a pause and made the world look
+    // alive while the player expected it stopped. The world_clock / sun is already held by
+    // ticking the engine with dt = 0 while paused (see worldPaused below).
+    private var animClock: CFTimeInterval = 0
     private var frameCounter = 0
     private weak var gameView: GameView?
     weak var hud: HUDView?
@@ -508,6 +536,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     // full daylight; daylight + the toggle scale it down further (0 = off). Raise for
     // more dramatic beams, lower (or toggle God Rays off in graphics settings) on a weak
     // GPU like the M1 Air. The raymarch only runs when this resolves > 0.
+    // #136 this is the 100%-slider CEILING. The pause-menu God Rays intensity slider scales
+    // it by gfxGodRayStr (0..1), which DEFAULTS to 0.5 — so the shipped look is half this,
+    // i.e. ~1.5 effective (the prior fixed look ran the full 3.0 and read too strong). Slider
+    // at 100% restores the old full strength; at 0% the rays are off.
     static let kGodRayStrength: Float = 3.0
     // #132 LENS-FLARE GATE KNOBS (CPU side; shader has its own element knobs FLARE_*).
     //   kFlareEdgeFade : how far (in centre-distance, 0=centre ~1.4=corner) the flare keeps
@@ -1148,6 +1180,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         // (any peer connected) never pause the shared world, so dt stays real.
         let worldPaused = (gameView?.worldIsPaused ?? false) && bf_net_peer_count(e) == 0
         _ = bf_frame_begin(e, &input, worldPaused ? 0.0 : dt)
+        // #127 advance the cosmetic animation clock only while NOT paused, so grass sway,
+        // creature/leaf wiggle, pollen, ambient sprites, and precipitation all freeze on
+        // pause and resume from the same value on unpause (no jump). It tracks the same
+        // dt = 0 hold the engine clock uses, so the render-side motion and the sun stop
+        // together. Always advance when a peer is connected (multiplayer never pauses).
+        if !worldPaused { animClock += dt }
         if let actions = gameView?.drainActions() {
             for var a in actions {
                 // #: trigger a tool swing on mine/place/attack (continuous mining is
@@ -1206,7 +1244,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         let viewProj = proj * viewM
         let sun = frame.camera.sun_dir
 
-        let wallClock = Float(now.truncatingRemainder(dividingBy: 3600.0))
+        // #127 cosmetic animation time. Was `now` (CACurrentMediaTime) which kept ticking
+        // through a pause; now sourced from animClock, which only advances while unpaused, so
+        // all wallClock-driven motion (sway / wiggle / pollen / sprites / precip) holds still
+        // while paused and resumes without a jump. Wrapped to keep the float precise.
+        let wallClock = Float(animClock.truncatingRemainder(dividingBy: 3600.0))
         let isUnderwater = frame.camera.underwater
 
         // Feed the HUD the player's world position + facing so it can show
@@ -1592,7 +1634,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         let dayT  = Renderer.dayLight(frame.camera.time_of_day)
         var grStrength: Float = 0
         if gfxGodRays {                                   // #: god-ray toggle
-            grStrength = dayT * (1 - frame.camera.underground) * Renderer.kGodRayStrength
+            // #136 fold in the intensity slider (0..1) so the rays scale from off to the
+            // kGodRayStrength ceiling; defaults to 0.5 = half the old full-strength look.
+            grStrength = dayT * (1 - frame.camera.underground) * Renderer.kGodRayStrength * gfxGodRayStr
         }
         // #132 LENS FLARE gate. Project the sun to screen + derive the look-at-sun strength
         // on the CPU; fold in the toggle and underground (no flare in a cave). The shader does
@@ -1607,13 +1651,18 @@ final class Renderer: NSObject, MTKViewDelegate {
             sunUVx = g.uv.x; sunUVy = g.uv.y
             flareStr = g.strength * (1 - frame.camera.underground)
         }
-        var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.18,
+        // #136 bloom intensity slider (0..1). Maps the default 0.5 to the prior fixed
+        // look (0.08 add) and 1.0 to double it: bloomAdd = 0.16 * gfxBloomStr.
+        var pu = PostUniforms(bloomStrength: 0.16 * gfxBloomStr, vignetteStr: 0.22, satBoost: 1.18,
                               rainStrength: precipPacked, wallClockSecs: wallClock,
                               godrayStrength: 0, sunScreenX: sunUVx, sunScreenY: sunUVy,
                               sunColorR: 1.0, sunColorG: 0.6 + 0.35 * dayT, sunColorB: 0.3 + 0.5 * dayT,
                               greyHaze: max(0, 1 - frame.camera.local_sat),   // #: The Grey wash
                               celShade: gfxCelShade ? 1 : 0)   // #130 ink outlines + cel grade
         pu.lensFlareStr = flareStr
+        // #136 cel ink-outline intensity slider (0..1) scales CEL_OUTLINE_DARK in the
+        // composite. Only meaningful when cel-shade is on; 0 = no outline, 1 = current look.
+        pu.celOutlineStr = gfxCelShade ? gfxCelOutlineStr : 0
         // #119 volumetric uniforms shared by every composite call site this frame. The god-ray
         // occlusion now marches the SAME world occupancy grid the cast shadows use (no shadow map).
         var vu = VolUniforms(
@@ -2469,6 +2518,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         float greyHaze;   // #: The-Grey screen wash
         float celShade;   // #130 1 = draw ink outlines + cel grade
         float lensFlareStr; // #132 lens-flare master strength (0 = off)
+        float celOutlineStr; // #136 cel ink-outline intensity (0..1) scaling CEL_OUTLINE_DARK
     };
 
     // VolUniforms (240 bytes) — #119 volumetric god-ray raymarch, composite buffer(1).
@@ -4753,7 +4803,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                 // Fade the ink in the far haze so the distant render edge does not get a
                 // busy net of lines (keeps the vista readable, matches the terrain fog).
                 float farFade = 1.0 - smoothstep(CEL_FAR * 0.6, CEL_FAR * 0.92, lc);
-                tonemapped *= (1.0 - edge * CEL_OUTLINE_DARK * farFade);
+                // #136 scale the ink darkness by the cel-outline intensity slider (0..1).
+                tonemapped *= (1.0 - edge * CEL_OUTLINE_DARK * pu.celOutlineStr * farFade);
             }
         }
 

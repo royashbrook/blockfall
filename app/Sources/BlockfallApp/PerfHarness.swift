@@ -591,7 +591,11 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 enc.endEncoding()
             }
-            var onStrength = godOff ? 0 : dayT * Renderer.kGodRayStrength
+            // #136 fold in the god-ray intensity slider. BF_GODRAY_STR (0..1) drives the same
+            // fraction the live pause-menu slider does, so a 0 / 0.5 / 1.0 sweep here verifies
+            // the slider scales the rays and that the shipped 0.5 default is half full strength.
+            let grFrac = Float(ProcessInfo.processInfo.environment["BF_GODRAY_STR"] ?? "0.5") ?? 0.5
+            var onStrength = godOff ? 0 : dayT * Renderer.kGodRayStrength * max(0, min(1, grFrac))
             if debug { onStrength = -max(onStrength, 0.85) }   // sentinel: output raw shaft term
             let onFlare: Float = flareOff ? 0 : flareGate.strength   // #132
             composite(into: output, godStrength: onStrength, flareStrength: onFlare)

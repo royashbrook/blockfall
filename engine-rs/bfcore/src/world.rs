@@ -5254,6 +5254,53 @@ mod time_mode_tests {
         assert!(w.world_clock > before + 0.1);
     }
 
+    // #127 pause freezes the sun. The app pauses by ticking the engine with dt = 0
+    // (bf_frame_begin(e, .., worldPaused ? 0.0 : dt)). Assert that ticking with dt = 0
+    // does NOT advance world_clock (the sun holds where it is), and that resuming with a
+    // real dt continues from the SAME value with no jump (the clock is not reset, it just
+    // stopped accumulating). Render-side cosmetic motion (grass sway / wiggle) is frozen the
+    // same way: the renderer's animClock only accumulates dt while unpaused.
+    #[test]
+    fn pause_dt_zero_freezes_world_clock_then_resumes() {
+        let mut w = World::new(None);
+        for _ in 0..5 {
+            tick(&mut w); // advance into the day a bit
+        }
+        let frozen = w.world_clock;
+        let frozen_phase = w.debug_day_time();
+        // Two "paused" frames: tick with dt = 0, exactly as the paused render path does.
+        let input = zero_input();
+        w.update(&input, 0.0);
+        w.update(&input, 0.0);
+        // Sun must not have moved at all while paused.
+        assert_eq!(w.world_clock, frozen, "world_clock advanced while paused (dt=0)");
+        assert_eq!(w.debug_day_time(), frozen_phase, "day phase moved while paused");
+        // Resume: a real dt continues from the same value (no jump back / no skip ahead).
+        w.update(&input, 0.016);
+        assert!(
+            w.world_clock > frozen && w.world_clock < frozen + 0.05,
+            "resume did not continue smoothly from the frozen clock: frozen={} now={}",
+            frozen,
+            w.world_clock
+        );
+    }
+
+    // Zero-input frame helper (no movement / look), so a tick advances only time + sim.
+    fn zero_input() -> bf_frame_input {
+        bf_frame_input {
+            move_forward: 0.0,
+            move_strafe: 0.0,
+            look_yaw_delta: 0.0,
+            look_pitch_delta: 0.0,
+            jump: 0,
+            sneak: 0,
+            sprint: 0,
+            fly_ascend: 0,
+            fly_descend: 0,
+            _pad: [0; 3],
+        }
+    }
+
     // Sun elevation (positive = above the horizon) for a given day_time phase,
     // using the exact sun_dir geometry the renderer ships to the app:
     // sun_dir = {cos(ang)*0.6, -sin(ang)-0.25, 0.90}, ang = 2*pi*t, elevation is

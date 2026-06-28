@@ -42,6 +42,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // the live value label). Rebuilt each time the pause overlay opens.
     private weak var hudScaleSlider: NSSlider?
     private weak var hudScaleValueLabel: NSTextField?
+    // #136 graphics intensity sliders, held so a checkbox toggle can grey/enable its
+    // companion slider live. Rebuilt each time the pause overlay opens.
+    private weak var godRaySlider: NSSlider?
+    private weak var celOutlineSlider: NSSlider?
 
     // ---- HUD option persistence (#: text size + visibility) ----
     // UserDefaults keys. Loaded at startup (startGame) and written on change.
@@ -270,15 +274,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateHUDScaleLabel()   // fill the live value label now that it exists
 
         // ---- Graphics effect toggles (#: click each effect on/off, live + persisted) ----
+        // #136 effects with a meaningful strength (God Rays, Cel Shading) carry an intensity
+        // slider beside the checkbox; Bloom (always on) gets its own labelled slider row. The
+        // slider greys out when the effect is toggled off. Lens Flare stays a plain toggle.
         let fxTitle = NSTextField(labelWithString: "Effects")
         fxTitle.font = .boldSystemFont(ofSize: 16); fxTitle.textColor = .white
+
+        // God Rays + Cel Shading: checkbox with an intensity slider beside it.
+        let godRayCb = gfxCheckbox("God Rays", tag: 2, on: renderer?.gfxGodRays ?? true)
+        let grSlider = gfxIntensitySlider(value: Double(renderer?.gfxGodRayStr ?? 0.5),
+                                          sel: #selector(godRayStrChanged(_:)),
+                                          enabled: renderer?.gfxGodRays ?? true)
+        godRaySlider = grSlider
+
+        let celCb = gfxCheckbox("Cel Shading", tag: 5, on: renderer?.gfxCelShade ?? true)
+        let celSlider = gfxIntensitySlider(value: Double(renderer?.gfxCelOutlineStr ?? 1.0),
+                                           sel: #selector(celOutlineStrChanged(_:)),
+                                           enabled: renderer?.gfxCelShade ?? true)
+        celOutlineSlider = celSlider
+
+        // Bloom is always on (no toggle); a plain labelled intensity slider.
+        let bloomLabel = NSTextField(labelWithString: "Bloom")
+        bloomLabel.font = .systemFont(ofSize: 14); bloomLabel.textColor = .white
+        let bloomSlider = gfxIntensitySlider(value: Double(renderer?.gfxBloomStr ?? 0.5),
+                                             sel: #selector(bloomStrChanged(_:)), enabled: true)
+        let bloomRow = NSStackView(views: [bloomLabel, bloomSlider])
+        bloomRow.orientation = .horizontal; bloomRow.spacing = 12; bloomRow.alignment = .centerY
+
         let fxStack = NSStackView(views: [
             gfxCheckbox("Waving Foliage",    tag: 0, on: renderer?.gfxFoliage ?? false),
             gfxCheckbox("Water Reflections", tag: 1, on: renderer?.gfxWater   ?? true),
-            gfxCheckbox("God Rays",          tag: 2, on: renderer?.gfxGodRays ?? true),
+            gfxRow(godRayCb, grSlider),
             gfxCheckbox("Pollen Motes",      tag: 3, on: renderer?.gfxPollen  ?? true),
             gfxCheckbox("Soft Shadows",      tag: 4, on: renderer?.gfxShadows ?? false),
-            gfxCheckbox("Cel Shading",       tag: 5, on: renderer?.gfxCelShade ?? true),
+            gfxRow(celCb, celSlider),
+            bloomRow,
             gfxCheckbox("Lens Flare",        tag: 6, on: renderer?.gfxLensFlare ?? true),
         ])
         fxStack.orientation = .vertical; fxStack.spacing = 8; fxStack.alignment = .leading
@@ -545,13 +575,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch sender.tag {
         case 0: renderer?.gfxFoliage = on
         case 1: renderer?.gfxWater   = on
-        case 2: renderer?.gfxGodRays = on
+        case 2: renderer?.gfxGodRays = on; godRaySlider?.isEnabled = on        // #136 grey the slider when off
         case 3: renderer?.gfxPollen  = on
         case 4: renderer?.gfxShadows = on
-        case 5: renderer?.gfxCelShade = on
+        case 5: renderer?.gfxCelShade = on; celOutlineSlider?.isEnabled = on   // #136 grey the slider when off
         case 6: renderer?.gfxLensFlare = on   // #132 lens-flare toggle
         default: break
         }
+    }
+
+    // #136 a compact intensity slider (0..1) styled to sit beside a gfxCheckbox. Greyed
+    // (disabled) when its effect is toggled off.
+    private func gfxIntensitySlider(value: Double, sel: Selector, enabled: Bool) -> NSSlider {
+        let s = NSSlider(value: value, minValue: 0.0, maxValue: 1.0, target: self, action: sel)
+        s.translatesAutoresizingMaskIntoConstraints = false
+        s.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        s.isEnabled = enabled
+        return s
+    }
+    // #136 a horizontal row pairing an effect checkbox with its intensity slider.
+    private func gfxRow(_ checkbox: NSButton, _ slider: NSSlider) -> NSStackView {
+        let row = NSStackView(views: [checkbox, slider])
+        row.orientation = .horizontal; row.spacing = 12; row.alignment = .centerY
+        return row
+    }
+    // #136 intensity sliders → live renderer + persisted (matching their toggle's key style).
+    @objc private func godRayStrChanged(_ s: NSSlider) {
+        UserDefaults.standard.set(s.doubleValue, forKey: "gfxGodRayStr")
+        renderer?.gfxGodRayStr = Float(s.doubleValue)
+    }
+    @objc private func celOutlineStrChanged(_ s: NSSlider) {
+        UserDefaults.standard.set(s.doubleValue, forKey: "gfxCelOutlineStr")
+        renderer?.gfxCelOutlineStr = Float(s.doubleValue)
+    }
+    @objc private func bloomStrChanged(_ s: NSSlider) {
+        UserDefaults.standard.set(s.doubleValue, forKey: "gfxBloomStr")
+        renderer?.gfxBloomStr = Float(s.doubleValue)
     }
     @objc private func quitToMenu() {
         pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
