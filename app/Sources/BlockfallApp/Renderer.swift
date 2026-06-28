@@ -110,8 +110,14 @@ struct WaterUniforms {
     var cameraPosW:    SIMD4<Float> = .zero   // xyz = world-space camera pos, w unused
     var sunDirTime:    SIMD4<Float> = .zero   // xyz = sun dir, w = time_of_day (#43 water sky reflection)
     var celShade:      Float = 0   // #130 toon-band the diffuse term in fmain (0=off, 1=on)
-    var pad0:          Float = 0   // keep 16-byte alignment / match the MSL struct
-    var pad1:          Float = 0
+    // #47 repurposed the former padding slots (the struct keeps the same 16-byte layout):
+    //   cloudsOn -> volumetric cloud toggle for the sky pass (1=on, 0=off)
+    //   pbrStr   -> stylized-PBR specular strength for the terrain pass (0..1)
+    // Defaults are env-driven STATICS so the headless --shot harness (which default-builds
+    // WaterUniforms) picks up the same look the live renderer ships, and BF_CLOUDS / BF_PBR
+    // can drive a clouds-off or pbr-off comparison shot without touching the harness file.
+    var cloudsOn:      Float = Renderer.cloudsDefault   // #47 cloud toggle (sky pass reads this)
+    var pbrStr:        Float = Renderer.pbrDefault      // #47 stylized PBR specular strength
     var pad2:          Float = 0
     // ---- World-space voxel sun shadows (replaces the cascaded shadow map) ----
     // The renderer marches each fragment toward the sun through a 3D occupancy
@@ -432,6 +438,27 @@ final class Renderer: NSObject, MTKViewDelegate {
     }()
     var gfxBloomStr      = Float(UserDefaults.standard.object(forKey: "gfxBloomStr")      as? Double ?? 0.5)
     var gfxCelOutlineStr = Float(UserDefaults.standard.object(forKey: "gfxCelOutlineStr") as? Double ?? 1.0)
+    // #47 volumetric clouds: real raymarched, bold/toy-styled cumulus over the sky dome,
+    // day/night gated. Defaults ON. The pause-menu checkbox is owned by the UI layer
+    // (main.swift); this reads the same persisted "gfxClouds" key so wiring a checkbox there
+    // is a one-liner, and BF_CLOUDS=0/1 overrides headless for the clouds-off comparison shot.
+    // TODO(ui): add a "Volumetric Clouds" checkbox in the pause menu bound to "gfxClouds".
+    var gfxClouds = Renderer.cloudsDefault > 0.5
+    // #47 stylized PBR: procedural per-material roughness/metalness drives a restrained
+    // specular that complements the cel bands (wet/shiny vs matte). Strength 0..1; default
+    // 0.6 (a tasteful sheen that does not flatten the toon banding). BF_PBR overrides headless.
+    var gfxPBRStr: Float = Renderer.pbrDefault
+    // Env-driven look defaults, shared by the live renderer AND the WaterUniforms struct
+    // defaults the headless --shot harness builds (so a shot ships the same look). BF_CLOUDS
+    // and BF_PBR let the verification shots compare clouds-off / pbr-off without a harness edit.
+    static let cloudsDefault: Float = {
+        if let s = ProcessInfo.processInfo.environment["BF_CLOUDS"], let v = Float(s) { return v > 0.5 ? 1 : 0 }
+        return (UserDefaults.standard.object(forKey: "gfxClouds") as? Bool ?? true) ? 1 : 0
+    }()
+    static let pbrDefault: Float = {
+        if let s = ProcessInfo.processInfo.environment["BF_PBR"], let v = Float(s) { return max(0, min(1, v)) }
+        return Float(UserDefaults.standard.object(forKey: "gfxPBRStr") as? Double ?? 0.6)
+    }()
     // World-space precipitation (rain streaks / snow flakes) — renderer-owned,
     // instanced billboards in a volume around the camera. Drives off frame.camera.weather.
     private var precipPipeline: MTLRenderPipelineState!
@@ -1394,6 +1421,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setFragmentBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
                 var wuSky = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater,
                                           cameraPosW: camPosW)
+                wuSky.cloudsOn = gfxClouds ? 1 : 0   // #47 volumetric cloud toggle (sky pass)
                 enc.setFragmentBytes(&wuSky, length: MemoryLayout<WaterUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             }
@@ -1411,6 +1439,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                                    sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day))
             wu.cameraPosW.w = kShadowFarR
             wu.celShade = gfxCelShade ? 1 : 0   // #130 toon-band the diffuse term in fmain
+            wu.pbrStr   = gfxPBRStr             // #47 stylized PBR specular strength (terrain)
             wu.voxOrigin = voxOriginU           // world-space voxel sun-shadow grid
             wu.voxDims   = voxDimsU
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
@@ -2500,8 +2529,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         float4 cameraPosW;   // xyz = world pos, w = pad
         float4 sunDirTime;   // xyz = sun dir, w = time_of_day (#43)
         float celShade;      // #130 toon-band the diffuse term (0=off, 1=on)
-        float pad0;
-        float pad1;
+        float cloudsOn;      // #47 volumetric cloud toggle (sky pass)
+        float pbrStr;        // #47 stylized PBR specular strength (terrain pass)
         float pad2;
         // World-space voxel sun shadows (replaces the cascaded shadow map).
         float4 voxOrigin;    // xyz = grid origin (world block coords), w = march distance
@@ -3694,7 +3723,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // to push HDR output above 1.0, causing view-dependent bloom wash-out.
         // New: sunTilt capped at 1.0 so the bump can only darken, never brighten.
         float bumpLight = 1.0;
-        float specAdd  = 0.0;   // #47 normal-mapped specular sheen (added pre-clamp)
+        float3 specAdd = float3(0.0);   // #47 stylized PBR specular (float3 so metals can tint it)
         if (!isEmissive) {
             // #134 cheaper relief: the visible #133 detail is now low-frequency and smooth,
             // so the bump height field is sampled at the matching low frequency and with TWO
@@ -3743,12 +3772,53 @@ final class Renderer: NSObject, MTKViewDelegate {
             // by sunAbove (sunDir.y < 0 == sun up; >0 == set), so the relief sheen only fires
             // while the sun is actually above the horizon and fades to zero through dusk.
             float sunAbove = smoothstep(0.0, -0.12, wu.sunDirTime.y);   // 1 sun up .. 0 sun set
-            float specBase = pow(max(0.0, dot(pN, Ld)), 18.0);
             float baseLum  = dot(in.color, float3(0.299, 0.587, 0.114));
-            // mid/dark materials only — bright snow/sand get none (would wash white).
-            specAdd = specBase * 0.14 * clamp(in.shade * 1.4, 0.0, 1.0) * shadowFactor
-                    * sunAbove
-                    * (1.0 - smoothstep(0.55, 0.85, baseLum));
+
+            // ===== #47 STYLIZED PBR SPECULAR =====================================
+            // There are no texture assets, so roughness/metalness are derived PROCEDURALLY
+            // per material id, and the highlight is a SUN-ONLY (view-independent) lobe so it
+            // never sweeps with the camera (preserving the world-fixed look). It is kept
+            // RESTRAINED and quantized into a couple of flat steps so it reads as a bold
+            // toon catch-light that COMPLEMENTS the cel bands rather than a smooth photoreal
+            // gradient that would flatten them.
+            //   rough  : 1 = matte (broad/dim), 0 = glossy (tight/bright)
+            //   metal  : 0 = dielectric (white-ish highlight), 1 = metal (albedo-tinted)
+            // Material families (ids from the block colour table):
+            //   water 9 / glass 25,26  -> handled elsewhere (discarded above)
+            //   metals/ore 13,14,15,33 -> glossy + metallic (tight albedo-tinted highlight)
+            //   stone/brick 3,4,5,28   -> medium-rough dielectric (soft sheen)
+            //   ice/gem 27,31          -> very glossy dielectric (wet/shiny)
+            //   wood/plank 6,11,12     -> rough-ish, faint sheen
+            //   default (grass/dirt..) -> matte (almost no highlight)
+            float rough = 0.85;   // matte by default — most of the toy world is matte
+            float metal = 0.0;
+            if (mat==13u || mat==14u || mat==15u || mat==33u) { rough = 0.30; metal = 0.85; } // metal/ore
+            else if (mat==27u || mat==31u)                     { rough = 0.16; metal = 0.0;  } // ice / gem (wet, shiny)
+            else if (mat==3u || mat==4u || mat==5u || mat==28u){ rough = 0.62; metal = 0.0;  } // stone / brick
+            else if (mat==6u || mat==11u || mat==12u)          { rough = 0.72; metal = 0.0;  } // wood
+            // Rain makes top faces wet -> temporarily glossier (lower roughness) for a slick sheen.
+            if (in.faceNorm == 2u && wind.rainStrength > 0.01) {
+                rough = mix(rough, min(rough, 0.22), wind.rainStrength);
+            }
+            // Specular exponent from roughness: glossy -> tight bright lobe, matte -> broad dim.
+            float specPow  = mix(6.0, 90.0, 1.0 - rough);
+            float ndl      = max(0.0, dot(pN, Ld));
+            float specRaw  = pow(ndl, specPow);
+            // Quantize to a few flat steps so the highlight reads as a crisp toon catch-light.
+            float specBands = mix(2.0, 4.0, 1.0 - rough);     // glossier -> a touch more steps
+            float specQ     = floor(specRaw * specBands + 0.5) / specBands;
+            // Glossier materials get a brighter peak; metals tint the highlight by albedo,
+            // dielectrics keep a near-white catch-light. Strength scales smoothly to zero on
+            // matte surfaces so grass/dirt stay flat (no PBR clash with the cel banding).
+            float gloss    = 1.0 - rough;
+            float3 specTint = mix(float3(1.0), normalize(in.color + 1e-3), metal);
+            float specAmt  = specQ * (0.10 + 0.30 * gloss);   // restrained peak (<= ~0.40)
+            // Keep bright materials (snow/sand) from washing: dim the highlight on already-bright albedo.
+            specAmt *= (1.0 - smoothstep(0.60, 0.88, baseLum) * (1.0 - metal));
+            // Day/sun + shadow + toggle gating. sunAbove keeps it ZERO at night (washout guard).
+            specAdd = specTint * specAmt
+                    * clamp(in.shade * 1.4, 0.0, 1.0) * shadowFactor
+                    * sunAbove * clamp(wu.pbrStr, 0.0, 1.0);
         }
 
         // Combined: shade * AO * shadow * bump * detail
@@ -3903,7 +3973,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // =========================================================
     // Reflective water (#43) samples the sky along the reflected ray. evalSkyColor
     // is defined further down (after cloudFbm); declare it here so water can call it.
-    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk);
+    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk, float cloudsOn);
 
     fragment float4 waterFmain(VOut in [[stage_in]],
                                constant WaterUniforms& wu [[buffer(2)]],
@@ -3977,8 +4047,10 @@ final class Renderer: NSObject, MTKViewDelegate {
             float3 viewDir = normalize(in.worldPos - camP);
             float3 refl    = reflect(viewDir, perturbedN);
             refl.y = max(refl.y, 0.02);                       // keep the bounce skyward
+            // cloudsOn=0 for the water reflection: the volumetric raymarch is skipped in the
+            // bounce (it would double the cloud cost per water fragment for a subtle gain).
             float3 skyRefl = evalSkyColor(normalize(refl),
-                                          wu.sunDirTime.xyz, wu.sunDirTime.w, t);
+                                          wu.sunDirTime.xyz, wu.sunDirTime.w, t, 0.0);
             float ndv     = max(0.0, dot(-viewDir, perturbedN));
             float fres    = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);   // Schlick, F0≈0.02
             // NIGHT GROUND-WASH FIX (#117): the Fresnel sky reflection was NOT gated by
@@ -4043,10 +4115,64 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     static float cloudFbm(float2 p) { return fbm2(p); }
 
+    // ===================================================================
+    // #47 VOLUMETRIC CLOUDS — bold/toy-styled raymarched cumulus.
+    // ===================================================================
+    // Cheap 3D value noise (trilinear hash lerp). Reuses the same integer hash the
+    // 2D noise uses so the cost is 8 hashes per sample, no trig, no texture fetch.
+    static float cloudHash3(float3 i) {
+        return uhash(uint(i.x) * 1597u + uint(i.y) * 2749u + uint(i.z) * 3433u);
+    }
+    static float cloudNoise3(float3 p) {
+        float3 i = floor(p);
+        float3 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);                 // smootherstep weights
+        float c000 = cloudHash3(i + float3(0,0,0));
+        float c100 = cloudHash3(i + float3(1,0,0));
+        float c010 = cloudHash3(i + float3(0,1,0));
+        float c110 = cloudHash3(i + float3(1,1,0));
+        float c001 = cloudHash3(i + float3(0,0,1));
+        float c101 = cloudHash3(i + float3(1,0,1));
+        float c011 = cloudHash3(i + float3(0,1,1));
+        float c111 = cloudHash3(i + float3(1,1,1));
+        float x00 = mix(c000, c100, f.x);
+        float x10 = mix(c010, c110, f.x);
+        float x01 = mix(c001, c101, f.x);
+        float x11 = mix(c011, c111, f.x);
+        return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z);
+    }
+    // Cloud density field at a world-ish sample point. The dominant octave is LOW
+    // frequency so the forms are big chunky lobes (bold toy cumulus), with one small
+    // higher octave for a fluffy edge. A tight smoothstep carves defined, hard-ish
+    // edges (not wispy haze) and squashing Y keeps the slab reading as flat-bottomed
+    // cumulus rather than vertical streaks. wind drifts the field over time. 0..1.
+    static float cloudDensity(float3 p, float wind, float cover) {
+        p.xz += wind;                                  // slow drift
+        // Scale DOWN hard so the noise cells are big (tens of units across): looking up
+        // through the slab a screen region stays inside one lobe (big puffs, no speckle).
+        // Y is squashed so the puffs are wide and flat-bottomed like real cumulus.
+        // Roughly ISOTROPIC scale (only mild Y squash) so the puffs have real VERTICAL
+        // structure: a near-vertical view ray then passes through varying density inside a
+        // puff, which the sun light-march turns into internal 3D shading (bright crown,
+        // shadowed base) instead of a flat overcast disc. Cells are ~30-40 units wide.
+        float3 q = p * float3(0.026, 0.020, 0.026);
+        float base = cloudNoise3(q);                   // big puffy lobes (dominant)
+        base += cloudNoise3(q * 2.4) * 0.34;           // medium billow
+        base += cloudNoise3(q * 5.3) * 0.14;           // fluffy edge
+        base /= 1.48;
+        // BOLD shaping: a tight smoothstep carves a CRISP, graphic silhouette (defined toy
+        // cumulus with clear blue gaps), not a soft connected haze. `cover` sets how much
+        // sky the puffs fill. A vertical falloff thins the slab edges so the puffs have
+        // rounded tops/bottoms rather than a hard sliced top and bottom.
+        float lo = 0.52 - cover * 0.16;
+        float d  = smoothstep(lo, lo + 0.10, base);
+        return d;
+    }
+
     // Sky colour along a view ray (gradient, sun/moon, stars, clouds, weather).
     // Shared by the sky pass AND reflective water (#43) — forward-declared above
     // waterFmain. Does NOT apply the underground fade (that's sky-pass only).
-    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk) {
+    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk, float cloudsOn) {
         // dayT now tracks the real sun elevation (see dayLight) so the sky darkens
         // when the sun actually sets, instead of staying lit until t~1.0 (the old
         // sin(t*pi) was a quarter-cycle out of phase with the sun arc). The sun
@@ -4219,38 +4345,95 @@ final class Renderer: NSObject, MTKViewDelegate {
         //  composited on top of the final LDR image for cheapness.)
 
         float fairCloud = clamp(1.0 - overcast * 1.6, 0.0, 1.0);
+        // Day/night gate (clouds fade out as the sun sets so night stays clean) AND the
+        // toggle (cloudsOn). The ray must point above the horizon to enter the cloud slab.
         float cloudVis  = smoothstep(0.12, 0.38, dayT)
-                        * smoothstep(0.0, 0.10, ray.y)
-                        * fairCloud;
+                        * smoothstep(0.02, 0.12, ray.y)
+                        * fairCloud * step(0.5, cloudsOn);
         if (cloudVis > 0.001) {
-            // #47 volumetric-look clouds: three parallax layers at different apparent
-            // heights give depth as you turn; a slow domain-warp puffs the silhouette;
-            // and a second density sample offset toward the sun fakes self-shadowing so
-            // sun-facing billows read bright while undersides/interiors go shadowed.
-            float ry = max(ray.y, 0.02);
-            float2 base = ray.xz / ry;
-            float2 uvA = base * 0.30 + float2( clk * 0.010,  clk * 0.004);
-            float2 uvB = base * 0.20 + float2(-clk * 0.007,  clk * 0.003);
-            float2 uvC = base * 0.13 + float2( clk * 0.004, -clk * 0.005);
-            float  warp = cloudFbm(base * 0.08 + float2(clk * 0.002, 0.0)) - 0.5;
-            float dA = cloudFbm(uvA + warp * 0.18);
-            float dB = cloudFbm(uvB + warp * 0.12);
-            float dC = cloudFbm(uvC);
-            float dens   = dA * 0.50 + dB * 0.32 + dC * 0.18;
-            float cloudD = smoothstep(0.46, 0.72, dens);
-            // Self-shadow: density a short step toward the sun in cloud-plane UV.
-            float2 sunUV = normalize(float2(sunDir3.x, sunDir3.z) + 1e-4) * 0.05;
-            float densSun = cloudFbm(uvA + warp * 0.18 + sunUV) * 0.50
-                          + cloudFbm(uvB + warp * 0.12 + sunUV) * 0.32 + dC * 0.18;
-            float lit = clamp((dens - densSun) * 3.2 + 0.55, 0.0, 1.0);  // sun-facing edge = lit
-            float3 cloudTop  = mix(float3(0.97, 0.97, 1.00),
-                                   mix(float3(1.0, 0.82, 0.65), float3(0.97, 0.97, 1.0), dayT),
-                                   sunsetT * 0.60);
-            float3 cloudShade = cloudTop * 0.58;                  // shadowed billow
-            float3 cloudCol  = mix(cloudShade, cloudTop, lit);
-            float underBelly = smoothstep(0.06, 0.35, ray.y);
-            cloudCol = mix(cloudCol * float3(0.74, 0.75, 0.82), cloudCol, underBelly);
-            skyCol = mix(skyCol, cloudCol, cloudD * cloudVis * 0.92);
+            // #47 REAL raymarched VOLUMETRIC clouds, styled BOLD/TOY (chunky, defined,
+            // fluffy cumulus with a touch of cel banding and a bright sun rim), NOT wispy
+            // photoreal haze. The clouds live in a slab between two heights; we intersect
+            // the view ray with that slab and march a BOUNDED number of steps, accumulating
+            // density front-to-back. A cheap 2-tap density step toward the sun gives real
+            // self-shadowing so sun-facing billows are bright and undersides go shadowed.
+            //
+            // Perf: the slab + bounded step count caps the cost. Only sky-facing rays march
+            // (cloudVis gates ray.y), the whole thing is skipped at night and when toggled
+            // off, and the march short-circuits once the accumulated alpha is near opaque.
+            const float CLOUD_BOTTOM = 55.0;
+            const float CLOUD_TOP    = 145.0;  // thick slab -> vertical structure, 3D puffs
+            const int   CLOUD_STEPS  = 24;     // THE perf knob (bounded march length)
+            const float CLOUD_MID    = 100.0;  // slab centre (for the rounded vertical taper)
+            const float CLOUD_HALF   = 45.0;   // half-thickness
+            float ry   = max(ray.y, 0.04);
+            // STABLE horizontal cloud coordinate: project the ray onto the slab-centre plane.
+            // The horizontal sample position is FIXED per pixel (it does not vary with the
+            // march step), so the noise lobes do NOT stretch radially with t — that radial
+            // smear was the artifact of sampling p=ray*t directly. We march only in HEIGHT
+            // through the slab, sampling density at (cloudXZ, h), so a near-vertical view ray
+            // still passes through varying density inside a puff (giving real 3D shading from
+            // the sun light-march) while the silhouette stays crisp and defined.
+            float2 cloudXZ = ray.xz / ry * CLOUD_MID;        // plane projection at slab centre
+            float dh   = (CLOUD_TOP - CLOUD_BOTTOM) / float(CLOUD_STEPS);  // height step
+            float wind = clk * 1.10;           // slow horizontal drift
+            // `cover` modulates how much sky the clouds fill; a slow weather-ish breathe
+            // keeps the sky from being uniformly packed. Kept modest so the sky still reads.
+            float cover = 0.50 + 0.16 * (sin(clk * (3.14159265 / 90.0)) * 0.5 + 0.5);
+            float3 sunL = normalize(-sd);                    // toward the sun
+
+            float trans = 1.0;        // remaining transparency (front-to-back)
+            float3 lum  = float3(0.0); // accumulated lit cloud colour
+            // BOLD cloud palette: bright tops, defined cool-grey shadow, warm sunrise/sunset
+            // tint. The lit top keeps a FAINT cool tint (not pure white) so cloud pixels hold
+            // a little saturation instead of reading as a flat washed white field — that keeps
+            // the washout guard happy AND still looks like a crisp toy cloud over blue sky.
+            float3 litCol = mix(float3(0.96, 0.98, 1.00),
+                                float3(1.00, 0.80, 0.58), sunsetT * 0.70);
+            float3 shadowCol = mix(float3(0.42, 0.46, 0.58),
+                                   float3(0.45, 0.34, 0.40), sunsetT * 0.55);
+            for (int s = 0; s < CLOUD_STEPS; ++s) {
+                if (trans < 0.02) break;                     // already ~opaque, stop
+                float h  = CLOUD_BOTTOM + (float(s) + 0.5) * dh;  // sample height in the slab
+                float3 p = float3(cloudXZ.x, h, cloudXZ.y);  // stable XZ, marching in height
+                float d  = cloudDensity(p, wind, cover);
+                // Rounded vertical profile: density tapers to 0 at the slab top/bottom so the
+                // puffs have domed crowns and soft bases (3D billows) rather than a hard
+                // sliced slab. h is the sample's height (slab centred at CLOUD_MID).
+                float hN = clamp(1.0 - abs(h - CLOUD_MID) / CLOUD_HALF, 0.0, 1.0);
+                d *= smoothstep(0.0, 0.6, hN);
+                if (d > 0.001) {
+                    // 2-tap light march toward the sun for self-shadowing: sample density a
+                    // short and a longer step sunward; more density above = darker billow.
+                    float ls1 = cloudDensity(p + sunL * 8.0,  wind, cover);
+                    float ls2 = cloudDensity(p + sunL * 20.0, wind, cover);
+                    float shadowAcc = ls1 * 0.6 + ls2 * 0.4;
+                    float lit = exp(-shadowAcc * 3.0);       // Beer toward the sun (deeper = bolder pop)
+                    // BOLD cel touch: a gentle quantization into a few bands keeps the cloud
+                    // reading as defined toy forms with a crisp-ish lit/shadow break (cohesive
+                    // with the terrain banding) without the hard concentric rings a strong
+                    // quantize produced. Mix 60% toward the 4-band version, 40% smooth.
+                    float litB = floor(lit * 4.0 + 0.5) / 4.0;
+                    lit = mix(lit, litB, 0.6);
+                    float3 cCol = mix(shadowCol, litCol, lit);
+                    // Front-to-back compositing: each step occludes the steps behind it. A
+                    // high per-step opacity makes the puff cores go solid quickly (chunky toy
+                    // cumulus) rather than a thin translucent smear.
+                    float a = clamp(d * 1.6, 0.0, 1.0);
+                    lum   += trans * a * cCol;
+                    trans *= (1.0 - a);
+                }
+            }
+            float cloudA = (1.0 - trans) * cloudVis;
+            // Fade clouds out toward the horizon so the slab edge does not show as a hard
+            // line (they sit naturally on the sky dome). Also never fully opaque so the
+            // sky colour breathes through the thin edges (keeps the sky from washing).
+            // Keep clouds in the upper sky where the slab reads as defined puffs. The low
+            // grazing band (where a flat slab inevitably smears) fades to clean blue sky.
+            float horizFade = smoothstep(0.18, 0.55, ray.y);
+            cloudA *= horizFade * 0.95;
+            float3 cloudColor = (cloudA > 1e-4) ? (lum / max(1.0 - trans, 1e-3)) : float3(0.0);
+            skyCol = mix(skyCol, cloudColor, clamp(cloudA, 0.0, 0.92));
         }
 
         return skyCol;
@@ -4264,7 +4447,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 ray = normalize(su.camFwd.xyz
                                + su.camRight.xyz * (in.ndc.x * aspect * tanHalfFov)
                                + su.camUp.xyz    * (in.ndc.y * tanHalfFov));
-        float3 skyCol = evalSkyColor(ray, su.sunDirTime.xyz, su.sunDirTime.w, wu.wallClockSecs);
+        float3 skyCol = evalSkyColor(ray, su.sunDirTime.xyz, su.sunDirTime.w, wu.wallClockSecs, wu.cloudsOn);
 
         // FIX (#33): when the eye is underground (su.camFwd.w = underground 0..1),
         // fade the whole sky to a near-black cave colour. Surface-priority streaming
