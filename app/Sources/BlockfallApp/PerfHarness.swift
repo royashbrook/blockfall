@@ -348,6 +348,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
 
     var frameIdx = 0
     var lastShotPropN = 0
+    // #116 diagnostic capture (env-gated): nearest-entity dump for aiming verification shots.
+    var lastEntDump = ""
     var fpsSamples: [Double] = []
     var peakMem = 0.0
     let start = CACurrentMediaTime()
@@ -508,7 +510,102 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
 
             enc.setRenderPipelineState(terrainPipeline)
             enc.setDepthStencilState(depthState)
-            entR.encode(enc, viewProj: viewProj, entities: f.entities, count: Int(f.entity_count))
+            // #116 character shadows in --shot: feed the entity renderer the same voxel grid the
+            // terrain marched so creatures receive shade and cast a ground blob. BF_NOCHARSHADOW=1
+            // forces them off for an A/B. Gated on the shadow volume being present (shadowVol != nil).
+            let es = EntityShadowUniforms(
+                sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, f.camera.time_of_day),
+                voxOrigin:  shadowVol?.voxOrigin ?? .zero,
+                voxDims:    shadowVol?.voxDims ?? .zero,
+                params:     SIMD4<Float>((shadowVol != nil && ProcessInfo.processInfo.environment["BF_NOCHARSHADOW"] != "1") ? 1 : 0, 0, 0, 0))
+            // #116 deterministic verification: BF_SHOT_TESTCREATURE=<kind> injects ONE creature on
+            // the ground directly ahead of the camera (and an extra one offset sideways for a
+            // tree-shadow test), replacing the wandering world entities so a shadow shot can be
+            // framed reliably. The foot Y is found by marching the occupancy grid down from the
+            // player's eye height so it lands on the real surface (works on slopes too).
+            if let kStr = ProcessInfo.processInfo.environment["BF_SHOT_TESTCREATURE"], let kind = UInt32(kStr) {
+                // Derive the true camera world position AND a forward point by UNPROJECTING through
+                // the actual viewProj (so it is always consistent with what is drawn, regardless of
+                // how camPosW was extracted). Unproject screen center at two depths -> a ray.
+                let invVP = viewProj.inverse
+                func unproj(_ ndcZ: Float) -> SIMD3<Float> {
+                    let p = invVP * SIMD4<Float>(0, 0, ndcZ, 1)
+                    return SIMD3<Float>(p.x / p.w, p.y / p.w, p.z / p.w)
+                }
+                let near = unproj(0.0)        // a point on the view ray (near-ish)
+                let far  = unproj(0.5)        // a farther point on the same ray
+                let camP = near
+                let rayDir = simd_normalize(far - near)
+                let fwdH = simd_normalize(SIMD3<Float>(rayDir.x, 0, rayDir.z))
+                let dist = Float(ProcessInfo.processInfo.environment["BF_SHOT_TCDIST"] ?? "3.0") ?? 3.0
+                let baseXZ = camP + fwdH * dist
+                // Find the real ground surface Y at the creature's XZ by reading the same occupancy
+                // grid the renderer marches (gHarnessShadowCache.fine). Search downward from the
+                // camera eye for the highest solid voxel, robust wherever the player landed.
+                func surfaceY(_ wx: Float, _ wz: Float, eyeY: Float) -> Float {
+                    let c = gHarnessShadowCache
+                    let (dx, dy, dz) = c.dims
+                    if dx <= 0 || c.fine.isEmpty { return eyeY - 1.6 }
+                    let bx = Int(floor(wx)) & (dx - 1)
+                    let bz = Int(floor(wz)) & (dz - 1)
+                    let top = min(dy - 1, Int(floor(eyeY)) - c.originY + 1)
+                    var yy = top
+                    while yy >= 0 {
+                        if c.fine[(bz * dy + yy) * dx + bx] != 0 {
+                            return Float(yy + 1 + c.originY)   // top face of the solid voxel
+                        }
+                        yy -= 1
+                    }
+                    return eyeY - 1.6
+                }
+                // Seat on the player's OWN ground column (where the player demonstrably stands) so
+                // the creature never floats/sinks regardless of biome occ quirks: use the player's
+                // foot height. BF_SHOT_TCYBIAS nudges if needed.
+                let playerFoot = surfaceY(camP.x, camP.z, eyeY: camP.y)
+                let aheadSurf  = surfaceY(baseXZ.x, baseXZ.z, eyeY: camP.y)
+                // Prefer the forward cell's surface but clamp it to within 1 block of the player's
+                // foot so a mis-read occ column can't strand the creature in the air or underground.
+                let footY = min(playerFoot + 1, max(playerFoot - 1, aheadSurf))
+                    + (Float(ProcessInfo.processInfo.environment["BF_SHOT_TCYBIAS"] ?? "0") ?? 0)
+                func mkEnt(_ x: Float, _ z: Float) -> bf_entity_draw {
+                    var ee = bf_entity_draw()
+                    ee.position = bf_vec3(x: x, y: footY, z: z)
+                    ee.kind = kind
+                    ee.scale = Float(ProcessInfo.processInfo.environment["BF_SHOT_TCSCALE"] ?? "1.6") ?? 1.6
+                    ee.sat = 1.0
+                    ee.color = bf_vec3(x: 0.7, y: 0.55, z: 0.35)
+                    ee.yaw = atan2(-fwdH.x, -fwdH.z)   // face the camera
+                    return ee
+                }
+                // Main creature dead ahead; a second one to the side (for the tree-shade test the
+                // caller frames separately), keep it to one for a clean flat-ground shot.
+                let testEnts = [mkEnt(baseXZ.x, baseXZ.z)]
+                if ProcessInfo.processInfo.environment["BF_SHOT_ENTDUMP"] == "1" {
+                    lastEntDump = "TESTCREATURE cam=(\(camP.x),\(camP.y),\(camP.z)) fwdH=(\(fwdH.x),\(fwdH.z)) creature=(\(baseXZ.x),\(footY),\(baseXZ.z)) kind=\(kind)"
+                }
+                testEnts.withUnsafeBufferPointer { bp in
+                    entR.encode(enc, viewProj: viewProj, entities: bp.baseAddress, count: testEnts.count,
+                                shadow: es, occ: shadowVol?.tex, occCoarse: shadowVol?.coarse)
+                }
+                if ProcessInfo.processInfo.environment["BF_SHOT_ENTDUMP"] == "1" {
+                    let mvpTest = viewProj * SIMD4<Float>(baseXZ.x, footY + 0.8, baseXZ.z, 1)
+                    lastEntDump += " | clip=(\(mvpTest.x/mvpTest.w),\(mvpTest.y/mvpTest.w),\(mvpTest.z/mvpTest.w)) w=\(mvpTest.w)"
+                }
+            }
+            if ProcessInfo.processInfo.environment["BF_SHOT_ENTDUMP"] == "1",
+               ProcessInfo.processInfo.environment["BF_SHOT_TESTCREATURE"] == nil {
+                let cp = f.camera.position
+                var s = "ENTDUMP cam=(\(cp.x),\(cp.y),\(cp.z)) count=\(f.entity_count)\\n"
+                if let ents = f.entities {
+                    for i in 0..<Int(f.entity_count) {
+                        let ee = ents[i]
+                        let dx = ee.position.x - cp.x, dz = ee.position.z - cp.z
+                        let dist = (dx*dx + dz*dz).squareRoot()
+                        s += "  ent[\(i)] kind=\(ee.kind) pos=(\(ee.position.x),\(ee.position.y),\(ee.position.z)) dist=\(dist)\\n"
+                    }
+                }
+                lastEntDump = s
+            }
 
             // #70 viewmodel arm (mirrors the live renderer so --shot shows it)
             if let vmp = viewModelPipeline, let vmb = viewModelArmBuf, let vmd = viewModelDepthState {
@@ -617,8 +714,16 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         let skyEnvM  = ProcessInfo.processInfo.environment["BF_SHOT_SKY"]
         let skyMode  = (skyEnvM == "1" || skyEnvM == "2")
         let treeMode = ProcessInfo.processInfo.environment["BF_SHOT_TREES"] == "1"
-        let travel = treeMode ? 320 : 700
+        // #116 test-creature mode: don't walk (so the player settles on the ground at a stable spot
+        // and the injected creature's foot Y == eye-height-1.6 lands on the real surface). Instead
+        // stand still long enough for gravity + streaming to converge to a deterministic position.
+        let testCreatureMode = ProcessInfo.processInfo.environment["BF_SHOT_TESTCREATURE"] != nil
+        // BF_SHOT_TCWALK=<frames> lets a test-creature shot walk first to reach a different biome
+        // (e.g. grass) before settling and injecting the creature.
+        let tcWalk = Int(ProcessInfo.processInfo.environment["BF_SHOT_TCWALK"] ?? "0") ?? 0
+        let travel = testCreatureMode ? tcWalk : (treeMode ? 320 : 700)
         for _ in 0..<travel { renderOneFrame(yaw: 0) }       // travel STRAIGHT to cross into grass/forest
+        if testCreatureMode { for _ in 0..<240 { renderOneFrame(yaw: 0, forward: 0) } }  // settle on ground
         // BF_SHOT_PITCH=<total radians> aims the camera up/down before the capture
         // (positive = up into more sky). Lets the night yaw sweep frame the horizon/sky,
         // where a view-dependent night over-brightness shows up, instead of the default
@@ -636,7 +741,9 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         // same spot can be shot at several yaws to reveal the view-dependent shadow wipe.
         // #89: BF_SHOT_NOWALK=1 turns WITHOUT walking forward, so the camera origin is
         // identical at every yaw (no position confound) for the decisive experiment.
-        let noWalk = ProcessInfo.processInfo.environment["BF_SHOT_NOWALK"] == "1"
+        // #116 test-creature mode implies no-walk so the player stays on its settled ground column
+        // and the injected creature lands deterministically wherever the camera is aimed.
+        let noWalk = ProcessInfo.processInfo.environment["BF_SHOT_NOWALK"] == "1" || testCreatureMode
         // #89: before the yaw sweep, stand still long enough for gravity + async streaming
         // to converge, so the camera lands on the SAME ground column at every yaw (otherwise
         // free-fall + per-run streaming timing drift the origin and confound the experiment).
@@ -648,6 +755,9 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         }
         for _ in 0..<24  { renderOneFrame(yaw: 0, forward: noWalk ? 0 : 1.0) } // settle
         print("shot: prop instances in final frame = \(lastShotPropN)")
+        // #116 diagnostic (env-gated, harmless): dump camera + entity positions so a verification
+        // shot can be aimed at a creature. Off unless BF_SHOT_ENTDUMP=1.
+        if ProcessInfo.processInfo.environment["BF_SHOT_ENTDUMP"] == "1" { print(lastEntDump) }
         writeTexturePNG(output, to: shot)
         // #119 AB mode: also write the pixel-aligned god-rays-OFF composite alongside, with
         // an "_off" suffix, so the before/after is a true same-frame comparison.

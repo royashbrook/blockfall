@@ -310,6 +310,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             gfxRow(celCb, celSlider),
             bloomRow,
             gfxCheckbox("Lens Flare",        tag: 6, on: renderer?.gfxLensFlare ?? true),
+            // #116 character (entity) shadows: receive world shade + cast a ground contact blob.
+            gfxCheckbox("Character Shadows", tag: 7, on: renderer?.gfxCharShadows ?? true),
         ])
         fxStack.orientation = .vertical; fxStack.spacing = 8; fxStack.alignment = .leading
 
@@ -569,7 +571,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // #: graphics toggle → live renderer + persisted. Tags match gfxCheckbox order.
     @objc private func gfxToggleChanged(_ sender: NSButton) {
         let on = (sender.state == .on)
-        let keys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows", "gfxCelShade", "gfxLensFlare"]
+        let keys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows", "gfxCelShade", "gfxLensFlare", "gfxCharShadows"]
         guard sender.tag >= 0 && sender.tag < keys.count else { return }
         UserDefaults.standard.set(on, forKey: keys[sender.tag])
         switch sender.tag {
@@ -580,6 +582,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case 4: renderer?.gfxShadows = on
         case 5: renderer?.gfxCelShade = on; celOutlineSlider?.isEnabled = on   // #136 grey the slider when off
         case 6: renderer?.gfxLensFlare = on   // #132 lens-flare toggle
+        case 7: renderer?.gfxCharShadows = on // #116 character (entity) shadows
         default: break
         }
     }

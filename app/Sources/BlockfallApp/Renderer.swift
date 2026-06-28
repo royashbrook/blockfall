@@ -401,6 +401,12 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Soft shadows: a few jittered sun rays for a penumbra instead of one hard ray. Costs
     // ~5x the march, so it is a quality knob gated behind its own toggle (default OFF, Air-safe).
     var gfxSoftShadows = UserDefaults.standard.object(forKey: "gfxSoftShadows") as? Bool ?? false
+    // #116 character shadows: dynamic entities (mobs, villagers, animals, the player) are not in
+    // the static voxel occupancy grid, so they cannot be ray-marched as casters. This toggle drives
+    // (a) entities RECEIVING the world voxel sun shadow (they darken in shade, marched the same way
+    // the terrain is) and (b) a cheap stylized CAST contact-shadow blob on the ground under each
+    // entity, offset/stretched along the sun direction. Daylight-gated. Defaults ON.
+    var gfxCharShadows = UserDefaults.standard.object(forKey: "gfxCharShadows") as? Bool ?? true
     // #130 cel-shade: bold outlines + banded toon lighting + punchier palette. This is the
     // new intended look so it defaults ON; OFF cleanly restores the prior smooth render for
     // A/B comparison. Drives both the terrain banding (fmain) and the composite ink/edge pass.
@@ -1457,7 +1463,18 @@ final class Renderer: NSObject, MTKViewDelegate {
             // Entities + particles
             enc.setRenderPipelineState(pipeline)
             enc.setDepthStencilState(depthState)
-            entityRenderer.encode(enc, viewProj: viewProj, entities: frame.entities, count: Int(frame.entity_count))
+            // #116 character shadows: entities both RECEIVE the world voxel sun shadow and CAST a
+            // cheap stylized ground blob. Gate on gfxCharShadows AND the shared world-shadow toggle
+            // (shadowOn already folds in gfxShadows + grid-ready); pass the same voxel grid uniforms
+            // + occupancy textures the terrain marches, so a creature's shade matches the ground.
+            let es = EntityShadowUniforms(
+                sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
+                voxOrigin:  voxOriginU,
+                voxDims:    voxDimsU,
+                params:     SIMD4<Float>((gfxCharShadows && shadowOn > 0.5) ? 1 : 0, 0, 0, 0))
+            entityRenderer.encode(enc, viewProj: viewProj, entities: frame.entities,
+                                  count: Int(frame.entity_count), shadow: es,
+                                  occ: shadowVolTex, occCoarse: shadowVolCoarseTex)
             particles.update(Float(dt))
             particles.encode(enc, viewProj: viewProj)
 
