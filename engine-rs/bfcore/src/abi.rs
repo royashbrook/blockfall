@@ -23,9 +23,11 @@ use core::ffi::{c_char, c_void};
 // ABI version
 // ---------------------------------------------------------------------------
 
-/// Bumped on ANY breaking change to the header. v18.
+/// Bumped on ANY breaking change to the header. v19.
 /// v18: appended BF_ACT_SET_TIME_MODE (no struct layout change; append-only).
-pub const BF_ABI_VERSION: u32 = 18;
+/// v19: appended bf_shadow_volume + bf_world_shadow_volume (world-space voxel
+///      sun shadows). No existing struct layout changed; purely additive.
+pub const BF_ABI_VERSION: u32 = 19;
 
 // ---------------------------------------------------------------------------
 // Primitive types
@@ -362,6 +364,40 @@ pub struct bf_gpu_allocator {
 }
 
 // ---------------------------------------------------------------------------
+// 8. WORLD SHADOW VOLUME (world-space voxel sun shadows, ABI v19)
+// ---------------------------------------------------------------------------
+
+/// Mirror of `bf_shadow_volume` in the C header. Occupancy grid export for the
+/// renderer's world-space voxel shadow march. X-fastest layout:
+/// index = x + dim_x*(y + dim_y*z). 1 byte/voxel: 1 = casts sun shadow.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct bf_shadow_volume {
+    /// IN: caller's occupancy buffer; engine writes up to `voxel_cap` bytes.
+    pub voxels: *mut u8,
+    /// IN: capacity of `voxels` in bytes.
+    pub voxel_cap: u32,
+    /// OUT: world min corner of the valid toroidal window.
+    pub origin: bf_ivec3,
+    /// OUT: grid dimensions in voxels (toroidal ring on x/z).
+    pub dim_x: u32,
+    pub dim_y: u32,
+    pub dim_z: u32,
+    /// OUT: bumps when the occupancy bytes change (skip re-upload otherwise).
+    pub revision: u32,
+    /// OUT: number of valid dirty boxes (0 = nothing changed this call).
+    pub dirty_count: u32,
+    /// Keep 8-byte alignment.
+    pub _pad: u32,
+    /// OUT: up to BF_SHADOW_MAX_DIRTY world-voxel AABBs of changed cells.
+    pub dirty_lo: [bf_ivec3; BF_SHADOW_MAX_DIRTY],
+    pub dirty_hi: [bf_ivec3; BF_SHADOW_MAX_DIRTY],
+}
+
+/// Mirror of BF_SHADOW_MAX_DIRTY in the C header.
+pub const BF_SHADOW_MAX_DIRTY: usize = 4;
+
+// ---------------------------------------------------------------------------
 // 6. EVENT CALLBACKS
 // ---------------------------------------------------------------------------
 
@@ -427,6 +463,7 @@ mod parity {
         assert_eq!(size_of::<bf_gpu_buffer>(), 24, "bf_gpu_buffer");
         assert_eq!(size_of::<bf_gpu_allocator>(), 24, "bf_gpu_allocator");
         assert_eq!(size_of::<bf_event>(), 36, "bf_event");
+        assert_eq!(size_of::<bf_shadow_volume>(), 144, "bf_shadow_volume");
     }
 
     #[test]
@@ -438,6 +475,22 @@ mod parity {
         assert_eq!(align_of::<bf_camera>(), 4, "bf_camera");
         assert_eq!(align_of::<bf_hud_state>(), 4, "bf_hud_state");
         assert_eq!(align_of::<bf_render_frame>(), 8, "bf_render_frame");
+        assert_eq!(align_of::<bf_shadow_volume>(), 8, "bf_shadow_volume");
+    }
+
+    #[test]
+    fn shadow_volume_offsets() {
+        assert_eq!(offset_of!(bf_shadow_volume, voxels), 0);
+        assert_eq!(offset_of!(bf_shadow_volume, voxel_cap), 8);
+        assert_eq!(offset_of!(bf_shadow_volume, origin), 12);
+        assert_eq!(offset_of!(bf_shadow_volume, dim_x), 24);
+        assert_eq!(offset_of!(bf_shadow_volume, dim_y), 28);
+        assert_eq!(offset_of!(bf_shadow_volume, dim_z), 32);
+        assert_eq!(offset_of!(bf_shadow_volume, revision), 36);
+        assert_eq!(offset_of!(bf_shadow_volume, dirty_count), 40);
+        assert_eq!(offset_of!(bf_shadow_volume, _pad), 44);
+        assert_eq!(offset_of!(bf_shadow_volume, dirty_lo), 48);
+        assert_eq!(offset_of!(bf_shadow_volume, dirty_hi), 96);
     }
 
     #[test]

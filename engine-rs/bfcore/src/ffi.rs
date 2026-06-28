@@ -734,6 +734,36 @@ pub unsafe extern "C" fn bf_set_render_distance(e: bf_engine, chunks: u32) {
 }
 
 // ---------------------------------------------------------------------------
+// 8. WORLD SHADOW VOLUME (world-space voxel sun shadows, ABI v19)
+// ---------------------------------------------------------------------------
+
+#[no_mangle]
+pub unsafe extern "C" fn bf_world_shadow_volume(
+    e: bf_engine,
+    vol: *mut bf_shadow_volume,
+) -> bf_result {
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => {
+            set_err("null engine");
+            return bf_result::BF_ERR_BAD_ARG;
+        }
+    };
+    if vol.is_null() {
+        set_err("null shadow volume");
+        return bf_result::BF_ERR_BAD_ARG;
+    }
+    if !e.world_ready {
+        set_err("world not ready");
+        return bf_result::BF_ERR_NOT_READY;
+    }
+    // SAFETY: caller guarantees `vol` points at a writable bf_shadow_volume; its
+    // `voxels`/`voxel_cap` describe the caller-owned output buffer.
+    let vref = unsafe { &mut *vol };
+    e.world.fill_shadow_volume(vref)
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

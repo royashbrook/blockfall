@@ -106,13 +106,19 @@ struct WaterUniforms {
     var wallClockSecs: Float
     var underwater:    Float
     var reflectScale:  Float = 1   // #: water-reflection toggle (0=off)
-    var shadowScale:   Float = 1   // #: cast-shadow toggle (0=off)
+    var shadowScale:   Float = 1   // #: cast-shadow toggle (0=off, 2=harness shadow-factor debug)
     var cameraPosW:    SIMD4<Float> = .zero   // xyz = world-space camera pos, w unused
     var sunDirTime:    SIMD4<Float> = .zero   // xyz = sun dir, w = time_of_day (#43 water sky reflection)
     var celShade:      Float = 0   // #130 toon-band the diffuse term in fmain (0=off, 1=on)
     var pad0:          Float = 0   // keep 16-byte alignment / match the MSL struct
     var pad1:          Float = 0
     var pad2:          Float = 0
+    // ---- World-space voxel sun shadows (replaces the cascaded shadow map) ----
+    // The renderer marches each fragment toward the sun through a 3D occupancy
+    // texture (the engine's bf_world_shadow_volume). The shadow is a property of
+    // the WORLD, identical for every camera position and view direction.
+    var voxOrigin:  SIMD4<Float> = .zero  // xyz = grid origin (world block coords), w = march distance (world units)
+    var voxDims:    SIMD4<Float> = .zero  // xyz = grid dims (voxels), w = soft-shadow flag (0=hard, 1=soft penumbra)
 }
 
 /// Uniforms for the HDR composite / tonemap pass (52 bytes).
@@ -139,10 +145,10 @@ struct PostUniforms {
 /// and the single strength knob (0 = fully off). 240 bytes; layout matches the MSL struct.
 struct VolUniforms {
     var invViewProj:    simd_float4x4 = matrix_identity_float4x4  // clip -> world
-    var lightViewProj:  simd_float4x4 = matrix_identity_float4x4  // near cascade
-    var lightViewProjF: simd_float4x4 = matrix_identity_float4x4  // far cascade
-    var camPosW:        SIMD4<Float> = .zero   // xyz = camera world pos, w = far cascade radius
-    var sunDir:         SIMD4<Float> = .zero   // xyz = sun dir (points downward), w = cascade split dist
+    var voxOrigin:      SIMD4<Float> = .zero   // xyz = shadow grid origin (world block coords), w = march distance
+    var voxDims:        SIMD4<Float> = .zero   // xyz = grid dims (voxels), w = soft-shadow flag
+    var camPosW:        SIMD4<Float> = .zero   // xyz = camera world pos, w = far coverage radius
+    var sunDir:         SIMD4<Float> = .zero   // xyz = sun dir (points downward), w unused
     var sunColor:       SIMD4<Float> = .zero   // rgb = sun colour, w = volumetric strength (0 = off)
 }
 
@@ -332,9 +338,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var skyPipeline: MTLRenderPipelineState!
     private var skyDepthState: MTLDepthStencilState!
     private var underwaterPipeline: MTLRenderPipelineState!
-    // Shadow depth-only pipeline
-    private var shadowPipeline: MTLRenderPipelineState!
-    private var shadowDepthState: MTLDepthStencilState!
+    // World-space voxel sun shadows: no shadow-map render pass (see uploadShadowVolume).
     // Post-processing pipelines
     private var bloomBrightPipeline: MTLRenderPipelineState!  // bright-pass (HDR → half-res)
     private var bloomBlurHPipeline: MTLRenderPipelineState!  // horizontal Gaussian
@@ -348,7 +352,6 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // ---- Sub-voxel props (#51/#52: GPU-instanced) ---------------------------
     private var propPipeline: MTLRenderPipelineState!
-    private var propShadowPipeline: MTLRenderPipelineState!   // #80 props (trees) cast shadows: depth-only, reuses propInstVmain
     private var propModelTable: MTLBuffer!       // static: 4 types × 4 cuboids (PropCuboidGPU)
     private var viewModelPipeline: MTLRenderPipelineState!   // #70 first-person arm
     private var viewModelDepthState: MTLDepthStencilState!   // always-on-top
@@ -390,7 +393,13 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Defaults ON; OFF removes the flare entirely (no cost, byte-identical to no-flare).
     var gfxLensFlare = UserDefaults.standard.object(forKey: "gfxLensFlare") as? Bool ?? true
     var gfxPollen  = UserDefaults.standard.object(forKey: "gfxPollen")  as? Bool ?? true
-    var gfxShadows = UserDefaults.standard.object(forKey: "gfxShadows") as? Bool ?? false  // default OFF (residual sun-angle bug; kids prefer it off)
+    // World-space voxel sun shadows. The old camera-following shadow map had a residual
+    // sun-angle / camera-yaw wipe and shipped OFF. This is the from-scratch world-space
+    // rebuild: a fixed world point's shadow is identical from every camera, so it defaults ON.
+    var gfxShadows = UserDefaults.standard.object(forKey: "gfxShadows") as? Bool ?? true
+    // Soft shadows: a few jittered sun rays for a penumbra instead of one hard ray. Costs
+    // ~5x the march, so it is a quality knob gated behind its own toggle (default OFF, Air-safe).
+    var gfxSoftShadows = UserDefaults.standard.object(forKey: "gfxSoftShadows") as? Bool ?? false
     // #130 cel-shade: bold outlines + banded toon lighting + punchier palette. This is the
     // new intended look so it defaults ON; OFF cleanly restores the prior smooth render for
     // A/B comparison. Drives both the terrain banding (fmain) and the composite ink/edge pass.
@@ -447,30 +456,29 @@ final class Renderer: NSObject, MTKViewDelegate {
     // True when the scaler was successfully created and can be used this frame.
     private var metalFXEnabled: Bool = false
 
-    // ---- Cascaded shadow maps (#46): two 1536² depth maps ---------------------
-    //   near cascade = tight radius → crisp contact shadows around the player
-    //   far  cascade = wide radius  → shadows out toward the horizon
-    private let kShadowRes  = 1536
-    private let kShadowNearR: Float = 48   // near cascade half-extent (world units)
-    // THE COVERAGE KNOB (#120). The far cascade half-extent, in world units. This is the
-    // radius of the INSCRIBED circle of the sun-aligned square shadow map (the half-extent
-    // reaches R at the edge-midpoints, sqrt(2)*R at the corners). Cast shadows are FULL out
-    // to this radius; the square edge/corners sit even farther out, beyond the rendered
-    // terrain, so no straight map edge can ever fall inside the vista.
-    // The whole long-view shadow wipe was the coverage circle (and its masking fog band)
-    // ending mid-vista, where the air is clear, so the boundary panned across the land as
-    // the camera turned. The fix is geometric: make the inscribed circle reach PAST the
-    // render distance (384), so shadows are full across everything the player can see, and
-    // fade only in a tight band right at the render edge (fmain distFade 376..384) where the
-    // terrain itself is ending. With no fade ring inside the vista and no masking fog band,
-    // there is nothing left to sweep.
-    // PERF/AIR KNOB (M1 Air): lower this to claw back GPU on a weak machine; the far map
-    // then rasterises a smaller circle. But it MUST stay >= the render distance (384) or the
-    // coverage circle re-enters the vista and the sweeping ring returns. On the M1 Air, drop
-    // render distance first (graphics settings) rather than this. The engine occluder radius
-    // (world.rs kshadow_r) must stay >= this; the per-cascade near cull keys off it.
-    private let kShadowFarR:  Float = 400
-    private let kCascadeSplit: Float = 36  // camera-distance split between cascades
+    // ---- World-space voxel sun shadows --------------------------------------
+    // Shadows are a property of the WORLD: a point is in shadow iff a solid voxel
+    // sits between it and the sun. The engine exports a compact occupancy grid
+    // (bf_world_shadow_volume) for the resident region around the player; the
+    // renderer uploads it to a 3D texture and DDA-marches each fragment toward the
+    // sun. No shadow map, no cascades, no coverage ring, no crawl, no camera
+    // dependence whatsoever.
+    //
+    // THE PRIMARY QUALITY/PERF KNOB: the march distance (world units). A fragment is sun-lit
+    // if no casting voxel is hit within this distance toward the sun. The per-fragment march
+    // is THE cost (the spec flagged this), and it scales with this distance: on the dev box
+    // (RD24 stress) ~20 holds the median comfortably above 60 while still covering the contact
+    // shadows players actually notice (under trees, beside structures, terraces). Larger gives
+    // longer grazing shadows but costs more; smaller is cheaper. BF_MARCH_DIST overrides it.
+    // M1 AIR NOTE: drop this to ~12-16 on the Air; raise toward 48+ only on a strong GPU.
+    static let kShadowMarchDist: Float = {
+        if let s = ProcessInfo.processInfo.environment["BF_MARCH_DIST"], let v = Float(s) {
+            return max(8, min(256, v))
+        }
+        return 20.0
+    }()
+    // Coverage radius used only to fade the god-ray contribution near the grid edge.
+    private let kShadowFarR:  Float = 384
     // #119 THE GOD-RAY TUNING KNOB. Overall strength of the volumetric light shafts at
     // full daylight; daylight + the toggle scale it down further (0 = off). Raise for
     // more dramatic beams, lower (or toggle God Rays off in graphics settings) on a weak
@@ -480,9 +488,20 @@ final class Renderer: NSObject, MTKViewDelegate {
     //   kFlareEdgeFade : how far (in centre-distance, 0=centre ~1.4=corner) the flare keeps
     //                    fading to zero. Larger = the flare reaches further toward the edges.
     static let kFlareEdgeFade: Float = 1.25
-    private var shadowMap: MTLTexture!     // depth32Float — near cascade
-    private var shadowMapFar: MTLTexture!  // depth32Float — far cascade
-    private var shadowSampler: MTLSamplerState!
+
+    // World occupancy 3D texture (r8uint, 1 = casting voxel) + the persistent CPU
+    // buffer the engine fills, and the region metadata for the current upload.
+    private var shadowVolTex: MTLTexture?
+    // Coarse 1/CO occupancy mip (1 = ANY casting voxel in the CO^3 block) for empty-space
+    // skipping: open-air rays step CO blocks at a time instead of one voxel, the big perf win.
+    private var shadowVolCoarseTex: MTLTexture?
+    private var shadowVolBuf: [UInt8] = []
+    private var shadowVolCoarseBuf: [UInt8] = []
+    private var shadowVolOrigin: SIMD3<Float> = .zero
+    private var shadowVolDims: SIMD3<Float> = .zero
+    private var shadowVolRevision: UInt32 = .max   // last uploaded revision (forces first upload)
+    private var shadowVolTexDims: (Int, Int, Int) = (0, 0, 0)
+    static let kShadowCoarse = 4   // coarse cell size (voxels per axis)
 
     // ---- No-write depth state (sky + bloom quads) ----------------------------
     private var noDepthState: MTLDepthStencilState!
@@ -520,7 +539,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 #endif
         buildPipeline(colorFormat: view.colorPixelFormat)
-        buildShadowMap()
+        // World occupancy 3D texture is created lazily on the first uploadShadowVolume()
+        // (its dims come from the engine), so there is no shadow-map allocation here.
         entityRenderer = EntityRenderer(device: device, colorFormat: .rgba16Float)
         particles = ParticleSystem(device: device, colorFormat: .rgba16Float)
         createEngine()
@@ -603,18 +623,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         wdd.isDepthWriteEnabled  = false   // don't write depth — lake bottom must stay visible
         waterDepthState = device.makeDepthStencilState(descriptor: wdd)
 
-        // ---- Shadow depth-only pipeline (no colour attachment) ---------------
-        let shadDesc = MTLRenderPipelineDescriptor()
-        shadDesc.vertexFunction   = lib.makeFunction(name: "shadowVmain")
-        shadDesc.fragmentFunction = nil   // depth-only
-        shadDesc.depthAttachmentPixelFormat = .depth32Float
-        do { shadowPipeline = try device.makeRenderPipelineState(descriptor: shadDesc) }
-        catch { fatalError("shadow pipeline failed: \(error)") }
-
-        let shdd = MTLDepthStencilDescriptor()
-        shdd.depthCompareFunction = .lessEqual
-        shdd.isDepthWriteEnabled  = true
-        shadowDepthState = device.makeDepthStencilState(descriptor: shdd)
+        // World-space voxel sun shadows: no shadow-map render pass, so there is no
+        // depth-only shadow pipeline. Shadows are marched per-fragment against the
+        // engine occupancy 3D texture (see uploadShadowVolume / fmain).
 
         // ---- Bloom bright-pass (HDR → half-res rgba16Float) ------------------
         let bpd = MTLRenderPipelineDescriptor()
@@ -671,15 +682,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         do { propPipeline = try device.makeRenderPipelineState(descriptor: propd) }
         catch { fatalError("prop pipeline failed: \(error)") }
 
-        // #80 depth-only prop pipeline for the shadow cascades: same vertex expansion as
-        // the main prop draw (so trunks/foliage/slant/sway match), no fragment/colour, so
-        // instanced trees and props cast shadows again. Pass the light matrix as viewProj.
-        let propShad = MTLRenderPipelineDescriptor()
-        propShad.vertexFunction   = lib.makeFunction(name: "propInstVmain")
-        propShad.fragmentFunction = nil
-        propShad.depthAttachmentPixelFormat = .depth32Float
-        do { propShadowPipeline = try device.makeRenderPipelineState(descriptor: propShad) }
-        catch { fatalError("prop shadow pipeline failed: \(error)") }
+        // Props no longer need a depth-only shadow pipeline: prop blocks live in the
+        // engine occupancy grid (the engine stamps their casting voxels), so they cast
+        // world-space shadows without any extra render pass here.
 
         propModelTable = Renderer.makePropModelTable(device: device)
 
@@ -761,21 +766,157 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
     }
 
-    private func buildShadowMap() {
-        let td = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .depth32Float, width: kShadowRes, height: kShadowRes, mipmapped: false)
-        td.usage        = [.renderTarget, .shaderRead]
-        td.storageMode  = .private
-        shadowMap    = device.makeTexture(descriptor: td)!
-        shadowMapFar = device.makeTexture(descriptor: td)!   // #46 far cascade
+    // Upload the engine's world occupancy grid into the 3D shadow texture. Pulls
+    // bf_world_shadow_volume into a persistent CPU buffer, (re)creates the r8uint
+    // 3D texture if the grid dims changed, and re-uploads the bytes only when the
+    // engine bumped the revision (so a stationary scene costs one cheap call). The
+    // texture + region metadata are then bound by the terrain / water / composite
+    // passes. Returns true if a usable occupancy texture is ready.
+    @discardableResult
+    private func uploadShadowVolume(_ e: bf_engine) -> Bool {
+        // Probe call (nil buffer): cheap, returns dims + revision + dirty box, NO 4 MB copy.
+        var vol = bf_shadow_volume()
+        vol.voxels = nil
+        vol.voxel_cap = 0
+        _ = bf_world_shadow_volume(e, &vol)
+        let dx = Int(vol.dim_x), dy = Int(vol.dim_y), dz = Int(vol.dim_z)
+        let need = dx * dy * dz
+        if need <= 0 { return false }
+        let dimsKnownSame = (shadowVolTex != nil && shadowVolTexDims == (dx, dy, dz))
+        // Standing still / nothing changed: textures are current, skip the fill + upload.
+        if dimsKnownSame && vol.revision == shadowVolRevision { return true }
 
-        let sd = MTLSamplerDescriptor()
-        sd.minFilter        = .linear
-        sd.magFilter        = .linear
-        sd.sAddressMode     = .clampToEdge
-        sd.tAddressMode     = .clampToEdge
-        sd.compareFunction  = .lessEqual   // comparison sampler for shadow PCF
-        shadowSampler = device.makeSamplerState(descriptor: sd)!
+        if shadowVolBuf.count < need { shadowVolBuf = [UInt8](repeating: 0, count: need) }
+        // Fill call: the engine copies the toroidal buffer into our persistent storage.
+        let ok: Bool = shadowVolBuf.withUnsafeMutableBufferPointer { p -> Bool in
+            vol.voxels = p.baseAddress
+            vol.voxel_cap = UInt32(p.count)
+            return bf_world_shadow_volume(e, &vol) == BF_OK
+        }
+        if !ok { return false }
+
+        shadowVolOrigin = SIMD3<Float>(Float(vol.origin.x), Float(vol.origin.y), Float(vol.origin.z))
+        shadowVolDims   = SIMD3<Float>(Float(dx), Float(dy), Float(dz))
+
+        // (Re)create the toroidal 3D textures when the dims change (rare).
+        let CO = Renderer.kShadowCoarse
+        let cdx = (dx + CO - 1) / CO, cdy = (dy + CO - 1) / CO, cdz = (dz + CO - 1) / CO
+        if shadowVolTex == nil || shadowVolTexDims != (dx, dy, dz) {
+            func make3D(_ w: Int, _ h: Int, _ d: Int) -> MTLTexture? {
+                let td = MTLTextureDescriptor()
+                td.textureType = .type3D; td.pixelFormat = .r8Uint
+                td.width = w; td.height = h; td.depth = d
+                td.usage = [.shaderRead]; td.storageMode = .shared
+                return device.makeTexture(descriptor: td)
+            }
+            shadowVolTex = make3D(dx, dy, dz)
+            shadowVolCoarseTex = make3D(cdx, cdy, cdz)
+            shadowVolTexDims = (dx, dy, dz)
+            shadowVolRevision = .max   // force a full upload into the new textures
+        }
+        guard let tex = shadowVolTex, let ctex = shadowVolCoarseTex else { return false }
+        if shadowVolCoarseBuf.count < cdx * cdy * cdz {
+            shadowVolCoarseBuf = [UInt8](repeating: 0, count: cdx * cdy * cdz)
+        }
+
+        // Nothing changed since our last upload: keep the textures, skip the GPU work.
+        if vol.revision == shadowVolRevision { return true }
+
+        // Collect the dirty boxes the engine reported (a list, to avoid one giant L-shaped
+        // bounding box on a diagonal scroll). On the first upload into fresh textures, force
+        // the full window.
+        let oy = Int(vol.origin.y)
+        let boxes = Renderer.shadowDirtyBoxes(vol, dx: dx, dy: dy, dz: dz,
+                                              forceFull: shadowVolRevision == .max)
+        for (wlo, whi) in boxes {
+            // Rebuild the coarse mip for ONLY this box, then upload only this box.
+            buildCoarseRegion(fine: shadowVolBuf, coarse: &shadowVolCoarseBuf,
+                              dx: dx, dy: dy, dz: dz, cdx: cdx, cdy: cdy, cdz: cdz, co: CO,
+                              originY: oy, wlo: wlo, whi: whi)
+            uploadToroidalRegion(tex, ctex, buf: shadowVolBuf, coarseBuf: shadowVolCoarseBuf,
+                                 dx: dx, dy: dy, dz: dz, cdx: cdx, cdy: cdy, cdz: cdz, co: CO,
+                                 wlo: wlo, whi: whi)
+        }
+        shadowVolRevision = vol.revision
+        return true
+    }
+
+    // Decode the engine's dirty-box list (a C fixed array, imported as a Swift tuple) into
+    // clamped world-voxel AABBs. forceFull (first upload into fresh textures) returns the
+    // whole window regardless of what the engine reported.
+    static func shadowDirtyBoxes(_ vol: bf_shadow_volume, dx: Int, dy: Int, dz: Int,
+                                 forceFull: Bool) -> [(SIMD3<Int>, SIMD3<Int>)] {
+        let ox = Int(vol.origin.x), oy = Int(vol.origin.y), oz = Int(vol.origin.z)
+        if forceFull {
+            return [(SIMD3<Int>(ox, oy, oz), SIMD3<Int>(ox + dx - 1, oy + dy - 1, oz + dz - 1))]
+        }
+        var los = vol.dirty_lo, his = vol.dirty_hi
+        let nlo = withUnsafeBytes(of: &los) { $0.bindMemory(to: bf_ivec3.self) }
+        let nhi = withUnsafeBytes(of: &his) { $0.bindMemory(to: bf_ivec3.self) }
+        var out: [(SIMD3<Int>, SIMD3<Int>)] = []
+        let n = min(Int(vol.dirty_count), nlo.count)
+        for i in 0..<n {
+            let lo = SIMD3<Int>(max(Int(nlo[i].x), ox), max(Int(nlo[i].y), oy), max(Int(nlo[i].z), oz))
+            let hi = SIMD3<Int>(min(Int(nhi[i].x), ox + dx - 1),
+                                min(Int(nhi[i].y), oy + dy - 1),
+                                min(Int(nhi[i].z), oz + dz - 1))
+            if hi.x >= lo.x && hi.y >= lo.y && hi.z >= lo.z { out.append((lo, hi)) }
+        }
+        return out
+    }
+
+    // Upload a world-voxel AABB [wlo, whi] into the toroidal fine + coarse textures, splitting
+    // the box at the wrap seam on x and z (y does not wrap). The buffers are the full toroidal
+    // arrays; we copy each wrapped sub-rect with MTLTexture.replace on just that region.
+    private func uploadToroidalRegion(_ tex: MTLTexture, _ ctex: MTLTexture,
+                                      buf: [UInt8], coarseBuf: [UInt8],
+                                      dx: Int, dy: Int, dz: Int,
+                                      cdx: Int, cdy: Int, cdz: Int, co: Int,
+                                      wlo: SIMD3<Int>, whi: SIMD3<Int>) {
+        func wrap(_ v: Int, _ d: Int) -> Int { let m = v % d; return m < 0 ? m + d : m }
+        // Build the up-to-2 contiguous cell spans for an axis range [lo,hi] of length n<=dim.
+        func spans(_ lo: Int, _ hi: Int, _ dim: Int) -> [(g0: Int, len: Int)] {
+            let n = hi - lo + 1
+            if n >= dim { return [(0, dim)] }
+            let g0 = wrap(lo, dim)
+            if g0 + n <= dim { return [(g0, n)] }
+            return [(g0, dim - g0), (0, n - (dim - g0))]   // wraps: tail + head
+        }
+        let xs = spans(wlo.x, whi.x, dx)
+        let zs = spans(wlo.z, whi.z, dz)
+        let gy0 = wlo.y - Int(shadowVolOrigin.y)          // y does not wrap
+        let yh  = whi.y - wlo.y + 1
+        // Fine grid: for each (x-span, z-span) rect, replace that sub-volume from the buffer.
+        buf.withUnsafeBytes { raw in
+            let base = raw.baseAddress!
+            for zsp in zs {
+                for xsp in xs {
+                    let region = MTLRegionMake3D(xsp.g0, gy0, zsp.g0, xsp.len, yh, zsp.len)
+                    // Source pointer to the buffer cell (xsp.g0, gy0, zsp.g0); the buffer is
+                    // contiguous with bytesPerRow=dx, bytesPerImage=dx*dy, so a sub-rect upload
+                    // reads strided directly from it.
+                    let off = (zsp.g0 * dy + gy0) * dx + xsp.g0
+                    tex.replace(region: region, mipmapLevel: 0, slice: 0,
+                                withBytes: base + off, bytesPerRow: dx, bytesPerImage: dx * dy)
+                }
+            }
+        }
+        // Coarse grid: the same AABB mapped to coarse cells (floor on lo, ceil on hi).
+        let cxs = spans(Int(floor(Double(wlo.x) / Double(co))), Int(floor(Double(whi.x) / Double(co))), cdx)
+        let czs = spans(Int(floor(Double(wlo.z) / Double(co))), Int(floor(Double(whi.z) / Double(co))), cdz)
+        let cgy0 = (gy0) / co
+        let cyh  = (gy0 + yh + co - 1) / co - cgy0
+        coarseBuf.withUnsafeBytes { raw in
+            let base = raw.baseAddress!
+            for zsp in czs {
+                for xsp in cxs {
+                    let region = MTLRegionMake3D(xsp.g0, cgy0, zsp.g0, xsp.len, cyh, zsp.len)
+                    let off = (zsp.g0 * cdy + cgy0) * cdx + xsp.g0
+                    ctex.replace(region: region, mipmapLevel: 0, slice: 0,
+                                 withBytes: base + off, bytesPerRow: cdx, bytesPerImage: cdx * cdy)
+                }
+            }
+        }
     }
 
     // ---- Resize: rebuild HDR + bloom textures when drawable size changes -----
@@ -1090,104 +1231,34 @@ final class Renderer: NSObject, MTKViewDelegate {
                              camFwd: camFwd, camRight: camRight, camUp: camUp)
         }
 
-        // 4) Build sun light-space matrices for the two shadow cascades (#46):
-        //    near = crisp contact shadows around the player; far = shadows to the horizon.
-        let sunV  = SIMD3<Float>(sun.x, sun.y, sun.z)
-        let camP3 = SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z)
-        let lightViewProj  = Renderer.buildLightMatrix(sunDir: sunV, camPos: camP3,
-                                                       radius: kShadowNearR, res: Float(kShadowRes))
-        let lightViewProjF = Renderer.buildLightMatrix(sunDir: sunV, camPos: camP3,
-                                                       radius: kShadowFarR,  res: Float(kShadowRes))
+        // 4) World-space voxel sun shadows: pull the engine occupancy grid into the
+        //    3D shadow texture. Cheap when nothing changed (the engine only bumps the
+        //    revision on a real change, and we re-upload only then). This REPLACES the
+        //    old shadow-map cascade render pass entirely.
+        let haveShadowVol = gfxShadows ? uploadShadowVolume(e) : false
 
         // Must release the acquired frame even on this early-out, or `borrowed`
         // sticks true and every later acquire returns the same frame forever.
         guard let cmd = queue.makeCommandBuffer() else { bf_frame_end(e); return }
 
-        // #80 Upload the prop instance list up front so trees/props can be drawn into the
-        // shadow cascades too (the main prop pass below reuses the same buffer). Without
-        // this the cascades only held terrain, so instanced trees cast no shadow.
-        let shadowPropN = Int(frame.prop_instance_count)
-        let propDayBright = 0.30 + 0.70 * Renderer.dayLight(frame.camera.time_of_day)
-        if gfxShadows, shadowPropN > 0, let insts = frame.prop_instances {
-            let need = shadowPropN * MemoryLayout<bf_prop_instance>.stride
-            if propInstanceBuffer == nil || propInstanceBuffer!.length < need {
-                propInstanceBuffer = device.makeBuffer(length: max(need, 64 * 1024), options: .storageModeShared)
-            }
-            if let ib = propInstanceBuffer { memcpy(ib.contents(), insts, need) }
-        }
+        // PASS 1 (the camera-following shadow-map cascade render) is RETIRED. World-space
+        // voxel shadows need no shadow geometry pass: the occupancy 3D texture was uploaded
+        // above (uploadShadowVolume) and each fragment marches it toward the sun. Trees and
+        // structures cast because their voxels live in the engine occupancy grid.
 
-        // =====================================================================
-        // PASS 1: Shadow depth — render the chunk meshes into BOTH cascade maps.
-        // =====================================================================
-        // #118 per-cascade occluder cull. cullR limits which occluder chunks get rasterised
-        // into THIS map: the wide far map (cullR = .infinity) takes the full engine list, but
-        // the tight near map (R=48) only needs occluders near the player. Rendering all ~380-
-        // radius occluders into the 48-radius near map was almost all wasted work; this cull
-        // is what pays for the wider far coverage. The margin (added by the caller) keeps tall
-        // casters just outside the near box, whose long shadows still fall inside it, in play.
-        func renderShadowCascade(_ map: MTLTexture, _ matrix: simd_float4x4, cullR: Float) {
-            let rp = MTLRenderPassDescriptor()
-            rp.depthAttachment.texture     = map
-            rp.depthAttachment.loadAction  = .clear
-            rp.depthAttachment.storeAction = .store
-            rp.depthAttachment.clearDepth  = 1.0
-            guard let shadowEnc = cmd.makeRenderCommandEncoder(descriptor: rp) else { return }
-            shadowEnc.setRenderPipelineState(shadowPipeline)
-            shadowEnc.setDepthStencilState(shadowDepthState)
-            shadowEnc.setCullMode(.front)   // front-face culling reduces acne
-            shadowEnc.setDepthBias(2.0, slopeScale: 2.0, clamp: 0.0)
-            shadowEnc.setVertexBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 2)
-            // Use the UN-culled shadow occluder list (#46) so geometry behind/beside
-            // the camera still casts shadows; fall back to draws if it's empty.
-            let sCount = Int(frame.shadow_draw_count)
-            let sDraws = frame.shadow_draws
-            let useShadow = (sCount > 0 && sDraws != nil)
-            let n = useShadow ? sCount : Int(frame.draw_count)
-            // Cull by the HORIZONTAL distance from camera to the occluder chunk centre, plus the
-            // chunk half-diagonal so a chunk that merely clips the cull circle is kept.
-            let cullR2 = cullR.isFinite ? (cullR + 14.0) * (cullR + 14.0) : Float.infinity
-            let camHX = camPosW.x, camHZ = camPosW.z
-            for i in 0..<n {
-                let d = useShadow ? sDraws![i] : frame.draws[i]
-                guard d.index_count > 0,
-                      let vbuf = bufs[d.vertex_buffer],
-                      let ibuf = bufs[d.index_buffer] else { continue }
-                if cullR2.isFinite {
-                    let ccx = Float(d.chunk_origin.x) + 8.0 - camHX
-                    let ccz = Float(d.chunk_origin.z) + 8.0 - camHZ
-                    if ccx * ccx + ccz * ccz > cullR2 { continue }
-                }
-                var su = ShadowVertUniforms(
-                    lightViewProj: matrix,
-                    chunkOrigin: SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), 0))
-                shadowEnc.setVertexBuffer(vbuf, offset: Int(d.vertex_offset), index: 0)
-                shadowEnc.setVertexBytes(&su, length: MemoryLayout<ShadowVertUniforms>.stride, index: 1)
-                shadowEnc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
-                                                indexType: .uint32, indexBuffer: ibuf,
-                                                indexBufferOffset: Int(d.index_offset))
-            }
-            // #80 Props (trees, foliage, trunks) cast shadows: same instanced expansion as
-            // the main prop draw, but with the light matrix as the view-projection, depth
-            // only. Reuses propInstVmain so trunk taper / slant / wind sway all match.
-            if gfxShadows, shadowPropN > 0, let ib = propInstanceBuffer {
-                shadowEnc.setRenderPipelineState(propShadowPipeline)
-                shadowEnc.setCullMode(.front)
-                shadowEnc.setDepthBias(2.0, slopeScale: 2.0, clamp: 0.0)
-                var psu = PropUniforms(viewProj: matrix,
-                                       params: SIMD4<Float>(propDayBright, wallClock, gfxFoliage ? 1 : 0, 0))
-                shadowEnc.setVertexBuffer(ib, offset: 0, index: 0)
-                shadowEnc.setVertexBytes(&psu, length: MemoryLayout<PropUniforms>.stride, index: 1)
-                shadowEnc.setVertexBuffer(propModelTable, offset: 0, index: 2)
-                shadowEnc.drawPrimitives(type: .triangle, vertexStart: 0,
-                                         vertexCount: kPropVertsPerInstance, instanceCount: shadowPropN)
-            }
-            shadowEnc.endEncoding()
-        }
-        // Near map: only occluders within the near box plus a margin for tall casters just
-        // outside whose shadows reach in. Far map: the full engine occluder set (already
-        // bounded by world.rs kshadow_r), so distant terrain casts to the horizon.
-        renderShadowCascade(shadowMap,    lightViewProj,  cullR: kShadowNearR + 96.0)
-        renderShadowCascade(shadowMapFar, lightViewProjF, cullR: .infinity)
+        // Per-fragment voxel-shadow uniform fields shared by terrain + water + composite.
+        // voxOrigin.xyz = grid origin (world block coords), voxOrigin.w = march distance.
+        // voxDims.xyz   = grid dims (voxels),               voxDims.w   = soft-shadow flag.
+        // When the grid is not ready (haveShadowVol == false) the shadow toggle reads 0 so
+        // fmain skips the march cleanly (fully lit).
+        let voxOriginU = SIMD4<Float>(shadowVolOrigin.x, shadowVolOrigin.y, shadowVolOrigin.z,
+                                      Renderer.kShadowMarchDist)
+        let voxDimsU   = SIMD4<Float>(shadowVolDims.x, shadowVolDims.y, shadowVolDims.z,
+                                      gfxSoftShadows ? 1 : 0)
+        let shadowOn: Float = (gfxShadows && haveShadowVol) ? 1 : 0
+
+        // Shadows are marched directly per fragment in the terrain pass (fmain) against the
+        // occupancy 3D textures bound below. The march distance (voxOrigin.w) is THE perf knob.
 
         // =====================================================================
         // PASS 2: Main scene → HDR colour texture (rgba16Float)
@@ -1233,18 +1304,16 @@ final class Renderer: NSObject, MTKViewDelegate {
 
             var wu = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater,
                                    reflectScale: gfxWater ? 1 : 0,      // #: water-reflection toggle
-                                   shadowScale:  gfxShadows ? 1 : 0,    // #: shadow toggle
+                                   shadowScale:  shadowOn,              // #: world-shadow toggle (0 = off / grid not ready)
                                    cameraPosW: camPosW,
                                    sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day))
-            // #118 carry the shadow-coverage radius (THE knob) into fmain via the unused
-            // cameraPosW.w so the radial distFade ends at the far cascade edge, out in the
-            // distance haze, with no mid-vista boundary to sweep when the camera turns.
             wu.cameraPosW.w = kShadowFarR
             wu.celShade = gfxCelShade ? 1 : 0   // #130 toon-band the diffuse term in fmain
+            wu.voxOrigin = voxOriginU           // world-space voxel sun-shadow grid
+            wu.voxDims   = voxDimsU
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
-            enc.setFragmentTexture(shadowMap,    index: 0)
-            enc.setFragmentTexture(shadowMapFar, index: 1)   // #46 far cascade
-            enc.setFragmentSamplerState(shadowSampler, index: 0)
+            if let occ = shadowVolTex { enc.setFragmentTexture(occ, index: 0) }  // world occupancy grid (fine)
+            if let occc = shadowVolCoarseTex { enc.setFragmentTexture(occc, index: 1) }  // coarse mip (empty-space skip)
             // Wind/weather available to terrain frag at index 3 (rain wet-darkening)
             enc.setFragmentBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)
             // Wind uniforms to terrain vertex shader at index 3 (foliage sway)
@@ -1259,9 +1328,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                     viewProj:      viewProj,
                     chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime:    SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
-                    lightViewProj: lightViewProj,
-                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0),
-                    lightViewProjF: lightViewProjF)
+                    lightViewProj: matrix_identity_float4x4,
+                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
                 enc.setVertexBuffer(vbuf, offset: Int(d.vertex_offset), index: 0)
                 enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
@@ -1331,10 +1399,10 @@ final class Renderer: NSObject, MTKViewDelegate {
             enc.setDepthStencilState(waterDepthState)
             enc.setCullMode(.none)   // water seen from below should also be translucent
             enc.setFrontFacing(.counterClockwise)
-            // Reuse the same WaterUniforms / shadow / wind bindings already set above
+            // Reuse the same WaterUniforms / occupancy / wind bindings already set above
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
-            enc.setFragmentTexture(shadowMap, index: 0)
-            enc.setFragmentSamplerState(shadowSampler, index: 0)
+            if let occ = shadowVolTex { enc.setFragmentTexture(occ, index: 0) }  // world occupancy grid (fine)
+            if let occc = shadowVolCoarseTex { enc.setFragmentTexture(occc, index: 1) }  // coarse mip (empty-space skip)
             enc.setFragmentBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)
             enc.setVertexBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)
             for i in 0..<Int(frame.draw_count) {
@@ -1346,9 +1414,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                     viewProj:      viewProj,
                     chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime:    SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
-                    lightViewProj: lightViewProj,
-                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0),
-                    lightViewProjF: lightViewProjF)
+                    lightViewProj: matrix_identity_float4x4,
+                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
                 enc.setVertexBuffer(vbuf, offset: Int(d.vertex_offset), index: 0)
                 enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
@@ -1495,13 +1562,14 @@ final class Renderer: NSObject, MTKViewDelegate {
                               greyHaze: max(0, 1 - frame.camera.local_sat),   // #: The Grey wash
                               celShade: gfxCelShade ? 1 : 0)   // #130 ink outlines + cel grade
         pu.lensFlareStr = flareStr
-        // #119 volumetric uniforms shared by every composite call site this frame.
+        // #119 volumetric uniforms shared by every composite call site this frame. The god-ray
+        // occlusion now marches the SAME world occupancy grid the cast shadows use (no shadow map).
         var vu = VolUniforms(
             invViewProj:    viewProj.inverse,
-            lightViewProj:  lightViewProj,
-            lightViewProjF: lightViewProjF,
+            voxOrigin:      voxOriginU,
+            voxDims:        voxDimsU,
             camPosW:        SIMD4<Float>(camPosW.x, camPosW.y, camPosW.z, kShadowFarR),
-            sunDir:         SIMD4<Float>(sun.x, sun.y, sun.z, kCascadeSplit),
+            sunDir:         SIMD4<Float>(sun.x, sun.y, sun.z, 0),
             sunColor:       SIMD4<Float>(1.0, 0.6 + 0.35 * dayT, 0.3 + 0.5 * dayT, grStrength))
 
         // =====================================================================
@@ -1533,9 +1601,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setFragmentTexture(hdrColor,    index: 0)
                 enc.setFragmentTexture(bloomBright, index: 1)
                 enc.setFragmentTexture(hdrDepth,    index: 2)   // #119 scene depth for the raymarch
-                enc.setFragmentTexture(shadowMap,    index: 3)  // #119 near cascade
-                enc.setFragmentTexture(shadowMapFar, index: 4)  // #119 far cascade
-                enc.setFragmentSamplerState(shadowSampler, index: 0)
+                if let occ = shadowVolTex { enc.setFragmentTexture(occ, index: 3) }  // world occupancy grid (fine)
+                if let occc = shadowVolCoarseTex { enc.setFragmentTexture(occc, index: 4) }  // coarse mip
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -1561,9 +1628,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                     enc.setFragmentTexture(hdrColor,    index: 0)
                     enc.setFragmentTexture(bloomBright, index: 1)
                     enc.setFragmentTexture(hdrDepth,    index: 2)   // #119 scene depth for the raymarch
-                    enc.setFragmentTexture(shadowMap,    index: 3)  // #119 near cascade
-                    enc.setFragmentTexture(shadowMapFar, index: 4)  // #119 far cascade
-                    enc.setFragmentSamplerState(shadowSampler, index: 0)
+                    if let occ = shadowVolTex { enc.setFragmentTexture(occ, index: 3) }  // world occupancy grid (fine)
+                    if let occc = shadowVolCoarseTex { enc.setFragmentTexture(occc, index: 4) }  // coarse mip
                     enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                     enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                     enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -1594,9 +1660,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                     enc.setFragmentTexture(hdrColor,    index: 0)
                     enc.setFragmentTexture(bloomBright, index: 1)
                     enc.setFragmentTexture(hdrDepth,    index: 2)   // #119 scene depth for the raymarch
-                    enc.setFragmentTexture(shadowMap,    index: 3)  // #119 near cascade
-                    enc.setFragmentTexture(shadowMapFar, index: 4)  // #119 far cascade
-                    enc.setFragmentSamplerState(shadowSampler, index: 0)
+                    if let occ = shadowVolTex { enc.setFragmentTexture(occ, index: 3) }  // world occupancy grid (fine)
+                    if let occc = shadowVolCoarseTex { enc.setFragmentTexture(occc, index: 4) }  // coarse mip
                     enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                     enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                     enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -2269,89 +2334,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         return m
     }
 
-    /// Build a sun orthographic light-space VP matrix centred on the camera.
-    /// L = normalize(sunDir) points FROM sun downward into the scene.
-    /// We place the eye 120 units "up" along L from a point 40 units in front of the camera.
-    // Light-frustum params, exposed for the position+sun shadow probe so a test can check
-    // whether a tall caster's depth along L falls inside [near,far] and whether a world
-    // point lands inside the ortho box. Pure data; no behaviour change.
-    struct LightFrustumDebug {
-        var r: SIMD3<Float>           // light right (world)
-        var u: SIMD3<Float>           // light up (world)
-        var L: SIMD3<Float>           // light forward (sun dir, normalized)
-        var eye: SIMD3<Float>         // light eye (world)
-        var R: Float                  // right half-extent (world units)
-        var Ry: Float                 // up half-extent (world, sun-tilt compensated)
-        var near: Float
-        var far: Float
-        // Depth of a world point from the light eye along +L (what near/far clip against).
-        func depthAlongL(_ p: SIMD3<Float>) -> Float { return simd_dot(p - eye, L) }
-    }
-
-    static func buildLightMatrix(sunDir: SIMD3<Float>, camPos: SIMD3<Float>,
-                                 radius R: Float, res: Float) -> simd_float4x4 {
-        return buildLightMatrixD(sunDir: sunDir, camPos: camPos, radius: R, res: res).0
-    }
-
-    static func buildLightMatrixD(sunDir: SIMD3<Float>, camPos: SIMD3<Float>,
-                                  radius R: Float, res: Float) -> (simd_float4x4, LightFrustumDebug) {
-        let L = normalize(sunDir)                         // points downward from sun
-        // Light-space basis depends ONLY on the sun direction (f = L), so it's stable
-        // frame-to-frame regardless of where the camera is.
-        // #49 residual sun-angle bug: this used to switch worldUp from (0,1,0) to (1,0,0)
-        // when |L.y| > 0.9, but the in-game sun peaks at |L.y| ~ 0.96 around noon, so it
-        // crossed that threshold twice a day — and the switch flips the right vector almost
-        // 180 degrees (measured |delta r| ~ 1.84 vs ~0.005 continuous), a hard shadow POP.
-        // The sun never goes fully vertical, so a fixed (0,1,0) up stays well-defined all
-        // day and the basis changes smoothly. No more flip, no more pop.
-        let worldUp = SIMD3<Float>(0, 1, 0)
-        let r = normalize(cross(L, worldUp))              // light right (always horizontal)
-        let u = cross(r, L)                               // light up (tilts with the sun)
-        // #49 THE wipe fix: the ortho frustum used the same half-extent R on both axes, but
-        // u tilts toward the sun, so the map's WORLD-HORIZONTAL footprint was an ellipse
-        // (~R perpendicular to the sun, only R*sqrt(1-u.y^2) along it — as little as ~50
-        // units at a low sun). That short axis, not the map's outer edge, is the line that
-        // wiped shadows toward/away from the sun as you turned. Stretch the u half-extent so
-        // its horizontal reach is also R, giving a circular ground footprint at every sun
-        // angle. Clamp so a near-horizontal sun does not blow the map up (and tank texels).
-        let uHoriz = max(0.30, (1.0 - u.y * u.y).squareRoot())   // horizontal fraction of u
-        let Ry = R / uHoriz                                       // compensated up half-extent
-        // TEXEL-SNAP the frustum centre to the (per-axis) texel grid so the map only moves in
-        // whole-texel steps (no shimmer). Centre on the player so spinning is stable.
-        let texelR = (2.0 * R)  / res
-        let texelU = (2.0 * Ry) / res
-        let cx = (simd_dot(camPos, r) / texelR).rounded() * texelR
-        let cy = (simd_dot(camPos, u) / texelU).rounded() * texelU
-        let cz = simd_dot(camPos, L)
-        let center = r * cx + u * cy + L * cz
-        // #118 The light-space depth slab must bracket the terrain across the WHOLE footprint.
-        // At the wide far radius (380) a tall mountain near the box edge sits much farther
-        // along the sun ray than the old fixed 120-back eye / 300-deep far allowed, so it got
-        // depth-clipped and stopped casting. Scale the back-off and far plane with R so the
-        // slab always spans the footprint (the near box keeps a small, crisp slab).
-        let backOff = max(120.0, R * 0.7)                 // light eye stand-off along -L
-        let eye    = center - L * backOff                 // light eye position
-
-        // Column-major view matrix (forward = L)
-        let lightView = simd_float4x4(columns: (
-            SIMD4<Float>( r.x,  u.x, -L.x, 0),
-            SIMD4<Float>( r.y,  u.y, -L.y, 0),
-            SIMD4<Float>( r.z,  u.z, -L.z, 0),
-            SIMD4<Float>(-dot(r, eye), -dot(u, eye), dot(L, eye), 1)))
-
-        // Orthographic projection — R across the (horizontal) right axis, Ry across the
-        // tilted up axis so both cover R of world ground.
-        let near: Float = 0.1
-        let far:  Float = backOff + max(180.0, R)         // depth deep enough for the footprint
-        let lightProj = simd_float4x4(columns: (
-            SIMD4<Float>(1/R,  0,     0,                      0),
-            SIMD4<Float>(0,    1/Ry,  0,                      0),
-            SIMD4<Float>(0,    0,     1/(near-far),            0),
-            SIMD4<Float>(0,    0,     near/(near-far),         1)))
-
-        let dbg = LightFrustumDebug(r: r, u: u, L: L, eye: eye, R: R, Ry: Ry, near: near, far: far)
-        return (lightProj * lightView, dbg)
-    }
+    // The sun light-space matrix builders (buildLightMatrix / buildLightMatrixD) and the
+    // LightFrustumDebug struct were retired with the shadow map. World-space voxel shadows
+    // need no light-space projection: fmain marches the world occupancy grid toward the sun.
 
     // MARK: - Shaders (MSL, runtime compiled)
     static let shaderSource = """
@@ -2386,18 +2371,21 @@ final class Renderer: NSObject, MTKViewDelegate {
         float4x4 lightViewProjF; // far cascade (#46)
     };
 
-    // WaterUniforms (64 bytes) — not engine-filled.
+    // WaterUniforms (96 bytes) — not engine-filled. Must EXACTLY match Swift.
     struct WaterUniforms {
         float wallClockSecs;
         float underwater;
         float reflectScale;  // #: water-reflection toggle (0=off)
-        float shadowScale;   // #: cast-shadow toggle (0=off)
+        float shadowScale;   // #: cast-shadow toggle (0=off, 2=harness shadow-factor debug)
         float4 cameraPosW;   // xyz = world pos, w = pad
         float4 sunDirTime;   // xyz = sun dir, w = time_of_day (#43)
         float celShade;      // #130 toon-band the diffuse term (0=off, 1=on)
         float pad0;
         float pad1;
         float pad2;
+        // World-space voxel sun shadows (replaces the cascaded shadow map).
+        float4 voxOrigin;    // xyz = grid origin (world block coords), w = march distance
+        float4 voxDims;      // xyz = grid dims (voxels), w = soft-shadow flag (0=hard,1=soft)
     };
     #define UW_CAM_POS(wu) (wu).cameraPosW.xyz
 
@@ -2435,18 +2423,14 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Must EXACTLY match the Swift VolUniforms struct.
     struct VolUniforms {
         float4x4 invViewProj;    // clip -> world
-        float4x4 lightViewProj;  // near cascade
-        float4x4 lightViewProjF; // far cascade
-        float4   camPosW;        // xyz = camera world pos, w = far cascade radius
-        float4   sunDir;         // xyz = sun dir (downward), w = cascade split distance
+        float4   voxOrigin;      // xyz = shadow grid origin (world block coords), w = march distance
+        float4   voxDims;        // xyz = grid dims (voxels), w = soft-shadow flag
+        float4   camPosW;        // xyz = camera world pos, w = far coverage radius
+        float4   sunDir;         // xyz = sun dir (downward), w unused
         float4   sunColor;       // rgb = sun colour, w = volumetric strength (0 = off)
     };
 
-    // ShadowVertUniforms (80 bytes): light VP + chunk origin.
-    struct ShadowVertUniforms {
-        float4x4 lightViewProj;  // 64 bytes
-        float4   chunkOrigin;    // 16 bytes
-    };
+    // (ShadowVertUniforms retired with the shadow-map render pass.)
 
     // WindUniforms (16 bytes) — foliage sway + weather.  buffer(3) on vertex AND frag.
     struct WindUniforms {
@@ -2465,10 +2449,6 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 worldPos;
         uint   faceNorm  [[flat]];
         uint   material  [[flat]];
-        // Shadow-map clip-space position (computed in vmain, not interpolated as
-        // a position but as a float4 so it interpolates correctly across the face).
-        float4 shadowPos;        // near cascade light-clip pos
-        float4 shadowPosF;       // far cascade light-clip pos (#46)
         float  ao;               // 0=fully occluded, 1=fully open (from bits [3:5])
     };
 
@@ -3143,25 +3123,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         return float2(sx, sz) * amp;
     }
 
-    // =========================================================
-    // SHADOW MAP — depth-only vertex shader (applies foliage sway)
-    // =========================================================
-    vertex float4 shadowVmain(uint vid [[vertex_id]],
-                              device const PackedVertex* verts [[buffer(0)]],
-                              constant ShadowVertUniforms& su [[buffer(1)]],
-                              constant WindUniforms& wu [[buffer(2)]]) {
-        PackedVertex p = verts[vid];
-        float x = float(p.pos & 0x3f)         + float((p.pos >> 18) & 0xf) / 16.0;
-        float y = float((p.pos >> 6) & 0x3f)  + float((p.pos >> 22) & 0xf) / 16.0;
-        float z = float((p.pos >> 12) & 0x3f) + float((p.pos >> 26) & 0xf) / 16.0;
-        float3 world = su.chunkOrigin.xyz + float3(x, y, z);
-        // Apply foliage sway — same formula as vmain so shadows track geometry.
-        // p.material holds the block type id; p.block holds per-vertex light level.
-        float2 sway = windSway(world, uint(p.material), wu.wallClockSecs, wu.rainStrength) * wu.swayScale;
-        world.x += sway.x;
-        world.z += sway.y;
-        return su.lightViewProj * float4(world, 1.0);
-    }
+    // The depth-only shadow-map vertex shader (shadowVmain) is retired: world-space
+    // voxel shadows are marched per fragment against the occupancy 3D texture, so no
+    // geometry is rasterised into a shadow map.
 
     // =========================================================
     // TERRAIN VERTEX SHADER (applies foliage wind sway)
@@ -3213,11 +3177,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         o.faceNorm = n;
         o.material = uint(p.material);
         o.ao       = ao;
-
-        // Light-space position for shadow lookup (per-vertex, interpolated).
-        // lightViewProj maps world → [−1,1] clip; NDC depth is in [0,1] on Metal.
-        o.shadowPos  = u.lightViewProj  * float4(swayedWorld, 1.0);   // near cascade
-        o.shadowPosF = u.lightViewProjF * float4(swayedWorld, 1.0);   // far cascade (#46)
+        // Sun shadows are now computed in the fragment shader by marching the world
+        // occupancy grid from o.worldPos toward the sun; no per-vertex light-space
+        // projection is needed (no shadow map).
 
         return o;
     }
@@ -3228,42 +3190,108 @@ final class Renderer: NSObject, MTKViewDelegate {
     //   shadowPos: light-clip-space float4 (w=1 for ortho, but do divide anyway).
     //   Returns 1.0 = fully lit, 0.0 = fully in shadow.
     // =========================================================
-    static float sampleShadowPCF(depth2d<float, access::sample> shadowTex,
-                                  sampler shadowSamp,
-                                  float4 shadowPos,
-                                  float dayFactor,
-                                  float bias) {
-        // Perspective divide (light proj is ortho so w≈1, but do it correctly).
-        float3 ndc = shadowPos.xyz / shadowPos.w;
-        // Metal NDC: x,y in [-1,1], z in [0,1]. Convert to shadow UV [0,1].
-        float2 uv = ndc.xy * 0.5 + 0.5;
-        uv.y = 1.0 - uv.y;   // Metal Y-up NDC → texture V-down
-        float depth = ndc.z - bias;   // depth bias to fight self-shadow acne
+    // =========================================================
+    // WORLD-SPACE VOXEL SUN-SHADOW MARCH
+    // ---------------------------------------------------------
+    // A point is in shadow iff a solid (casting) voxel sits between it and the
+    // sun. We DDA-march the 3D occupancy texture (the engine's resident-world
+    // occupancy grid) from the fragment's WORLD position toward the sun. The
+    // result depends ONLY on world geometry + sun direction, never the camera,
+    // so a fixed world point's shadow is identical from every angle/position.
+    //
+    //   occ      : r8uint 3D texture, 1 = casting voxel, 0 = empty
+    //   gridOrigin: world block coords of voxel (0,0,0)
+    //   gridDims  : voxel dimensions (x,y,z)
+    //   worldP    : the fragment's world position
+    //   toSun     : unit vector pointing TOWARD the sun
+    //   maxDist   : max world distance to march before giving up (lit)
+    // Returns 1.0 = lit, 0.0 = fully shadowed.
+    // Coarse cell size (must match Renderer.kShadowCoarse). Empty-space skipping: when the
+    // ray is in an empty coarse cell, advance to that cell's exit in ONE step; only inside an
+    // occupied coarse cell do we test fine voxels one at a time. Most of a sun ray's length is
+    // open air, so the coarse skips collapse the step count. Position-sampling form (recompute
+    // the voxel from p each iteration) keeps it simple and stall-free with a hard step cap.
+    constant int BF_COARSE = 4;
 
-        // Outside the shadow frustum? Assume lit.
-        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
-        if (depth >= 1.0) return 1.0;
-        // #49/#72: fade shadows out smoothly near the shadow-map BOUNDARY. The map is a
-        // fixed sun-aligned square around the player, so its edge is a hard line that
-        // "wiped" shadows on one side as you turned. A 12% fade still showed a faint line;
-        // fading the outer ~30% of the map to fully-lit turns the edge into a gradient too
-        // soft to read at any sun angle.
-        float2 eDist = min(uv, 1.0 - uv);                 // distance to nearest edge
-        float edgeFade = smoothstep(0.0, 0.14, min(eDist.x, eDist.y));
+    static float marchSunOcclusion(texture3d<uint, access::read> occ,
+                                   texture3d<uint, access::read> coarse,
+                                   float3 gridOrigin, float3 gridDims,
+                                   float3 worldP, float3 toSun, float maxDist) {
+        int3 dims = int3(gridDims);
+        int3 iorigin = int3(round(gridOrigin));
+        // Grid-relative start (window is [origin, origin+dim)), lifted a hair toward the sun
+        // (the caller also lifts along the surface normal, handling self-shadow acne).
+        float3 p0 = worldP - gridOrigin + toSun * 0.05;
+        // Per-axis reciprocal (axes with ~0 component never cross a boundary -> huge t).
+        float3 inv = float3(abs(toSun.x) < 1e-6 ? 0.0 : 1.0/toSun.x,
+                            abs(toSun.y) < 1e-6 ? 0.0 : 1.0/toSun.y,
+                            abs(toSun.z) < 1e-6 ? 0.0 : 1.0/toSun.z);
+        float3 sgnPos = float3(toSun.x >= 0.0 ? 1.0 : 0.0, toSun.y >= 0.0 ? 1.0 : 0.0, toSun.z >= 0.0 ? 1.0 : 0.0);
 
-        // PCF 5×5: wider kernel for smoother soft-shadow edges (the 3×3 read harsh).
-        // The comparison sampler (lessEqual) returns 0/1 per sample; Metal averages
-        // the bilinear taps for free.
-        float texelSize = 1.0 / 1536.0;
-        float shadow = 0.0;
-        for (int dy = -2; dy <= 2; ++dy) {
-            for (int dx = -2; dx <= 2; ++dx) {
-                float2 off = uv + float2(dx, dy) * texelSize;
-                shadow += shadowTex.sample_compare(shadowSamp, off, depth);
+        // Hierarchical empty-space skip: march the COARSE grid (CO-block cells) in big steps and
+        // only refine to single voxels inside an occupied coarse cell. The wrapped buffer cell
+        // (gx,_,gz) is tracked INCREMENTALLY (one add + a conditional wrap-correct, no per-step
+        // floor/modulo) which is the hot-path optimization. One texture read per step, exit the
+        // instant a solid voxel is hit.
+        float t = 0.0;
+        // Worst case is all-fine steps for the full march distance; cap generously but the loop
+        // almost always exits early via the t>maxDist / hit / out-of-grid checks.
+        const int MAX_STEPS = 48;
+        for (int i = 0; i < MAX_STEPS; ++i) {
+            float3 p = p0 + toSun * t;
+            int3 v = int3(floor(p));   // grid-relative voxel
+            if (v.x < 0 || v.y < 0 || v.z < 0 || v.x >= dims.x || v.y >= dims.y || v.z >= dims.z) {
+                return 1.0;   // left the loaded window -> open sky / not loaded -> lit
             }
+            // Wrapped fine cell + its coarse cell. dims.x/z are powers of two (256), so the
+            // toroidal wrap is a cheap bitmask (& (dim-1)) instead of an integer modulo. y is direct.
+            // BF_COARSE is a power of two (4) so /BF_COARSE -> >>2 and %BF_COARSE -> &3.
+            int wfx = (v.x + iorigin.x) & (dims.x - 1);
+            int wfz = (v.z + iorigin.z) & (dims.z - 1);
+            uint3 cvox = uint3(uint(wfx >> 2), uint(v.y >> 2), uint(wfz >> 2));
+            if (coarse.read(cvox).r == 0u) {
+                // Empty coarse cell: jump to its far boundary in ONE step (CO blocks of air).
+                float3 cbase = float3(v - (v & 3));
+                float3 nb = cbase + sgnPos * float(BF_COARSE);
+                float dx = (inv.x == 0.0) ? 1e30 : (nb.x - p.x) * inv.x;
+                float dy = (inv.y == 0.0) ? 1e30 : (nb.y - p.y) * inv.y;
+                float dz = (inv.z == 0.0) ? 1e30 : (nb.z - p.z) * inv.z;
+                t += max(min(dx, min(dy, dz)), 0.0) + 0.0008;
+            } else {
+                // Occupied coarse cell: test this fine voxel, then step one voxel.
+                if (occ.read(uint3(uint(wfx), uint(v.y), uint(wfz))).r != 0u) return 0.0;
+                float3 nb = float3(v) + sgnPos;
+                float dx = (inv.x == 0.0) ? 1e30 : (nb.x - p.x) * inv.x;
+                float dy = (inv.y == 0.0) ? 1e30 : (nb.y - p.y) * inv.y;
+                float dz = (inv.z == 0.0) ? 1e30 : (nb.z - p.z) * inv.z;
+                t += max(min(dx, min(dy, dz)), 0.0) + 0.0008;
+            }
+            if (t > maxDist) return 1.0;
         }
-        shadow /= 25.0;
-        return mix(1.0, shadow, edgeFade);   // #72: lit at the map boundary (no hard wipe line)
+        return 1.0;
+    }
+
+    // Sun shadow at a world point. Hard single ray, or a small jittered penumbra
+    // when soft shadows are enabled. 1.0 = lit, 0.0 = shadowed.
+    static float voxelSunShadow(texture3d<uint, access::read> occ,
+                                texture3d<uint, access::read> coarse,
+                                float3 gridOrigin, float3 gridDims,
+                                float3 worldP, float3 toSun, float maxDist, float soft) {
+        if (soft < 0.5) {
+            return marchSunOcclusion(occ, coarse, gridOrigin, gridDims, worldP, toSun, maxDist);
+        }
+        // Soft penumbra: average a few rays jittered around the sun direction.
+        float3 up = abs(toSun.y) < 0.95 ? float3(0,1,0) : float3(1,0,0);
+        float3 t1 = normalize(cross(up, toSun));
+        float3 t2 = cross(toSun, t1);
+        const float R = 0.06;   // angular jitter radius
+        float lit = marchSunOcclusion(occ, coarse, gridOrigin, gridDims, worldP, toSun, maxDist);
+        const float2 offs[4] = { float2( 1, 0), float2(-1, 0), float2(0, 1), float2(0,-1) };
+        for (int k = 0; k < 4; ++k) {
+            float3 dir = normalize(toSun + (t1 * offs[k].x + t2 * offs[k].y) * R);
+            lit += marchSunOcclusion(occ, coarse, gridOrigin, gridDims, worldP, dir, maxDist);
+        }
+        return lit / 5.0;
     }
 
     // =========================================================
@@ -3272,78 +3300,59 @@ final class Renderer: NSObject, MTKViewDelegate {
     fragment float4 fmain(VOut in [[stage_in]],
                           constant WaterUniforms& wu [[buffer(2)]],
                           constant WindUniforms& wind [[buffer(3)]],
-                          depth2d<float, access::sample> shadowTex  [[texture(0)]],
-                          depth2d<float, access::sample> shadowFar  [[texture(1)]],
-                          sampler shadowSamp [[sampler(0)]]) {
+                          texture3d<uint, access::read> occ    [[texture(0)]],
+                          texture3d<uint, access::read> occCoarse [[texture(1)]]) {
         uint mat = in.material;
 
         // ---- Glowing blocks skip shadowing (they emit light) ----
         bool isEmissive = (mat==7u||mat==32u||mat==34u||mat==35u||mat==40u);
 
-        // ---- Cascaded sun shadows (#46) ----
-        // Two cascades: a tight NEAR map for crisp contact shadows around the player
-        // and a wide FAR map for shadows toward the horizon. Pick by camera distance.
-        // Texel-snapped light matrices (Swift side) keep edges from swimming as you
-        // move — the wobble that got the earlier single-map shadows disabled. Kept
-        // soft (strength 0.40) so it adds depth without the old harsh wash-out.
+        // ---- World-space voxel sun shadows ----
+        // A fragment is sun-shadowed iff a casting voxel sits between it and the
+        // sun. We DDA-march the resident-world occupancy grid (3D texture) from the
+        // fragment's WORLD position toward the sun. The result depends only on world
+        // geometry + sun direction, so a fixed world point's shadow is identical
+        // regardless of camera position or yaw (no map, no cascade, no coverage ring,
+        // no crawl). Daylight-gated via in.shade so there are no sun shadows at night.
         float shadowFactor = 1.0;
         if (!isEmissive && wu.shadowScale > 0.5) {
             float dayFactor = clamp(in.shade * 1.5, 0.0, 1.0);
-            float distToCam = length(in.worldPos - UW_CAM_POS(wu));
-            // Higher depth bias than before to kill self-shadow acne on the stepped /
-            // terraced terrain (continentalness made more near-sea-level terraces).
-            // #115 THE position+sun wipe: the near cascade's box is small (R=48, centred on
-            // the player). At a low / mid sun a tall caster (mountain, tree) throws a LONG
-            // shadow; the far end of that shadow reaches ground near the player but the
-            // CASTER itself sits beyond the near box, so the near map never rasterised it and
-            // the near cascade reads that ground as LIT. The far cascade (R=150) DID capture
-            // the caster and reads it SHADOWED. The old code used the near cascade alone when
-            // distToCam < 30, so as the player walked a fixed ground point crossed the 30..42
-            // band and flipped far(shadowed) <-> near(lit): the shadow wiped in/out with
-            // player position, worst at low/mid sun (long shadows), exactly as reported.
-            // Measured (--shadowposprobe): a fixed point's shadow factor swung 0.40 across
-            // player offsets at a mid sun; the UNION below drives that to 0.0000.
-            //
-            // Fix: take the UNION (min == more-shadowed) of the two cascades. A shadow that
-            // EITHER map captured is shown, so the small near box can never wipe away a long
-            // shadow the far box holds. The near map still supplies crisp contact shadows;
-            // the far map is the coverage floor. Both maps cover any point within the far
-            // radius, so the union is well-defined everywhere shadows are drawn.
-            float rn = sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos,  dayFactor, 0.0028);
-            // #120 the far cascade covers ~400 world units over 1536 texels (~0.52 u/texel),
-            // so it needs a larger depth bias to avoid self-shadow acne on the bigger texels.
-            // 0.0075; distant shadows are tiny on screen so the slight peter-panning this trades
-            // for is invisible at range.
-            float rf = sampleShadowPCF(shadowFar, shadowSamp, in.shadowPosF, dayFactor, 0.0075);
-            float raw = min(rn, rf);
-            // #72 the real wipe fix: the shadow map is a sun-aligned SQUARE, whose straight
-            // edges (corners reach ~1.4x farther than edge-midpoints) read as a line that
-            // sweeps across the view as you turn. Fade shadows out by RADIAL DISTANCE from
-            // the player instead, so the cutoff is a smooth circle (same in every
-            // direction) that sits inside the square's minimum reach — no straight edge can
-            // ever show, so turning never wipes a side.
-            // #120 THE long-view wipe fix (geometric). The far cascade's inscribed circle now
-            // reaches PAST the render distance (kShadowFarR 400 >= 384), so cast shadows are
-            // FULL across the ENTIRE visible vista. The radial fade is pushed to a TIGHT band
-            // right at the render edge (RENDER_EDGE-8 .. RENDER_EDGE) where the terrain itself
-            // is ending - so there is no fade ring sitting inside the field to sweep across the
-            // land when the camera turns. The fade end stays well inside the cascade's inscribed
-            // circle (kShadowFarR), so no straight square edge can ever show.
-            // wu.cameraPosW.w carries kShadowFarR; we clamp the fade END to the render edge (384)
-            // rather than to that radius, since shadows are valid all the way out to kShadowFarR
-            // and we only need to fade the last few blocks before terrain runs out.
-            const float RENDER_EDGE = 384.0;       // 24 chunks * 16 blocks (matches render dist)
-            float coverR   = (wu.cameraPosW.w > 1.0) ? wu.cameraPosW.w : 298.0;
-            // Fade only in the final 8-block sliver before the render edge, and never beyond the
-            // cascade's valid coverage radius.
-            float fadeEnd   = min(RENDER_EDGE, coverR);
-            float fadeStart = fadeEnd - 8.0;
-            float distFade  = 1.0 - smoothstep(fadeStart, fadeEnd, distToCam);
-            raw = mix(1.0, raw, distFade);
-            // #72 DEBUG: shadowScale == 2 (harness sentinel) outputs the shadow factor as
-            // grayscale (white = lit, black = shadowed) so coverage is unmistakable headless.
-            if (wu.shadowScale > 1.5) return float4(raw, raw, raw, 1.0);
-            shadowFactor = 1.0 - (0.55 * dayFactor) * (1.0 - raw);
+            if (dayFactor > 0.001) {
+                float3 toSun = normalize(-wu.sunDirTime.xyz);
+                float3 fnrm;
+                switch (in.faceNorm) {
+                    case 0u: fnrm = float3( 1, 0, 0); break;
+                    case 1u: fnrm = float3(-1, 0, 0); break;
+                    case 2u: fnrm = float3( 0, 1, 0); break;
+                    case 3u: fnrm = float3( 0,-1, 0); break;
+                    case 4u: fnrm = float3( 0, 0, 1); break;
+                    default: fnrm = float3( 0, 0,-1); break;
+                }
+                // BACK-FACE SKIP (exact, the big win): a surface whose normal faces away from
+                // the sun is self-shadowed by definition. Set fully shadowed and SKIP the march
+                // entirely. ~half of visible faces never march. This is exact geometry, not an
+                // approximation, so it does not affect world-fixedness.
+                float ndl = dot(fnrm, toSun);
+                float raw;
+                if (ndl <= 0.0) {
+                    raw = 0.0;   // back face -> shadowed, no march
+                } else {
+                    // March the world occupancy directly toward the sun, lifting the start along
+                    // the face normal to avoid self-shadow acne. The bounded march distance
+                    // (voxOrigin.w, THE perf knob) caps the per-fragment cost; the result is a
+                    // pure function of the WORLD point, so a fixed point's shadow is camera-free.
+                    raw = voxelSunShadow(occ, occCoarse, wu.voxOrigin.xyz, wu.voxDims.xyz,
+                                         in.worldPos + fnrm * 0.25, toSun, wu.voxOrigin.w, wu.voxDims.w);
+                }
+                // Harness sentinel (shadowScale == 2): output the raw shadow factor as
+                // grayscale (white = lit, black = shadowed) so coverage reads headless.
+                if (wu.shadowScale > 1.5) return float4(raw, raw, raw, 1.0);
+                shadowFactor = 1.0 - (0.55 * dayFactor) * (1.0 - raw);
+            } else if (wu.shadowScale > 1.5) {
+                return float4(1.0, 1.0, 1.0, 1.0);   // night: fully lit in the debug view
+            }
+        } else if (wu.shadowScale > 1.5) {
+            return float4(1.0, 1.0, 1.0, 1.0);
         }
 
         // ---- AO multiplier: fold into lit colour (multiplied with shade) ----
@@ -3749,8 +3758,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     fragment float4 waterFmain(VOut in [[stage_in]],
                                constant WaterUniforms& wu [[buffer(2)]],
                                constant WindUniforms& wind [[buffer(3)]],
-                               depth2d<float, access::sample> shadowTex [[texture(0)]],
-                               sampler shadowSamp [[sampler(0)]]) {
+                               texture3d<uint, access::read> occ    [[texture(0)]],
+                               texture3d<uint, access::read> occCoarse [[texture(1)]]) {
         // #68 glass (25 clear, 26 colored): a light see-through pane, rendered in this
         // translucent pass. The mesher culls glass-to-glass faces, so a wall of panes
         // reads as one continuous sheet (connected glass), not a per-block grid.
@@ -3788,10 +3797,15 @@ final class Renderer: NSObject, MTKViewDelegate {
         float sunAbove = smoothstep(0.0, -0.12, wu.sunDirTime.y);   // 1 sun up .. 0 sun set
         float spec = pow(max(0.0, dot(perturbedN, sunDir3)), 22.0) * sunAbove;
 
-        // Shadow + AO
+        // Shadow + AO (sample the precomputed half-res shadow, same as fmain)
         float aoFactor = mix(0.45, 1.0, in.ao);
         float dayFactor = clamp(in.shade * 1.5, 0.0, 1.0);
-        float rawShadow = sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos, dayFactor, 0.0016);
+        float rawShadow = 1.0;
+        if (wu.shadowScale > 0.5 && dayFactor > 0.001) {
+            float3 toSun = normalize(-wu.sunDirTime.xyz);
+            rawShadow = voxelSunShadow(occ, occCoarse, wu.voxOrigin.xyz, wu.voxDims.xyz,
+                                       in.worldPos + float3(0, 0.25, 0), toSun, wu.voxOrigin.w, wu.voxDims.w);
+        }
         float shadowStrength = 0.65 * dayFactor;
         float shadowFactor = 1.0 - shadowStrength * (1.0 - rawShadow);
 
@@ -4380,31 +4394,15 @@ final class Renderer: NSObject, MTKViewDelegate {
         return (1.0 - g2) / (4.0 * 3.14159265 * pow(max(denom, 1e-4), 1.5));
     }
 
-    // Sun-lit test for one world-space step. Picks the cascade by camera distance like
-    // fmain, single shadow tap (the raymarch already averages many steps, so PCF here
-    // would just cost more for the same look). Returns 1 = lit, 0 = shadowed; treats
-    // points outside both frusta as lit so distant haze does not punch holes in shafts.
-    static float volShadowLit(float3 worldP, float distToCam,
-                              float4x4 lvpNear, float4x4 lvpFar, float splitDist,
-                              depth2d<float, access::sample> shNear,
-                              depth2d<float, access::sample> shFar,
-                              sampler shSamp) {
-        bool useNear = (distToCam < splitDist);
-        float4 sp = (useNear ? lvpNear : lvpFar) * float4(worldP, 1.0);
-        float3 ndc = sp.xyz / sp.w;
-        float2 uv = ndc.xy * 0.5 + 0.5;
-        uv.y = 1.0 - uv.y;
-        // Outside this cascade? Fall back to the far cascade once, else assume lit.
-        if (useNear && (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)) {
-            sp = lvpFar * float4(worldP, 1.0);
-            ndc = sp.xyz / sp.w;
-            uv = ndc.xy * 0.5 + 0.5;
-            uv.y = 1.0 - uv.y;
-        }
-        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
-        float depth = ndc.z - 0.0040;   // depth bias (between fmain's near/far biases)
-        if (depth >= 1.0) return 1.0;
-        return (useNear ? shNear : shFar).sample_compare(shSamp, uv, depth);
+    // Sun-lit test for one world-space god-ray step: march the SAME world occupancy
+    // grid the terrain shadows use, from this step's world point toward the sun.
+    // Returns 1 = lit, 0 = shadowed. Using the same voxel volume means the god-ray
+    // occlusion matches the cast shadows exactly and the shadow map is fully retired.
+    static float volShadowLit(texture3d<uint, access::read> occ,
+                              texture3d<uint, access::read> coarse,
+                              float3 gridOrigin, float3 gridDims,
+                              float3 worldP, float3 toSun, float maxDist) {
+        return marchSunOcclusion(occ, coarse, gridOrigin, gridDims, worldP, toSun, maxDist);
     }
 
     fragment float4 compositeFrag(FSVOut in [[stage_in]],
@@ -4413,9 +4411,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                                   constant PostUniforms& pu [[buffer(0)]],
                                   constant VolUniforms&  vu [[buffer(1)]],
                                   depth2d<float, access::sample> sceneDepth [[texture(2)]],
-                                  depth2d<float, access::sample> shNear     [[texture(3)]],
-                                  depth2d<float, access::sample> shFar      [[texture(4)]],
-                                  sampler shSamp [[sampler(0)]]) {
+                                  texture3d<uint, access::read> occ         [[texture(3)]],
+                                  texture3d<uint, access::read> occCoarse   [[texture(4)]]) {
         constexpr sampler s(filter::linear, address::clamp_to_edge);
 
         // hdrTex is at the capped internal resolution; bilinear upscale is free here.
@@ -4465,8 +4462,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             float2 px = in.position.xy;
             float dither = fract(sin(dot(px, float2(12.9898, 78.233))) * 43758.5453);
 
-            float splitDist = vu.sunDir.w;
             float farR      = vu.camPosW.w;
+            float voxMaxDist = vu.voxOrigin.w;
             // Accumulate the LIT length and the TOTAL marched length separately, so the
             // raw signal is a lit FRACTION in [0,1] (how much of the air toward the sun
             // along this ray is sunlit). Normalising this way decouples the strength from
@@ -4477,10 +4474,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             for (int i = 0; i < GR_STEPS; ++i) {
                 float3 sp = camP + viewDir * t;
                 float dc  = length(sp - camP);
-                float lit = volShadowLit(sp, dc, vu.lightViewProj, vu.lightViewProjF,
-                                         splitDist, shNear, shFar, shSamp);
-                // Fade contribution out toward the far cascade edge so no hard shadow
-                // boundary can show (mirrors fmain's radial distFade reasoning).
+                // Same world occupancy march as the cast shadows (no shadow map).
+                float lit = volShadowLit(occ, occCoarse, vu.voxOrigin.xyz, vu.voxDims.xyz,
+                                         sp, toSun, voxMaxDist);
+                // Fade contribution out toward the coverage edge so no hard boundary
+                // shows where the occupancy grid ends.
                 float coverage = 1.0 - smoothstep(farR * 0.85, farR, dc);
                 litLen += lit * coverage * stepLen;
                 totLen += stepLen;
@@ -5179,13 +5177,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     """
 }
 
-// MARK: - Shadow vert uniform (Swift side, matches MSL ShadowVertUniforms)
-
-/// 80 bytes: lightViewProj (64) + chunkOrigin (16)
-struct ShadowVertUniforms {
-    var lightViewProj: simd_float4x4
-    var chunkOrigin:   SIMD4<Float>
-}
+// (ShadowVertUniforms removed: the shadow-map render pass is retired in favour of
+//  world-space voxel sun shadows.)
 
 // MARK: - Ambient sprite POD (matches MSL AmbientSprite, 32 bytes)
 /// 32 bytes per sprite, written by Swift, read by MSL ambientLifeVert.
@@ -5237,15 +5230,7 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
     sdsd.depthCompareFunction = .always; sdsd.isDepthWriteEnabled = false
     let skyDepthState = device.makeDepthStencilState(descriptor: sdsd)
 
-    // Shadow pipeline
-    let shadowDesc = MTLRenderPipelineDescriptor()
-    shadowDesc.vertexFunction   = lib.makeFunction(name: "shadowVmain")
-    shadowDesc.fragmentFunction = nil
-    shadowDesc.depthAttachmentPixelFormat = .depth32Float
-    let shadowPipeline = try? device.makeRenderPipelineState(descriptor: shadowDesc)
-    let shdd = MTLDepthStencilDescriptor()
-    shdd.depthCompareFunction = .lessEqual; shdd.isDepthWriteEnabled = true
-    let shadowDepthState = device.makeDepthStencilState(descriptor: shdd)
+    // World-space voxel shadows: no shadow-map pipeline in the offscreen test.
 
     // Composite pipeline
     let cpdesc = MTLRenderPipelineDescriptor()
@@ -5259,13 +5244,6 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
     let noDepthState = device.makeDepthStencilState(descriptor: nodd)
 
     let entR = EntityRenderer(device: device, colorFormat: .rgba16Float)
-
-    // Shadow sampler
-    let ssd = MTLSamplerDescriptor()
-    ssd.minFilter = .linear; ssd.magFilter = .linear
-    ssd.sAddressMode = .clampToEdge; ssd.tAddressMode = .clampToEdge
-    ssd.compareFunction = .lessEqual
-    let shadowSampler = device.makeSamplerState(descriptor: ssd)!
 
     // Engine
     var cfg = bf_engine_config()
@@ -5283,7 +5261,6 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
 
     let W = width, H = height
     let HW = max(1, W/2), HH = max(1, H/2)
-    let kShadowRes = 512  // smaller for CI speed
 
     func makeTex(_ fmt: MTLPixelFormat, _ w: Int, _ h: Int, usage: MTLTextureUsage, priv: Bool = true) -> MTLTexture {
         let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: fmt, width: w, height: h, mipmapped: false)
@@ -5292,7 +5269,6 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
         return device.makeTexture(descriptor: td)!
     }
 
-    let shadowTex  = makeTex(.depth32Float, kShadowRes, kShadowRes, usage: [.renderTarget, .shaderRead])
     let hdrColor   = makeTex(.rgba16Float,  W, H, usage: [.renderTarget, .shaderRead])
     let hdrDepth   = makeTex(.depth32Float, W, H, usage: [.renderTarget, .shaderRead])   // #119 readable for composite
     let bloomBrt   = makeTex(.rgba16Float,  HW, HH, usage: [.renderTarget, .shaderRead])
@@ -5326,44 +5302,12 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
             -(viewM.columns.0.y*vt.x + viewM.columns.1.y*vt.y + viewM.columns.2.y*vt.z),
             -(viewM.columns.0.z*vt.x + viewM.columns.1.z*vt.y + viewM.columns.2.z*vt.z))
         let camFwdST = SIMD3<Float>(-viewM.columns.0.z, -viewM.columns.1.z, -viewM.columns.2.z)
-        let testLightVP = Renderer.buildLightMatrix(
-            sunDir: SIMD3<Float>(sun.x, sun.y, sun.z), camPos: camPosW, radius: 90, res: Float(kShadowRes))
+        _ = camPosW
 
         guard let cmd = queue.makeCommandBuffer() else { bf_frame_end(e); continue }
 
-        // --- Shadow pass ---
-        if let sp = shadowPipeline {
-            let srp = MTLRenderPassDescriptor()
-            srp.depthAttachment.texture = shadowTex
-            srp.depthAttachment.loadAction = .clear
-            srp.depthAttachment.storeAction = .store
-            srp.depthAttachment.clearDepth = 1.0
-            if let enc = cmd.makeRenderCommandEncoder(descriptor: srp) {
-                enc.setRenderPipelineState(sp)
-                enc.setDepthStencilState(shadowDepthState)
-                enc.setCullMode(.front)
-                enc.setDepthBias(2.0, slopeScale: 2.0, clamp: 0.0)
-                var windST = WindUniforms(wallClockSecs: Float(f)/60.0, rainStrength: 0)
-                enc.setVertexBytes(&windST, length: MemoryLayout<WindUniforms>.stride, index: 2)
-                let sNt = Int(frame.shadow_draw_count); let sDt = frame.shadow_draws   // #49 un-culled
-                let useSt = (sNt > 0 && sDt != nil)
-                for i in 0..<(useSt ? sNt : Int(frame.draw_count)) {
-                    let d = useSt ? sDt![i] : frame.draws[i]
-                    guard d.index_count > 0,
-                          let vb = registry.lookup(d.vertex_buffer),
-                          let ib = registry.lookup(d.index_buffer) else { continue }
-                    var su = ShadowVertUniforms(
-                        lightViewProj: testLightVP,
-                        chunkOrigin: SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), 0))
-                    enc.setVertexBuffer(vb, offset: Int(d.vertex_offset), index: 0)
-                    enc.setVertexBytes(&su, length: MemoryLayout<ShadowVertUniforms>.stride, index: 1)
-                    enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
-                                              indexType: .uint32, indexBuffer: ib,
-                                              indexBufferOffset: Int(d.index_offset))
-                }
-                enc.endEncoding()
-            }
-        }
+        // World-space voxel shadows: pull the engine occupancy grid into a 3D texture.
+        let shadowVol = harnessUploadShadowVolume(device, e)
 
         // --- HDR scene pass ---
         let rp = MTLRenderPassDescriptor()
@@ -5400,11 +5344,12 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
             enc.setDepthStencilState(depthState)
             enc.setCullMode(.back); enc.setFrontFacing(.counterClockwise)
             var wu = WaterUniforms(wallClockSecs: Float(f)/60.0, underwater: 0.0,
-                                   cameraPosW: SIMD4<Float>(0, 20, 0, 0))
+                                   cameraPosW: SIMD4<Float>(camPosW.x, camPosW.y, camPosW.z, 0))
+            wu.shadowScale = (shadowVol != nil) ? 1.0 : 0.0   // world-space voxel shadows
+            wu.sunDirTime = SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day)
+            if let sv = shadowVol { wu.voxOrigin = sv.voxOrigin; wu.voxDims = sv.voxDims }
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
-            enc.setFragmentTexture(shadowTex, index: 0)
-            enc.setFragmentTexture(shadowTex, index: 1)   // #46 far cascade (same map in tests)
-            enc.setFragmentSamplerState(shadowSampler, index: 0)
+            if let sv = shadowVol { enc.setFragmentTexture(sv.tex, index: 0); enc.setFragmentTexture(sv.coarse, index: 1) }  // world occupancy grid + coarse
             var windST = WindUniforms(wallClockSecs: Float(f)/60.0, rainStrength: 0)
             enc.setVertexBytes(&windST, length: MemoryLayout<WindUniforms>.stride, index: 3)
             enc.setFragmentBytes(&windST, length: MemoryLayout<WindUniforms>.stride, index: 3)
@@ -5417,7 +5362,7 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
                     viewProj: viewProj,
                     chunkOrigin: SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
-                    lightViewProj: testLightVP,
+                    lightViewProj: matrix_identity_float4x4,
                     dimSatN: SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
                 enc.setVertexBuffer(vb, offset: Int(d.vertex_offset), index: 0)
                 enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
@@ -5510,9 +5455,7 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
                 enc.setFragmentTexture(hdrColor,  index: 0)
                 enc.setFragmentTexture(bloomBrt,  index: 1)
                 enc.setFragmentTexture(hdrDepth,  index: 2)   // #119 (raymarch off in this test path)
-                enc.setFragmentTexture(shadowTex, index: 3)
-                enc.setFragmentTexture(shadowTex, index: 4)
-                enc.setFragmentSamplerState(shadowSampler, index: 0)
+                if let sv = shadowVol { enc.setFragmentTexture(sv.tex, index: 3); enc.setFragmentTexture(sv.coarse, index: 4) }  // world occupancy grid + coarse
                 var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.18,
                                       rainStrength: 0, wallClockSecs: Float(f)/60.0)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
@@ -5767,7 +5710,7 @@ func runWashoutTest() -> Bool {
             if let enc = cmd.makeRenderCommandEncoder(descriptor: crp) {
                 enc.setRenderPipelineState(compPipe); enc.setDepthStencilState(noDepthState); enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor, index: 0); enc.setFragmentTexture(bloomBrt, index: 1)
-                enc.setFragmentTexture(hdrDepth, index: 2); enc.setFragmentTexture(hdrDepth, index: 3); enc.setFragmentTexture(hdrDepth, index: 4)
+                enc.setFragmentTexture(hdrDepth, index: 2)   // occupancy grid (index 3) unread when volStrength 0
                 enc.setFragmentSamplerState(washoutVolSampler, index: 0)
                 var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.18, rainStrength: 0, wallClockSecs: 0)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
@@ -5862,7 +5805,7 @@ func runWashoutTest() -> Bool {
             if let enc = cmd.makeRenderCommandEncoder(descriptor: crp) {
                 enc.setRenderPipelineState(compPipe); enc.setDepthStencilState(noDepthState); enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor, index: 0); enc.setFragmentTexture(hdrColor, index: 1)
-                enc.setFragmentTexture(hdrDepth, index: 2); enc.setFragmentTexture(hdrDepth, index: 3); enc.setFragmentTexture(hdrDepth, index: 4)
+                enc.setFragmentTexture(hdrDepth, index: 2)   // occupancy grid (index 3) unread when volStrength 0
                 enc.setFragmentSamplerState(washoutVolSampler, index: 0)
                 var pu = PostUniforms(bloomStrength: 0.0, vignetteStr: 0.22, satBoost: 1.18, rainStrength: 0, wallClockSecs: 0)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)

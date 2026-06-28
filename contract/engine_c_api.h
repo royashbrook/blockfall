@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 18u  /* v18: BF_ACT_SET_TIME_MODE (always-day/night/auto, append-only) */
+#define BF_ABI_VERSION 19u  /* v19: bf_world_shadow_volume + bf_shadow_volume (world-space voxel sun shadows, append-only) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -445,6 +445,64 @@ BF_API uint32_t  bf_net_peer_count(bf_engine e);
 /* Change the horizontal render/stream distance at runtime (pause-menu slider, #85).
  * `chunks` is clamped to [4, 28]. Re-streams immediately. */
 BF_API void      bf_set_render_distance(bf_engine e, uint32_t chunks);
+
+/* ==========================================================================
+ * 8. WORLD SHADOW VOLUME  (world-space voxel sun shadows, ABI v19)
+ * --------------------------------------------------------------------------
+ * Export a compact occupancy grid (1 byte per voxel: 1 = casts sun shadow,
+ * 0 = does not) for an axis-aligned region of the RESIDENT world around the
+ * player. The renderer uploads this to a 3D texture and DDA-marches each
+ * fragment toward the sun to decide sun occlusion. The shadow is therefore a
+ * property of the WORLD, identical for every camera position and view angle.
+ *
+ * The grid is TOROIDAL (wrap-addressed): the buffer cell for a world voxel w is
+ * at (w mod dim) on each axis, a mapping that does NOT depend on the origin. So
+ * when the player walks and the valid window scrolls, only the newly-exposed edge
+ * slabs change in the buffer; the rest stay put. `origin` is the world min corner
+ * of the currently-valid window: a world voxel w is inside the grid iff
+ * origin <= w < origin+dim on every axis; outside that the grid is "not loaded"
+ * (treat as not casting). The renderer wraps the lookup modulo dim.
+ * Layout is X-fastest, then Y, then Z:  cell = gx + dim_x*(gy + dim_y*gz),
+ * where gx = ((w.x mod dim_x)+dim_x)%dim_x, etc. (Y does not scroll.)
+ * "Casts" = opaque solid blocks AND leaves (foliage casts like today); air,
+ * water, and most plants do NOT cast.
+ *
+ * Caller supplies a persistent buffer (reused across frames). The engine fills
+ * `origin`/`dim_*`/`revision` and a small LIST of DIRTY BOXES (`dirty_count` +
+ * `dirty_lo[i]`/`dirty_hi[i]`, in WORLD voxel coords) describing exactly which
+ * voxels changed since the caller's last successful fill, so the app re-uploads
+ * ONLY those sub-regions (handling the toroidal wrap by splitting each box at the
+ * seam). A LIST (not one AABB) is used because a diagonal scroll changes two thin
+ * perpendicular edge strips whose single bounding box would cover most of the
+ * volume; reporting the strips separately keeps the upload proportional to the
+ * movement. dirty_count == 0 means nothing changed (skip the upload). When more
+ * regions change than fit (rare, e.g. a teleport), the engine reports a single
+ * box covering the whole window (dirty_count == 1, full). `revision` still bumps
+ * on any change so the app can detect "unchanged" cheaply. If `voxels` is NULL or
+ * `voxel_cap` is too small, the engine writes the dims it WANTS and returns
+ * BF_ERR_BAD_ARG (and the next fill reports the full window dirty). [MAIN] */
+#define BF_SHADOW_MAX_DIRTY 4
+typedef struct bf_shadow_volume {
+    /* IN: caller's occupancy buffer + its capacity in bytes. */
+    uint8_t* voxels;        /* caller-owned; engine fills voxel_cap bytes      */
+    uint32_t voxel_cap;     /* capacity of `voxels` in bytes                   */
+    /* OUT: the region the engine filled (or wants, on a too-small buffer).    */
+    bf_ivec3 origin;        /* world min corner of the valid window            */
+    uint32_t dim_x, dim_y, dim_z; /* grid dimensions in voxels (toroidal ring) */
+    uint32_t revision;      /* bumps when the occupancy bytes change           */
+    /* OUT: up to BF_SHADOW_MAX_DIRTY world-voxel AABBs of changed cells.       */
+    uint32_t dirty_count;   /* 0 = nothing changed this call                   */
+    uint32_t _pad;          /* keep 8-byte alignment                           */
+    bf_ivec3 dirty_lo[BF_SHADOW_MAX_DIRTY];
+    bf_ivec3 dirty_hi[BF_SHADOW_MAX_DIRTY];
+} bf_shadow_volume;
+
+/* [MAIN] Fill `vol->voxels` with the resident-world occupancy grid (toroidal),
+ * write back origin/dims/revision and the dirty AABB. Returns BF_ERR_BAD_ARG when
+ * the buffer is too small (dims are still written so the caller can resize),
+ * BF_ERR_NOT_READY pre-world, BF_OK otherwise. Cheap on movement: only the edge
+ * slabs that scrolled in are rewritten, never the whole volume. */
+BF_API bf_result bf_world_shadow_volume(bf_engine e, bf_shadow_volume* vol);
 
 #ifdef __cplusplus
 } /* extern "C" */

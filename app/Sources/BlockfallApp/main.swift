@@ -603,6 +603,20 @@ if CommandLine.arguments.contains("--vistatest") {
     let ok = runVistaProbe(strict: true)
     exit(ok ? 0 : 1)
 }
+// --worldfixedprobe / --worldfixedtest: THE world-space voxel shadow guard. Boots a fixed-seed
+// real-terrain region, freezes the player (and the world occupancy grid), then renders the SAME
+// ground patch from many camera positions AND yaws and asserts a fixed world point's sun shadow
+// is IDENTICAL from every camera (spread ~0). This is the defining property of the rebuild:
+// shadows belong to the WORLD, not the camera. Replaces the retired shadow-MAP guards
+// (--shadowyawtest / --shadowstabilitytest / --vistatest). Needs a Metal device; self-skips.
+if CommandLine.arguments.contains("--worldfixedprobe") {
+    let ok = runWorldFixedShadowTest(strict: false)
+    exit(ok ? 0 : 1)
+}
+if CommandLine.arguments.contains("--worldfixedtest") {
+    let ok = runWorldFixedShadowTest(strict: true)
+    exit(ok ? 0 : 1)
+}
 if let idx = CommandLine.arguments.firstIndex(of: "--screenshot"), idx + 1 < CommandLine.arguments.count {
     let ok = runRenderSelfTest(savePath: CommandLine.arguments[idx + 1], width: 960, height: 720)
     exit(ok ? 0 : 1)

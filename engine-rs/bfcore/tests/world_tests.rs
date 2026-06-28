@@ -110,6 +110,50 @@ fn world_mine_place_loop() {
 }
 
 // ============================================================================
+// World-space sun-shadow occupancy grid (ABI v19). Verifies the exported
+// occupancy: solid terrain casts, air does not, an edit updates it and bumps the
+// revision, and a placed leaf casts (foliage casts like the old shadow map).
+// ============================================================================
+#[test]
+fn shadow_occupancy_grid() {
+    let mut content = ContentRegistry::new();
+    content.load(CONTENT);
+    let mut w = World::new(None);
+    w.debug_set_sync_streaming(true);
+    w.set_content(&content);
+    w.set_allocator(allocator());
+    w.generate_test_world();
+    // Flat test world: solid y in [0,7], air above, around the player at (8,12,8).
+
+    // Solid terrain casts; air above does not.
+    assert_eq!(w.debug_shadow_occupancy(8, 7, 8), 1, "grass surface casts");
+    assert_eq!(w.debug_shadow_occupancy(8, 0, 8), 1, "stone floor casts");
+    assert_eq!(w.debug_shadow_occupancy(8, 9, 8), 0, "air above does not cast");
+    assert_eq!(w.debug_shadow_occupancy(8, 30, 8), 0, "high air does not cast");
+
+    let rev0 = w.debug_shadow_revision();
+
+    // Mining the surface block must clear that voxel and bump the revision.
+    w.debug_edit(8, 7, 8, world::AIR);
+    assert_eq!(w.debug_shadow_occupancy(8, 7, 8), 0, "mined voxel no longer casts");
+    let rev1 = w.debug_shadow_revision();
+    assert_ne!(rev1, rev0, "occupancy revision bumps after an edit");
+
+    // A placed leaf casts a shadow (foliage casts, matching the old shadow map).
+    w.debug_edit(8, 9, 8, world::LEAF);
+    assert_eq!(w.debug_shadow_occupancy(8, 9, 8), 1, "leaf casts a sun shadow");
+
+    // Water does NOT cast.
+    w.debug_edit(8, 10, 8, world::WATER);
+    assert_eq!(w.debug_shadow_occupancy(8, 10, 8), 0, "water does not cast");
+
+    // An unchanged re-read keeps the same revision (no needless rebuild/re-upload).
+    let rev2 = w.debug_shadow_revision();
+    let rev3 = w.debug_shadow_revision();
+    assert_eq!(rev2, rev3, "no rebuild when nothing changed");
+}
+
+// ============================================================================
 // test_doors.cpp — doors open/close + collision flip + 2-tall sync.
 // ============================================================================
 #[test]

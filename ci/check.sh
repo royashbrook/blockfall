@@ -33,19 +33,18 @@ if "$BIN" --washouttest; then :; else
 fi
 # Shadow-stability regression (#115): walk the player past a tall occluder at high AND low
 # sun; FAIL if a fixed world point's cast shadow moves with player position (the position+sun
-# "wipe"). Guards the cascade-union fix so a future change can't silently bring the wipe back.
-# Needs a Metal device; self-skips (returns 0) where none is present.
-if "$BIN" --shadowstabilitytest; then :; else
-  FAIL=1; echo "   (SHADOW-STABILITY regression: cast shadows wipe with player position, #115)"
-fi
-# Shadow camera-yaw regression: on a fixed-seed REAL-terrain region (single process), boot
-# the engine, reconstruct a fixed set of ground world-points, and measure each point's cast
-# shadow against the full two-cascade pipeline at camera yaws N/E/S/W. FAILS if a fixed
-# point's shadow drifts with camera facing (the reported "shadows vanish when turning toward
-# E/W"). The shipped path is view-free so the spread is ~0; the gate catches any future
-# view-dependent shadow term. Needs a Metal device; self-skips (returns 0) where none present.
-if "$BIN" --shadowyawtest; then :; else
-  FAIL=1; echo "   (SHADOW-YAW regression: cast shadows wipe with camera yaw toward E/W)"
+# "wipe"). NOTE: the old camera-following shadow MAP is retired; shadows are now world-space
+# voxel ray-marched. The three shadow-MAP guards (--shadowstabilitytest / --shadowyawtest /
+# --vistatest) are replaced by ONE world-fixed guard below.
+#
+# World-fixed shadow regression (THE requirement): boot a fixed-seed REAL-terrain region,
+# freeze the player (and the world occupancy grid), then render the SAME ground patch from
+# many camera positions AND yaws and assert a fixed world point's sun shadow is IDENTICAL
+# from every camera. Shadows are a property of the WORLD, never the camera. FAILS if a fixed
+# point's shadow varies with the camera (any wipe/crawl/coverage-ring re-introduction would
+# show as a non-zero spread). Needs a Metal device; self-skips (returns 0) where none present.
+if "$BIN" --worldfixedtest; then :; else
+  FAIL=1; echo "   (WORLD-FIXED-SHADOW regression: a fixed world point's shadow changes with the camera)"
 fi
 # Ground-night regression (#117): at night the water sky-reflection was not day/night gated,
 # so water surfaces over the terrain washed pale toward the sun's E/W azimuth as the camera
@@ -55,14 +54,8 @@ fi
 if "$BIN" --groundnighttest; then :; else
   FAIL=1; echo "   (GROUND-NIGHT regression: night water reflection washes the ground by view direction, #117)"
 fi
-# Long-view shadow-sweep regression (#118): perch HIGH over fixed-seed real terrain and render a
-# long vista at several yaws through the full two-cascade pipeline. FAILS if the shadow-coverage
-# fade forms a perceptible post-fog ring (the boundary that swept across the land when turning).
-# The fix pushes the coverage to the render edge and dissolves the fade into the distance haze.
-# Needs a Metal device; self-skips (returns 0) where none is present.
-if "$BIN" --vistatest; then :; else
-  FAIL=1; echo "   (VISTA regression: long-view shadow coverage edge sweeps across the vista when turning, #118)"
-fi
+# (The long-view VISTA shadow-sweep guard #118 is retired with the shadow map: a coverage ring
+#  cannot exist for world-space voxel shadows. The world-fixed guard above covers high vistas too.)
 # Perf smoke: a short measured run (the full gate is a 10-min M1 Air run).
 if "$BIN" --perftest 5; then :; else
   echo "   (perf smoke failed or no Metal device — non-fatal in headless CI)"
