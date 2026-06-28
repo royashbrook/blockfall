@@ -461,7 +461,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // full daylight; daylight + the toggle scale it down further (0 = off). Raise for
     // more dramatic beams, lower (or toggle God Rays off in graphics settings) on a weak
     // GPU like the M1 Air. The raymarch only runs when this resolves > 0.
-    static let kGodRayStrength: Float = 1.5
+    static let kGodRayStrength: Float = 3.0
     private var shadowMap: MTLTexture!     // depth32Float — near cascade
     private var shadowMapFar: MTLTexture!  // depth32Float — far cascade
     private var shadowSampler: MTLSamplerState!
@@ -4154,10 +4154,34 @@ final class Renderer: NSObject, MTKViewDelegate {
     //   GR_HG_G     : Henyey-Greenstein anisotropy (0..1). Higher = the glow concentrates
     //                 more tightly toward the sun direction (forward scattering).
     // =========================================================
-    constant int   GR_STEPS   = 32;
+    // #126 -> bold pass: pushed from a subtle in-scatter glow to dramatic, graphic
+    // cel-shaded shafts. STEPS up a little (crisper beams at the higher density),
+    // DENSITY ~2.3x (the in-scatter the eye reads as the shaft body), HG_G sharper
+    // (a tighter forward lobe so the glow concentrates into distinct rays toward the
+    // sun instead of a broad haze). See the floor / saturation / clamp tuning below.
+    constant int   GR_STEPS   = 48;
     constant float GR_MAXDIST = 140.0;
-    constant float GR_DENSITY = 0.013;
-    constant float GR_HG_G    = 0.82;
+    constant float GR_DENSITY = 0.030;
+    constant float GR_HG_G    = 0.88;
+
+    // Bold-shaft shaping knobs (all easy to tune):
+    //   GR_FLOOR_LO/HI : the lit-fraction window the shaft is remapped from. The cores of
+    //                    a shaft (air that is almost fully sunlit toward the sun) reach HI
+    //                    and blaze; anything below LO is cut to zero. This is what makes the
+    //                    shadow corridors carve crisp DARK gaps between beams.
+    //   GR_SHAFT_GAMMA : > 1 CRUSHES the partly-lit midtones toward black, so the broad
+    //                    low-level glow (the "sun glare" / fog wash) dies and only the
+    //                    carved beams survive. Higher = more graphic, harder-edged shafts.
+    //   GR_SATURATION  : pushes the shaft color away from its luma (>1 = more saturated).
+    //   GR_WARM_TINT   : multiplies the (saturated) sun color to bias the beams warm-gold.
+    //   GR_MAX_ADD     : HARD per-channel additive ceiling. The night/ground-wash guard:
+    //                    even a runaway in-scatter can never lift a channel past this.
+    constant float GR_FLOOR_LO    = 0.30;
+    constant float GR_FLOOR_HI    = 0.95;
+    constant float GR_SHAFT_GAMMA = 2.20;
+    constant float GR_SATURATION  = 1.45;
+    constant float3 GR_WARM_TINT  = float3(1.12, 1.02, 0.78);
+    constant float GR_MAX_ADD     = 0.85;
 
     // Henyey-Greenstein phase: brightest when the view ray looks toward the sun.
     // cosT = dot(viewDir, toSun). Normalised so the forward lobe peaks but the term
@@ -4276,21 +4300,34 @@ final class Renderer: NSObject, MTKViewDelegate {
             }
             float litFrac = (totLen > 1e-4) ? (litLen / totLen) : 0.0;   // 0..1
 
-            // A soft floor cut: suppress the broad, uniform low-level glow (the "fog wash"
-            // failure mode and the ground-wash guard) while letting the brighter shaft
-            // cores survive. Only the upper part of the lit fraction contributes, so fully
-            // lit air toward the sun glows but partly shadowed / sideways air stays clear.
-            float shaft = smoothstep(0.28, 1.0, litFrac);
+            // A floor cut that keeps ONLY the shaft cores: it suppresses the broad,
+            // uniform low-level glow (the "fog wash" failure mode and the ground-wash
+            // guard) and remaps the surviving range so beams read as distinct, graphic
+            // rays rather than a soft haze. The window is narrower and higher than #126
+            // (0.28..1.0): air must be mostly sunlit toward the sun before it lights up.
+            // GR_SHAFT_GAMMA > 1 then CRUSHES the partly-lit midtones toward black so the
+            // broad smooth glare dies and the shadow corridors read as crisp dark gaps
+            // between bright beams (graphic, cel-shaded shafts, not a soft halo).
+            float shaftRaw = smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac);
+            float shaft    = pow(shaftRaw, GR_SHAFT_GAMMA);
             // marchLen factor: long rays (open sky toward the sun) scatter more than the
             // short rays that hit nearby ground, which keeps the ground from washing.
             float lenFactor = clamp(marchLen / GR_MAXDIST, 0.0, 1.0);
             float inscatter = shaft * phase * lenFactor * GR_DENSITY * marchLen;
 
+            // Saturate the shaft color toward a warm gold so the beams read as obvious
+            // sunlight, not a neutral lift. Push the base sun tint away from its luma so
+            // brighter shaft cores get more saturated (cel-shaded, graphic), then warm it.
             float3 sunCol = vu.sunColor.rgb;
+            float  sunLuma = dot(sunCol, float3(0.2126, 0.7152, 0.0722));
+            float3 sunSat  = clamp(mix(float3(sunLuma), sunCol, GR_SATURATION) * GR_WARM_TINT,
+                                   0.0, 1.5);
             // Clamp the additive HARD so god rays can never blow the scene to white
             // (mirrors the bloom clamp below). This is the night-whiteout / ground-wash
-            // guard: even at max in-scatter the lift per channel stays modest.
-            float3 add = clamp(sunCol * inscatter * volStrength, 0.0, 0.40);
+            // guard: even at max in-scatter the lift per channel stays bounded. The cap is
+            // higher than #126 (0.40) so the bold shafts can actually punch through, but it
+            // is still a hard per-channel ceiling, so a runaway value can never wash out.
+            float3 add = clamp(sunSat * inscatter * volStrength, 0.0, GR_MAX_ADD);
             if (volDebug) {
                 // Show the lit fraction (top) and the final shaft term (bottom half).
                 float g = (in.uv.y < 0.5) ? litFrac : clamp(inscatter * volStrength * 4.0, 0.0, 1.0);
