@@ -127,6 +127,19 @@ struct PostUniforms {
     var greyHaze:       Float = 0   // #: 0..1 The-Grey screen wash (0 in test paths)
 }
 
+/// #119 Volumetric god-ray uniforms — composite pass, buffer(1).
+/// Everything the shadow-map raymarch needs: clip->world reconstruction, the two sun
+/// shadow cascades (same maps fmain uses), camera pos + cascade radii, sun dir + colour,
+/// and the single strength knob (0 = fully off). 240 bytes; layout matches the MSL struct.
+struct VolUniforms {
+    var invViewProj:    simd_float4x4 = matrix_identity_float4x4  // clip -> world
+    var lightViewProj:  simd_float4x4 = matrix_identity_float4x4  // near cascade
+    var lightViewProjF: simd_float4x4 = matrix_identity_float4x4  // far cascade
+    var camPosW:        SIMD4<Float> = .zero   // xyz = camera world pos, w = far cascade radius
+    var sunDir:         SIMD4<Float> = .zero   // xyz = sun dir (points downward), w = cascade split dist
+    var sunColor:       SIMD4<Float> = .zero   // rgb = sun colour, w = volumetric strength (0 = off)
+}
+
 /// Wind + weather uniforms passed to terrain vertex shaders (both vmain and shadowVmain).
 /// 16 bytes. Keeps foliage sway + rain factor in a dedicated buffer (index 3) so
 /// Uniforms / WaterUniforms signatures stay unchanged (runPerfTest safe).
@@ -440,6 +453,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     // radius (world.rs kshadow_r) must stay >= this; the per-cascade near cull keys off it.
     private let kShadowFarR:  Float = 380
     private let kCascadeSplit: Float = 36  // camera-distance split between cascades
+    // #119 THE GOD-RAY TUNING KNOB. Overall strength of the volumetric light shafts at
+    // full daylight; daylight + the toggle scale it down further (0 = off). Raise for
+    // more dramatic beams, lower (or toggle God Rays off in graphics settings) on a weak
+    // GPU like the M1 Air. The raymarch only runs when this resolves > 0.
+    static let kGodRayStrength: Float = 1.5
     private var shadowMap: MTLTexture!     // depth32Float — near cascade
     private var shadowMapFar: MTLTexture!  // depth32Float — far cascade
     private var shadowSampler: MTLSamplerState!
@@ -765,7 +783,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         hdrColor    = make2D(.rgba16Float,  SW,  SH, usage: [.renderTarget, .shaderRead])
-        hdrDepth    = make2D(.depth32Float, SW,  SH, usage: [.renderTarget])
+        // #119 god rays: the composite volumetric pass raymarches from the camera to the
+        // scene depth, so the depth buffer must be readable (shaderRead) and survive the
+        // scene pass (store, set on the depth attachment below). Was render-target-only.
+        hdrDepth    = make2D(.depth32Float, SW,  SH, usage: [.renderTarget, .shaderRead])
         bloomBright = make2D(.rgba16Float, HW,  HH, usage: [.renderTarget, .shaderRead])
         bloomBlurA  = make2D(.rgba16Float, HW,  HH, usage: [.renderTarget, .shaderRead])
         bloomBlurB  = make2D(.rgba16Float, HW,  HH, usage: [.renderTarget, .shaderRead])
@@ -1158,7 +1179,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         hdrRP.colorAttachments[0].clearColor  = MTLClearColor(red: sky.0, green: sky.1, blue: sky.2, alpha: 1)
         hdrRP.depthAttachment.texture         = hdrDepth
         hdrRP.depthAttachment.loadAction      = .clear
-        hdrRP.depthAttachment.storeAction     = .dontCare
+        // #119 god rays: keep the depth buffer so the composite volumetric pass can read it.
+        hdrRP.depthAttachment.storeAction     = .store
         hdrRP.depthAttachment.clearDepth      = 1.0
 
         if let enc = cmd.makeRenderCommandEncoder(descriptor: hdrRP) {
@@ -1421,24 +1443,28 @@ final class Renderer: NSObject, MTKViewDelegate {
         case 2:  precipPacked = -1.0   // snow
         default: precipPacked =  0.0   // clear
         }
-        // God rays (#44): project the sun to screen space; the composite marches
-        // toward it to scatter light shafts. Gated to daytime above ground.
+        // God rays (#119): volumetric light shafts via a shadow-map raymarch in the
+        // composite pass (replaces the old screen-space sun halo). The single strength
+        // knob folds the toggle (gfxGodRays) AND daylight (dayLight) so it is zero at
+        // night and zero when the player turns it off. THE TUNING KNOB is kGodRayStrength.
         let dayT  = Renderer.dayLight(frame.camera.time_of_day)
-        let toSun = simd_normalize(SIMD3<Float>(-sun.x, -sun.y, -sun.z))
-        let sunClip = viewProj * SIMD4<Float>(camPosW.x + toSun.x * 2000,
-                                              camPosW.y + toSun.y * 2000,
-                                              camPosW.z + toSun.z * 2000, 1)
-        var grStrength: Float = 0, sunSX: Float = 0, sunSY: Float = 0
-        if sunClip.w > 0.001 && gfxGodRays {              // #: god-ray toggle
-            sunSX = (sunClip.x / sunClip.w) * 0.5 + 0.5
-            sunSY = 0.5 - (sunClip.y / sunClip.w) * 0.5   // Metal top-left uv (matches fullscreenVert)
-            grStrength = dayT * (1 - frame.camera.underground) * 0.45
+        var grStrength: Float = 0
+        if gfxGodRays {                                   // #: god-ray toggle
+            grStrength = dayT * (1 - frame.camera.underground) * Renderer.kGodRayStrength
         }
         var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.18,
                               rainStrength: precipPacked, wallClockSecs: wallClock,
-                              godrayStrength: grStrength, sunScreenX: sunSX, sunScreenY: sunSY,
+                              godrayStrength: 0, sunScreenX: 0, sunScreenY: 0,
                               sunColorR: 1.0, sunColorG: 0.6 + 0.35 * dayT, sunColorB: 0.3 + 0.5 * dayT,
                               greyHaze: max(0, 1 - frame.camera.local_sat))   // #: The Grey wash
+        // #119 volumetric uniforms shared by every composite call site this frame.
+        var vu = VolUniforms(
+            invViewProj:    viewProj.inverse,
+            lightViewProj:  lightViewProj,
+            lightViewProjF: lightViewProjF,
+            camPosW:        SIMD4<Float>(camPosW.x, camPosW.y, camPosW.z, kShadowFarR),
+            sunDir:         SIMD4<Float>(sun.x, sun.y, sun.z, kCascadeSplit),
+            sunColor:       SIMD4<Float>(1.0, 0.6 + 0.35 * dayT, 0.3 + 0.5 * dayT, grStrength))
 
         // =====================================================================
         // PASS 4a: Composite (ACES + colour grade + vignette)
@@ -1468,7 +1494,12 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor,    index: 0)
                 enc.setFragmentTexture(bloomBright, index: 1)
+                enc.setFragmentTexture(hdrDepth,    index: 2)   // #119 scene depth for the raymarch
+                enc.setFragmentTexture(shadowMap,    index: 3)  // #119 near cascade
+                enc.setFragmentTexture(shadowMapFar, index: 4)  // #119 far cascade
+                enc.setFragmentSamplerState(shadowSampler, index: 0)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+                enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 enc.endEncoding()
             }
@@ -1491,7 +1522,12 @@ final class Renderer: NSObject, MTKViewDelegate {
                     enc.setCullMode(.none)
                     enc.setFragmentTexture(hdrColor,    index: 0)
                     enc.setFragmentTexture(bloomBright, index: 1)
+                    enc.setFragmentTexture(hdrDepth,    index: 2)   // #119 scene depth for the raymarch
+                    enc.setFragmentTexture(shadowMap,    index: 3)  // #119 near cascade
+                    enc.setFragmentTexture(shadowMapFar, index: 4)  // #119 far cascade
+                    enc.setFragmentSamplerState(shadowSampler, index: 0)
                     enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+                    enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                     enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                     enc.endEncoding()
                 }
@@ -1519,7 +1555,12 @@ final class Renderer: NSObject, MTKViewDelegate {
                     enc.setCullMode(.none)
                     enc.setFragmentTexture(hdrColor,    index: 0)
                     enc.setFragmentTexture(bloomBright, index: 1)
+                    enc.setFragmentTexture(hdrDepth,    index: 2)   // #119 scene depth for the raymarch
+                    enc.setFragmentTexture(shadowMap,    index: 3)  // #119 near cascade
+                    enc.setFragmentTexture(shadowMapFar, index: 4)  // #119 far cascade
+                    enc.setFragmentSamplerState(shadowSampler, index: 0)
                     enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+                    enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                     enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                     enc.endEncoding()
                 }
@@ -2304,6 +2345,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         float sunColorG;
         float sunColorB;
         float greyHaze;   // #: The-Grey screen wash
+    };
+
+    // VolUniforms (240 bytes) — #119 volumetric god-ray raymarch, composite buffer(1).
+    // Must EXACTLY match the Swift VolUniforms struct.
+    struct VolUniforms {
+        float4x4 invViewProj;    // clip -> world
+        float4x4 lightViewProj;  // near cascade
+        float4x4 lightViewProjF; // far cascade
+        float4   camPosW;        // xyz = camera world pos, w = far cascade radius
+        float4   sunDir;         // xyz = sun dir (downward), w = cascade split distance
+        float4   sunColor;       // rgb = sun colour, w = volumetric strength (0 = off)
     };
 
     // ShadowVertUniforms (80 bytes): light VP + chunk origin.
@@ -4095,39 +4147,160 @@ final class Renderer: NSObject, MTKViewDelegate {
     // (Old screen-space rainStreak / snowFlake helpers removed in #32 — precipitation
     //  is now environmental world-space particles; see the precip* shaders below.)
 
+    // =========================================================
+    // #119 VOLUMETRIC GOD RAYS — shadow-map raymarch helpers
+    //
+    //   GR_STEPS    : samples per ray. Higher = smoother shafts, more GPU. The dither
+    //                 below lets a modest count look banding-free. PERF KNOB.
+    //   GR_MAXDIST  : how far (world units) a ray marches before giving up. Kept inside
+    //                 the far shadow cascade so every sample has shadow data.
+    //   GR_DENSITY  : fog density per world unit; scales how fast in-scatter accumulates.
+    //   GR_HG_G     : Henyey-Greenstein anisotropy (0..1). Higher = the glow concentrates
+    //                 more tightly toward the sun direction (forward scattering).
+    // =========================================================
+    constant int   GR_STEPS   = 32;
+    constant float GR_MAXDIST = 140.0;
+    constant float GR_DENSITY = 0.013;
+    constant float GR_HG_G    = 0.82;
+
+    // Henyey-Greenstein phase: brightest when the view ray looks toward the sun.
+    // cosT = dot(viewDir, toSun). Normalised so the forward lobe peaks but the term
+    // stays bounded (no division blow-up at g->1).
+    static float hgPhase(float cosT, float g) {
+        float g2 = g * g;
+        float denom = 1.0 + g2 - 2.0 * g * cosT;
+        return (1.0 - g2) / (4.0 * 3.14159265 * pow(max(denom, 1e-4), 1.5));
+    }
+
+    // Sun-lit test for one world-space step. Picks the cascade by camera distance like
+    // fmain, single shadow tap (the raymarch already averages many steps, so PCF here
+    // would just cost more for the same look). Returns 1 = lit, 0 = shadowed; treats
+    // points outside both frusta as lit so distant haze does not punch holes in shafts.
+    static float volShadowLit(float3 worldP, float distToCam,
+                              float4x4 lvpNear, float4x4 lvpFar, float splitDist,
+                              depth2d<float, access::sample> shNear,
+                              depth2d<float, access::sample> shFar,
+                              sampler shSamp) {
+        bool useNear = (distToCam < splitDist);
+        float4 sp = (useNear ? lvpNear : lvpFar) * float4(worldP, 1.0);
+        float3 ndc = sp.xyz / sp.w;
+        float2 uv = ndc.xy * 0.5 + 0.5;
+        uv.y = 1.0 - uv.y;
+        // Outside this cascade? Fall back to the far cascade once, else assume lit.
+        if (useNear && (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)) {
+            sp = lvpFar * float4(worldP, 1.0);
+            ndc = sp.xyz / sp.w;
+            uv = ndc.xy * 0.5 + 0.5;
+            uv.y = 1.0 - uv.y;
+        }
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 1.0;
+        float depth = ndc.z - 0.0040;   // depth bias (between fmain's near/far biases)
+        if (depth >= 1.0) return 1.0;
+        return (useNear ? shNear : shFar).sample_compare(shSamp, uv, depth);
+    }
+
     fragment float4 compositeFrag(FSVOut in [[stage_in]],
                                   texture2d<float> hdrTex   [[texture(0)]],
                                   texture2d<float> bloomTex [[texture(1)]],
-                                  constant PostUniforms& pu [[buffer(0)]]) {
+                                  constant PostUniforms& pu [[buffer(0)]],
+                                  constant VolUniforms&  vu [[buffer(1)]],
+                                  depth2d<float, access::sample> sceneDepth [[texture(2)]],
+                                  depth2d<float, access::sample> shNear     [[texture(3)]],
+                                  depth2d<float, access::sample> shFar      [[texture(4)]],
+                                  sampler shSamp [[sampler(0)]]) {
         constexpr sampler s(filter::linear, address::clamp_to_edge);
 
         // hdrTex is at the capped internal resolution; bilinear upscale is free here.
         float3 hdr   = hdrTex.sample(s, in.uv).rgb;
         float3 bloom = bloomTex.sample(s, in.uv).rgb;
 
-        // God rays (#44): scatter the sun into light shafts. March from this pixel
-        // toward the sun's screen position; bright (sky/sun) samples accumulate while
-        // geometry occludes them. Added in HDR so ACES keeps it from blowing out;
-        // gated to daytime-above-ground (godrayStrength) and faded near the edge.
-        if (pu.godrayStrength > 0.001) {
-            float2 sunUV = float2(pu.sunScreenX, pu.sunScreenY);
-            float2 delta = (sunUV - in.uv) * (1.0 / 24.0) * 0.9;
-            float2 p = in.uv;
-            float decay = 1.0, illum = 0.0;
-            for (int i = 0; i < 24; ++i) {
-                p += delta;
-                float3 c = hdrTex.sample(s, clamp(p, 0.0, 1.0)).rgb;
-                // Only the very brightest pixels (the sun disc itself) seed rays, not the
-                // broad bright sky. A low threshold turned god rays into a screen-wide wash
-                // that washed out the view toward the sun's E/W arc (#: washout). 0.85 keeps
-                // them as tight shafts from the sun.
-                illum += max(0.0, dot(c, float3(0.2126, 0.7152, 0.0722)) - 0.85) * decay;
-                decay *= 0.92;
+        // =========================================================
+        // #119 VOLUMETRIC GOD RAYS (replaces the old screen-space sun halo).
+        // March a ray from the camera into the scene; at each step reconstruct the
+        // world position, sample the SUN SHADOW MAP, and where the point is lit add
+        // in-scatter weighted by a forward (Henyey-Greenstein) phase function. Lit
+        // air glows; shadowed volumes (behind trees / hills / walls) stay dark, so
+        // beams of sunlight read through the gaps. vu.sunColor.w folds the toggle
+        // (gfxGodRays) AND daylight (dayLight) into one strength; 0 = fully off.
+        // =========================================================
+        float volStrength = vu.sunColor.w;
+        // #119 DEBUG: a NEGATIVE strength (harness sentinel, BF_GR_DEBUG=1) outputs the raw
+        // shaft in-scatter as grayscale so the beam structure is unmistakable headless.
+        bool volDebug = (volStrength < -0.5);
+        if (volDebug) volStrength = -volStrength;
+        if (volStrength > 0.001) {
+            // Reconstruct this pixel's world position from depth (clip -> world).
+            // FSVOut uv is Metal top-left; NDC y is flipped, z in [0,1] on Metal.
+            float d = sceneDepth.sample(s, in.uv);
+            float2 ndcXY = float2(in.uv.x * 2.0 - 1.0, (1.0 - in.uv.y) * 2.0 - 1.0);
+            float4 clip  = float4(ndcXY, d, 1.0);
+            float4 wp    = vu.invViewProj * clip;
+            float3 worldHit = wp.xyz / wp.w;
+
+            float3 camP    = vu.camPosW.xyz;
+            float3 toHit   = worldHit - camP;
+            float  hitDist = length(toHit);
+            float3 viewDir = (hitDist > 1e-4) ? (toHit / hitDist) : float3(0, 0, 1);
+
+            // March only up to the visible surface (so shafts respect occlusion) and
+            // cap at GR_MAXDIST (keeps every sample inside the far cascade + bounds cost).
+            float marchLen = min(hitDist, GR_MAXDIST);
+            float stepLen  = marchLen / float(GR_STEPS);
+
+            // toSun points from the scene toward the sun (sunDir points downward).
+            float3 toSun = normalize(-vu.sunDir.xyz);
+            float  cosT  = dot(viewDir, toSun);
+            float  phase = hgPhase(cosT, GR_HG_G);
+
+            // Per-pixel dither so the modest step count does not band. Bayer-ish hash
+            // of the pixel coord -> [0,1), used to jitter the first step.
+            float2 px = in.position.xy;
+            float dither = fract(sin(dot(px, float2(12.9898, 78.233))) * 43758.5453);
+
+            float splitDist = vu.sunDir.w;
+            float farR      = vu.camPosW.w;
+            // Accumulate the LIT length and the TOTAL marched length separately, so the
+            // raw signal is a lit FRACTION in [0,1] (how much of the air toward the sun
+            // along this ray is sunlit). Normalising this way decouples the strength from
+            // the ray length, so short ground rays and long sky rays are on the same
+            // scale and a single threshold reads consistently.
+            float litLen = 0.0, totLen = 0.0;
+            float t = stepLen * dither;   // jittered start
+            for (int i = 0; i < GR_STEPS; ++i) {
+                float3 sp = camP + viewDir * t;
+                float dc  = length(sp - camP);
+                float lit = volShadowLit(sp, dc, vu.lightViewProj, vu.lightViewProjF,
+                                         splitDist, shNear, shFar, shSamp);
+                // Fade contribution out toward the far cascade edge so no hard shadow
+                // boundary can show (mirrors fmain's radial distFade reasoning).
+                float coverage = 1.0 - smoothstep(farR * 0.85, farR, dc);
+                litLen += lit * coverage * stepLen;
+                totLen += stepLen;
+                t += stepLen;
             }
-            illum *= (1.0 / 24.0);
-            float edge = 1.0 - smoothstep(0.5, 1.1, max(abs(sunUV.x - 0.5), abs(sunUV.y - 0.5)) * 2.0);
-            float3 sunCol = float3(pu.sunColorR, pu.sunColorG, pu.sunColorB);
-            hdr += sunCol * (illum * pu.godrayStrength * edge * 3.5);  // pronounced shafts so they actually read (was 1.0, invisible)
+            float litFrac = (totLen > 1e-4) ? (litLen / totLen) : 0.0;   // 0..1
+
+            // A soft floor cut: suppress the broad, uniform low-level glow (the "fog wash"
+            // failure mode and the ground-wash guard) while letting the brighter shaft
+            // cores survive. Only the upper part of the lit fraction contributes, so fully
+            // lit air toward the sun glows but partly shadowed / sideways air stays clear.
+            float shaft = smoothstep(0.28, 1.0, litFrac);
+            // marchLen factor: long rays (open sky toward the sun) scatter more than the
+            // short rays that hit nearby ground, which keeps the ground from washing.
+            float lenFactor = clamp(marchLen / GR_MAXDIST, 0.0, 1.0);
+            float inscatter = shaft * phase * lenFactor * GR_DENSITY * marchLen;
+
+            float3 sunCol = vu.sunColor.rgb;
+            // Clamp the additive HARD so god rays can never blow the scene to white
+            // (mirrors the bloom clamp below). This is the night-whiteout / ground-wash
+            // guard: even at max in-scatter the lift per channel stays modest.
+            float3 add = clamp(sunCol * inscatter * volStrength, 0.0, 0.40);
+            if (volDebug) {
+                // Show the lit fraction (top) and the final shaft term (bottom half).
+                float g = (in.uv.y < 0.5) ? litFrac : clamp(inscatter * volStrength * 4.0, 0.0, 1.0);
+                return float4(g, g, g, 1.0);
+            }
+            hdr += add;
         }
 
         // Clamp the bloom contribution per-channel so a large bright region (sun disc,
@@ -4762,7 +4935,7 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
 
     let shadowTex  = makeTex(.depth32Float, kShadowRes, kShadowRes, usage: [.renderTarget, .shaderRead])
     let hdrColor   = makeTex(.rgba16Float,  W, H, usage: [.renderTarget, .shaderRead])
-    let hdrDepth   = makeTex(.depth32Float, W, H, usage: [.renderTarget])
+    let hdrDepth   = makeTex(.depth32Float, W, H, usage: [.renderTarget, .shaderRead])   // #119 readable for composite
     let bloomBrt   = makeTex(.rgba16Float,  HW, HH, usage: [.renderTarget, .shaderRead])
     let bloomBlurA = makeTex(.rgba16Float,  HW, HH, usage: [.renderTarget, .shaderRead])
     // Final readable output
@@ -4977,9 +5150,15 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
                 enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor,  index: 0)
                 enc.setFragmentTexture(bloomBrt,  index: 1)
+                enc.setFragmentTexture(hdrDepth,  index: 2)   // #119 (raymarch off in this test path)
+                enc.setFragmentTexture(shadowTex, index: 3)
+                enc.setFragmentTexture(shadowTex, index: 4)
+                enc.setFragmentSamplerState(shadowSampler, index: 0)
                 var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.18,
                                       rainStrength: 0, wallClockSecs: Float(f)/60.0)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+                var vu = VolUniforms()   // #119 volStrength = 0 -> raymarch is a no-op
+                enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 enc.endEncoding()
             }
@@ -5080,7 +5259,10 @@ func runWashoutTest() -> Bool {
         return device.makeTexture(descriptor: td)!
     }
     let hdrColor = makeTex(.rgba16Float, W, H, [.renderTarget, .shaderRead], false)
-    let hdrDepth = makeTex(.depth32Float, W, H, [.renderTarget], false)
+    let hdrDepth = makeTex(.depth32Float, W, H, [.renderTarget, .shaderRead], false)   // #119 readable for composite binding
+    // #119 a comparison sampler so compositeFrag has sampler(0) (god rays are off here).
+    let vsd = MTLSamplerDescriptor(); vsd.compareFunction = .lessEqual
+    let washoutVolSampler = device.makeSamplerState(descriptor: vsd)!
     let bloomBrt = makeTex(.rgba16Float, HW, HH, [.renderTarget, .shaderRead], false)
     let bloomBlurA = makeTex(.rgba16Float, HW, HH, [.renderTarget, .shaderRead], false)
     let output = makeTex(.bgra8Unorm, W, H, [.renderTarget], true)
@@ -5226,8 +5408,12 @@ func runWashoutTest() -> Bool {
             if let enc = cmd.makeRenderCommandEncoder(descriptor: crp) {
                 enc.setRenderPipelineState(compPipe); enc.setDepthStencilState(noDepthState); enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor, index: 0); enc.setFragmentTexture(bloomBrt, index: 1)
+                enc.setFragmentTexture(hdrDepth, index: 2); enc.setFragmentTexture(hdrDepth, index: 3); enc.setFragmentTexture(hdrDepth, index: 4)
+                enc.setFragmentSamplerState(washoutVolSampler, index: 0)
                 var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.18, rainStrength: 0, wallClockSecs: 0)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+                var vu = VolUniforms()   // #119 volStrength = 0 -> raymarch is a no-op in this test path
+                enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3); enc.endEncoding()
             }
             cmd.commit(); cmd.waitUntilCompleted()
@@ -5317,8 +5503,12 @@ func runWashoutTest() -> Bool {
             if let enc = cmd.makeRenderCommandEncoder(descriptor: crp) {
                 enc.setRenderPipelineState(compPipe); enc.setDepthStencilState(noDepthState); enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor, index: 0); enc.setFragmentTexture(hdrColor, index: 1)
+                enc.setFragmentTexture(hdrDepth, index: 2); enc.setFragmentTexture(hdrDepth, index: 3); enc.setFragmentTexture(hdrDepth, index: 4)
+                enc.setFragmentSamplerState(washoutVolSampler, index: 0)
                 var pu = PostUniforms(bloomStrength: 0.0, vignetteStr: 0.22, satBoost: 1.18, rainStrength: 0, wallClockSecs: 0)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+                var vu = VolUniforms()   // #119 volStrength = 0 -> raymarch is a no-op in this test path
+                enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3); enc.endEncoding()
             }
             cmd.commit(); cmd.waitUntilCompleted()

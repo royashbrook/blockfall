@@ -169,10 +169,16 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     }
     let shadowTex  = makeTex(.depth32Float, kShadowRes, kShadowRes, [.renderTarget, .shaderRead])
     let hdrColor   = makeTex(.rgba16Float,  W, H, [.renderTarget, .shaderRead])
-    let hdrDepth   = makeTex(.depth32Float, W, H, [.renderTarget])
+    // #119 god rays: depth must be readable by the composite volumetric pass.
+    let hdrDepth   = makeTex(.depth32Float, W, H, [.renderTarget, .shaderRead])
     let bloomBrt   = makeTex(.rgba16Float,  HW, HH, [.renderTarget, .shaderRead])
     let bloomBlurA = makeTex(.rgba16Float,  HW, HH, [.renderTarget, .shaderRead])
     let output     = makeTex(.bgra8Unorm,   W, H, [.renderTarget], false)
+    // #119 second composite target for the same-process god-ray A/B (BF_SHOT_AB=1):
+    // composites the SAME hdr/depth/shadow buffers with god rays forced OFF, so the ON
+    // (output) and OFF (outputOff) PNGs are pixel-aligned (no streaming drift between them).
+    let outputOff  = makeTex(.bgra8Unorm,   W, H, [.renderTarget], false)
+    let abMode     = ProcessInfo.processInfo.environment["BF_SHOT_AB"] == "1"
 
     var frameIdx = 0
     var lastShotPropN = 0
@@ -308,7 +314,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         rp.colorAttachments[0].loadAction = .clear; rp.colorAttachments[0].storeAction = .store
         rp.colorAttachments[0].clearColor = MTLClearColor(red: 0.45, green: 0.62, blue: 0.86, alpha: 1)
         rp.depthAttachment.texture = hdrDepth
-        rp.depthAttachment.loadAction = .clear; rp.depthAttachment.clearDepth = 1.0; rp.depthAttachment.storeAction = .dontCare
+        rp.depthAttachment.loadAction = .clear; rp.depthAttachment.clearDepth = 1.0; rp.depthAttachment.storeAction = .store // #119 keep depth for god-ray raymarch
         if let enc = cmd.makeRenderCommandEncoder(descriptor: rp) {
             if let sp = skyPipeline {
                 enc.setRenderPipelineState(sp); enc.setDepthStencilState(skyDepthState); enc.setCullMode(.none)
@@ -429,37 +435,45 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
 
         // PASS 4: composite (HDR + bloom) → bgra8 output
         if let cp = compositePipeline {
-            let crp = MTLRenderPassDescriptor()
-            crp.colorAttachments[0].texture = output
-            crp.colorAttachments[0].loadAction = .dontCare; crp.colorAttachments[0].storeAction = .store
-            if let enc = cmd.makeRenderCommandEncoder(descriptor: crp) {
+            let dayT  = Renderer.dayLight(f.camera.time_of_day)
+            let godOff = ProcessInfo.processInfo.environment["BF_SHOT_NOGODRAY"] == "1"
+            let debug  = ProcessInfo.processInfo.environment["BF_GR_DEBUG"] == "1"
+            // #119 one composite into `target` with the given god-ray strength. Reused for
+            // the normal shot (ON or OFF) and, in AB mode, a second OFF pass into outputOff.
+            func composite(into target: MTLTexture, godStrength: Float) {
+                let crp = MTLRenderPassDescriptor()
+                crp.colorAttachments[0].texture = target
+                crp.colorAttachments[0].loadAction = .dontCare; crp.colorAttachments[0].storeAction = .store
+                guard let enc = cmd.makeRenderCommandEncoder(descriptor: crp) else { return }
                 enc.setRenderPipelineState(cp); enc.setDepthStencilState(noDepthState); enc.setCullMode(.none)
                 enc.setFragmentTexture(hdrColor, index: 0)
                 enc.setFragmentTexture(bloomBrt, index: 1)
-                // God rays (#44): mirror the LIVE renderer so the headless --shot composites
-                // the same scattered sun shafts. The harness previously left these off
-                // (godrayStrength defaulted to 0), so the screenshot path could not reproduce
-                // the live dusk ground-whiteout the rays cause. Match the live formula.
-                let dayT  = Renderer.dayLight(f.camera.time_of_day)
-                let toSun = simd_normalize(SIMD3<Float>(-sun.x, -sun.y, -sun.z))
-                let sunClip = viewProj * SIMD4<Float>(camPosW.x + toSun.x * 2000,
-                                                      camPosW.y + toSun.y * 2000,
-                                                      camPosW.z + toSun.z * 2000, 1)
-                var grStrength: Float = 0, sunSX: Float = 0, sunSY: Float = 0
-                let godOff = ProcessInfo.processInfo.environment["BF_SHOT_NOGODRAY"] == "1"
-                if sunClip.w > 0.001 && !godOff {
-                    sunSX = (sunClip.x / sunClip.w) * 0.5 + 0.5
-                    sunSY = 0.5 - (sunClip.y / sunClip.w) * 0.5
-                    grStrength = dayT * 0.45
-                }
                 var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.30,
                                       rainStrength: 0, wallClockSecs: 0,
-                                      godrayStrength: grStrength, sunScreenX: sunSX, sunScreenY: sunSY,
+                                      godrayStrength: 0, sunScreenX: 0, sunScreenY: 0,
                                       sunColorR: 1.0, sunColorG: 0.6 + 0.35 * dayT, sunColorB: 0.3 + 0.5 * dayT)
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+                // Single shadow map -> both cascade slots; a huge cascade split keeps every
+                // step on the "near" (only) map. farR matches the map radius (150).
+                var vu = VolUniforms(
+                    invViewProj:    viewProj.inverse,
+                    lightViewProj:  lightViewProj,
+                    lightViewProjF: lightViewProj,
+                    camPosW:        SIMD4<Float>(camPosW.x, camPosW.y, camPosW.z, 150.0),
+                    sunDir:         SIMD4<Float>(sun.x, sun.y, sun.z, 1.0e9),
+                    sunColor:       SIMD4<Float>(1.0, 0.6 + 0.35 * dayT, 0.3 + 0.5 * dayT, godStrength))
+                enc.setFragmentTexture(hdrDepth,  index: 2)
+                enc.setFragmentTexture(shadowTex, index: 3)
+                enc.setFragmentTexture(shadowTex, index: 4)
+                enc.setFragmentSamplerState(shadowSampler, index: 0)
+                enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 enc.endEncoding()
             }
+            var onStrength = godOff ? 0 : dayT * Renderer.kGodRayStrength
+            if debug { onStrength = -max(onStrength, 0.85) }   // sentinel: output raw shaft term
+            composite(into: output, godStrength: onStrength)
+            if abMode { composite(into: outputOff, godStrength: 0) }   // pixel-aligned OFF
         }
 
         cmd.commit(); cmd.waitUntilCompleted()
@@ -521,6 +535,12 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         }
         print("shot: prop instances in final frame = \(lastShotPropN)")
         writeTexturePNG(output, to: shot)
+        // #119 AB mode: also write the pixel-aligned god-rays-OFF composite alongside, with
+        // an "_off" suffix, so the before/after is a true same-frame comparison.
+        if abMode {
+            let offPath = shot.hasSuffix(".png") ? String(shot.dropLast(4)) + "_off.png" : shot + "_off"
+            writeTexturePNG(outputOff, to: offPath)
+        }
         return true
     }
 
@@ -1763,8 +1783,16 @@ func runGroundNightProbe(strict: Bool = false) -> Bool {
         if let enc = cmd.makeRenderCommandEncoder(descriptor: crp) {
             enc.setRenderPipelineState(compPipe); enc.setDepthStencilState(noDepthState); enc.setCullMode(.none)
             enc.setFragmentTexture(hdrColor, index: 0); enc.setFragmentTexture(bloomBrt, index: 1)
+            // #119 bind the god-ray inputs so compositeFrag has all its resources; volStrength=0
+            // (default VolUniforms) makes the raymarch a no-op, so this night probe is unchanged.
+            // hdrDepth doubles as a stand-in for the (unsampled) shadow slots.
+            enc.setFragmentTexture(hdrDepth, index: 2); enc.setFragmentTexture(hdrDepth, index: 3); enc.setFragmentTexture(hdrDepth, index: 4)
+            let vsd = MTLSamplerDescriptor(); vsd.compareFunction = .lessEqual
+            enc.setFragmentSamplerState(device.makeSamplerState(descriptor: vsd)!, index: 0)
             var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.18, rainStrength: 0, wallClockSecs: 0)
             enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+            var vu = VolUniforms()   // volStrength = 0 -> raymarch off in this probe
+            enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3); enc.endEncoding()
         }
         cmd.commit(); cmd.waitUntilCompleted()
