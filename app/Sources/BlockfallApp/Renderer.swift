@@ -130,6 +130,7 @@ struct PostUniforms {
     var sunColorB:      Float = 0.7
     var greyHaze:       Float = 0   // #: 0..1 The-Grey screen wash (0 in test paths)
     var celShade:       Float = 0   // #130 1 = draw ink outlines + punchier cel grade
+    var lensFlareStr:   Float = 0   // #132 lens-flare master strength (0 = off; folds toggle + daylight + look-at-sun)
 }
 
 /// #119 Volumetric god-ray uniforms — composite pass, buffer(1).
@@ -384,6 +385,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     var gfxFoliage = UserDefaults.standard.object(forKey: "gfxFoliage") as? Bool ?? false
     var gfxWater   = UserDefaults.standard.object(forKey: "gfxWater")   as? Bool ?? true
     var gfxGodRays = UserDefaults.standard.object(forKey: "gfxGodRays") as? Bool ?? true
+    // #132 lens flare: classic screen-space flare when the sun is on-screen and not
+    // occluded. Separate toggle from God Rays (which drives the descending shafts).
+    // Defaults ON; OFF removes the flare entirely (no cost, byte-identical to no-flare).
+    var gfxLensFlare = UserDefaults.standard.object(forKey: "gfxLensFlare") as? Bool ?? true
     var gfxPollen  = UserDefaults.standard.object(forKey: "gfxPollen")  as? Bool ?? true
     var gfxShadows = UserDefaults.standard.object(forKey: "gfxShadows") as? Bool ?? false  // default OFF (residual sun-angle bug; kids prefer it off)
     // #130 cel-shade: bold outlines + banded toon lighting + punchier palette. This is the
@@ -471,6 +476,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     // more dramatic beams, lower (or toggle God Rays off in graphics settings) on a weak
     // GPU like the M1 Air. The raymarch only runs when this resolves > 0.
     static let kGodRayStrength: Float = 3.0
+    // #132 LENS-FLARE GATE KNOBS (CPU side; shader has its own element knobs FLARE_*).
+    //   kFlareEdgeFade : how far (in centre-distance, 0=centre ~1.4=corner) the flare keeps
+    //                    fading to zero. Larger = the flare reaches further toward the edges.
+    static let kFlareEdgeFade: Float = 1.25
     private var shadowMap: MTLTexture!     // depth32Float — near cascade
     private var shadowMapFar: MTLTexture!  // depth32Float — far cascade
     private var shadowSampler: MTLSamplerState!
@@ -1466,12 +1475,26 @@ final class Renderer: NSObject, MTKViewDelegate {
         if gfxGodRays {                                   // #: god-ray toggle
             grStrength = dayT * (1 - frame.camera.underground) * Renderer.kGodRayStrength
         }
+        // #132 LENS FLARE gate. Project the sun to screen + derive the look-at-sun strength
+        // on the CPU; fold in the toggle and underground (no flare in a cave). The shader does
+        // the occlusion depth test + the per-element draw. Zero here => the flare block is
+        // skipped entirely (free when toggled off, off-screen, or at night via dayT).
+        var flareStr: Float = 0
+        var sunUVx: Float = 0, sunUVy: Float = 0
+        if gfxLensFlare {                                 // #132 lens-flare toggle
+            let g = Renderer.sunFlareGate(viewProj: viewProj,
+                                          camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z),
+                                          sunDir: SIMD3<Float>(sun.x, sun.y, sun.z), dayT: dayT)
+            sunUVx = g.uv.x; sunUVy = g.uv.y
+            flareStr = g.strength * (1 - frame.camera.underground)
+        }
         var pu = PostUniforms(bloomStrength: 0.08, vignetteStr: 0.22, satBoost: 1.18,
                               rainStrength: precipPacked, wallClockSecs: wallClock,
-                              godrayStrength: 0, sunScreenX: 0, sunScreenY: 0,
+                              godrayStrength: 0, sunScreenX: sunUVx, sunScreenY: sunUVy,
                               sunColorR: 1.0, sunColorG: 0.6 + 0.35 * dayT, sunColorB: 0.3 + 0.5 * dayT,
                               greyHaze: max(0, 1 - frame.camera.local_sat),   // #: The Grey wash
                               celShade: gfxCelShade ? 1 : 0)   // #130 ink outlines + cel grade
+        pu.lensFlareStr = flareStr
         // #119 volumetric uniforms shared by every composite call site this frame.
         var vu = VolUniforms(
             invViewProj:    viewProj.inverse,
@@ -2195,6 +2218,46 @@ final class Renderer: NSObject, MTKViewDelegate {
         return x * x * (3.0 - 2.0 * x)
     }
 
+    // #132 LENS-FLARE GATE (CPU side).
+    // Project the (directional) sun onto the screen and derive the master flare strength
+    // BEFORE it reaches the shader. The directional sun has no world position, so we place
+    // it a long way down the toSun ray from the camera and project that point. Returns:
+    //   onScreenUV : the sun's screen-space uv (matches compositeFrag's top-left uv), or
+    //                (-1,-1) when the sun is behind the camera / off-screen.
+    //   strength   : the master flare strength, 0..1, folding:
+    //                  - daylight  (0 at night so the flare is impossible after dark)
+    //                  - in-front-of-camera (flare needs the sun roughly ahead)
+    //                  - look-at-sun: peaks when the sun sits near screen centre, fades
+    //                    to 0 toward the screen edge (looking away -> no flare).
+    // The shader still does the occlusion (scene-depth) test and the per-element draw; this
+    // just kills the whole pass cheaply when it cannot possibly contribute.
+    static func sunFlareGate(viewProj: simd_float4x4, camPos: SIMD3<Float>,
+                             sunDir: SIMD3<Float>, dayT: Float)
+        -> (uv: SIMD2<Float>, strength: Float) {
+        // toSun points from the scene toward the sun (sunDir points downward from the sun).
+        let toSun = simd_normalize(-sunDir)
+        // A far point along the sun ray; projecting it gives the sun's screen position.
+        let sunWorld = camPos + toSun * 1.0e6
+        let clip = viewProj * SIMD4<Float>(sunWorld.x, sunWorld.y, sunWorld.z, 1.0)
+        // Behind the camera (w <= 0): the sun is not in front, no flare.
+        if clip.w <= 1e-4 { return (SIMD2<Float>(-1, -1), 0) }
+        let ndc = SIMD2<Float>(clip.x / clip.w, clip.y / clip.w)
+        // Metal top-left uv: x maps [-1,1]->[0,1]; y is flipped.
+        let uv = SIMD2<Float>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5))
+        // Off-screen (with a small margin so ghosts entering frame are not popped): no flare.
+        let m: Float = 0.15
+        if uv.x < -m || uv.x > 1 + m || uv.y < -m || uv.y > 1 + m {
+            return (uv, 0)
+        }
+        // Look-at-sun: how close the sun is to the screen centre (0..1). Strongest when you
+        // look straight at the sun, fading smoothly to the edges so a sun in the corner only
+        // gives a faint flare and one off-screen gives none.
+        let off = simd_length(SIMD2<Float>(uv.x - 0.5, uv.y - 0.5)) * 2.0   // 0 centre .. ~1.4 corner
+        let centred = max(0.0, 1.0 - off / kFlareEdgeFade)
+        let look = centred * centred * (3.0 - 2.0 * centred)   // smoothstep-ish ease
+        return (uv, dayT * look)
+    }
+
     static func perspective(fovy: Float, aspect: Float, near: Float, far: Float) -> simd_float4x4 {
         let t = tan(fovy * 0.5)
         var m = simd_float4x4(0)
@@ -2365,6 +2428,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         float sunColorB;
         float greyHaze;   // #: The-Grey screen wash
         float celShade;   // #130 1 = draw ink outlines + cel grade
+        float lensFlareStr; // #132 lens-flare master strength (0 = off)
     };
 
     // VolUniforms (240 bytes) — #119 volumetric god-ray raymarch, composite buffer(1).
@@ -4229,6 +4293,48 @@ final class Renderer: NSObject, MTKViewDelegate {
     constant float3 GR_WARM_TINT  = float3(1.12, 1.02, 0.78);
     constant float GR_MAX_ADD     = 0.85;
 
+    // #132 DISTINCT DESCENDING SHAFTS — knobs that sharpen the volumetric in-scatter into
+    // clearly separated beams and boost it at low sun (dawn/dusk) so rays read as actually
+    // streaming DOWN, subtler at high noon. Applied ON TOP of the base shaft shaping above.
+    //   GR_SHAFT_SHARP : extra contrast applied around the shaft mid-value to segment the
+    //                    smooth in-scatter into distinct bright cores / dark gaps (cel feel).
+    //                    1 = no extra sharpening; higher = harder edges between beams.
+    //   GR_LOWSUN_BOOST: multiplier added to the shaft at the lowest sun. At a low sun the
+    //                    shafts get (1 + boost) stronger; at noon ~1x. This is what makes
+    //                    dawn/dusk feel like god-rays streaming down.
+    //   GR_LOWSUN_POW  : shapes the low-sun ramp (higher = the boost concentrates nearer the
+    //                    horizon so noon stays subtle).
+    constant float GR_SHAFT_SHARP  = 1.7;
+    constant float GR_LOWSUN_BOOST = 1.6;
+    constant float GR_LOWSUN_POW   = 2.0;
+
+    // =========================================================
+    // #132 STYLIZED SCREEN-SPACE LENS FLARE (composite pass)
+    //
+    // A classic ghost-chain flare drawn along the line from the sun's screen position
+    // THROUGH the screen centre, plus a horizontal anamorphic streak through the sun and a
+    // tight bright bloom at the sun itself. It is gated on the CPU (pu.lensFlareStr folds the
+    // toggle + daylight + look-at-sun) and gated HERE by an occlusion depth test: if scene
+    // geometry sits in front of the sun's screen position, the flare fades out (a flare from
+    // a hidden sun looks wrong). All additive contributions are clamped so the flare can
+    // never wash the scene to white. Tasteful for the cel look, not a lens-sim overload.
+    //   FLARE_GHOSTS    : number of ghost elements along the sun->centre line.
+    //   FLARE_GHOST_SP  : spacing between ghosts (fraction of the sun->centre vector).
+    //   FLARE_GHOST_SZ  : base ghost radius (screen-space, aspect-corrected).
+    //   FLARE_STREAK_LEN: half-length of the horizontal anamorphic streak (uv units).
+    //   FLARE_STREAK_THK: thickness of the streak (uv units).
+    //   FLARE_BLOOM_SZ  : radius of the tight bright core at the sun.
+    //   FLARE_INTENSITY : overall flare brightness multiplier.
+    //   FLARE_MAX_ADD   : HARD per-channel additive ceiling (the wash-out guard).
+    constant int    FLARE_GHOSTS     = 5;
+    constant float  FLARE_GHOST_SP   = 0.32;
+    constant float  FLARE_GHOST_SZ   = 0.075;
+    constant float  FLARE_STREAK_LEN = 0.40;
+    constant float  FLARE_STREAK_THK = 0.0075;
+    constant float  FLARE_BLOOM_SZ   = 0.055;
+    constant float  FLARE_INTENSITY  = 0.95;
+    constant float  FLARE_MAX_ADD    = 0.55;
+
     // =========================================================
     // #130 CEL-SHADE INK OUTLINES + PUNCHIER PALETTE (composite pass)
     //
@@ -4392,10 +4498,23 @@ final class Renderer: NSObject, MTKViewDelegate {
             // between bright beams (graphic, cel-shaded shafts, not a soft halo).
             float shaftRaw = smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac);
             float shaft    = pow(shaftRaw, GR_SHAFT_GAMMA);
+            // #132 DISTINCT BEAMS: sharpen the shaft around its mid-value with a contrast
+            // curve so the smooth in-scatter SEGMENTS into separated bright cores and dark
+            // gaps — the player can point at the sun through trees and see real shafts, not a
+            // broad warm glare. A logistic-ish contrast about 0.5 keeps it in [0,1] (cannot
+            // raise the mean past the carved beams, so it cannot reintroduce a wash).
+            shaft = clamp((shaft - 0.5) * GR_SHAFT_SHARP + 0.5, 0.0, 1.0);
+            shaft *= shaft;   // square biases toward the cores: gaps go darker, beams stay
+            // #132 LOW-SUN BOOST: shafts read as god-rays streaming DOWN at dawn/dusk and stay
+            // subtle at noon. sunDir points downward, so -sunDir.y is the sun elevation
+            // (~1 noon, ~0 horizon). lowSun is ~1 near the horizon, ~0 high up.
+            float sunElev = clamp(-vu.sunDir.y, 0.0, 1.0);
+            float lowSun  = pow(1.0 - sunElev, GR_LOWSUN_POW);
+            float shaftBoost = 1.0 + GR_LOWSUN_BOOST * lowSun;
             // marchLen factor: long rays (open sky toward the sun) scatter more than the
             // short rays that hit nearby ground, which keeps the ground from washing.
             float lenFactor = clamp(marchLen / GR_MAXDIST, 0.0, 1.0);
-            float inscatter = shaft * phase * lenFactor * GR_DENSITY * marchLen;
+            float inscatter = shaft * shaftBoost * phase * lenFactor * GR_DENSITY * marchLen;
 
             // Saturate the shaft color toward a warm gold so the beams read as obvious
             // sunlight, not a neutral lift. Push the base sun tint away from its luma so
@@ -4416,6 +4535,84 @@ final class Renderer: NSObject, MTKViewDelegate {
                 return float4(g, g, g, 1.0);
             }
             hdr += add;
+        }
+
+        // =========================================================
+        // #132 STYLIZED LENS FLARE.
+        // pu.lensFlareStr (CPU) already folds the toggle + daylight + look-at-sun and is 0
+        // when the sun is off-screen / behind the camera, so this whole block is skipped
+        // unless the player is actually looking toward an on-screen daytime sun. We then do
+        // the OCCLUSION test here: if scene geometry sits in front of the sun's screen
+        // position the flare fades (a flare from a hidden sun looks wrong). Everything is
+        // additive into hdr (so it shares the exposure + ACES + final clamp wash guards) and
+        // hard-clamped to FLARE_MAX_ADD on top of that.
+        if (pu.lensFlareStr > 0.001) {
+            float2 sunUV = float2(pu.sunScreenX, pu.sunScreenY);
+            // OCCLUSION: sample scene depth at the sun's screen position. The sky is at the
+            // far plane (depth ~1); any geometry in front reads notably less than 1. Fade the
+            // flare smoothly to zero as something occludes the sun (hill / tree / wall).
+            float occD = sceneDepth.sample(s, clamp(sunUV, 0.0, 1.0));
+            float visible = smoothstep(0.985, 0.9995, occD);   // 1 = clear sky behind sun, 0 = occluded
+            float flareStr = pu.lensFlareStr * visible * FLARE_INTENSITY;
+            if (flareStr > 0.001) {
+                // Aspect correction so circles stay round and distances are isotropic.
+                float w = float(sceneDepth.get_width());
+                float h = float(sceneDepth.get_height());
+                float aspect = w / max(h, 1.0);
+                float2 px = in.uv;
+                float2 aspV = float2(aspect, 1.0);
+                // Warm flare tint from the sun colour, biased a touch warmer for the cel look.
+                float3 fcol = clamp(pu.sunColorR > 0.0
+                                    ? float3(pu.sunColorR, pu.sunColorG, pu.sunColorB) : float3(1.0),
+                                    0.0, 1.5);
+                fcol = mix(fcol, float3(1.0, 0.85, 0.55), 0.35);
+
+                float3 flare = float3(0.0);
+
+                // --- Tight bright bloom AT the sun ---
+                float2 dSun = (px - sunUV) * aspV;
+                float rSun  = length(dSun);
+                float bloomC = exp(-rSun * rSun / (FLARE_BLOOM_SZ * FLARE_BLOOM_SZ));
+                flare += fcol * bloomC * 1.2;
+
+                // --- Horizontal anamorphic streak through the sun ---
+                // Bright along x, tight in y: a soft horizontal bar centred on the sun.
+                float2 dStr = px - sunUV;
+                float streakX = 1.0 - smoothstep(0.0, FLARE_STREAK_LEN, abs(dStr.x));
+                float streakY = exp(-(dStr.y * dStr.y) / (FLARE_STREAK_THK * FLARE_STREAK_THK));
+                flare += fcol * streakX * streakX * streakY * 0.9;
+
+                // --- Ghost chain along the sun -> screen-centre line ---
+                // The vector from the sun toward the centre; ghosts march past centre to the
+                // opposite side, the classic flare layout. Each ghost is a soft disc with a
+                // size + tint that varies down the chain so it reads as a lens artefact, not
+                // a row of identical dots.
+                float2 toCentre = (float2(0.5) - sunUV);
+                for (int gi = 0; gi < FLARE_GHOSTS; ++gi) {
+                    float fi = float(gi + 1);
+                    float2 gpos = sunUV + toCentre * (FLARE_GHOST_SP * fi);
+                    // Vary size + brightness + a faint chromatic tint per ghost.
+                    float gsz = FLARE_GHOST_SZ * (0.5 + 0.5 * fract(fi * 0.37 + 0.2));
+                    float2 dG = (px - gpos) * aspV;
+                    float rG  = length(dG);
+                    float disc = exp(-rG * rG / (gsz * gsz));
+                    // Soft hex-ish edge: a faint ring on the bigger ghosts adds the lens look
+                    // without an expensive polygon test.
+                    float ring = exp(-pow((rG - gsz) / (gsz * 0.5), 2.0)) * 0.25;
+                    float gbright = (0.10 + 0.16 * fract(fi * 0.61));
+                    float3 gtint = mix(fcol, float3(0.6, 0.8, 1.0), 0.3 * fract(fi * 0.5));
+                    flare += gtint * (disc + ring) * gbright;
+                }
+
+                // Vignette the whole flare toward the screen edge so it never crowds the very
+                // corners (keeps gameplay readable) and clamp HARD per channel: the flare can
+                // brighten the sky toward the sun but can NEVER wash the frame to white.
+                float2 cc = px - 0.5;
+                float edgeFade = 1.0 - smoothstep(0.45, 0.75, dot(cc, cc) * 2.2);
+                // (flare already carries the warm tint per element; one strength + clamp here.)
+                float3 flareAdd = clamp(flare * flareStr * edgeFade, 0.0, FLARE_MAX_ADD);
+                hdr += flareAdd;
+            }
         }
 
         // Clamp the bloom contribution per-channel so a large bright region (sun disc,

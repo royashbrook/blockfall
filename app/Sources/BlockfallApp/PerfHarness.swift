@@ -444,9 +444,16 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             let dayT  = Renderer.dayLight(f.camera.time_of_day)
             let godOff = ProcessInfo.processInfo.environment["BF_SHOT_NOGODRAY"] == "1"
             let debug  = ProcessInfo.processInfo.environment["BF_GR_DEBUG"] == "1"
+            // #132 lens-flare gate for --shot. BF_SHOT_NOFLARE=1 disables it (so a god-ray AB
+            // is not confounded by the flare). dayT folds night to 0 (byte-identical guard).
+            let flareOff = ProcessInfo.processInfo.environment["BF_SHOT_NOFLARE"] == "1"
+            let flareGate = Renderer.sunFlareGate(
+                viewProj: viewProj,
+                camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z),
+                sunDir: SIMD3<Float>(sun.x, sun.y, sun.z), dayT: dayT)
             // #119 one composite into `target` with the given god-ray strength. Reused for
             // the normal shot (ON or OFF) and, in AB mode, a second OFF pass into outputOff.
-            func composite(into target: MTLTexture, godStrength: Float) {
+            func composite(into target: MTLTexture, godStrength: Float, flareStrength: Float) {
                 let crp = MTLRenderPassDescriptor()
                 crp.colorAttachments[0].texture = target
                 crp.colorAttachments[0].loadAction = .dontCare; crp.colorAttachments[0].storeAction = .store
@@ -456,9 +463,11 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 enc.setFragmentTexture(bloomBrt, index: 1)
                 var pu = PostUniforms(bloomStrength: 0.12, vignetteStr: 0.22, satBoost: 1.30,
                                       rainStrength: 0, wallClockSecs: 0,
-                                      godrayStrength: 0, sunScreenX: 0, sunScreenY: 0,
+                                      godrayStrength: 0,
+                                      sunScreenX: flareGate.uv.x, sunScreenY: flareGate.uv.y,
                                       sunColorR: 1.0, sunColorG: 0.6 + 0.35 * dayT, sunColorB: 0.3 + 0.5 * dayT)
                 pu.celShade = celShot   // #130 ink outlines + cel grade in --shot when BF_CEL=1
+                pu.lensFlareStr = flareStrength   // #132 lens flare in --shot
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 // Single shadow map -> both cascade slots; a huge cascade split keeps every
                 // step on the "near" (only) map. farR matches the map radius (150).
@@ -479,8 +488,11 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             }
             var onStrength = godOff ? 0 : dayT * Renderer.kGodRayStrength
             if debug { onStrength = -max(onStrength, 0.85) }   // sentinel: output raw shaft term
-            composite(into: output, godStrength: onStrength)
-            if abMode { composite(into: outputOff, godStrength: 0) }   // pixel-aligned OFF
+            let onFlare: Float = flareOff ? 0 : flareGate.strength   // #132
+            composite(into: output, godStrength: onStrength, flareStrength: onFlare)
+            // pixel-aligned OFF baseline: both god rays AND flare off (so the AB diff is
+            // attributable and the night byte-identical test stays clean).
+            if abMode { composite(into: outputOff, godStrength: 0, flareStrength: 0) }
         }
 
         cmd.commit(); cmd.waitUntilCompleted()
