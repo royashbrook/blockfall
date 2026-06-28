@@ -315,7 +315,14 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     _ = bf_world_new(e, 2026)
 
     // ---- Render targets (full size; shadow map at the live 2048) ----------
-    let W = 1280, H = 800
+    // BF_PERF_RES=<scale> multiplies the render resolution (default 1.0 = 1280x800).
+    // The dev box GPU is not fragment-bound at 1280x800, so per-fragment shader costs
+    // (procedural texture, cel outline) barely move the number there. Scaling the
+    // resolution up makes the run fragment-bound, the way the player's M1 Air is at the
+    // real window size, so a per-fragment optimization actually shows in FPS. Does not
+    // change the default measurement.
+    let resScale = Float(ProcessInfo.processInfo.environment["BF_PERF_RES"] ?? "1") ?? 1
+    let W = Int(1280.0 * resScale), H = Int(800.0 * resScale)
     let HW = W/2, HH = H/2
     func makeTex(_ fmt: MTLPixelFormat, _ w: Int, _ h: Int, _ usage: MTLTextureUsage, _ priv: Bool = true) -> MTLTexture {
         let td = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: fmt, width: w, height: h, mipmapped: false)

@@ -2586,6 +2586,18 @@ final class Renderer: NSObject, MTKViewDelegate {
     static float fbm2(float2 p) {
         return noise2(p)*0.60 + noise2(p*2.1+float2(3.7,1.1))*0.30 + noise2(p*4.3+float2(1.3,5.7))*0.10;
     }
+    // #133/#134 stylized surface detail. A single low-frequency value-noise sample,
+    // gently contrast-shaped so the variation reads as broad painterly patches rather
+    // than fine speckle. ONE noise2 (four hashes) per call, no extra octaves and no
+    // Voronoi loop, so it is far cheaper than the old fbm + 9-tap cellular pattern and
+    // sits cleanly under the bold cel outlines and toon banding. Caller scales p to set
+    // the patch size (lower scale = larger, calmer patches).
+    static float smoothDetail(float2 p) {
+        float n = noise2(p);
+        // Soft S-curve: pushes the mid values apart a touch so patches have shape, while
+        // keeping the extremes gentle (no harsh light/dark speckle).
+        return n * n * (3.0 - 2.0 * n);
+    }
     // Project world pos to 2D UV by dominant face axis (face 0/1=YZ, 2/3=XZ, 4/5=XY)
     static float2 faceUV(float3 wp, uint face) {
         if (face == 0u || face == 1u) return wp.yz;
@@ -2637,120 +2649,103 @@ final class Renderer: NSObject, MTKViewDelegate {
         float vH    = voxelHash(vi);                        // 0..1
 
         // ---- STONE / COBBLESTONE / ORES  (3,10,8,29,17-20) --------------------
-        // Stone (3): mottled grey value noise + Voronoi crack lines
+        // #133 stylized rework: the natural terrain materials (the blocks that fill
+        // most of the screen) used 2-3 octaves of value noise plus a 9-tap Voronoi
+        // loop each, which read grainy/busy under the flat cel palette and cost a lot
+        // of fragment instructions (#134). They now use one low-frequency smooth term
+        // (calmer, painterly mottling) plus, where a block needs structure, ONE more
+        // cheap term. No Voronoi loop, no high-frequency speckle. The per-voxel hash
+        // (vH) still shifts each block so adjacent blocks differ.
+        //
+        // Stone (3): low-frequency grey mottling, soft, no crack net.
         if (matID == 3u) {
-            // Base mottled noise
-            float mot  = noise2(uv * 6.5) * 0.55 + noise2(uv * 13.0 + float2(4.1, 2.3)) * 0.30
-                       + noise2(uv * 26.0 + float2(1.9, 6.7)) * 0.15;
-            // Voronoi cracks: dark lines between cells
-            float2 vd  = voronoi2(uv * 2.8 + float2(vH * 3.0, vH * 2.1));
-            float crack = 1.0 - smoothstep(0.0, 0.18, vd.y - vd.x);   // 1=on crack
-            // Combine: mottled brightness + darker cracks
-            float bri  = mix(0.82, 1.18, mot);
-            bri       -= crack * 0.28;
-            return float3(clamp(bri, 0.78, 1.20));
+            float mot = smoothDetail(uv * 2.6 + float2(vH * 3.0, vH * 2.1));
+            float bri = mix(0.86, 1.14, mot);
+            return float3(clamp(bri, 0.80, 1.16));
         }
 
-        // Cobblestone (10): rounded pebble cells with highlight on top
+        // Cobblestone (10): broad rounded patches (low-freq) read as cobbles without
+        // the per-pixel Voronoi pebble loop.
         if (matID == 10u) {
-            float2 vd = voronoi2(uv * 2.2 + float2(vH * 2.0, vH * 1.5));
-            float d0  = vd.x;
-            // Pebble: light centre, dark edge ring, dark mortar gap
-            float pebble = smoothstep(0.0, 0.38, d0);  // 0=mortar, 1=stone
-            float highlight = smoothstep(0.24, 0.42, d0) * smoothstep(0.60, 0.35, d0) * (isTop ? 0.18 : 0.09);
-            float grain  = (noise2(uv * 9.0) - 0.5) * 0.10;
-            float bri  = mix(0.72, 1.08, pebble) + highlight + grain;
-            return float3(clamp(bri, 0.72, 1.18));
+            float patch = smoothDetail(uv * 3.2 + float2(vH * 2.0, vH * 1.5));
+            float bri   = mix(0.80, 1.12, patch) + (isTop ? 0.04 : 0.0);
+            return float3(clamp(bri, 0.74, 1.16));
         }
 
-        // Ores (17-20, 29): stone base + bright mineral specks in ore hue
+        // Ores (17-20, 29): smooth stone base + a soft mineral vein in the ore hue
+        // (low-freq band instead of high-freq speckle dots).
         if (matID==17u||matID==18u||matID==19u||matID==20u||matID==29u) {
-            // Stone base (same as stone but slightly tighter)
-            float mot  = noise2(uv * 7.0) * 0.55 + noise2(uv * 15.0 + float2(3.1, 1.7)) * 0.45;
-            float2 vd  = voronoi2(uv * 3.0 + float2(vH * 2.5, vH * 1.9));
-            float crack = 1.0 - smoothstep(0.0, 0.15, vd.y - vd.x);
-            float stBase = mix(0.83, 1.15, mot) - crack * 0.22;
-
-            // Mineral specks: small bright high-frequency dots
-            float speck = noise2(uv * 22.0 + float2(vH * 5.0, 1.3));
-            float mineralMask = step(0.78, speck);     // only bright dots
-            // Each ore gets a distinct hue push on the speck
+            float mot   = smoothDetail(uv * 2.8 + float2(vH * 2.5, vH * 1.9));
+            float stBase = mix(0.84, 1.14, mot);
+            // Soft vein: a second low-freq term, thresholded gently into a vein region.
+            float vein  = smoothstep(0.62, 0.80, smoothDetail(uv * 4.0 + float2(vH * 5.0, 1.3)));
+            // Each ore gets a distinct hue push on the vein
             float3 oreHue;
             if      (matID == 17u) oreHue = float3(0.6, 0.6, 0.7);   // silver/iron
             else if (matID == 18u) oreHue = float3(0.9, 0.7, 0.3);   // gold
             else if (matID == 19u) oreHue = float3(0.5, 0.8, 0.6);   // emerald
             else if (matID == 20u) oreHue = float3(0.7, 0.5, 1.0);   // amethyst
             else                   oreHue = float3(0.5, 0.8, 0.5);   // moss ore (29)
-            float3 col = float3(clamp(stBase, 0.78, 1.18));
-            col = mix(col, col * oreHue * 1.35, mineralMask * 0.65);
-            return clamp(col, 0.75, 1.28);
+            float3 col = float3(clamp(stBase, 0.80, 1.16));
+            col = mix(col, col * oreHue * 1.30, vein * 0.55);
+            return clamp(col, 0.76, 1.26);
         }
 
-        // Mossy / decorated stone (15,16): irregular organic overgrowth noise
+        // Mossy / decorated stone (15,16): soft organic overgrowth blotches.
         if (matID==15u||matID==16u) {
-            float blotch = fbm2(uv * 3.5 + float2(vH * 2.0, vH * 1.5));
-            float grain  = (noise2(uv * 9.0) - 0.5) * 0.12;
-            float bri    = mix(0.78, 1.22, blotch) + grain;
-            // Mossy green tint in the darker blotches
-            float mossy  = clamp(1.0 - blotch, 0.0, 0.6) * 0.30;
-            float3 col   = float3(clamp(bri, 0.78, 1.20));
+            float blotch = smoothDetail(uv * 2.8 + float2(vH * 2.0, vH * 1.5));
+            float bri    = mix(0.82, 1.18, blotch);
+            float mossy  = clamp(1.0 - blotch, 0.0, 0.6) * 0.28;
+            float3 col   = float3(clamp(bri, 0.80, 1.16));
             col.g       += mossy;
-            return clamp(col, 0.75, 1.25);
+            return clamp(col, 0.78, 1.22);
         }
 
         // ---- DIRT / GRAVEL / CLAY  (2, 11, 14) --------------------------------
         if (matID==2u||matID==11u||matID==14u) {
-            // Coarse speckled noise + fine grit
-            float coarse = fbm2(uv * 4.0 + float2(vH * 1.5, 0.7));
-            float grit   = noise2(uv * 18.0 + float2(2.2, 7.1)) * 0.5
-                         + noise2(uv * 26.0 + float2(5.0, 1.3)) * 0.5;
-            float pebble = step(0.72, noise2(uv * 7.0 + float2(vH * 3.0, 2.1)));  // small pebble speck
-            float bri    = mix(0.80, 1.15, coarse) + (grit - 0.5) * 0.10 + pebble * 0.06;
+            // Soft coarse clumping, no fine grit / pebble speckle.
+            float coarse = smoothDetail(uv * 2.4 + float2(vH * 1.5, 0.7));
+            float bri    = mix(0.84, 1.12, coarse);
             // Clay (14) gets a slight blue-grey desaturation
             if (matID == 14u) {
-                return clamp(float3(bri * 1.00, bri * 1.00, bri * 1.04), 0.78, 1.18);
+                return clamp(float3(bri, bri, bri * 1.04), 0.80, 1.16);
             }
-            return float3(clamp(bri, 0.78, 1.18));
+            return float3(clamp(bri, 0.80, 1.16));
         }
 
         // ---- GRASS  (1) -------------------------------------------------------
         if (matID == 1u) {
             if (isTop) {
-                // Blade-noise: fine striped pattern at high frequency, green variation
-                float blades = noise2(uv * 12.0 + float2(vH * 3.0, 0.9)) * 0.60
-                             + noise2(uv * 24.0 + float2(1.3, vH * 2.5)) * 0.40;
-                float hue    = (noise2(uv * 5.5) - 0.5) * 0.14;  // slight yellowing
-                float bri    = mix(0.85, 1.18, blades);
-                float3 col   = float3(bri + hue * (-0.03), bri + hue * (-0.06), bri + hue * 0.01);
-                return clamp(col, 0.78, 1.22);
+                // Soft clumpy grass patches with a gentle green/yellow hue drift.
+                // One low-freq term for brightness, the same term reused for hue
+                // (no separate high-freq blade noise).
+                float patch = smoothDetail(uv * 2.6 + float2(vH * 3.0, 0.9));
+                float bri   = mix(0.86, 1.16, patch);
+                float hue   = (patch - 0.5) * 0.14;   // lighter patches yellow slightly
+                float3 col  = float3(bri - hue * 0.03, bri - hue * 0.06, bri + hue * 0.01);
+                return clamp(col, 0.80, 1.20);
             } else {
-                // Side: dirt base with grassy fringe at the very top edge of the block
-                float dirt = fbm2(uv * 4.5 + float2(vH * 1.5, 0.7));
-                float bri  = mix(0.82, 1.12, dirt);
-                // uv.y fractional position on block side: near 0 = top of block face
+                // Side: smooth dirt base with a grassy fringe at the top edge.
+                float dirt = smoothDetail(uv * 2.6 + float2(vH * 1.5, 0.7));
+                float bri  = mix(0.84, 1.12, dirt);
                 float localY = fract(worldPos.y);   // 0=bottom of block, 1=top
-                float fringe = smoothstep(0.70, 0.95, localY);  // green at top edge
-                float blades = noise2(uv * 10.0 + float2(vH * 2.0, 1.1));
+                float fringe = smoothstep(0.70, 0.95, localY);
                 float3 col   = float3(bri);
-                // blend green grass fringe
-                col.g += fringe * blades * 0.22;
+                col.g += fringe * 0.18;
                 col.r -= fringe * 0.08;
                 col.b -= fringe * 0.04;
-                return clamp(col, 0.78, 1.22);
+                return clamp(col, 0.80, 1.20);
             }
         }
 
         // ---- SAND  (6) --------------------------------------------------------
         if (matID == 6u) {
-            // Dune micro-ripples: two overlapping sine waves at slight angles
-            float ripple1 = sin((uv.x * 0.97 + uv.y * 0.25) * 12.0) * 0.5 + 0.5;
-            float ripple2 = sin((uv.x * 0.18 + uv.y * 1.02) * 7.5 + 1.3) * 0.5 + 0.5;
-            float ripple  = ripple1 * 0.55 + ripple2 * 0.45;
-            // Fine grain over the ripple
-            float grain   = noise2(uv * 20.0 + float2(vH * 4.0, 1.7)) * 0.30
-                          + noise2(uv * 10.0 + float2(2.1, vH * 2.0)) * 0.70;
-            float bri     = mix(0.85, 1.14, ripple) + (grain - 0.5) * 0.08;
-            return float3(clamp(bri, 0.82, 1.15));
+            // Calm dune ripples (one sine band) over a soft low-freq tone. Cheaper
+            // than the prior two-sine + two-noise grain and reads cleaner.
+            float ripple = sin((uv.x * 0.95 + uv.y * 0.30) * 9.0) * 0.5 + 0.5;
+            float tone   = smoothDetail(uv * 2.2 + float2(vH * 4.0, 1.7));
+            float bri    = mix(0.88, 1.12, ripple * 0.5 + tone * 0.5);
+            return float3(clamp(bri, 0.84, 1.14));
         }
 
         // ---- WOOD LOGS  (21, 22) ----------------------------------------------
@@ -2807,30 +2802,22 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // ---- SNOW  (12) -------------------------------------------------------
         if (matID == 12u) {
-            // Base compression noise + sparkle specks (bright white)
-            float base  = noise2(uv * 8.0 + float2(vH * 2.5, 1.3)) * 0.60
-                        + noise2(uv * 18.0 + float2(1.7, vH * 2.0)) * 0.40;
-            float spk   = step(0.88, noise2(uv * 28.0 + float2(vH * 5.0, 3.1)));  // bright specks
-            float bri   = mix(0.92, 1.10, base) + spk * 0.12;
-            // Sparkles are slightly blue-white
-            float3 col  = float3(bri);
-            col.b      += spk * 0.06;
-            return clamp(col, 0.88, 1.22);
+            // Soft drift tone, no sparkle speckle (the high-freq specks read as noise
+            // under the flat cel palette). Gentle blue-white shading.
+            float base = smoothDetail(uv * 2.2 + float2(vH * 2.5, 1.3));
+            float bri  = mix(0.94, 1.10, base);
+            return clamp(float3(bri, bri, bri + 0.01), 0.90, 1.18);
         }
 
         // ---- ICE  (13) --------------------------------------------------------
         if (matID == 13u) {
-            // Mostly smooth with faint blue-tinted Voronoi cracks
-            float2 vd   = voronoi2(uv * 2.0 + float2(vH * 1.5, 0.8));
-            float crack = 1.0 - smoothstep(0.0, 0.12, vd.y - vd.x);   // 1=on crack
-            // Subtle surface gloss (high-freq noise, very low amplitude)
-            float gloss = noise2(uv * 22.0 + float2(vH * 3.0, 2.1));
-            float bri   = 1.0 + (gloss - 0.5) * 0.06 - crack * 0.18;
+            // Mostly smooth with a faint blue-tinted low-freq sheen (no Voronoi cracks).
+            float sheen = smoothDetail(uv * 1.8 + float2(vH * 1.5, 0.8));
+            float bri   = 1.0 + (sheen - 0.5) * 0.10;
             float3 col  = float3(bri);
-            // Cracks push slightly blue
-            col.b      += crack * 0.06;
-            col.r      -= crack * 0.04;
-            return clamp(col, 0.82, 1.12);
+            col.b      += (1.0 - sheen) * 0.05;
+            col.r      -= (1.0 - sheen) * 0.03;
+            return clamp(col, 0.86, 1.12);
         }
 
         // ---- BRICKS  (8, 24) --------------------------------------------------
@@ -3551,13 +3538,18 @@ final class Renderer: NSObject, MTKViewDelegate {
         float bumpLight = 1.0;
         float specAdd  = 0.0;   // #47 normal-mapped specular sheen (added pre-clamp)
         if (!isEmissive) {
-            const float eps = 0.06;   // finite-difference step in world units
+            // #134 cheaper relief: the visible #133 detail is now low-frequency and smooth,
+            // so the bump height field is sampled at the matching low frequency and with TWO
+            // taps instead of three (a centre sample plus one diagonal offset). The diagonal
+            // delta drives both axes, which loses a little directionality but is invisible at
+            // this amplitude and saves a per-fragment noise2 (four hashes) on every block.
+            const float eps = 0.10;   // finite-difference step in world units
             float2 uv0 = faceUV(in.worldPos, in.faceNorm);
-            float h00 = noise2(uv0 * 7.5);
-            float h10 = noise2((uv0 + float2(eps, 0.0)) * 7.5);
-            float h01 = noise2((uv0 + float2(0.0, eps)) * 7.5);
-            float dHdX = (h10 - h00) / eps;
-            float dHdY = (h01 - h00) / eps;
+            float h00  = noise2(uv0 * 2.6);
+            float hD   = noise2((uv0 + float2(eps, eps)) * 2.6);
+            float dH   = (hD - h00) / eps;
+            float dHdX = dH;
+            float dHdY = dH;
             // bumpStrength reduced to 0.06 (was 0.09) so the perturbation stays subtle.
             // sunTilt clamped to [0.82, 1.00] — bump can darken corners but never
             // pushes lit surfaces above 1.0 HDR, preventing bloom wash-out.
@@ -4692,14 +4684,17 @@ final class Renderer: NSObject, MTKViewDelegate {
             // bright horizon from getting a dark fringe.
             if (dC < 0.9995) {
                 float lc = celLinearizeDepth(dC);
-                // 4-tap diagonal cross (Roberts) catches silhouettes; cheap (4 samples).
-                float l00 = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2(-texel.x, -texel.y)));
-                float l11 = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2( texel.x,  texel.y)));
-                float l01 = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2(-texel.x,  texel.y)));
-                float l10 = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2( texel.x, -texel.y)));
+                // #134 cheaper edge: a 3-tap forward-difference cross (centre + right + down)
+                // replaces the 4-tap diagonal Roberts (5 depth samples + 5 linearizations →
+                // 3 of each). The centre sample is already needed for the sky-skip and the
+                // normalization, so this adds only two taps. The largest of the two forward
+                // gaps still inks every silhouette boldly; visually indistinguishable from the
+                // 4-tap cross at this thickness, at a noticeably lower per-pixel cost.
+                float lR = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2(texel.x, 0.0)));
+                float lD = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2(0.0, texel.y)));
                 // Largest neighbour gap, normalised by centre distance so the sensitivity is
                 // scale-free (a one-block ledge inks the same near and far).
-                float g = max(abs(l00 - l11), abs(l01 - l10)) / max(lc, 1.0);
+                float g = max(abs(lc - lR), abs(lc - lD)) / max(lc, 1.0);
                 // Smoothstep gate around CEL_DEPTH_SENS so the line antialiases instead of a
                 // hard 1-px jaggy. Above ~2x the threshold it is a full-strength edge.
                 float edge = smoothstep(CEL_DEPTH_SENS, CEL_DEPTH_SENS * 2.2, g);
