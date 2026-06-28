@@ -425,6 +425,31 @@ final class Renderer: NSObject, MTKViewDelegate {
     weak var hud: HUDView?
     weak var audio: GameAudio?
     private var lastUnderwater = false
+
+    // ---- #135 first-load readiness signal -----------------------------------
+    // The app shows a loading overlay from launch and hides it once the spawn
+    // neighbourhood has actually meshed + uploaded and the framerate has settled.
+    // We detect that from state we already have per frame: the resident chunk
+    // draw count (frame.draw_count, i.e. spawn-area meshes uploaded) crossing a
+    // threshold AND a short run of consecutive healthy frame times. We prefer
+    // the mesh-count signal over a pure timer because a timer alone is fragile.
+    // isWorldReady latches true once and onReady fires exactly once.
+    private(set) var isWorldReady = false
+    var onReady: (() -> Void)?
+    // Called each loading frame with the live progress fraction so the overlay can
+    // animate a bar. Cleared by the app once the overlay is gone.
+    var onLoadProgress: (() -> Void)?
+    // The first-load stutter is the spawn chunks meshing/uploading; once this
+    // many chunk draws are resident the spawn neighbourhood is on the GPU.
+    private let kReadyChunkDraws = 24
+    // ...and the frame loop must have settled: this many back-to-back frames
+    // under the healthy-frame budget (the 1-2 fps load frames blow way past it).
+    private let kReadyHealthyFrames = 6
+    private let kHealthyFrameSecs: CFTimeInterval = 1.0 / 40.0   // <=25ms = settled
+    private var healthyFrameRun = 0
+    // Progress fraction (0..1) for a bar: resident chunk draws / threshold.
+    private(set) var loadProgress: Float = 0
+
     private let saveDir: String
     private let freshWorld: Bool       // true = start a brand-new world (ignore any save)
     private let worldSeed: UInt64
@@ -1145,6 +1170,33 @@ final class Renderer: NSObject, MTKViewDelegate {
         // a just-remeshed chunk wasn't drawn for a frame — flashing holes that let
         // you see the caves below, especially while chunks stream/light settles.
         let bufs = registry.snapshot()
+
+        // #135 first-load readiness: while the spawn neighbourhood is meshing and
+        // uploading the loop runs at 1-2 fps and few chunk draws are resident. Treat
+        // the world as "ready to play" once enough chunk draws are on the GPU AND the
+        // frame loop has held a healthy frame time for a short run. Latches once and
+        // fires onReady so the app can lift the loading overlay. Costs a couple of
+        // comparisons per frame and nothing after it latches.
+        if !isWorldReady {
+            let residentDraws = Int(frame.draw_count)
+            loadProgress = min(1.0, Float(residentDraws) / Float(kReadyChunkDraws))
+            if let cb = onLoadProgress { DispatchQueue.main.async { cb() } }
+            // dt on the very first frame is ~0 (lastTime seeded at init); only count
+            // real frames toward the healthy run.
+            if dt > 0 && dt <= kHealthyFrameSecs && residentDraws >= kReadyChunkDraws {
+                healthyFrameRun += 1
+            } else {
+                healthyFrameRun = 0
+            }
+            if healthyFrameRun >= kReadyHealthyFrames {
+                isWorldReady = true
+                loadProgress = 1.0
+                NSLog("[Blockfall #135] world ready: %d chunk draws resident, %d healthy frames (frame %d) — hiding loading overlay",
+                      residentDraws, healthyFrameRun, frameCounter)
+                let cb = onReady
+                DispatchQueue.main.async { cb?() }
+            }
+        }
 
         // 3) camera matrices
         let aspect = Float(dSize.width / max(1, dSize.height))

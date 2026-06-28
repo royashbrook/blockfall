@@ -25,6 +25,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var gameView: GameView?
     var gameContainer: NSView?
     var pauseOverlay: NSView?
+    // #135 loading overlay: covers the 1-2 fps first-load stutter (spawn chunks
+    // meshing + uploading) and lifts once the renderer reports the world is ready.
+    var loadingOverlay: LoadingView?
+    private var loadStartTime: CFTimeInterval = 0
+    private let kMinLoadingSecs: CFTimeInterval = 1.2   // avoid a flicker on fast loads
     let dialogue = DialogueController()   // #82 villager dialogue
     // #71 character editor state.
     var charEditorOverlay: NSView?
@@ -142,10 +147,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mtkView.autoresizingMask = [.width, .height]
         container.addSubview(mtkView)
         container.addSubview(h)
+
+        // #135 loading screen: cover the first-load stutter from launch. The MTKView
+        // keeps rendering (and meshing) underneath; this opaque overlay sits on top of
+        // both the scene and the HUD until the renderer reports the world is ready, so
+        // the player never sees the 1-2 fps spawn-area load. Input stays locked because
+        // we do NOT grab the mouse until the overlay lifts (see onReady below).
+        let loading = LoadingView(frame: container.bounds)
+        loading.autoresizingMask = [.width, .height]
+        container.addSubview(loading)
+        loadingOverlay = loading
+        loadStartTime = CACurrentMediaTime()
+        NSLog("[Blockfall #135] showing loading overlay")
+        // Drive the spinner/progress bar from the renderer's load fraction each frame.
+        r.onLoadProgress = { [weak loading, weak r] in
+            loading?.progress = r?.loadProgress ?? 0
+        }
+
         window.contentView = container
         window.makeFirstResponder(mtkView)
         renderer = r
         hud = h
+        // #135 hand control to the player once the spawn neighbourhood is meshed +
+        // uploaded and the framerate has settled. Honour a small minimum display time
+        // so a fast load does not flash the overlay, then fade it out and grab the mouse.
+        r.onReady = { [weak self] in
+            guard let self = self else { return }
+            let elapsed = CACurrentMediaTime() - self.loadStartTime
+            let wait = max(0, self.kMinLoadingSecs - elapsed)
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+                self?.hideLoadingOverlay()
+            }
+        }
         // #82 villager dialogue: load the trees and open the overlay when the engine reports
         // a right-click on a villager. Release the pointer so the player can click choices.
         dialogue.load()
@@ -157,6 +190,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         gameView = mtkView
         gameContainer = container
+    }
+
+    // #135 fade out and remove the loading overlay, then hand the player control
+    // (grab the mouse for camera look). Idempotent — safe if called after teardown.
+    private func hideLoadingOverlay() {
+        guard let ov = loadingOverlay else { return }
+        loadingOverlay = nil
+        renderer?.onLoadProgress = nil
+        let elapsed = CACurrentMediaTime() - loadStartTime
+        NSLog("[Blockfall #135] hiding loading overlay after %.2fs", elapsed)
+        // Only capture the mouse if we are still in-game and not paused (the player
+        // could have hit Esc during load). The fade is a short, kid-friendly reveal.
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.45
+            ov.animator().alphaValue = 0
+        }, completionHandler: { [weak self, weak ov] in
+            ov?.removeFromSuperview()
+            guard let self = self else { return }
+            // Hand control to the player. Match the existing "click to look around"
+            // model: just make the game view first responder and leave the mouse
+            // uncaptured until the player clicks in (same as a normal world start).
+            if self.pauseOverlay == nil, let gv = self.gameView {
+                self.window.makeFirstResponder(gv)
+            }
+        })
     }
 
     // ---- pause menu (Esc) ----
@@ -497,6 +555,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func quitToMenu() {
         pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
+        // #135 drop the loading overlay if we quit mid-load (rare, but the
+        // pending fade/grab callbacks must not run against a torn-down game).
+        loadingOverlay?.removeFromSuperview(); loadingOverlay = nil
         renderer?.shutdown(); renderer = nil    // saves the world
         gameView = nil; gameContainer = nil; hud = nil
         menu.refresh()
@@ -516,6 +577,157 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_: Notification) {
         renderer?.shutdown()
         audio.stop()
+    }
+}
+
+// ============================================================================
+// #135 LoadingView — the first-load cover screen.
+// A self-contained, lazy AppKit view: a subtly animated sky-gradient background,
+// the game name, a bouncing-dot spinner, and a thin progress bar driven by the
+// renderer's load fraction. No engine data, no Metal — just a CALayer animation
+// that runs on the main thread while the scene meshes underneath. Kid-friendly:
+// big friendly title, soft colours, gentle motion. Opaque so it hides the scene
+// and the HUD; being on top also swallows clicks so the player cannot capture
+// the mouse / move the camera until the overlay lifts.
+// ============================================================================
+final class LoadingView: NSView {
+    private let bar = CALayer()
+    private let barTrack = CALayer()
+    private var dots: [CALayer] = []
+    // 0..1 from the renderer; the bar eases toward this each set.
+    var progress: Float = 0 {
+        didSet { updateBar() }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(calibratedRed: 0.35, green: 0.62, blue: 0.86, alpha: 1).cgColor
+        buildBackground()
+        buildTitle()
+        buildSpinner()
+        buildProgressBar()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
+
+    // A soft top-to-bottom sky gradient with a slow breathing animation so the
+    // screen never looks frozen even if a load frame is slow to arrive.
+    private func buildBackground() {
+        let grad = CAGradientLayer()
+        grad.frame = bounds
+        grad.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        grad.colors = [
+            NSColor(calibratedRed: 0.42, green: 0.70, blue: 0.93, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.74, green: 0.88, blue: 0.98, alpha: 1).cgColor,
+        ]
+        grad.startPoint = CGPoint(x: 0.5, y: 1.0)
+        grad.endPoint = CGPoint(x: 0.5, y: 0.0)
+        let pulse = CABasicAnimation(keyPath: "colors")
+        pulse.toValue = [
+            NSColor(calibratedRed: 0.38, green: 0.66, blue: 0.90, alpha: 1).cgColor,
+            NSColor(calibratedRed: 0.66, green: 0.84, blue: 0.97, alpha: 1).cgColor,
+        ]
+        pulse.duration = 2.4
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        grad.add(pulse, forKey: "breathe")
+        layer?.addSublayer(grad)
+    }
+
+    private func buildTitle() {
+        let title = NSTextField(labelWithString: "Blockfall")
+        title.font = .systemFont(ofSize: 56, weight: .heavy)
+        title.textColor = .white
+        title.alignment = .center
+        title.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(title)
+
+        let sub = NSTextField(labelWithString: "Building your world\u{2026}")
+        sub.font = .systemFont(ofSize: 20, weight: .medium)
+        sub.textColor = NSColor.white.withAlphaComponent(0.92)
+        sub.alignment = .center
+        sub.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(sub)
+
+        NSLayoutConstraint.activate([
+            title.centerXAnchor.constraint(equalTo: centerXAnchor),
+            title.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -40),
+            sub.centerXAnchor.constraint(equalTo: centerXAnchor),
+            sub.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 14),
+        ])
+    }
+
+    // A simple, friendly three-dot bouncing spinner centred under the subtitle.
+    private func buildSpinner() {
+        let spinner = NSView(frame: .zero)
+        spinner.wantsLayer = true
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(spinner)
+        NSLayoutConstraint.activate([
+            spinner.centerXAnchor.constraint(equalTo: centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 36),
+            spinner.widthAnchor.constraint(equalToConstant: 96),
+            spinner.heightAnchor.constraint(equalToConstant: 24),
+        ])
+        let r: CGFloat = 9, gap: CGFloat = 33
+        for i in 0..<3 {
+            let dot = CALayer()
+            dot.backgroundColor = NSColor.white.cgColor
+            dot.frame = CGRect(x: CGFloat(i) * gap, y: 8, width: r, height: r)
+            dot.cornerRadius = r / 2
+            spinner.layer?.addSublayer(dot)
+            let bounce = CABasicAnimation(keyPath: "transform.translation.y")
+            bounce.fromValue = 0
+            bounce.toValue = 10
+            bounce.duration = 0.45
+            bounce.autoreverses = true
+            bounce.repeatCount = .infinity
+            bounce.beginTime = CACurrentMediaTime() + Double(i) * 0.15
+            bounce.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            dot.add(bounce, forKey: "bounce")
+            dots.append(dot)
+        }
+    }
+
+    // A thin rounded progress bar near the bottom; width tracks `progress`.
+    private func buildProgressBar() {
+        let w: CGFloat = 320, h: CGFloat = 10
+        barTrack.backgroundColor = NSColor.white.withAlphaComponent(0.30).cgColor
+        barTrack.cornerRadius = h / 2
+        bar.backgroundColor = NSColor.white.cgColor
+        bar.cornerRadius = h / 2
+        layer?.addSublayer(barTrack)
+        barTrack.addSublayer(bar)
+        layoutBar(w: w, h: h)
+    }
+
+    private func layoutBar(w: CGFloat, h: CGFloat) {
+        let x = (bounds.width - w) / 2
+        let y = bounds.height * 0.22
+        barTrack.frame = CGRect(x: x, y: y, width: w, height: h)
+        updateBar()
+    }
+
+    private func updateBar() {
+        let frac = CGFloat(max(0, min(1, progress)))
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.2)
+        bar.frame = CGRect(x: 0, y: 0, width: barTrack.bounds.width * frac, height: barTrack.bounds.height)
+        CATransaction.commit()
+    }
+
+    override func layout() {
+        super.layout()
+        layoutBar(w: 320, h: 10)
+    }
+
+    // Swallow input so clicks never reach the game view while loading.
+    override func mouseDown(with event: NSEvent) {}
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Stay opaque to the window's hit-testing so the MTKView underneath
+        // cannot capture the pointer until we are removed.
+        return self
     }
 }
 
