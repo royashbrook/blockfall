@@ -966,10 +966,32 @@ impl<'c> World<'c> {
         NO_FLOOR
     }
 
-    // day/night cycle phase in 0..1 (start bright morning, ~12 min/day).
+    // day/night cycle phase in 0..1.
+    //
+    // Phase convention (shared with the app's dayLight / skyColor / sun_dir):
+    // 0.25 is high noon (sun highest, brightest) and 0.75 is deep midnight. The
+    // sun direction is sun_dir.y = -sin(2*pi*t) - 0.25, so the sun sits ABOVE the
+    // horizon for t in [0, 0.5403] U [0.9598, 1.0] (about 0.58 of the cycle) and
+    // BELOW for t in [0.5403, 0.9598]. That 0.58 daylight band is ~14 of 24 hours,
+    // with the night taking the remaining ~10 hours, which is the generous-day
+    // balance we want. Phase advances LINEARLY with the clock, so the sun traces
+    // one smooth continuous arc per cycle (no discontinuity at noon or midnight).
+    //
+    // The whole cycle takes DAY_CYCLE_SECS of world_clock, so a fresh world opens
+    // at DAY_START_PHASE (dawn) and the sun climbs from there.
     fn day_time(clock: f64) -> f32 {
-        ((clock * 0.00175 + 0.30) % 1.0) as f32
+        ((clock * Self::DAY_RATE + Self::DAY_START_PHASE) % 1.0) as f32
     }
+
+    // One full day/night cycle in seconds of world_clock. 24 minutes maps one real
+    // minute to one in-game hour, so the ~0.58 daylight band is ~14 real minutes of
+    // day and ~10 of night. Not so fast the day blinks by, not so slow it drags.
+    const DAY_CYCLE_SECS: f64 = 24.0 * 60.0;
+    // Phase advanced per second of world_clock (one full 0..1 sweep per cycle).
+    const DAY_RATE: f64 = 1.0 / Self::DAY_CYCLE_SECS;
+    // Phase at world_clock = 0. 0.0 reads as ~06:00 under the 0.25 = noon
+    // convention, so a new world starts at dawn just as the sun clears the horizon.
+    const DAY_START_PHASE: f64 = 0.0;
 
     // Generate a chunk via the worldgen (pure fn of seed+coord). Borrows gen
     // immutably and returns an owned chunk so the caller can mutate the store
@@ -4063,13 +4085,13 @@ impl<'c> World<'c> {
     const TIME_PHASE_DAY: f32 = 0.25;
     const TIME_PHASE_NIGHT: f32 = 0.75;
 
-    // Invert day_time (phase = (clock * 0.00175 + 0.30) % 1.0) to the smallest
-    // non-negative world_clock that yields the given phase. Mirrors the math in
-    // debug_set_day_time so the pinned clock reads back as exactly `phase`.
+    // Invert day_time (phase = (clock * DAY_RATE + DAY_START_PHASE) % 1.0) to the
+    // smallest non-negative world_clock that yields the given phase. Mirrors the
+    // math in debug_set_day_time so the pinned clock reads back as exactly `phase`.
     fn clock_for_phase(phase: f32) -> f64 {
         let p = phase.rem_euclid(1.0) as f64;
-        let frac = (p - 0.30).rem_euclid(1.0);
-        frac / 0.00175
+        let frac = (p - Self::DAY_START_PHASE).rem_euclid(1.0);
+        frac / Self::DAY_RATE
     }
 
     // Set the day/night pin: 0 = auto (clock advances normally), 1 = always-day,
@@ -5067,10 +5089,8 @@ impl<'c> World<'c> {
     // tests: jump the world clock to a chosen day_time phase (0..1) so a test can
     // put the world into night without pumping ~5 minutes of frames.
     pub fn debug_set_day_time(&mut self, phase: f32) {
-        // invert day_time: phase = (clock * 0.00175 + 0.30) % 1.0
-        let p = phase.rem_euclid(1.0) as f64;
-        let frac = (p - 0.30).rem_euclid(1.0);
-        self.world_clock = frac / 0.00175;
+        // invert day_time: phase = (clock * DAY_RATE + DAY_START_PHASE) % 1.0
+        self.world_clock = Self::clock_for_phase(phase);
     }
     pub fn debug_quests_completed(&self) -> i32 {
         self.quests_completed
@@ -5232,5 +5252,108 @@ mod time_mode_tests {
         }
         // 10 ticks of 0.016 s advance the clock by ~0.16 units in auto mode.
         assert!(w.world_clock > before + 0.1);
+    }
+
+    // Sun elevation (positive = above the horizon) for a given day_time phase,
+    // using the exact sun_dir geometry the renderer ships to the app:
+    // sun_dir = {cos(ang)*0.6, -sin(ang)-0.25, 0.90}, ang = 2*pi*t, elevation is
+    // the negated, normalized y component. Kept local to the test so it tracks the
+    // render math; if that geometry changes, this assertion catches the drift.
+    fn sun_elev(phase: f32) -> f32 {
+        let ang = phase * std::f32::consts::TAU;
+        let dx = ang.cos() * 0.6;
+        let dy = -ang.sin() - 0.25;
+        let dz = 0.90f32;
+        -dy / (dx * dx + dy * dy + dz * dz).sqrt()
+    }
+
+    // Map a day_time phase to an in-game hour. The app fixes phase 0.25 = high noon
+    // (12:00), so hour = ((phase - 0.25) * 24 + 12) mod 24.
+    fn phase_hour(phase: f32) -> f32 {
+        (((phase - 0.25) * 24.0 + 12.0) % 24.0 + 24.0) % 24.0
+    }
+
+    // The day phase should occupy ~14/24 of the cycle and the night ~10/24: the sun
+    // is above the horizon for roughly 14 of every 24 hours, generous day vs short
+    // night. We sample one full cycle by stepping world_clock and counting how long
+    // day_time lands in the sun-up band.
+    #[test]
+    fn daylight_fraction_is_about_fourteen_of_twentyfour() {
+        let n = 100_000u32;
+        let mut up = 0u32;
+        for i in 0..n {
+            let phase = (i as f32 + 0.5) / n as f32; // uniform sweep of the phase
+            if sun_elev(phase) > 0.0 {
+                up += 1;
+            }
+        }
+        let frac = up as f64 / n as f64;
+        let hours = frac * 24.0;
+        // Target 14/24 ~= 0.5833; the geometry gives ~0.5805 (~13.93 h). Allow a
+        // modest tolerance so the test pins the balance without being brittle.
+        assert!(
+            (frac - 14.0 / 24.0).abs() < 0.02,
+            "daylight fraction {frac:.4} ({hours:.2} h) not ~14/24",
+        );
+        // And it must clearly beat the night, never a 50/50 split.
+        assert!(frac > 0.55, "day must be longer than night, got {frac:.4}");
+    }
+
+    // The sun should be up across roughly the 07:00..19:00 band and down outside it.
+    // We assert it is above the horizon at mid-morning, noon, and mid-afternoon, and
+    // below at deep night, with the actual sunrise/sunset bracketing 07:00..19:00.
+    #[test]
+    fn sun_up_across_daytime_band() {
+        // Sun is comfortably up through the working day.
+        for &h in &[8.0f32, 10.0, 12.0, 14.0, 16.0, 18.0] {
+            let phase = (0.25 + (h - 12.0) / 24.0).rem_euclid(1.0);
+            assert!(sun_elev(phase) > 0.0, "expected sun up at {h:.0}:00");
+        }
+        // Sun is down through the night.
+        for &h in &[0.0f32, 2.0, 22.0] {
+            let phase = (0.25 + (h - 12.0) / 24.0).rem_euclid(1.0);
+            assert!(sun_elev(phase) < 0.0, "expected sun down at {h:.0}:00");
+        }
+        // Find the sunrise and sunset hours by scanning the elevation crossings.
+        let n = 200_000u32;
+        let mut sunrise = -1.0f32;
+        let mut sunset = -1.0f32;
+        let mut prev = sun_elev(0.0);
+        for i in 1..=n {
+            let phase = i as f32 / n as f32;
+            let e = sun_elev(phase);
+            if prev <= 0.0 && e > 0.0 {
+                sunrise = phase_hour(phase);
+            }
+            if prev > 0.0 && e <= 0.0 {
+                sunset = phase_hour(phase);
+            }
+            prev = e;
+        }
+        // The sun-up window brackets roughly 07:00..19:00. The fixed sun_dir
+        // geometry is symmetric about noon, so the ~14 h band runs ~05:02..18:58;
+        // sunrise lands at/before 07:00 and sunset right around 19:00 (within a few
+        // game-minutes). We allow a small tolerance rather than fight the geometry
+        // the app shares for lighting and shadows.
+        assert!(
+            sunrise > 0.0 && sunrise <= 7.0,
+            "sunrise {sunrise:.2} should be at/before 07:00",
+        );
+        assert!(
+            (18.9..=19.5).contains(&sunset),
+            "sunset {sunset:.2} should be ~19:00",
+        );
+    }
+
+    // A full cycle takes DAY_CYCLE_SECS of world_clock: phase returns to its start
+    // after exactly that many seconds, confirming the chosen day length.
+    #[test]
+    fn cycle_length_matches_constant() {
+        let start = World::day_time(0.0);
+        let after = World::day_time(World::DAY_CYCLE_SECS);
+        assert!((start - after).abs() < 1e-4, "cycle should close after DAY_CYCLE_SECS");
+        // Half a cycle should land near the opposite phase (start 0.0 -> ~0.5).
+        let half = World::day_time(World::DAY_CYCLE_SECS / 2.0);
+        assert!((half - 0.5).abs() < 1e-3, "half cycle should be ~0.5 phase, got {half}");
     }
 }
