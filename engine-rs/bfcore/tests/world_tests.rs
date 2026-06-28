@@ -1105,3 +1105,89 @@ fn villager_home_is_a_real_building() {
         "expected at least one home larger than 5x5 across the seeds (size variety)"
     );
 }
+
+// ============================================================================
+// Natural movement (#131) — creatures CLIMB a 1-block step smoothly (over a few
+// ticks) instead of teleporting their Y up a whole block in a single tick, and a
+// wall taller than the climb cap stays unclimbable (the AI must go around).
+// ============================================================================
+#[test]
+fn creature_climbs_step_smoothly() {
+    let mut content = ContentRegistry::new();
+    content.load(CONTENT);
+    let mut w = World::new(None);
+    w.debug_set_sync_streaming(true);
+    w.set_content(&content);
+    w.set_allocator(allocator());
+
+    // Flat test world: grass top at y=7, so the standable surface is y=8.
+    w.generate_test_world();
+    // Keep the maintain_creatures spawner from running (it self-gates on resident
+    // count, but place the camera far so any spawns land away from our column too).
+    w.debug_set_camera(8.5, 12.0, 8.5, 0.0, 0.0);
+
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+
+    // ---- 1-block step: a single solid block on top of the grass at x=11 makes the
+    // surface there y=9. A creature walking +X into it should clamber up to y=9. ----
+    w.debug_edit(11, 8, 11, world::STONE);
+    // yaw with sin=1, cos=0 -> direction (1,0,0), straight at the step in +X.
+    let yaw = std::f32::consts::FRAC_PI_2;
+    let idx = w.debug_spawn_creature_at(9.5, 8.0, 11.5, yaw, 2.0);
+
+    let mut ys: Vec<f32> = Vec::new();
+    let mut reached_top = false;
+    for _ in 0..120 {
+        w.update(&zero, 0.05);
+        let (_x, y, _z) = w.debug_creature_pos(idx);
+        ys.push(y);
+        if (y - 9.0).abs() < 0.05 {
+            reached_top = true;
+            break;
+        }
+    }
+    assert!(reached_top, "creature climbed onto the 1-block step (ends at y=9)");
+
+    // The rise must be GRADUAL: count frames where Y sits strictly between the
+    // start floor (8) and the step top (9). A single-tick pop would show zero or
+    // one such frame; a smooth climb shows several.
+    let mid_frames = ys.iter().filter(|&&y| y > 8.05 && y < 8.95).count();
+    assert!(
+        mid_frames >= 3,
+        "Y rose gradually across several frames (saw {} mid-climb frames), not an instant pop",
+        mid_frames
+    );
+    // And no single tick jumped a whole block (the old pop moved a full 1.0 at once).
+    let mut max_jump = 0.0f32;
+    for win in ys.windows(2) {
+        let dy = (win[1] - win[0]).abs();
+        if dy > max_jump {
+            max_jump = dy;
+        }
+    }
+    assert!(
+        max_jump < 0.9,
+        "no single tick teleported a whole block (max per-tick dy was {:.3})",
+        max_jump
+    );
+
+    // ---- too-tall wall: a 3-block stack is above the climb cap (2), so the
+    // creature must NOT climb it; it stays on the ground (y stays ~8). ----
+    w.debug_edit(31, 8, 31, world::STONE);
+    w.debug_edit(31, 9, 31, world::STONE);
+    w.debug_edit(31, 10, 31, world::STONE);
+    let idx2 = w.debug_spawn_creature_at(29.5, 8.0, 31.5, yaw, 2.0);
+    let mut max_y2 = 8.0f32;
+    for _ in 0..120 {
+        w.update(&zero, 0.05);
+        let (_x, y, _z) = w.debug_creature_pos(idx2);
+        if y > max_y2 {
+            max_y2 = y;
+        }
+    }
+    assert!(
+        max_y2 < 8.6,
+        "a 3-block wall is NOT climbed (creature stayed near the ground, peak y={:.3})",
+        max_y2
+    );
+}

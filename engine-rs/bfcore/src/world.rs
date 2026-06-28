@@ -218,6 +218,12 @@ struct Creature {
     // night/quest gate (a ruin is dangerous around the clock) and are capped
     // separately so they never overwhelm the world.
     from_ruin: bool,
+    // Vertical distance still to be climbed when the creature is stepping up onto
+    // a ledge it bumped into. While this is > 0 the creature raises its Y toward
+    // the ledge top over several ticks (a smooth clamber) instead of snapping up a
+    // whole block in one tick, and gravity is suppressed so it does not fight the
+    // climb. Deterministic: advanced by a fixed climb speed times the fixed dt.
+    climb: f32,
     name: String,
 }
 impl Default for Creature {
@@ -244,6 +250,7 @@ impl Default for Creature {
             home_x: 0,
             home_z: 0,
             from_ruin: false,
+            climb: 0.0,
             name: String::new(),
         }
     }
@@ -2829,6 +2836,13 @@ impl<'c> World<'c> {
     }
 
     fn update_creatures(&mut self, dt: f32) {
+        // Smooth step-up tuning. A creature blocked by a ledge it can stand on climbs
+        // its Y up at CLIMB_SPEED blocks/sec (a clamber that reads over a few ticks at
+        // the usual ~0.05s dt) instead of teleporting up a whole block. MAX_CLIMB caps
+        // how tall a step it will attempt; anything taller stays blocked so the AI
+        // turns and goes around, exactly as before this change.
+        const CLIMB_SPEED: f32 = 3.0;
+        const MAX_CLIMB: i32 = 2;
         let n = self.creatures.len();
         for i in 0..n {
             // Snapshot the fields we need for read-only logic, then write back.
@@ -2908,23 +2922,58 @@ impl<'c> World<'c> {
             if !into_water && !self.collide_solid(nv.x, nv.y, nv.z) {
                 c.pos.x = next.x;
                 c.pos.z = next.z;
-            } else if !into_water && !self.collide_solid(nv.x, nv.y + 1, nv.z) {
-                c.pos.x = next.x;
-                c.pos.z = next.z;
-                c.pos.y += 1.0;
+            } else if !into_water {
+                // Blocked horizontally by a step. Find the lowest height the creature
+                // could stand on top of: scan up from the blocking block to the first
+                // free cell, capped at MAX_CLIMB blocks. A step within reach starts a
+                // smooth climb (raise Y over several ticks, see below) instead of the
+                // old instant one block pop; a taller wall stays blocked so the AI
+                // turns and paths around it just like before.
+                let mut step_h = 0i32;
+                let mut h = 1i32;
+                while h <= MAX_CLIMB {
+                    if !self.collide_solid(nv.x, nv.y + h, nv.z) {
+                        step_h = h;
+                        break;
+                    }
+                    h += 1;
+                }
+                if step_h > 0 {
+                    // Take the horizontal step now and queue the remaining vertical
+                    // rise; the climb advance below interpolates Y up smoothly.
+                    c.pos.x = next.x;
+                    c.pos.z = next.z;
+                    c.climb = (step_h as f32 - (c.pos.y - c.pos.y.floor())).max(c.climb);
+                } else if c.wander <= 0.0 {
+                    c.yaw += 2.0 + self.rand01() * 2.2;
+                    c.wander = 0.6 + self.rand01() * 0.6;
+                }
             } else if c.wander <= 0.0 {
                 c.yaw += 2.0 + self.rand01() * 2.2;
                 c.wander = 0.6 + self.rand01() * 0.6;
             }
-            // gravity + land on floor below.
-            c.vy -= 24.0 * dt;
-            c.pos.y += c.vy * dt;
-            let fy = self.floor_below(Self::ifloor(c.pos.x), c.pos.y.floor() as i32 + 1, Self::ifloor(c.pos.z));
-            if fy != NO_FLOOR && c.pos.y <= fy as f32 {
-                c.pos.y = fy as f32;
+            if c.climb > 0.0 {
+                // Smooth clamber: raise Y toward the ledge top at a fixed climb speed
+                // (deterministic, fixed dt) rather than snapping a whole block. Gravity
+                // is skipped this tick so it does not pull against the climb.
+                let rise = (CLIMB_SPEED * dt).min(c.climb);
+                c.pos.y += rise;
+                c.climb -= rise;
+                if c.climb < 1e-4 {
+                    c.climb = 0.0;
+                }
                 c.vy = 0.0;
-            } else if fy == NO_FLOOR {
-                c.vy = 0.0;
+            } else {
+                // gravity + land on floor below.
+                c.vy -= 24.0 * dt;
+                c.pos.y += c.vy * dt;
+                let fy = self.floor_below(Self::ifloor(c.pos.x), c.pos.y.floor() as i32 + 1, Self::ifloor(c.pos.z));
+                if fy != NO_FLOOR && c.pos.y <= fy as f32 {
+                    c.pos.y = fy as f32;
+                    c.vy = 0.0;
+                } else if fy == NO_FLOOR {
+                    c.vy = 0.0;
+                }
             }
             self.creatures[i] = c;
         }
@@ -4515,6 +4564,21 @@ impl<'c> World<'c> {
         }
         let c = &self.creatures[i as usize];
         (c.pos.x, c.pos.y, c.pos.z)
+    }
+    // Spawn a plain wandering creature at a precise position + heading and return its
+    // index. Used by the locomotion tests to place a creature against a known step.
+    // The wander timer is set high so the creature keeps its given yaw (it walks
+    // straight at the step instead of randomly turning away) for the test window.
+    pub fn debug_spawn_creature_at(&mut self, x: f32, y: f32, z: f32, yaw: f32, speed: f32) -> i32 {
+        let mut c = Creature::default();
+        c.pos = V3::new(x, y, z);
+        c.yaw = yaw;
+        c.speed = speed;
+        c.scale = 1.0;
+        c.hp = 5;
+        c.wander = 1000.0;
+        self.creatures.push(c);
+        (self.creatures.len() - 1) as i32
     }
     pub fn debug_set_friendly(&mut self, i: i32) {
         if i >= 0 && i < self.creatures.len() as i32 {
