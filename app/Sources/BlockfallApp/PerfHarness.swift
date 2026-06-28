@@ -2452,9 +2452,10 @@ func runVistaProbe(strict: Bool = false) -> Bool {
     ssd.compareFunction = .lessEqual
     let shadowSampler = device.makeSamplerState(descriptor: ssd)!
 
-    // BEFORE / AFTER knobs (default = shipped values).
-    let farR     = Float(ProcessInfo.processInfo.environment["BF_VISTA_FARR"]     ?? "") ?? 380
-    let fadeEnd  = Float(ProcessInfo.processInfo.environment["BF_VISTA_FADE_END"] ?? "") ?? 380
+    // BEFORE / AFTER knobs (default = shipped values; #120 farR 400 so the inscribed circle
+    // reaches past the 384 render edge and the fade lands in the final 8-block sliver).
+    let farR     = Float(ProcessInfo.processInfo.environment["BF_VISTA_FARR"]     ?? "") ?? 400
+    let fadeEnd  = Float(ProcessInfo.processInfo.environment["BF_VISTA_FADE_END"] ?? "") ?? 400
     let nearR: Float = 48
     let outDir   = ProcessInfo.processInfo.environment["BF_VISTA_DIR"] ?? "/tmp"
     let tag      = ProcessInfo.processInfo.environment["BF_VISTA_TAG"] ?? "vista"
@@ -2643,9 +2644,13 @@ func runVistaProbe(strict: Bool = false) -> Bool {
         let rf = analyticPCF(dF, lvpF, p, bias: 0.0075)
         var raw = min(rn, rf)
         let distToCam = simd_length(p - camPos)
-        // Mirror fmain's fade band exactly (so the cutoff metric matches the rendered shots).
-        let fadeStart = (fadeEnd >= 360.0) ? Float(345.0) : (fadeEnd - 35.0)
-        let td = max(0, min(1, (distToCam - fadeStart)/(fadeEnd - fadeStart)))
+        // #120 mirror fmain's NEW fade band exactly: a tight 8-block fade right at the render
+        // edge (min(384, coverR)-8 .. min(384, coverR)), so the cutoff metric matches the
+        // rendered shots. Shadows are full everywhere inside.
+        let renderEdge: Float = 384.0
+        let fEnd = min(renderEdge, fadeEnd)
+        let fadeStart = fEnd - 8.0
+        let td = max(0, min(1, (distToCam - fadeStart)/(fEnd - fadeStart)))
         let distFade = 1.0 - (td*td*(3-2*td))
         raw = 1.0*(1-distFade) + raw*distFade
         return raw
@@ -2769,9 +2774,9 @@ func runVistaProbe(strict: Bool = false) -> Bool {
         let t = max(0, min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t)
     }
     func fogAt(_ dist: Float) -> Float {
-        let baseFog = (smoothstepF(295, 400, dist)) * 0.22
-        var edgeFog = smoothstepF(340, 384, dist); edgeFog = edgeFog * edgeFog * 0.78
-        return min(0.92, baseFog + edgeFog)
+        // #120 match fmain's gentle single haze (onset 290, cap 0.32); the artificial edge band
+        // is gone.
+        return smoothstepF(290, 384, dist) * 0.32
     }
     // Raw (un-faded) shadow factor: the cascade union WITHOUT the radial distFade. The fade
     // RING is the difference between this and the faded result - i.e. light the fade removes.

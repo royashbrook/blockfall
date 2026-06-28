@@ -438,20 +438,24 @@ final class Renderer: NSObject, MTKViewDelegate {
     //   far  cascade = wide radius  → shadows out toward the horizon
     private let kShadowRes  = 1536
     private let kShadowNearR: Float = 48   // near cascade half-extent (world units)
-    // THE COVERAGE KNOB (#118). The far cascade half-extent. The whole long-view shadow
-    // wipe was caused by this circle ending mid-vista (was 300) where the air is still
-    // clear, so the shadow/no-shadow boundary was plainly visible and panned across the
-    // view as the camera turned. Render distance is 384 blocks, so to HIDE the boundary it
-    // must sit out at the terrain edge IN the distance haze, not in the middle of the field.
-    // 380 puts the coverage circle right at the render edge, where the fmain radial distFade
-    // (which fades shadows out over 345..this value) dissolves into the heavy EDGE haze
-    // (Renderer fog, 340..384) - so no shadow line is left to sweep.
-    // PERF/AIR KNOB: lower this toward ~360 to claw back GPU on a weak machine; the far map
-    // rasterises a smaller circle. Keep it >= ~360 so the fade stays inside the edge-haze
-    // band - below that the fade-out re-emerges into clearer air and a faint ring returns
-    // (to go lower you must also pull the fog/edge band in to match). The engine occluder
-    // radius (world.rs kshadow_r) must stay >= this; the per-cascade near cull keys off it.
-    private let kShadowFarR:  Float = 380
+    // THE COVERAGE KNOB (#120). The far cascade half-extent, in world units. This is the
+    // radius of the INSCRIBED circle of the sun-aligned square shadow map (the half-extent
+    // reaches R at the edge-midpoints, sqrt(2)*R at the corners). Cast shadows are FULL out
+    // to this radius; the square edge/corners sit even farther out, beyond the rendered
+    // terrain, so no straight map edge can ever fall inside the vista.
+    // The whole long-view shadow wipe was the coverage circle (and its masking fog band)
+    // ending mid-vista, where the air is clear, so the boundary panned across the land as
+    // the camera turned. The fix is geometric: make the inscribed circle reach PAST the
+    // render distance (384), so shadows are full across everything the player can see, and
+    // fade only in a tight band right at the render edge (fmain distFade 376..384) where the
+    // terrain itself is ending. With no fade ring inside the vista and no masking fog band,
+    // there is nothing left to sweep.
+    // PERF/AIR KNOB (M1 Air): lower this to claw back GPU on a weak machine; the far map
+    // then rasterises a smaller circle. But it MUST stay >= the render distance (384) or the
+    // coverage circle re-enters the vista and the sweeping ring returns. On the M1 Air, drop
+    // render distance first (graphics settings) rather than this. The engine occluder radius
+    // (world.rs kshadow_r) must stay >= this; the per-cascade near cull keys off it.
+    private let kShadowFarR:  Float = 400
     private let kCascadeSplit: Float = 36  // camera-distance split between cascades
     // #119 THE GOD-RAY TUNING KNOB. Overall strength of the volumetric light shafts at
     // full daylight; daylight + the toggle scale it down further (0 = off). Raise for
@@ -3226,10 +3230,10 @@ final class Renderer: NSObject, MTKViewDelegate {
             // the far map is the coverage floor. Both maps cover any point within the far
             // radius, so the union is well-defined everywhere shadows are drawn.
             float rn = sampleShadowPCF(shadowTex, shadowSamp, in.shadowPos,  dayFactor, 0.0028);
-            // #118 the far cascade now covers ~380 world units over 1536 texels (~0.5 u/texel,
-            // coarser than before), so it needs a larger depth bias to avoid self-shadow acne
-            // on the now-bigger texels. Bumped 0.0050 -> 0.0075; distant shadows are tiny on
-            // screen so the slight peter-panning this trades for is invisible at range.
+            // #120 the far cascade covers ~400 world units over 1536 texels (~0.52 u/texel),
+            // so it needs a larger depth bias to avoid self-shadow acne on the bigger texels.
+            // 0.0075; distant shadows are tiny on screen so the slight peter-panning this trades
+            // for is invisible at range.
             float rf = sampleShadowPCF(shadowFar, shadowSamp, in.shadowPosF, dayFactor, 0.0075);
             float raw = min(rn, rf);
             // #72 the real wipe fix: the shadow map is a sun-aligned SQUARE, whose straight
@@ -3238,24 +3242,22 @@ final class Renderer: NSObject, MTKViewDelegate {
             // the player instead, so the cutoff is a smooth circle (same in every
             // direction) that sits inside the square's minimum reach — no straight edge can
             // ever show, so turning never wipes a side.
-            // #118 THE long-view wipe fix: the fade used to END at 298, mid-vista, in clear
-            // air (render distance is 384, fog only reaches ~32% at the very edge), so that
-            // circular cutoff was plainly visible and panned across the view as the camera
-            // turned. Push the fade out to the far cascade edge (wu.cameraPosW.w = kShadowFarR,
-            // ~380) so it lands at the render edge inside the distance haze; the residual edge
-            // is then hidden by fog. The fade stays just inside the far cascade's minimum reach
-            // so no straight map edge can ever show. Falls back to the old 298 if the knob is
-            // unset (w == 0, e.g. legacy callers).
-            // The fade must coincide with the EDGE haze (Renderer fog: edge term climbs 345->400)
-            // so shadows only dim where the land is already hazing over. Start the fade at 345
-            // (where the heavy haze begins) and finish at the far cascade edge (fadeEnd ~380),
-            // by which point the edge fog has largely taken over - so the shadow disappearance is
-            // hidden by haze and no line is visible to sweep when turning. (Falls back to the old
-            // 298 end if the knob is unset.)
-            float fadeEnd   = (wu.cameraPosW.w > 1.0) ? wu.cameraPosW.w : 298.0;
-            // Begin the fade where the heavy EDGE haze starts (345) when coverage reaches the
-            // render edge; for a smaller (dialed-down) coverage radius just use a 35-unit band.
-            float fadeStart = (fadeEnd >= 360.0) ? 345.0 : (fadeEnd - 35.0);
+            // #120 THE long-view wipe fix (geometric). The far cascade's inscribed circle now
+            // reaches PAST the render distance (kShadowFarR 400 >= 384), so cast shadows are
+            // FULL across the ENTIRE visible vista. The radial fade is pushed to a TIGHT band
+            // right at the render edge (RENDER_EDGE-8 .. RENDER_EDGE) where the terrain itself
+            // is ending - so there is no fade ring sitting inside the field to sweep across the
+            // land when the camera turns. The fade end stays well inside the cascade's inscribed
+            // circle (kShadowFarR), so no straight square edge can ever show.
+            // wu.cameraPosW.w carries kShadowFarR; we clamp the fade END to the render edge (384)
+            // rather than to that radius, since shadows are valid all the way out to kShadowFarR
+            // and we only need to fade the last few blocks before terrain runs out.
+            const float RENDER_EDGE = 384.0;       // 24 chunks * 16 blocks (matches render dist)
+            float coverR   = (wu.cameraPosW.w > 1.0) ? wu.cameraPosW.w : 298.0;
+            // Fade only in the final 8-block sliver before the render edge, and never beyond the
+            // cascade's valid coverage radius.
+            float fadeEnd   = min(RENDER_EDGE, coverR);
+            float fadeStart = fadeEnd - 8.0;
             float distFade  = 1.0 - smoothstep(fadeStart, fadeEnd, distToCam);
             raw = mix(1.0, raw, distFade);
             // #72 DEBUG: shadowScale == 2 (harness sentinel) outputs the shadow factor as
@@ -3600,21 +3602,15 @@ final class Renderer: NSObject, MTKViewDelegate {
             // 0.32 so only the last ~25% of the view hazes; the field stays clear.
             float3 camPos3 = UW_CAM_POS(wu);
             float dist = length(in.worldPos - camPos3);
-            // #118 two-part haze. A thin base haze (onset 295, max ~0.22) hides chunk pop-in
-            // and keeps the near/mid field clear, PLUS a strong EDGE haze that climbs hard over
-            // the last ~50 blocks (345..400) toward the render edge. The edge haze exists so the
-            // shadow-coverage fade-out (which ends at the far cascade radius, ~380) dissolves
-            // INTO dense fog: by the time shadows stop, the land there is mostly hazed, so there
-            // is no visible shadow/no-shadow line to sweep when the camera turns. The mid-field
-            // stays clear because the edge term is ~0 until 345.
-            float baseFog = smoothstep(295.0, 400.0, dist) * 0.22;
-            // The edge haze spans the SAME band as the shadow-coverage fade (fmain fades shadows
-            // out 345..fadeEnd~380). It must be dense enough through that band that the residual
-            // shadow fade-out dissolves into haze with no detectable line as the camera pans the
-            // ring across the view. Climbs to ~0.62 by 380 and ~0.8 by the render edge.
-            float edgeFog = smoothstep(340.0, 384.0, dist);
-            edgeFog = edgeFog * edgeFog * 0.78;          // steep only in the far fade band
-            float fog = clamp(baseFog + edgeFog, 0.0, 0.92);
+            // #120 GENTLE natural haze only. The strong artificial EDGE-haze band (340..384,
+            // up to ~0.78) that was added to MASK the old shadow-fade ring is GONE: it was
+            // itself a discrete band that swept across the land as the camera turned (the
+            // player still saw the wipe). With shadows now full across the whole vista and the
+            // fade pushed to the very render edge, there is no ring left to mask, so the fog
+            // returns to a single soft haze that only just tints the far quarter of the view to
+            // hide chunk pop-in. Onset ~290, capped at 0.32 (the pre-edge-haze behaviour). The
+            // near/mid field stays clear so the player SEES the land.
+            float fog = smoothstep(290.0, 384.0, dist) * 0.32;
             // Gate the haze colour by day/night. Ungated, this muted-blue haze stayed bright
             // at night, so the far render edge washed PALE/WHITE over dark night terrain (the
             // long-hunted night "white ground": worst looking E/W across open distance, which
