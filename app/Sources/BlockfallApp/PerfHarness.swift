@@ -179,6 +179,11 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     // (output) and OFF (outputOff) PNGs are pixel-aligned (no streaming drift between them).
     let outputOff  = makeTex(.bgra8Unorm,   W, H, [.renderTarget], false)
     let abMode     = ProcessInfo.processInfo.environment["BF_SHOT_AB"] == "1"
+    // #130 BF_CEL=1 forces the cel-shade look ON for this shot (banding + outlines +
+    // punchier grade); BF_CEL=0 forces it OFF. Lets a headless A/B compare the new look
+    // without touching UserDefaults. Defaults OFF in the harness so existing shots/perf
+    // numbers are unchanged unless explicitly requested.
+    let celShot: Float = (ProcessInfo.processInfo.environment["BF_CEL"] == "1") ? 1 : 0
 
     var frameIdx = 0
     var lastShotPropN = 0
@@ -352,6 +357,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             var wu = WaterUniforms(wallClockSecs: wallClock, underwater: 0, cameraPosW: camPosW,
                                    sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, f.camera.time_of_day))
             if ProcessInfo.processInfo.environment["BF_SHADOW_DEBUG"] == "1" { wu.shadowScale = 2.0 } // #72 debug view
+            wu.celShade = celShot   // #130 toon-band the terrain in --shot when BF_CEL=1
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
             enc.setFragmentBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)
             enc.setFragmentTexture(shadowTex, index: 0)
@@ -452,6 +458,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                                       rainStrength: 0, wallClockSecs: 0,
                                       godrayStrength: 0, sunScreenX: 0, sunScreenY: 0,
                                       sunColorR: 1.0, sunColorG: 0.6 + 0.35 * dayT, sunColorB: 0.3 + 0.5 * dayT)
+                pu.celShade = celShot   // #130 ink outlines + cel grade in --shot when BF_CEL=1
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 // Single shadow map -> both cascade slots; a huge cascade split keeps every
                 // step on the "near" (only) map. farR matches the map radius (150).
@@ -603,7 +610,9 @@ func runCritterGallery(savePath: String) -> Bool {
         return device.makeTexture(descriptor: d)!
     }
     let hdr      = tex(.rgba16Float, [.renderTarget, .shaderRead], false)
-    let hdrDepth = tex(.depth32Float, [.renderTarget], false)
+    // #130 depth must be readable by the composite when cel outlines are on (BF_CEL=1).
+    let celGallery: Bool = ProcessInfo.processInfo.environment["BF_CEL"] == "1"
+    let hdrDepth = tex(.depth32Float, celGallery ? [.renderTarget, .shaderRead] : [.renderTarget], false)
     let bloom    = tex(.rgba16Float, [.renderTarget, .shaderRead], false)
     let output   = tex(.bgra8Unorm, [.renderTarget], true)
 
@@ -637,7 +646,8 @@ func runCritterGallery(savePath: String) -> Bool {
     rp.colorAttachments[0].loadAction = .clear; rp.colorAttachments[0].storeAction = .store
     rp.colorAttachments[0].clearColor = MTLClearColor(red: 0.46, green: 0.63, blue: 0.86, alpha: 1)
     rp.depthAttachment.texture = hdrDepth
-    rp.depthAttachment.loadAction = .clear; rp.depthAttachment.clearDepth = 1.0; rp.depthAttachment.storeAction = .dontCare
+    rp.depthAttachment.loadAction = .clear; rp.depthAttachment.clearDepth = 1.0
+    rp.depthAttachment.storeAction = celGallery ? .store : .dontCare   // #130 keep depth for outlines
     if let enc = cmd.makeRenderCommandEncoder(descriptor: rp) {
         enc.setDepthStencilState(depthState)
         ents.withUnsafeBufferPointer { p in
@@ -657,7 +667,19 @@ func runCritterGallery(savePath: String) -> Bool {
         enc.setRenderPipelineState(composite); enc.setDepthStencilState(noDepth); enc.setCullMode(.none)
         enc.setFragmentTexture(hdr, index: 0); enc.setFragmentTexture(bloom, index: 1)
         var pu = PostUniforms(bloomStrength: 0.0, vignetteStr: 0.0, satBoost: 1.15, rainStrength: 0, wallClockSecs: 0)
+        pu.celShade = celGallery ? 1 : 0   // #130 outlines + cel grade on the creature gallery
         enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+        // #130 compositeFrag reads sceneDepth(2) + VolUniforms(1) when cel is on; bind both
+        // (volStrength 0 => the god-ray branch is skipped, so a zero VU is fine).
+        if celGallery {
+            enc.setFragmentTexture(hdrDepth, index: 2)
+            var vu = VolUniforms(invViewProj: viewProj.inverse, lightViewProj: viewProj,
+                                 lightViewProjF: viewProj,
+                                 camPosW: SIMD4<Float>(eye.x, eye.y, eye.z, 150),
+                                 sunDir: SIMD4<Float>(0, -1, 0, 1.0e9),
+                                 sunColor: SIMD4<Float>(1, 1, 1, 0))   // w=0 => god rays off
+            enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
+        }
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.endEncoding()
     }

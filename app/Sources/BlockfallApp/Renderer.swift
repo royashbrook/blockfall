@@ -109,9 +109,13 @@ struct WaterUniforms {
     var shadowScale:   Float = 1   // #: cast-shadow toggle (0=off)
     var cameraPosW:    SIMD4<Float> = .zero   // xyz = world-space camera pos, w unused
     var sunDirTime:    SIMD4<Float> = .zero   // xyz = sun dir, w = time_of_day (#43 water sky reflection)
+    var celShade:      Float = 0   // #130 toon-band the diffuse term in fmain (0=off, 1=on)
+    var pad0:          Float = 0   // keep 16-byte alignment / match the MSL struct
+    var pad1:          Float = 0
+    var pad2:          Float = 0
 }
 
-/// Uniforms for the HDR composite / tonemap pass (48 bytes).
+/// Uniforms for the HDR composite / tonemap pass (52 bytes).
 struct PostUniforms {
     var bloomStrength:  Float   // fraction of bloom added
     var vignetteStr:    Float   // vignette strength
@@ -125,6 +129,7 @@ struct PostUniforms {
     var sunColorG:      Float = 0.9
     var sunColorB:      Float = 0.7
     var greyHaze:       Float = 0   // #: 0..1 The-Grey screen wash (0 in test paths)
+    var celShade:       Float = 0   // #130 1 = draw ink outlines + punchier cel grade
 }
 
 /// #119 Volumetric god-ray uniforms — composite pass, buffer(1).
@@ -381,6 +386,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     var gfxGodRays = UserDefaults.standard.object(forKey: "gfxGodRays") as? Bool ?? true
     var gfxPollen  = UserDefaults.standard.object(forKey: "gfxPollen")  as? Bool ?? true
     var gfxShadows = UserDefaults.standard.object(forKey: "gfxShadows") as? Bool ?? false  // default OFF (residual sun-angle bug; kids prefer it off)
+    // #130 cel-shade: bold outlines + banded toon lighting + punchier palette. This is the
+    // new intended look so it defaults ON; OFF cleanly restores the prior smooth render for
+    // A/B comparison. Drives both the terrain banding (fmain) and the composite ink/edge pass.
+    var gfxCelShade = UserDefaults.standard.object(forKey: "gfxCelShade") as? Bool ?? true
     // World-space precipitation (rain streaks / snow flakes) — renderer-owned,
     // instanced billboards in a volume around the camera. Drives off frame.camera.weather.
     private var precipPipeline: MTLRenderPipelineState!
@@ -1222,6 +1231,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             // cameraPosW.w so the radial distFade ends at the far cascade edge, out in the
             // distance haze, with no mid-vista boundary to sweep when the camera turns.
             wu.cameraPosW.w = kShadowFarR
+            wu.celShade = gfxCelShade ? 1 : 0   // #130 toon-band the diffuse term in fmain
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
             enc.setFragmentTexture(shadowMap,    index: 0)
             enc.setFragmentTexture(shadowMapFar, index: 1)   // #46 far cascade
@@ -1460,7 +1470,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                               rainStrength: precipPacked, wallClockSecs: wallClock,
                               godrayStrength: 0, sunScreenX: 0, sunScreenY: 0,
                               sunColorR: 1.0, sunColorG: 0.6 + 0.35 * dayT, sunColorB: 0.3 + 0.5 * dayT,
-                              greyHaze: max(0, 1 - frame.camera.local_sat))   // #: The Grey wash
+                              greyHaze: max(0, 1 - frame.camera.local_sat),   // #: The Grey wash
+                              celShade: gfxCelShade ? 1 : 0)   // #130 ink outlines + cel grade
         // #119 volumetric uniforms shared by every composite call site this frame.
         var vu = VolUniforms(
             invViewProj:    viewProj.inverse,
@@ -2312,7 +2323,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         float4x4 lightViewProjF; // far cascade (#46)
     };
 
-    // WaterUniforms (32 bytes) — not engine-filled.
+    // WaterUniforms (64 bytes) — not engine-filled.
     struct WaterUniforms {
         float wallClockSecs;
         float underwater;
@@ -2320,6 +2331,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         float shadowScale;   // #: cast-shadow toggle (0=off)
         float4 cameraPosW;   // xyz = world pos, w = pad
         float4 sunDirTime;   // xyz = sun dir, w = time_of_day (#43)
+        float celShade;      // #130 toon-band the diffuse term (0=off, 1=on)
+        float pad0;
+        float pad1;
+        float pad2;
     };
     #define UW_CAM_POS(wu) (wu).cameraPosW.xyz
 
@@ -2334,7 +2349,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     constant float3 WATER_SURFACE_COL = float3(0.11, 0.38, 0.78);
     constant float3 WATER_FOG_COL     = float3(0.10, 0.34, 0.62);
 
-    // PostUniforms (48 bytes) — composite pass.
+    // PostUniforms (52 bytes) — composite pass.
     // >0 rainStrength = rain, <0 = snow, 0 = clear.
     struct PostUniforms {
         float bloomStrength;
@@ -2349,6 +2364,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         float sunColorG;
         float sunColorB;
         float greyHaze;   // #: The-Grey screen wash
+        float celShade;   // #130 1 = draw ink outlines + cel grade
     };
 
     // VolUniforms (240 bytes) — #119 volumetric god-ray raymarch, composite buffer(1).
@@ -3516,7 +3532,37 @@ final class Renderer: NSObject, MTKViewDelegate {
         // FIX (#7): clamp pre-bloom output to 1.0 for non-emissive blocks so
         // ordinary sunlit terrain never crosses the bloom bright-pass threshold.
         // Emissive blocks are still allowed to go overbright (they SHOULD bloom).
-        float3 col = in.color * detail * (in.shade * bumpLight) * aoFactor * shadowFactor;
+        //
+        // #130 BANDED TOON LIGHTING. The full diffuse multiplier is
+        //   lightTerm = shade * bumpLight * AO * shadowFactor
+        // which the default path applies as a smooth gradient. When cel-shade is on we
+        // QUANTIZE that multiplier into a few flat steps so a lit surface reads as bold
+        // flat colour regions with a crisp light/shadow step instead of a soft ramp.
+        // Crucially we band the LIGHT multiplier, not the final colour, and we never
+        // lift the floor: the darkest band is just the quantized low end of whatever the
+        // smooth term already was, so night stays night and a shadowed area lands in a
+        // darker band rather than vanishing (the shadowFactor is inside the term).
+        float lightTerm = (in.shade * bumpLight) * aoFactor * shadowFactor;
+        if (wu.celShade > 0.5 && !isEmissive) {
+            // CEL_BANDS flat steps. quantize to band centres so the brightest lit face
+            // does not get pushed to a flat 1.0 (keeps material colour, avoids washout),
+            // and the lowest band keeps the true dark end (night / deep shadow stay dark).
+            const float CEL_BANDS = 4.0;
+            float q = floor(lightTerm * CEL_BANDS) / CEL_BANDS;   // band floor in [0,1)
+            // Half-step lift puts each region at its band centre; clamp so we never
+            // exceed the original term (cannot brighten a surface, only flatten it).
+            float banded = min(q + 0.5 / CEL_BANDS, lightTerm > 0.0 ? 1.0 : 0.0);
+            // Bias toward the band floor a touch so the steps read crisp and the lit
+            // bands stay graphic rather than blown bright.
+            lightTerm = mix(q, banded, 0.75);
+            // Keep a navigable NIGHT floor. The quantizer crushes the deliberate ~15%
+            // night-light floor down toward black (band 0), which is too dark for a kids
+            // sandbox. Floor the celled term only at night (scaled by 1-dayLight) so days
+            // keep dark crisp shadows but night stays dim-visible like the non-cel build.
+            float celNightFloor = 0.14 * (1.0 - dayLight(wu.sunDirTime.w));
+            lightTerm = max(lightTerm, celNightFloor);
+        }
+        float3 col = in.color * detail * lightTerm;
         col += specAdd;                       // #47 normal-mapped sun sheen (pre-clamp)
         if (!isEmissive) col = clamp(col, 0.0, 1.0);
 
@@ -4183,6 +4229,42 @@ final class Renderer: NSObject, MTKViewDelegate {
     constant float3 GR_WARM_TINT  = float3(1.12, 1.02, 0.78);
     constant float GR_MAX_ADD     = 0.85;
 
+    // =========================================================
+    // #130 CEL-SHADE INK OUTLINES + PUNCHIER PALETTE (composite pass)
+    //
+    // A screen-space edge pass that draws a dark ink line on geometry edges, detected
+    // from the SCENE DEPTH (already stored + sampleable here for the god-ray raymarch).
+    // We linearize depth so the discontinuity test is in world-ish units (a raw [0,1]
+    // depth buffer is hugely non-linear and would ink every distant seam). A Roberts
+    // cross of linearized depth gives crisp SILHOUETTES (depth jumps at object borders)
+    // cheaply; an extra check against the local neighbourhood mean catches strong
+    // interior creases (ledges, block tops) without inking every tiny voxel seam.
+    //
+    // All tunables are single constants so the art direction can be dialed:
+    //   CEL_OUTLINE_PX     : line thickness, in source pixels (tap offset radius).
+    //   CEL_OUTLINE_DARK   : how dark the ink is (1 = near-black line, 0 = no line).
+    //   CEL_DEPTH_SENS     : depth-discontinuity sensitivity. LOWER = more lines (more
+    //                        sensitive to small depth steps); HIGHER = only bold edges.
+    //   CEL_NEAR / CEL_FAR : the linearization range (matches the perspective depth split
+    //                        the scene uses; only the ratio matters for edge detection).
+    //   CEL_SAT / CEL_CON  : extra saturation / contrast applied ONLY when cel-shade is on,
+    //                        so the palette reads graphic and bold (tasteful, not neon).
+    constant float CEL_OUTLINE_PX   = 1.3;
+    constant float CEL_OUTLINE_DARK = 0.82;
+    constant float CEL_DEPTH_SENS   = 0.022;
+    constant float CEL_NEAR         = 0.20;
+    constant float CEL_FAR          = 420.0;
+    constant float CEL_SAT          = 1.16;
+    constant float CEL_CON          = 1.10;
+
+    // Linearize a Metal [0,1] depth sample to a view-space-ish distance. The exact
+    // projection constants do not matter for edge detection (we only compare relative
+    // jumps), but matching the scene's near/far keeps CEL_DEPTH_SENS intuitive.
+    static float celLinearizeDepth(float d) {
+        // Standard reversed-z-free perspective: z_view = near*far / (far - d*(far-near)).
+        return (CEL_NEAR * CEL_FAR) / max(CEL_FAR - d * (CEL_FAR - CEL_NEAR), 1e-4);
+    }
+
     // Henyey-Greenstein phase: brightest when the view ray looks toward the sun.
     // cosT = dot(viewDir, toSun). Normalised so the forward lobe peaks but the term
     // stays bounded (no division blow-up at g->1).
@@ -4360,6 +4442,17 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Light contrast only.
         tonemapped   = clamp((tonemapped - 0.5) * 1.06 + 0.5, 0.0, 1.0);
 
+        // #130 PUNCHIER PALETTE. When cel-shade is on, add a modest extra saturation +
+        // contrast lift on top of the base grade so colours read graphic and bold. Kept
+        // tasteful (CEL_SAT 1.16, CEL_CON 1.10) so it pops without going neon, and applied
+        // BEFORE the vignette / Grey wash so those still behave. Multiplicative contrast
+        // about 0.5 cannot brighten the mean, so it cannot reintroduce a washout.
+        if (pu.celShade > 0.5) {
+            float lumC = dot(tonemapped, float3(0.2126, 0.7152, 0.0722));
+            tonemapped = mix(float3(lumC), tonemapped, CEL_SAT);
+            tonemapped = clamp((tonemapped - 0.5) * CEL_CON + 0.5, 0.0, 1.0);
+        }
+
         // Vignette: smooth falloff toward screen edges
         float2 centred = in.uv - 0.5;
         float vigRad = dot(centred, centred);
@@ -4384,6 +4477,42 @@ final class Renderer: NSObject, MTKViewDelegate {
             float3 cold = float3(gl) * float3(0.84, 0.88, 0.97);   // cool slate grey
             tonemapped = mix(tonemapped, cold, clamp(pu.greyHaze, 0.0, 1.0) * 0.55);
             tonemapped *= (1.0 - clamp(pu.greyHaze, 0.0, 1.0) * 0.12);
+        }
+
+        // #130 BOLD INK OUTLINES. Screen-space edge pass from the scene depth. Sample a
+        // cross of linearized-depth neighbours and look for a discontinuity (a silhouette
+        // where geometry steps toward/away from the camera). Where one is found, darken the
+        // pixel toward black so a crisp dark line traces the edge. The line is depth-aware:
+        // it is normalised by the centre depth so a fixed world step inks the same whether
+        // it is near or far (distant edges do not vanish, near edges do not over-thicken).
+        // This catches terrain, structures, trees, AND creatures uniformly because they all
+        // share this depth buffer. The sky (depth ~1) is skipped so the horizon stays clean.
+        if (pu.celShade > 0.5) {
+            float w = float(sceneDepth.get_width());
+            float h = float(sceneDepth.get_height());
+            float2 texel = float2(CEL_OUTLINE_PX / max(w, 1.0), CEL_OUTLINE_PX / max(h, 1.0));
+
+            float dC = sceneDepth.sample(s, in.uv);
+            // Skip the far plane (sky / nothing): no geometry edge to ink, and it keeps the
+            // bright horizon from getting a dark fringe.
+            if (dC < 0.9995) {
+                float lc = celLinearizeDepth(dC);
+                // 4-tap diagonal cross (Roberts) catches silhouettes; cheap (4 samples).
+                float l00 = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2(-texel.x, -texel.y)));
+                float l11 = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2( texel.x,  texel.y)));
+                float l01 = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2(-texel.x,  texel.y)));
+                float l10 = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2( texel.x, -texel.y)));
+                // Largest neighbour gap, normalised by centre distance so the sensitivity is
+                // scale-free (a one-block ledge inks the same near and far).
+                float g = max(abs(l00 - l11), abs(l01 - l10)) / max(lc, 1.0);
+                // Smoothstep gate around CEL_DEPTH_SENS so the line antialiases instead of a
+                // hard 1-px jaggy. Above ~2x the threshold it is a full-strength edge.
+                float edge = smoothstep(CEL_DEPTH_SENS, CEL_DEPTH_SENS * 2.2, g);
+                // Fade the ink in the far haze so the distant render edge does not get a
+                // busy net of lines (keeps the vista readable, matches the terrain fog).
+                float farFade = 1.0 - smoothstep(CEL_FAR * 0.6, CEL_FAR * 0.92, lc);
+                tonemapped *= (1.0 - edge * CEL_OUTLINE_DARK * farFade);
+            }
         }
 
         // Gamma: drawable is bgra8Unorm (no hardware sRGB), apply manual gamma 2.2.

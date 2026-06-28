@@ -220,6 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             gfxCheckbox("God Rays",          tag: 2, on: renderer?.gfxGodRays ?? true),
             gfxCheckbox("Pollen Motes",      tag: 3, on: renderer?.gfxPollen  ?? true),
             gfxCheckbox("Soft Shadows",      tag: 4, on: renderer?.gfxShadows ?? false),
+            gfxCheckbox("Cel Shading",       tag: 5, on: renderer?.gfxCelShade ?? true),
         ])
         fxStack.orientation = .vertical; fxStack.spacing = 8; fxStack.alignment = .leading
 
@@ -479,7 +480,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // #: graphics toggle → live renderer + persisted. Tags match gfxCheckbox order.
     @objc private func gfxToggleChanged(_ sender: NSButton) {
         let on = (sender.state == .on)
-        let keys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows"]
+        let keys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows", "gfxCelShade"]
         guard sender.tag >= 0 && sender.tag < keys.count else { return }
         UserDefaults.standard.set(on, forKey: keys[sender.tag])
         switch sender.tag {
@@ -488,6 +489,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case 2: renderer?.gfxGodRays = on
         case 3: renderer?.gfxPollen  = on
         case 4: renderer?.gfxShadows = on
+        case 5: renderer?.gfxCelShade = on
         default: break
         }
     }
