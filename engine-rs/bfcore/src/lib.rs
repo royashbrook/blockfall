@@ -14,6 +14,7 @@ pub mod worldgen;
 pub mod mesher;
 pub mod jobs;
 pub mod abi;
+pub mod creature_ai;
 pub mod world;
 pub mod net;
 pub mod session;

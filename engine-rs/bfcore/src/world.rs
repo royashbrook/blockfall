@@ -20,6 +20,7 @@
 use crate::abi::*;
 use crate::chunk::PaletteChunk;
 use crate::content::{ContentExtra, ContentRegistry, CreatureDefX, QuestDefX};
+use crate::creature_ai;
 use crate::inventory::Inventory;
 use crate::lighting;
 use crate::mesher::{self, GreedyMesher};
@@ -231,6 +232,10 @@ struct Creature {
     // climb. Deterministic: advanced by a fixed climb speed times the fixed dt.
     climb: f32,
     name: String,
+    // Locomotion + AI state (epic #131). Holds the smooth heading/speed, the
+    // behaviour state machine, and the throttled A* path. Logic lives in
+    // creature_ai.rs; this is just the per creature data riding along.
+    ai: creature_ai::CreatureAi,
 }
 impl Default for Creature {
     fn default() -> Creature {
@@ -258,6 +263,7 @@ impl Default for Creature {
             from_ruin: false,
             climb: 0.0,
             name: String::new(),
+            ai: creature_ai::CreatureAi::default(),
         }
     }
 }
@@ -591,6 +597,17 @@ impl ShadowVol {
             return;
         }
         self.dirty.push((lo, hi));
+    }
+}
+
+// Lets the creature AI pathfinder (creature_ai.rs) query terrain without seeing any
+// World internals. Both methods are thin shims over existing helpers (epic #131).
+impl<'c> creature_ai::WorldQuery for World<'c> {
+    fn is_solid(&self, x: i32, y: i32, z: i32) -> bool {
+        self.ai_is_solid(x, y, z)
+    }
+    fn floor(&self, x: i32, y_top: i32, z: i32) -> Option<i32> {
+        self.ai_floor(x, y_top, z)
     }
 }
 
@@ -955,6 +972,17 @@ impl<'c> World<'c> {
             y -= 1;
         }
         NO_FLOOR
+    }
+
+    // Standable feet Y at (x,z) scanning down from y_top, as an Option for the AI
+    // pathfinder. Thin wrapper over floor_below so creature_ai never sees NO_FLOOR.
+    fn ai_floor(&self, x: i32, y_top: i32, z: i32) -> Option<i32> {
+        let f = self.floor_below(x, y_top, z);
+        if f == NO_FLOOR {
+            None
+        } else {
+            Some(f)
+        }
     }
 
     // ---- region saturation ----------------------------------------------
@@ -3310,6 +3338,20 @@ impl<'c> World<'c> {
         }
     }
 
+    // The AI pathfinder asks the world about terrain through this thin shim; it never
+    // touches World internals directly (epic #131, creature_ai.rs).
+    fn ai_is_solid(&self, x: i32, y: i32, z: i32) -> bool {
+        self.collide_solid(x, y, z)
+    }
+
+    // A creature ran into an impassable wall or a water edge: turn it away. Uses the
+    // world rng so the turn stays deterministic. Delegates the heading swing to the
+    // AI so the body eases around rather than snapping (epic #131).
+    fn creature_blocked(&mut self, c: &mut Creature, _dt: f32) {
+        let turn = 2.0 + self.rand01() * 2.2;
+        c.ai.on_blocked(turn);
+    }
+
     fn update_creatures(&mut self, dt: f32) {
         // Smooth step-up tuning. A creature blocked by a ledge it can stand on climbs
         // its Y up at CLIMB_SPEED blocks/sec (a clamber that reads over a few ticks at
@@ -3350,46 +3392,85 @@ impl<'c> World<'c> {
                 self.creatures[i] = c;
                 continue;
             }
-            let mut spd_mul = 1.0f32;
-            if c.hostile && self.mode == bf_game_mode::BF_MODE_SURVIVAL {
+            // ---- AI + smooth locomotion (epic #131, creature_ai.rs) -----------
+            // Decision (which state, where to face, how fast) and the path follow
+            // + smooth turn/accel all live in creature_ai; here we only classify
+            // the creature into a temperament, run melee, and apply the resulting
+            // smoothed displacement through the EXISTING collision/climb code below.
+            use crate::creature_ai as cai;
+            let xzd = (to_player.x * to_player.x + to_player.z * to_player.z).sqrt();
+            let temper = if c.wander > 900.0 {
+                // Scripted straight-walker (set by debug_spawn_creature_at for the
+                // deterministic locomotion/climb tests): ignore the player, walk on.
+                cai::Temperament::Scripted
+            } else if c.hostile {
+                cai::Temperament::Hunter
+            } else if c.friendly {
+                // Befriended pet: follows the player, keeps comfortable spacing.
+                cai::Temperament::Pet
+            } else if c.model == 20 {
+                // Villagers idle and roam their settlement.
+                cai::Temperament::Villager
+            } else {
+                // Animals (incl. skittish ones) graze + flee the player.
+                cai::Temperament::Passive
+            };
+            // Hostiles only seek/attack in survival; outside survival they amble.
+            let hunting = c.hostile && self.mode == bf_game_mode::BF_MODE_SURVIVAL;
+            let eff_temper = if c.hostile && !hunting { cai::Temperament::Passive } else { temper };
+            // Melee: unchanged behaviour, fires when a hunting hostile is in range.
+            if hunting {
                 if c.atk_cd > 0.0 {
                     c.atk_cd -= dt;
                 }
-                let xzd = (to_player.x * to_player.x + to_player.z * to_player.z).sqrt();
-                let kaggro = 16.0;
-                if xzd < kaggro {
-                    if dot(to_player, to_player) > 0.0001 {
-                        c.yaw = to_player.x.atan2(to_player.z);
-                    }
-                    let yd = ((c.pos.y + c.scale * 0.5) - (self.pos.y - 1.6)).abs();
-                    if xzd < 1.3 && yd < 1.6 && c.atk_cd <= 0.0 {
-                        self.hurt_player(2.5);
-                        c.atk_cd = 1.1;
-                    }
-                } else if c.wander <= 0.0 {
-                    c.yaw = self.rand01() * 6.2831853;
-                    c.wander = 1.5 + self.rand01() * 2.5;
+                let yd = ((c.pos.y + c.scale * 0.5) - (self.pos.y - 1.6)).abs();
+                if xzd < 1.3 && yd < 1.6 && c.atk_cd <= 0.0 {
+                    self.hurt_player(2.5);
+                    c.atk_cd = 1.1;
                 }
-            } else if c.friendly {
-                let d = dot(to_player, to_player).sqrt();
-                if d > 2.2 {
-                    c.yaw = to_player.x.atan2(to_player.z);
-                } else {
-                    spd_mul = 0.0;
-                    if c.wander <= 0.0 {
-                        c.yaw = self.rand01() * 6.2831853;
-                        c.wander = 1.0 + self.rand01() * 1.5;
-                    }
-                }
-            } else if c.skittish && dot(to_player, to_player) < 36.0 {
-                c.yaw = (-to_player.x).atan2(-to_player.z);
-                c.wander = 0.8;
-            } else if c.wander <= 0.0 {
-                c.yaw = self.rand01() * 6.2831853;
-                c.wander = 1.5 + self.rand01() * 2.5;
             }
-            let dir = V3::new(c.yaw.sin(), 0.0, c.yaw.cos());
-            let next = c.pos + dir * (c.speed * spd_mul * dt);
+            // Drive the behaviour state machine from the world rng so it stays
+            // deterministic with the rest of the sim. The world's rng is the seed.
+            c.ai.tick_repath();
+            let mut seed = self.rng;
+            let dec = cai::decide(
+                &mut c.ai,
+                eff_temper,
+                c.pos.x,
+                c.pos.z,
+                self.pos.x,
+                self.pos.z,
+                xzd,
+                dt,
+                &mut seed,
+            );
+            self.rng = seed;
+            // Seeking hostiles path around obstacles with throttled, bounded A*.
+            let mut desired_heading = dec.desired_heading;
+            if let Some(goal) = dec.path_goal {
+                if c.ai.needs_repath(goal) {
+                    let sy = Self::ifloor(c.pos.y);
+                    let path = cai::find_path(self, Self::ifloor(c.pos.x), Self::ifloor(c.pos.z), sy, goal.0, goal.1);
+                    c.ai.set_path(path);
+                }
+                if let Some(h) = c.ai.follow_heading(c.pos.x, c.pos.z) {
+                    desired_heading = h;
+                } else {
+                    // Path exhausted but not yet in melee range: steer straight in.
+                    desired_heading = (self.pos.x - c.pos.x).atan2(self.pos.z - c.pos.z);
+                }
+            } else {
+                c.ai.path.clear();
+            }
+            // Smooth turn + accel toward the decision, then apply the displacement
+            // through the existing collision/climb code. step_locomotion never snaps
+            // heading or velocity, so creatures rotate and ramp instead of flipping.
+            let target_speed = c.speed * dec.speed_frac;
+            let (mdx, mdz, new_heading, new_speed) = cai::step_locomotion(&c.ai, desired_heading, target_speed, dt);
+            c.ai.heading = new_heading;
+            c.ai.speed = new_speed;
+            c.yaw = new_heading;
+            let next = V3::new(c.pos.x + mdx, c.pos.y, c.pos.z + mdz);
             let nv = IVec3 { x: Self::ifloor(next.x), y: Self::ifloor(next.y), z: Self::ifloor(next.z) };
             let into_water = !c.aquatic
                 && (self.block_at(IVec3 { x: nv.x, y: nv.y, z: nv.z }) == WATER
@@ -3419,13 +3500,14 @@ impl<'c> World<'c> {
                     c.pos.x = next.x;
                     c.pos.z = next.z;
                     c.climb = (step_h as f32 - (c.pos.y - c.pos.y.floor())).max(c.climb);
-                } else if c.wander <= 0.0 {
-                    c.yaw += 2.0 + self.rand01() * 2.2;
-                    c.wander = 0.6 + self.rand01() * 0.6;
+                } else {
+                    // Wall too tall to step: nudge the AI to turn away. Pathing
+                    // creatures repath next chance; wanderers pick a new amble dir.
+                    self.creature_blocked(&mut c, dt);
                 }
-            } else if c.wander <= 0.0 {
-                c.yaw += 2.0 + self.rand01() * 2.2;
-                c.wander = 0.6 + self.rand01() * 0.6;
+            } else if into_water {
+                // Edge of water: turn away rather than wade in (non-aquatic).
+                self.creature_blocked(&mut c, dt);
             }
             if c.climb > 0.0 {
                 // Smooth clamber: raise Y toward the ledge top at a fixed climb speed
@@ -5400,6 +5482,10 @@ impl<'c> World<'c> {
         c.scale = 1.0;
         c.hp = 5;
         c.wander = 1000.0;
+        // Seed the AI straight-walk heading so the creature walks in `yaw` (the
+        // locomotion tests place it against a known step). wander > 900 marks it
+        // Scripted in update_creatures so it ignores the player and never re-rolls.
+        c.ai.seed_straight(yaw);
         self.creatures.push(c);
         (self.creatures.len() - 1) as i32
     }
