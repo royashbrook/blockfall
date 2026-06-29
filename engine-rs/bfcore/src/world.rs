@@ -4207,12 +4207,15 @@ impl<'c> World<'c> {
     fn stream_backlog(&self) -> usize {
         self.gen_queue.len() + self.dirty.len()
     }
-    // A LARGE backlog means a bulk fill (spawn-in, teleport, the initial load at a
-    // big render distance), not the small ring added by normal walking. Only then
-    // do we crank the per-frame budgets + in-flight caps, so steady-state play
-    // never floods the upload/dirty work. Mirrors the C++ bulk_fill heuristic.
+    // A LARGE backlog near an empty resident set means a startup/teleport bulk fill.
+    // Once the world already has a substantial resident area, use a gentler catch-up
+    // lane so crossing the first rendered boundary does not hit the frame thread with
+    // startup-class lighting and upload bursts.
     fn bulk_fill(&self) -> bool {
-        !self.moving && self.stream_backlog() > 384
+        !self.moving && self.store.resident_count() < 128 && self.stream_backlog() > 384
+    }
+    fn catchup_fill(&self) -> bool {
+        !self.bulk_fill() && self.stream_backlog() > 192
     }
 
     // Lazily create the worker pool + result channels on the first live tick.
@@ -4265,11 +4268,12 @@ impl<'c> World<'c> {
         // Live (async) path: generate on workers, collect finished chunks here.
         self.ensure_pool();
         let bulk = self.bulk_fill();
+        let catchup = self.catchup_fill();
 
         // 1) Drain finished gen chunks. Budgeted: meshing downstream is the limit,
         // so inserting the whole worker backlog at once explodes dirty_ and the
         // per-frame dirty scan, tanking FPS (mirrors the C++ kGenCollect).
-        let gen_collect = if bulk { 64 } else { 16 };
+        let gen_collect = if bulk { 48 } else if catchup { 24 } else { 16 };
         let mut done: Vec<GenResult> = Vec::new();
         if let Some(rx) = self.gen_rx.as_ref() {
             while done.len() < gen_collect {
@@ -4295,7 +4299,7 @@ impl<'c> World<'c> {
 
         // 2) Submit more gen jobs, keeping a bounded number in flight (the queue is
         // sorted farthest-first, so popping the back submits nearest-first).
-        let max_inflight = if bulk { 128 } else { 32 };
+        let max_inflight = if bulk { 96 } else if catchup { 48 } else { 32 };
         // worldgen is a pure fn of coord + seed; each job builds its own seeded
         // generator from this seed (TerrainGen does not derive Clone, so we re-seed
         // a fresh one rather than capture self.gen).
@@ -4471,13 +4475,14 @@ impl<'c> World<'c> {
             self.ensure_pool();
         }
         let bulk = self.bulk_fill();
+        let catchup = self.catchup_fill();
 
         // 1) (async) Upload meshes finished on worker threads. The GPU allocator is
         // frame-thread only, so this is the one place worker output reaches the GPU.
         // Budgeted: buffer alloc + memcpy is the main-thread cost (mirrors the C++
         // kUploadBudget); the rest waits a frame rather than tanking FPS.
         if async_mode {
-            let upload_budget = if bulk { 24 } else { 8 };
+            let upload_budget = if bulk { 12 } else if catchup { 10 } else { 8 };
             let mut batch: Vec<MeshJobResult> = Vec::new();
             if let Some(rx) = self.mesh_rx.as_ref() {
                 while batch.len() < upload_budget {
@@ -4525,12 +4530,14 @@ impl<'c> World<'c> {
         let mesh_budget = if !async_mode {
             MESH_BUDGET
         } else if bulk {
-            36
+            18
+        } else if catchup {
+            16
         } else {
             MESH_BUDGET
         };
-        let kremesh_cap = if bulk { 12 } else { 4 };
-        let mesh_inflight_cap = if bulk { 192 } else { 64 };
+        let kremesh_cap = if bulk { 8 } else { 4 };
+        let mesh_inflight_cap = if bulk { 96 } else if catchup { 72 } else { 64 };
         // NaN-safe: a finite score sorts normally; if pos ever went NaN we keep order
         // instead of panicking (the C++ comparator tolerated NaN as UB-but-non-crashing).
         todo.sort_by(|a, b| score(*a).partial_cmp(&score(*b)).unwrap_or(std::cmp::Ordering::Equal));

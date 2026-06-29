@@ -282,6 +282,29 @@ fn neighbour_block<S: ChunkStore>(
     }
 }
 
+// Like neighbour_block, but preserves the difference between loaded-air and an
+// unknown neighbour chunk. Transparent water should not draw a full chunk-edge
+// side wall while the adjacent chunk is still streaming in.
+fn neighbour_block_known<S: ChunkStore>(
+    current_chunk: Option<&S::Chunk>,
+    cc: ChunkCoord,
+    store: &S,
+    fd: &FaceDir,
+    x: i32,
+    y: i32,
+    z: i32,
+) -> Option<BlockId> {
+    let (mut nx, mut ny, mut nz) = (x, y, z);
+    if fd.axis == 0 {
+        nx += fd.sign;
+    } else if fd.axis == 1 {
+        ny += fd.sign;
+    } else {
+        nz += fd.sign;
+    }
+    sample_block_known(current_chunk, cc, store, nx, ny, nz)
+}
+
 // Light (sky, block) of the cell adjacent to a face. That cell is the visible
 // side, so its light is what the face shows.
 //
@@ -525,6 +548,86 @@ fn sample_block<S: ChunkStore>(
         None => 0,
         Some(nb) => nb.get(nx as usize, ny as usize, nz as usize),
     }
+}
+
+// Sample a block while preserving missing cross-chunk neighbours as None. Inside
+// the meshed chunk this is always Some; across a chunk edge it is None until the
+// neighbour is resident in the snapshot.
+fn sample_block_known<S: ChunkStore>(
+    current_chunk: Option<&S::Chunk>,
+    cc: ChunkCoord,
+    store: &S,
+    x: i32,
+    y: i32,
+    z: i32,
+) -> Option<BlockId> {
+    if x >= 0 && x < KCHUNK_DIM && y >= 0 && y < KCHUNK_DIM && z >= 0 && z < KCHUNK_DIM {
+        return current_chunk.map(|ch| ch.get(x as usize, y as usize, z as usize));
+    }
+    let mut nc = cc;
+    let (mut nx, mut ny, mut nz) = (x, y, z);
+    if nx < 0 {
+        nc.x -= 1;
+        nx += KCHUNK_DIM;
+    } else if nx >= KCHUNK_DIM {
+        nc.x += 1;
+        nx -= KCHUNK_DIM;
+    }
+    if ny < 0 {
+        nc.y -= 1;
+        ny += KCHUNK_DIM;
+    } else if ny >= KCHUNK_DIM {
+        nc.y += 1;
+        ny -= KCHUNK_DIM;
+    }
+    if nz < 0 {
+        nc.z -= 1;
+        nz += KCHUNK_DIM;
+    } else if nz >= KCHUNK_DIM {
+        nc.z += 1;
+        nz -= KCHUNK_DIM;
+    }
+    store.get(nc).map(|nb| nb.get(nx as usize, ny as usize, nz as usize))
+}
+
+fn door_mesh_rotated<S: ChunkStore>(
+    current_chunk: Option<&S::Chunk>,
+    cc: ChunkCoord,
+    store: &S,
+    x: i32,
+    y: i32,
+    z: i32,
+) -> bool {
+    let mut low_y = y;
+    let mut guard = 0;
+    while guard < KCHUNK_DIM * 4 && is_door(sample_block(current_chunk, cc, store, x, low_y - 1, z)) {
+        low_y -= 1;
+        guard += 1;
+    }
+    let mut high_y = y;
+    guard = 0;
+    while guard < KCHUNK_DIM * 4 && is_door(sample_block(current_chunk, cc, store, x, high_y + 1, z)) {
+        high_y += 1;
+        guard += 1;
+    }
+
+    let mut wall_x_score = 0;
+    let mut wall_z_score = 0;
+    for yy in low_y..=high_y {
+        if is_opaque(sample_block(current_chunk, cc, store, x - 1, yy, z)) {
+            wall_x_score += 1;
+        }
+        if is_opaque(sample_block(current_chunk, cc, store, x + 1, yy, z)) {
+            wall_x_score += 1;
+        }
+        if is_opaque(sample_block(current_chunk, cc, store, x, yy, z - 1)) {
+            wall_z_score += 1;
+        }
+        if is_opaque(sample_block(current_chunk, cc, store, x, yy, z + 1)) {
+            wall_z_score += 1;
+        }
+    }
+    wall_z_score > wall_x_score
 }
 
 // ---- AO ---------------------------------------------------------------------
@@ -1352,7 +1455,10 @@ impl GreedyMesher {
                         if is_opaque(here) {
                             emit = !is_opaque(nb); // air, water, or glass neighbour
                         } else if here == 9 || is_waterlogged(here) {
-                            emit = nb == 0; // water surface only against air
+                            emit = match neighbour_block_known(chunk_opt, c, store, fd, x, y, z) {
+                                Some(known) => known == 0, // water surface only against loaded air
+                                None => false,
+                            };
                         } else if is_glass(here) {
                             emit = nb == 0 || nb == 9; // glass against air/water, cull glass-glass
                         } else {
@@ -1445,11 +1551,7 @@ impl GreedyMesher {
                     if is_door(here) {
                         let dsky = chunk.sky_light(x as usize, y as usize, z as usize);
                         let dblk = chunk.block_light(x as usize, y as usize, z as usize);
-                        let wall_x = is_opaque(sample_block(chunk_opt, c, store, x - 1, y, z))
-                            || is_opaque(sample_block(chunk_opt, c, store, x + 1, y, z));
-                        let wall_z = is_opaque(sample_block(chunk_opt, c, store, x, y, z - 1))
-                            || is_opaque(sample_block(chunk_opt, c, store, x, y, z + 1));
-                        let rotated = wall_z && !wall_x;
+                        let rotated = door_mesh_rotated(chunk_opt, c, store, x, y, z);
                         if !emit_door(x, y, z, here, rotated, dsky, dblk, &mut buf) {
                             buf.full = true;
                             return finalize(buf, false);
@@ -1843,6 +1945,58 @@ mod tests {
             out.push((normal, sky, block));
         }
         out
+    }
+
+    fn decode_normal_and_mat(vtx: &[u8]) -> Vec<(u32, u16)> {
+        let mut out = Vec::new();
+        for chunk in vtx.chunks_exact(16) {
+            let normal_uv = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+            let normal = normal_uv & 0x7;
+            let mat = u16::from_le_bytes([chunk[8], chunk[9]]);
+            out.push((normal, mat));
+        }
+        out
+    }
+
+    #[test]
+    fn water_does_not_emit_faces_against_missing_chunk_neighbour() {
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(15, 8, 8, 9);
+        ch.set(14, 8, 8, 9);
+        ch.set(15, 7, 8, 9);
+        ch.set(15, 9, 8, 9);
+        ch.set(15, 8, 7, 9);
+        ch.set(15, 8, 9, 9);
+        store.chunks.insert(ChunkCoord::default(), ch);
+
+        let (_, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+        let faces = decode_normal_and_mat(&vtx);
+        assert!(
+            !faces.iter().any(|&(n, m)| m == 9 && n == BF_NX_POS),
+            "water at x=15 must not draw a blue +X chunk-edge wall while the neighbour chunk is missing"
+        );
+    }
+
+    #[test]
+    fn door_orientation_is_shared_across_vertical_run() {
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(8, 4, 8, DOOR_CLOSED);
+        ch.set(8, 5, 8, DOOR_OPEN);
+
+        // Bottom half alone would infer an X-wall; top half alone would infer a
+        // Z-wall. The mesher must choose one orientation for the whole door run.
+        ch.set(7, 4, 8, 1);
+        ch.set(9, 4, 8, 1);
+        ch.set(8, 5, 7, 1);
+        ch.set(8, 5, 9, 1);
+        store.chunks.insert(ChunkCoord::default(), ch);
+
+        let cur = store.get(ChunkCoord::default());
+        let bottom = door_mesh_rotated(cur, ChunkCoord::default(), &store, 8, 4, 8);
+        let top = door_mesh_rotated(cur, ChunkCoord::default(), &store, 8, 5, 8);
+        assert_eq!(bottom, top, "both halves of one door must render on the same axis");
     }
 
     #[test]
