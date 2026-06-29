@@ -288,7 +288,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         let dd = MTLDepthStencilDescriptor(); dd.depthCompareFunction = .always; dd.isDepthWriteEnabled = false
         return device.makeDepthStencilState(descriptor: dd)
     }()
-    let kPropVertsPerInstance = 4 * 36
+    let kPropVertsPerInstance = 5 * 144
 
     let dsd = MTLDepthStencilDescriptor(); dsd.depthCompareFunction = .less; dsd.isDepthWriteEnabled = true
     let depthState = device.makeDepthStencilState(descriptor: dsd)

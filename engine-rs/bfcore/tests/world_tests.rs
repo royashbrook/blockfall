@@ -217,6 +217,20 @@ fn doors_open_close() {
         w.debug_block_at(ex, ey, ez) == 33 && w.debug_block_at(ex, ey + 1, ez) == 33,
         "both halves close together (#89)"
     );
+
+    // #148 follow-up: stale / interacted doors must not visually split into two
+    // independent 1-tall halves. Target the top half and canonicalize the whole run.
+    w.debug_edit(ex, ey, ez, 33);
+    w.debug_edit(ex, ey + 1, ez, 50);
+    w.debug_set_camera(ex as f32 + 0.5, ey as f32 + 6.0, ez as f32 + 0.5, 0.0, -1.5707);
+    w.update(&zero, 0.016);
+    assert!(w.debug_has_target(), "aimed at the top half of the door");
+    w.action(&usea);
+    w.update(&zero, 0.016);
+    assert!(
+        w.debug_block_at(ex, ey, ez) == 33 && w.debug_block_at(ex, ey + 1, ez) == 33,
+        "top-half interaction closes both door halves together (#148)"
+    );
 }
 
 // ============================================================================

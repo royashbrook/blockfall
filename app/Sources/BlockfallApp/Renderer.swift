@@ -385,11 +385,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var lastHeldItem = -1
     private var swingPulse: Double = -100          // #: time of last mine/place/attack (tool swing)
     private var propInstanceBuffer: MTLBuffer?   // per-frame: the bf_prop_instance list (tiny)
-    private let kPropMaxCuboids = 4
+    private let kPropMaxCuboids = 5
     // #62: each part now draws up to 144 verts so it can be a box, sphere, cone, or
     // cylinder (the richest is an 8-slice x 3-stack sphere = 144). Unused verts are
     // emitted degenerate and culled.
-    private let kPropVertsPerInstance = 4 * 144  // kPropMaxCuboids × kVertsPerShape
+    private let kPropVertsPerInstance = 5 * 144  // kPropMaxCuboids × kVertsPerShape
 
     // ---- Graphics effect toggles (pause-menu Options) ------------------------
     // Each effect can be switched on/off live. Persisted in UserDefaults; loaded
@@ -1449,7 +1449,9 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setFragmentBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
                 var wuSky = WaterUniforms(wallClockSecs: wallClock, underwater: isUnderwater,
                                           cameraPosW: camPosW)
-                wuSky.cloudsOn = gfxClouds ? 1 : 0   // #47 volumetric cloud toggle (sky pass)
+                let ug = max(0, min(1, (frame.camera.underground - 0.05) / 0.40))
+                let undergroundCloudFade = 1 - ug * ug * (3 - 2 * ug)
+                wuSky.cloudsOn = gfxClouds ? undergroundCloudFade : 0   // #47 volumetric cloud toggle (sky pass)
                 enc.setFragmentBytes(&wuSky, length: MemoryLayout<WaterUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             }
@@ -2321,12 +2323,15 @@ final class Renderer: NSObject, MTKViewDelegate {
                 (SIMD3(0.50, 0.78, 0.57), SIMD3(0.048, 0.76, 0.048), stalk),  // third stalk (more fill)
                 (SIMD3(0.46, 1.70, 0.50), SIMD3(0.10, 0.30, 0.10), tip),      // taller, fuller brown poof
             ]
-        case 44:       // cactus — green column with a stubby arm
+        case 44:       // cactus — tall varied desert silhouette; shader scales per seed
             let cac = SIMD3<Float>(0.27, 0.52, 0.26)
+            let cac2 = SIMD3<Float>(0.22, 0.45, 0.22)
             return [
-                (SIMD3(0.50, 0.42, 0.50), SIMD3(0.16, 0.42, 0.16), cac),    // trunk
-                (SIMD3(0.74, 0.40, 0.50), SIMD3(0.09, 0.09, 0.09), cac),    // arm out
-                (SIMD3(0.80, 0.52, 0.50), SIMD3(0.07, 0.13, 0.07), cac),    // arm up
+                (SIMD3(0.50, 0.48, 0.50), SIMD3(0.16, 0.48, 0.16), cac),    // trunk
+                (SIMD3(0.74, 0.44, 0.50), SIMD3(0.10, 0.09, 0.09), cac),    // right arm out
+                (SIMD3(0.82, 0.58, 0.50), SIMD3(0.07, 0.18, 0.07), cac),    // right arm up
+                (SIMD3(0.28, 0.62, 0.50), SIMD3(0.10, 0.09, 0.09), cac2),   // left arm out
+                (SIMD3(0.20, 0.78, 0.50), SIMD3(0.07, 0.20, 0.07), cac2),   // left arm up
             ]
         case 45:       // seashell — small pale shell on the sand
             let sh  = SIMD3<Float>(0.94, 0.86, 0.80)
@@ -2412,10 +2417,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
     }
 
-    // Build the static model table: 4 type-rows × 4 cuboid-slots of PropCuboidGPU.
+    // Build the static model table: type rows × cuboid slots of PropCuboidGPU.
     // Unused slots are left zero (zero half-extent → the vertex shader skips them).
     static func makePropModelTable(device: MTLDevice) -> MTLBuffer {
-        let rows = 18, slots = 4
+        let rows = 18, slots = 5
         var table = [PropCuboidGPU](repeating: PropCuboidGPU(cx:0,cy:0,cz:0, hx:0,hy:0,hz:0, r:0,g:0,b:0),
                                     count: rows * slots)
         let typeForRow: [UInt32] = [36, 37, 39, 40, 38, 41, 42, 43, 44, 45, 46, 47,
@@ -4958,7 +4963,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             // the ray length, so short ground rays and long sky rays are on the same
             // scale and a single threshold reads consistently.
             float litLen = 0.0, totLen = 0.0;
-            float t = stepLen * dither;   // jittered start
+            // #147: keep the start jitter, but make it a small centred offset rather than
+            // a full-step random shift. Full-step jitter removes bands but leaves visible
+            // pixel variance after the steep shaft shaping; a centred 0.35-step jitter still
+            // breaks lockstep bands while feeding the denoise pass a calmer signal.
+            float t = stepLen * (0.5 + (dither - 0.5) * 0.35);
             for (int i = 0; i < GR_STEPS; ++i) {
                 float3 sp = camP + viewDir * t;
                 float dc  = length(sp - camP);
@@ -5007,6 +5016,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             // raise the mean past the carved beams, so it cannot reintroduce a wash).
             shaft = clamp((shaft - 0.5) * GR_SHAFT_SHARP + 0.5, 0.0, 1.0);
             shaft *= shaft;   // square biases toward the cores: gaps go darker, beams stay
+            float shaftQ = (shaft
+                            + quad_shuffle_xor(shaft, 1u)
+                            + quad_shuffle_xor(shaft, 2u)
+                            + quad_shuffle_xor(shaft, 3u)) * 0.25;
+            shaft = mix(shaft, clamp(shaftQ, 0.0, 1.0), 0.65);
             // #132 LOW-SUN BOOST: shafts read as god-rays streaming DOWN at dawn/dusk and stay
             // subtle at noon. sunDir points downward, so -sunDir.y is the sun elevation
             // (~1 noon, ~0 horizon). lowSun is ~1 near the horizon, ~0 high up.
@@ -5564,6 +5578,26 @@ final class Renderer: NSObject, MTKViewDelegate {
             lp.x = 0.5 + (lp.x - 0.5) * gscale;
             lp.z = 0.5 + (lp.z - 0.5) * gscale;
             lp.y *= gscale;                                  // taller from the ground up
+        }
+        // Desert cactus (#152): one stored plant block renders as a varied tall cactus.
+        // The smallest is about 2x the old prop height and the biggest is about 5x.
+        // Arm pieces are selectively hidden per seed, then yawed like every prop, so
+        // a desert reads as mixed silhouettes without adding multi-block collision.
+        if (row == 8) {
+            uint variant = inst.seed & 3u;
+            float hscale = (variant == 0u) ? 2.0 : (variant == 1u) ? 2.8 : (variant == 2u) ? 3.7 : 5.0;
+            float wscale = (variant == 3u) ? 1.10 : 1.0;
+            bool rightArm = (variant != 0u);
+            bool leftArm = (variant >= 2u);
+            if ((cuboidIdx == 1u || cuboidIdx == 2u) && !rightArm) {
+                o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o;
+            }
+            if ((cuboidIdx == 3u || cuboidIdx == 4u) && !leftArm) {
+                o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o;
+            }
+            lp.x = 0.5 + (lp.x - 0.5) * wscale;
+            lp.z = 0.5 + (lp.z - 0.5) * wscale;
+            lp.y *= hscale;
         }
         // #62 trunk vs branch. Branches (bit 31) lie sideways; trunks taper with height.
         if (isTrunk) {

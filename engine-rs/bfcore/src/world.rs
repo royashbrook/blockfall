@@ -2070,17 +2070,25 @@ impl<'c> World<'c> {
                 self.notify_quest("collect_item", &dn);
             }
             self.set_block_internal(t, AIR);
-            // 2-tall door: clear the other half (already dropped one door item).
+            // Doors are one logical object even though the world stores vertical cells.
+            // Clear the whole contiguous run so old odd states cannot leave a lone half.
             if broken == 33 || broken == 50 {
-                let dup = IVec3 { x: t.x, y: t.y + 1, z: t.z };
-                let ddn = IVec3 { x: t.x, y: t.y - 1, z: t.z };
-                let du = self.block_at(dup);
-                let dd = self.block_at(ddn);
-                if du == 33 || du == 50 {
-                    self.set_block_internal(dup, AIR);
+                let mut low_y = t.y;
+                while {
+                    let b = self.block_at(IVec3 { x: t.x, y: low_y - 1, z: t.z });
+                    b == 33 || b == 50
+                } {
+                    low_y -= 1;
                 }
-                if dd == 33 || dd == 50 {
-                    self.set_block_internal(ddn, AIR);
+                let mut high_y = t.y;
+                while {
+                    let b = self.block_at(IVec3 { x: t.x, y: high_y + 1, z: t.z });
+                    b == 33 || b == 50
+                } {
+                    high_y += 1;
+                }
+                for y in low_y..=high_y {
+                    self.set_block_internal(IVec3 { x: t.x, y, z: t.z }, AIR);
                 }
             }
             // A prop resting on this block loses support: break it too.
@@ -4941,16 +4949,22 @@ impl<'c> World<'c> {
                     if tb == 33 || tb == 50 {
                         let nb = if tb == 33 { 50 } else { 33 };
                         let target = self.target;
-                        self.set_block_internal(target, nb);
-                        let up = IVec3 { x: target.x, y: target.y + 1, z: target.z };
-                        let dn = IVec3 { x: target.x, y: target.y - 1, z: target.z };
-                        let bu = self.block_at(up);
-                        let bd = self.block_at(dn);
-                        if bu == 33 || bu == 50 {
-                            self.set_block_internal(up, nb);
+                        let mut low_y = target.y;
+                        while {
+                            let b = self.block_at(IVec3 { x: target.x, y: low_y - 1, z: target.z });
+                            b == 33 || b == 50
+                        } {
+                            low_y -= 1;
                         }
-                        if bd == 33 || bd == 50 {
-                            self.set_block_internal(dn, nb);
+                        let mut high_y = target.y;
+                        while {
+                            let b = self.block_at(IVec3 { x: target.x, y: high_y + 1, z: target.z });
+                            b == 33 || b == 50
+                        } {
+                            high_y += 1;
+                        }
+                        for y in low_y..=high_y {
+                            self.set_block_internal(IVec3 { x: target.x, y, z: target.z }, nb);
                         }
                         self.fx(1, target, 0);
                         return;

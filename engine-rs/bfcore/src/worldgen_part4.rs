@@ -430,7 +430,7 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
                         }
                     }
                 } else if dom == Biome::Desert {
-                    if surf == SAND && roll < 10 {
+                    if surf == SAND && roll < 7 {
                         plant = CACTUS_PLANT;
                     }
                 } else if dom == Biome::Beach {
@@ -591,9 +591,7 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
                     continue;
                 }
 
-                if roll < 42 {
-                    chunk.set(lx, ly_above, lz, MUSHROOM);
-                } else if roll < 70 {
+                if roll < 26 {
                     let rb = if (dh >> 8) & 1 != 0 { GRAVEL } else { STONE };
                     chunk.set(lx, ly_surf, lz, rb);
                 }
@@ -1489,6 +1487,54 @@ mod worldgen_tests {
         }
         let n = seen.iter().filter(|&&s| s).count();
         assert!(n >= 5, "expected varied biomes in a wide scan, saw {n}: {seen:?}");
+    }
+
+    // #152: deserts should be dry sparse decoration, not a mushroom carpet. The
+    // old desert-decoration pass placed MUSHROOM on sand at 42/256, which could
+    // make desert spawn chunks dense and slow to build. Cactus / rocks are fine;
+    // mushrooms are forest/swamp/plains food, not desert ground cover.
+    #[test]
+    fn desert_columns_do_not_generate_mushrooms() {
+        let mut g = TerrainGen::new();
+        g.seed(SEED);
+        let mut desert_columns = 0;
+        let mut chunks_checked = 0;
+        'scan: for cz in -48..=48 {
+            for cx in -48..=48 {
+                let center_wx = cx * K_CHUNK_DIM + K_CHUNK_DIM / 2;
+                let center_wz = cz * K_CHUNK_DIM + K_CHUNK_DIM / 2;
+                if worldgen_dominant_biome(center_wx, center_wz, SEED) != Biome::Desert as i32 {
+                    continue;
+                }
+                let c = ChunkCoord { x: cx, y: 0, z: cz };
+                let mut chunk = DenseChunk::new(AIR);
+                g.generate(c, &mut chunk);
+                for lz in 0..K_CHUNK_DIM {
+                    for lx in 0..K_CHUNK_DIM {
+                        let wx = c.x * K_CHUNK_DIM + lx;
+                        let wz = c.z * K_CHUNK_DIM + lz;
+                        if worldgen_dominant_biome(wx, wz, SEED) != Biome::Desert as i32 {
+                            continue;
+                        }
+                        desert_columns += 1;
+                        for ly in 0..K_CHUNK_DIM {
+                            let b = chunk.get(lx, ly, lz);
+                            assert_ne!(
+                                b, MUSHROOM,
+                                "desert column generated a mushroom at world ({wx},{},{wz})",
+                                c.y * K_CHUNK_DIM + ly
+                            );
+                        }
+                    }
+                }
+                chunks_checked += 1;
+                if chunks_checked >= 8 {
+                    break 'scan;
+                }
+            }
+        }
+
+        assert!(desert_columns > 0, "sample set no longer covers desert columns");
     }
 
     // Biome borders must NOT be axis-aligned straight lines (#: natural, eroded
