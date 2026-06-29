@@ -737,7 +737,7 @@ final class LoadingView: NSView {
         addSubview(spinner)
         NSLayoutConstraint.activate([
             spinner.centerXAnchor.constraint(equalTo: centerXAnchor),
-            spinner.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 36),
+            spinner.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 84),
             spinner.widthAnchor.constraint(equalToConstant: 96),
             spinner.heightAnchor.constraint(equalToConstant: 24),
         ])

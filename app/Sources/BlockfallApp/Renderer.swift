@@ -585,9 +585,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     // GPU like the M1 Air. The raymarch only runs when this resolves > 0.
     // #136 this is the 100%-slider CEILING. The pause-menu God Rays intensity slider scales
     // it by gfxGodRayStr (0..1), which DEFAULTS to 0.5 — so the shipped look is half this,
-    // i.e. ~1.5 effective (the prior fixed look ran the full 3.0 and read too strong). Slider
-    // at 100% restores the old full strength; at 0% the rays are off.
-    static let kGodRayStrength: Float = 3.0
+    // Halved again after playtest (the 1.5 ceiling still read too strong even at the 0.5 default).
+    // Ceiling 1.5 with the 0.5 default gives ~0.75 effective; slider at 100% = 1.5 (the prior default).
+    static let kGodRayStrength: Float = 1.5
     // #132 LENS-FLARE GATE KNOBS (CPU side; shader has its own element knobs FLARE_*).
     //   kFlareEdgeFade : how far (in centre-distance, 0=centre ~1.4=corner) the flare keeps
     //                    fading to zero. Larger = the flare reaches further toward the edges.
