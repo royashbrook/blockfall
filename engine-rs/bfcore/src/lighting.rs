@@ -25,8 +25,15 @@ pub fn light_plant(b: BlockId) -> bool {
 pub fn light_glass(b: BlockId) -> bool {
     b == 25 || b == 26
 }
+// #118 snow overlay: snow_layer (12) and trodden_snow (54) are a thin blanket, not a
+// solid cube. They must not block sky light, so the snow cell itself receives the open
+// sky light the mesher reads onto the blanket faces (an opaque snow cell would store
+// sky=0 and the white slab would render near-black).
+pub fn light_snow_overlay(b: BlockId) -> bool {
+    b == 12 || b == 54
+}
 pub fn light_opaque(b: BlockId) -> bool {
-    b != 0 && b != 9 && !light_glass(b) && !light_plant(b)
+    b != 0 && b != 9 && !light_glass(b) && !light_plant(b) && !light_snow_overlay(b)
 }
 pub fn light_emit(b: BlockId) -> u8 {
     match b {

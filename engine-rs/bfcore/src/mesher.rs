@@ -453,10 +453,23 @@ fn is_door(id: BlockId) -> bool {
     id == DOOR_CLOSED || id == DOOR_OPEN
 }
 
-// A cell is OPAQUE if it is non-air, not water (9), not glass, not a door, not a prop.
+// #118 snow overlay: snow is a thin BLANKET on top of the surface block, not a solid
+// cube. snow_layer (12) is fresh snow; trodden_snow (54) is a stepped/compressed print
+// (#117). Both are emitted as a thin slab sitting at the bottom of their cell by
+// emit_snow_layer, so the block underneath shows through on the sides. They are not
+// opaque and do not occlude, so the surface below keeps its faces and AO is unchanged.
+const SNOW_LAYER: BlockId = 12;
+const TRODDEN_SNOW: BlockId = 54;
+#[inline]
+fn is_snow_overlay(id: BlockId) -> bool {
+    id == SNOW_LAYER || id == TRODDEN_SNOW
+}
+
+// A cell is OPAQUE if it is non-air, not water (9), not glass, not a door, not a snow
+// overlay, not a prop.
 #[inline]
 fn is_opaque(id: BlockId) -> bool {
-    id != 0 && id != 9 && !is_glass(id) && !is_door(id) && !is_prop(id)
+    id != 0 && id != 9 && !is_glass(id) && !is_door(id) && !is_snow_overlay(id) && !is_prop(id)
 }
 
 // Waterlogged props (reed 43, lily pad 46): the cell still renders as water.
@@ -465,10 +478,11 @@ fn is_waterlogged(id: BlockId) -> bool {
     id == 43 || id == 46
 }
 
-// Is this block id an AO-occluder? Air(0), water(9), glass, doors, props do not occlude.
+// Is this block id an AO-occluder? Air(0), water(9), glass, doors, snow overlay, props
+// do not occlude.
 #[inline]
 fn is_occluder(id: BlockId) -> bool {
-    id != 0 && id != 9 && !is_glass(id) && !is_door(id) && !is_prop(id)
+    id != 0 && id != 9 && !is_glass(id) && !is_door(id) && !is_snow_overlay(id) && !is_prop(id)
 }
 
 // Sample a block at an arbitrary world offset from (x,y,z) in chunk cc.
@@ -1010,6 +1024,116 @@ fn emit_door(
     true
 }
 
+// ---- snow overlay emission (#118) -------------------------------------------
+// A thin white blanket sitting at the BOTTOM of the cell, on top of whatever block
+// is below. The slab is full width in X and Z but only a few sixteenths tall, so the
+// block under it shows on the sides and the snow reads as a covering rather than a
+// cube. Fresh snow (12) is taller with a slight raised lip; trodden snow (54, #117)
+// is flatter and uses a separate material id so the renderer tints the print darker.
+// 6 quads = 24 verts + 36 indices, same budget as a door. Top face is given an inset
+// lip: the top quad is one sixteenth narrower on each side so the rim catches light
+// and the blanket edge reads clearly.
+fn emit_snow_layer(
+    bx: i32,
+    by: i32,
+    bz: i32,
+    id: BlockId,
+    sky: u8,
+    blk: u8,
+    buf: &mut MeshBuffers,
+) -> bool {
+    if buf.vtx_cap - buf.vtx.len() < 24 * VERTEX_SIZE {
+        return false;
+    }
+    if buf.idx_cap - buf.idx.len() < 36 * INDEX_SIZE {
+        return false;
+    }
+
+    const AO: u32 = 3;
+    let mat: u16 = id; // 12 fresh, 54 trodden, tinted by the renderer
+    let x = bx as u32;
+    let y = by as u32;
+    let z = bz as u32;
+
+    // Blanket thickness in sixteenths. Fresh snow stands a touch proud; a footprint
+    // compresses it almost flat so the trail reads as a sunken track in the snow (the
+    // bigger the step down from the surrounding fresh snow, the clearer the print).
+    let top: u32 = if id == TRODDEN_SNOW { 1 } else { 6 };
+
+    // Fracs run 0..16 across the cell; split into integer block step + 4-bit frac.
+    let vert = |fx: u32, fy: u32, fz: u32, normal: u32, u: u32, v: u32| -> BFVertex {
+        BFVertex {
+            pos_packed: bf_pack_pos(
+                x + (fx >> 4),
+                y + (fy >> 4),
+                z + (fz >> 4),
+                fx & 0xF,
+                fy & 0xF,
+                fz & 0xF,
+            ),
+            normal_uv: bf_pack_normal_uv(normal, AO, u, v),
+            material_id: mat,
+            sky_light: sky,
+            block_light: blk,
+            reserved: 0,
+        }
+    };
+
+    // Slab spans X/Z 0..16, Y 0..top, so adjacent snow cells tile seamlessly into one
+    // blanket. The top cap is full width too: a per-cell lip inset made every cell border
+    // read as an exposed-dirt grid, which fought the "cohesive blanket" goal. The blanket
+    // reads as a covering purely from its thinness (the block shows on the sides at the
+    // edge of the snow field and on every step riser), which is the #118 requirement.
+    let lo: u32 = 0;
+    let hi: u32 = 16;
+    let tlo: u32 = lo;
+    let thi: u32 = hi;
+
+    // +X side.
+    buf.quad(
+        &vert(hi, 0, lo, BF_NX_POS, 0, 0),
+        &vert(hi, top, lo, BF_NX_POS, 0, 1),
+        &vert(hi, top, hi, BF_NX_POS, 1, 1),
+        &vert(hi, 0, hi, BF_NX_POS, 1, 0),
+    );
+    // -X side.
+    buf.quad(
+        &vert(lo, 0, hi, BF_NX_NEG, 0, 0),
+        &vert(lo, top, hi, BF_NX_NEG, 0, 1),
+        &vert(lo, top, lo, BF_NX_NEG, 1, 1),
+        &vert(lo, 0, lo, BF_NX_NEG, 1, 0),
+    );
+    // +Z side.
+    buf.quad(
+        &vert(hi, 0, hi, BF_NZ_POS, 0, 0),
+        &vert(hi, top, hi, BF_NZ_POS, 0, 1),
+        &vert(lo, top, hi, BF_NZ_POS, 1, 1),
+        &vert(lo, 0, hi, BF_NZ_POS, 1, 0),
+    );
+    // -Z side.
+    buf.quad(
+        &vert(lo, 0, lo, BF_NZ_NEG, 0, 0),
+        &vert(lo, top, lo, BF_NZ_NEG, 0, 1),
+        &vert(hi, top, lo, BF_NZ_NEG, 1, 1),
+        &vert(hi, 0, lo, BF_NZ_NEG, 1, 0),
+    );
+    // Top cap, inset by the lip so the rim reads.
+    buf.quad(
+        &vert(thi, top, tlo, BF_NY_POS, 0, 0),
+        &vert(tlo, top, tlo, BF_NY_POS, 1, 0),
+        &vert(tlo, top, thi, BF_NY_POS, 1, 1),
+        &vert(thi, top, thi, BF_NY_POS, 0, 1),
+    );
+    // Bottom cap, sits flush on the block below.
+    buf.quad(
+        &vert(lo, 0, lo, BF_NY_NEG, 0, 0),
+        &vert(hi, 0, lo, BF_NY_NEG, 1, 0),
+        &vert(hi, 0, hi, BF_NY_NEG, 1, 1),
+        &vert(lo, 0, hi, BF_NY_NEG, 0, 1),
+    );
+    true
+}
+
 // ============================================================================
 // GreedyMesher::mesh
 // ============================================================================
@@ -1194,6 +1318,18 @@ impl GreedyMesher {
                         }
                         continue;
                     }
+
+                    // #118 snow overlay: a thin blanket slab at the bottom of the cell.
+                    if is_snow_overlay(here) {
+                        let ssky = chunk.sky_light(x as usize, y as usize, z as usize);
+                        let sblk = chunk.block_light(x as usize, y as usize, z as usize);
+                        if !emit_snow_layer(x, y, z, here, ssky, sblk, &mut buf) {
+                            buf.full = true;
+                            return finalize(buf, false);
+                        }
+                        continue;
+                    }
+
                     if !is_prop(here) {
                         continue;
                     }
@@ -1385,6 +1521,76 @@ mod tests {
         assert_eq!(vtx.len(), 24 * 16);
         assert_eq!(idx.len(), 36 * 4);
         assert!(!res.empty);
+    }
+
+    // Decode each vertex's continuous Y (integer cell + 4-bit fraction/16) and its
+    // material id. Used by the snow-overlay test to prove the slab is thin.
+    fn decode_y_and_mat(vtx: &[u8]) -> Vec<(f32, u16)> {
+        let mut out = Vec::new();
+        for ch in vtx.chunks_exact(16) {
+            let pos = u32::from_le_bytes([ch[0], ch[1], ch[2], ch[3]]);
+            let y = ((pos >> 6) & 0x3F) as f32;
+            let fy = ((pos >> 22) & 0xF) as f32;
+            let mat = u16::from_le_bytes([ch[8], ch[9]]);
+            out.push((y + fy / 16.0, mat));
+        }
+        out
+    }
+
+    // #118 snow overlay: a snow_layer (12) block sitting directly on grass (1) must mesh
+    // as a THIN blanket slab, not a full cube. The grass keeps all its faces; the snow
+    // emits a separate slab whose top sits well below the top of its cell, so the grass
+    // shows on the sides. trodden_snow (54, #117 footprint) is even flatter.
+    #[test]
+    fn snow_overlay_is_a_thin_slab_over_the_block() {
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(8, 8, 8, 1); // grass surface
+        ch.set(8, 9, 8, 12); // fresh snow blanket on top
+        store.chunks.insert(ChunkCoord::default(), ch);
+        let m = GreedyMesher::new();
+        let (res, vtx, _) = m.mesh(ChunkCoord::default(), &store, false);
+
+        // Grass keeps 6 faces (24 verts), snow adds a 6-quad slab (24 verts). The snow is
+        // not a culled cube and not opaque, so the grass top face is NOT removed.
+        assert_eq!(res.index_count, 36 + 36, "grass cube + snow slab");
+
+        let vm = decode_y_and_mat(&vtx);
+        // Snow material (12) vertices all live in the snow cell's bottom few sixteenths:
+        // the slab spans y=9.0 (cell floor, on top of grass) up to a fractional top well
+        // under y=10.0 (the cell ceiling). A full cube would reach y=10.0.
+        let snow_ys: Vec<f32> = vm.iter().filter(|&&(_, m)| m == 12).map(|&(y, _)| y).collect();
+        assert!(!snow_ys.is_empty(), "snow slab must emit geometry");
+        let snow_top = snow_ys.iter().cloned().fold(f32::MIN, f32::max);
+        let snow_bot = snow_ys.iter().cloned().fold(f32::MAX, f32::min);
+        assert!((snow_bot - 9.0).abs() < 1e-3, "snow slab sits on top of the grass (y=9)");
+        assert!(snow_top < 9.5, "snow slab top {snow_top} must be a thin lip, not a full cube (y<9.5)");
+        assert!(snow_top > 9.0, "snow slab must have some thickness");
+
+        // The grass still has its own top face at y=9.0 (cell ceiling of the grass cell),
+        // present because snow does not occlude. So the block reads through under the snow.
+        let grass_top_faces = vm.iter().filter(|&&(y, m)| m == 1 && (y - 9.0).abs() < 1e-3).count();
+        assert!(grass_top_faces >= 4, "grass keeps its top face under the non-opaque snow");
+    }
+
+    #[test]
+    fn trodden_snow_is_flatter_than_fresh_snow() {
+        let top_of = |id: BlockId| -> f32 {
+            let mut store = TestStore::new();
+            let mut ch = TestChunk::new();
+            ch.set(8, 8, 8, 1);
+            ch.set(8, 9, 8, id);
+            store.chunks.insert(ChunkCoord::default(), ch);
+            let (_, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+            decode_y_and_mat(&vtx)
+                .iter()
+                .filter(|&&(_, m)| m == id)
+                .map(|&(y, _)| y)
+                .fold(f32::MIN, f32::max)
+        };
+        let fresh = top_of(12);
+        let trod = top_of(54);
+        assert!(trod < fresh, "a footprint (54) compresses the snow below fresh (12): {trod} < {fresh}");
     }
 
     // Decode a packed vertex stream into (normal, sky_light, block_light) tuples,

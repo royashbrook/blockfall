@@ -900,17 +900,22 @@ fn parse_bytes(bytes: &[u8]) -> Result<Value, serde_json::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const CONTENT: &str = "/Users/roy/gh/blockfall/content";
+    // Resolve content relative to this crate so the tests read the SAME checkout (or git
+    // worktree) they are built from, rather than a hard-coded absolute path that could point
+    // at a different tree. CARGO_MANIFEST_DIR is engine-rs/bfcore, so content is ../../content.
+    const CONTENT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../content");
 
     // Golden counts + records from the verified C++ dump (the full record diff was IDENTICAL at
     // the port). Counts may legitimately grow past the C++ baseline as we add content post-port:
     // block_count went 51 to 52 when the bed block (id 52) was added for villager home interiors,
-    // then 52 to 53 when iron_bars (id 53) was added for the village blacksmith iron-gate tier (#95).
+    // then 52 to 53 when iron_bars (id 53) was added for the village blacksmith iron-gate tier (#95),
+    // then 53 to 54 when trodden_snow (id 54) was added for snow footprints (#117); it is the
+    // compressed-snow state a walker leaves in the snow blanket (#118 made snow a thin overlay).
     #[test]
     fn loads_with_cpp_parity_counts() {
         let mut reg = ContentRegistry::new();
         assert!(reg.load(CONTENT));
-        assert_eq!(reg.block_count(), 53);
+        assert_eq!(reg.block_count(), 54);
         assert_eq!(reg.item_count(), 60);
         assert_eq!(reg.recipe_count(), 34);
         let oak = reg.block_by_name("oak_log").expect("oak_log");

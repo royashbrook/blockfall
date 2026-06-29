@@ -41,6 +41,10 @@ pub const SAND: BlockId = 6;
 pub const GLOW: BlockId = 7;
 pub const BRICK: BlockId = 8;
 pub const WATER: BlockId = 9;
+// #118 snow overlay / #117 footprints: snow is a thin blanket block, not a cube.
+// Stepping on fresh snow (SNOW_LAYER) compacts it to TRODDEN_SNOW (a footprint).
+pub const SNOW_LAYER: BlockId = 12;
+pub const TRODDEN_SNOW: BlockId = 54;
 
 // #109 chests: the chest block id (content/blocks/functional.json id 31) and the
 // fixed per-chest slot count. A small fixed number keeps the panel kid-simple and
@@ -933,8 +937,15 @@ impl<'c> World<'c> {
     fn is_plant(b: BlockId) -> bool {
         (36..=47).contains(&b) || b == 5 || b == 27 || b == 48
     }
+    // #118 snow overlay: snow_layer (12, fresh) and trodden_snow (54, footprint) are a
+    // thin blanket on the surface block, not a solid cube. They are walk-through so the
+    // player stands on the block below with the snow at their feet (and footprints, #117,
+    // read at ground level rather than a block up).
+    fn is_snow_overlay(b: BlockId) -> bool {
+        b == SNOW_LAYER || b == TRODDEN_SNOW
+    }
     fn solid_block(b: BlockId) -> bool {
-        b != AIR && b != WATER && b != 50 && !Self::is_plant(b)
+        b != AIR && b != WATER && b != 50 && !Self::is_plant(b) && !Self::is_snow_overlay(b)
     }
     fn is_gravity_block(b: BlockId) -> bool {
         b == 6 || b == 11
@@ -949,8 +960,13 @@ impl<'c> World<'c> {
     /// Opaque solids cast; leaves cast (foliage casts like the old shadow map);
     /// air, water, and most plants/props do NOT. Mirrors the shadow-map occluder
     /// set so the new world-space shadows match the old look.
+    /// Snow overlay (#118) is walk-through but still occupies the surface cell in the
+    /// occupancy grid: it sits where the ground visually is, so keeping it as an occluder
+    /// keeps the world-fixed shadow ground-top aligned with the rendered snow surface
+    /// (matching the old full-cube snow). Without this a snowy region's ground-top would
+    /// drop a cell and the shadow reconstruction would vary per camera.
     fn casts_shadow(b: BlockId) -> bool {
-        Self::solid_block(b) || Self::is_leaf(b)
+        Self::solid_block(b) || Self::is_leaf(b) || Self::is_snow_overlay(b)
     }
     fn is_prop_block(id: BlockId) -> bool {
         (36..=47).contains(&id)
@@ -960,7 +976,7 @@ impl<'c> World<'c> {
     }
     fn collide_solid(&self, x: i32, y: i32, z: i32) -> bool {
         let b = self.block_at(IVec3 { x, y, z });
-        b != AIR && b != WATER && b != 50 && !Self::is_plant(b)
+        b != AIR && b != WATER && b != 50 && !Self::is_plant(b) && !Self::is_snow_overlay(b)
     }
     fn box_collides(&self, p: V3) -> bool {
         let hw = 0.3f32;
@@ -1824,7 +1840,7 @@ impl<'c> World<'c> {
         match b {
             3 | 8 | 10 | 15 | 29 => 1,
             21 | 22 | 4 | 23 | 30 | 31 | 33 => 2,
-            1 | 2 | 14 | 16 | 12 => 3,
+            1 | 2 | 14 | 16 | 12 | 54 => 3,
             6 | 11 => 4,
             25 | 26 | 13 => 5,
             5 | 27 | 36 | 37 | 38 | 39 => 6,
@@ -1836,9 +1852,19 @@ impl<'c> World<'c> {
         match b {
             3 | 8 | 10 | 29 => 1,
             6 => 2,
-            12 | 13 => 3,
+            12 | 13 | 54 => 3,
             4 | 23 | 21 | 22 | 49 | 51 | 33 => 4,
             _ => 0,
+        }
+    }
+    // #117 footprint stamp: a walker stepping on FRESH snow compresses it into a trodden
+    // print (TRODDEN_SNOW). Only fresh snow converts, so a cell is stamped at most once
+    // and a trail does not keep re-dirtying the same cells. set_block_internal handles the
+    // remesh + co-op replication, so the print shows for everyone and persists with the
+    // edited chunk. Cheap and bounded: O(1) per step, no separate print list to cap.
+    fn stamp_footprint(&mut self, cell: IVec3) {
+        if self.block_at(cell) == SNOW_LAYER {
+            self.set_block_internal(cell, TRODDEN_SNOW);
         }
     }
     fn item_that_places(&self, b: BlockId) -> ItemId {
@@ -3990,7 +4016,28 @@ impl<'c> World<'c> {
                     c.vy = 0.0;
                 }
             }
+            let grounded_fy = if c.vy == 0.0 && !c.aquatic {
+                let fy = self.floor_below(
+                    Self::ifloor(c.pos.x),
+                    c.pos.y.floor() as i32 + 1,
+                    Self::ifloor(c.pos.z),
+                );
+                if fy != NO_FLOOR && (c.pos.y - fy as f32).abs() < 0.2 {
+                    Some(fy)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let cell_xz = (Self::ifloor(c.pos.x), Self::ifloor(c.pos.z));
             self.creatures[i] = c;
+            // #117 creatures leave prints too: a grounded land creature on fresh snow
+            // compresses it. Same fresh-only, O(1) stamp as the player, so the cost is
+            // bounded by the (small) creature count, not the trail length.
+            if let Some(fy) = grounded_fy {
+                self.stamp_footprint(IVec3 { x: cell_xz.0, y: fy, z: cell_xz.1 });
+            }
         }
 
         // ---- collision: creatures (animals + villagers) hold distinct space ----
@@ -4836,6 +4883,12 @@ impl<'c> World<'c> {
                     GRASS
                 };
                 self.fx(2, pv, Self::footstep_class(fb));
+                // #117 footprint: if the cell at the player's feet is fresh snow, compress
+                // it into a trodden print. Bounded by construction (one cell per step, and
+                // fresh snow only converts once), so there is no growing print buffer.
+                if gy != NO_FLOOR {
+                    self.stamp_footprint(IVec3 { x: pv.x, y: gy, z: pv.z });
+                }
             }
         } else {
             self.bob_amt = (self.bob_amt - dtf * 7.0).max(0.0);
@@ -6191,6 +6244,46 @@ mod time_mode_tests {
             _pad: [0; 3],
         };
         w.update(&input, 0.016);
+    }
+
+    // #117 footprints: stepping on FRESH snow (12) compresses it to a TRODDEN print (54);
+    // already-trodden snow and non-snow blocks are left alone, so a trail is stamped at
+    // most once per cell (bounded, no growing print list). Snow stays walk-through.
+    #[test]
+    fn footprint_compresses_fresh_snow_only() {
+        let mut w = World::new(None);
+        // A grass cell with a fresh snow blanket above it.
+        w.debug_edit(0, 10, 0, GRASS);
+        w.debug_edit(0, 11, 0, SNOW_LAYER);
+        assert_eq!(w.debug_block_at(0, 11, 0), SNOW_LAYER);
+
+        // First step on the snow cell turns it into a footprint.
+        w.stamp_footprint(IVec3 { x: 0, y: 11, z: 0 });
+        assert_eq!(w.debug_block_at(0, 11, 0), TRODDEN_SNOW, "fresh snow becomes a print");
+
+        // Stepping again does nothing (already trodden), so a trail does not churn.
+        w.stamp_footprint(IVec3 { x: 0, y: 11, z: 0 });
+        assert_eq!(w.debug_block_at(0, 11, 0), TRODDEN_SNOW);
+
+        // Stepping on a non-snow cell leaves it untouched.
+        w.debug_edit(2, 10, 0, GRASS);
+        w.stamp_footprint(IVec3 { x: 2, y: 10, z: 0 });
+        assert_eq!(w.debug_block_at(2, 10, 0), GRASS, "non-snow is never stamped");
+    }
+
+    // #118 snow overlay is walk-through: the player stands on the surface block below,
+    // not on top of the snow cell (so the blanket sits at their feet and prints read at
+    // ground level). Snow must not collide.
+    #[test]
+    fn snow_overlay_does_not_collide() {
+        let w = World::new(None);
+        assert!(!World::solid_block(SNOW_LAYER), "fresh snow is walk-through");
+        assert!(!World::solid_block(TRODDEN_SNOW), "trodden snow is walk-through");
+        // But it still occupies the surface cell for sun shadows (keeps the world-fixed
+        // shadow ground-top aligned with the rendered snow surface).
+        assert!(World::casts_shadow(SNOW_LAYER));
+        assert!(World::casts_shadow(TRODDEN_SNOW));
+        let _ = w;
     }
 
     // Always-day (mode 1) pins day_time to the representative daytime phase and

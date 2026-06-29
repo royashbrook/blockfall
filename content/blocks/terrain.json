@@ -96,6 +96,19 @@
     }
   },
   {
+    "id": 54,
+    "name": "trodden_snow",
+    "display_name": "Trodden Snow",
+    "hardness": 2,
+    "required_tier": 0,
+    "preferred_tool": "shovel",
+    "transparent": true,
+    "drop_item": "snow_layer",
+    "textures": {
+      "all": "snow"
+    }
+  },
+  {
     "id": 13,
     "name": "ice",
     "display_name": "Ice",

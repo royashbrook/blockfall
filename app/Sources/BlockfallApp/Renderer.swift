@@ -2754,6 +2754,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             case  9u: return float3(0.10, 0.40, 0.85);   // water: deep saturated cerulean (submerged base)
             // ---- SNOW / ICE: cool whites, not flat white ------------------------------
             case 12u: return float3(0.95, 0.97, 1.00);   // snow: bright with a whisper of blue
+            case 54u: return float3(0.64, 0.70, 0.82);   // trodden snow (#117): compressed print, clearly dimmer cool grey-blue so the trail reads against fresh snow
             case 13u: return float3(0.66, 0.84, 1.00);   // ice: clean glacial blue, more saturated than snow
             // ---- DARK / DIM terrain ---------------------------------------------------
             case 15u: return float3(0.26, 0.23, 0.34);   // dim stone: deep cool violet-grey

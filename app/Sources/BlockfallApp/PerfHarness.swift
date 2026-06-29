@@ -726,7 +726,10 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         // BF_SHOT_TCWALK=<frames> lets a test-creature shot walk first to reach a different biome
         // (e.g. grass) before settling and injecting the creature.
         let tcWalk = Int(ProcessInfo.processInfo.environment["BF_SHOT_TCWALK"] ?? "0") ?? 0
-        let travel = testCreatureMode ? tcWalk : (treeMode ? 320 : 700)
+        // BF_SHOT_TRAVEL=<frames> overrides how far the shot walks before the capture, so a
+        // verification shot can stop near spawn (less likely to bury the camera in terrain).
+        let travelEnv = Int(ProcessInfo.processInfo.environment["BF_SHOT_TRAVEL"] ?? "")
+        let travel = testCreatureMode ? tcWalk : (travelEnv ?? (treeMode ? 320 : 700))
         for _ in 0..<travel { renderOneFrame(yaw: 0) }       // travel STRAIGHT to cross into grass/forest
         if testCreatureMode { for _ in 0..<240 { renderOneFrame(yaw: 0, forward: 0) } }  // settle on ground
         // BF_SHOT_PITCH=<total radians> aims the camera up/down before the capture
