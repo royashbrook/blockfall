@@ -881,6 +881,64 @@ pub unsafe extern "C" fn bf_chest_close(e: bf_engine) {
 }
 
 // ---------------------------------------------------------------------------
+// Living villages (#95, v21)
+// ---------------------------------------------------------------------------
+
+#[no_mangle]
+pub unsafe extern "C" fn bf_village_query(e: bf_engine, out: *mut bf_village_view) -> bf_result {
+    let e = match engine_ref(e) {
+        Some(e) => e,
+        None => {
+            set_err("null engine");
+            return bf_result::BF_ERR_BAD_ARG;
+        }
+    };
+    if out.is_null() {
+        set_err("null arg");
+        return bf_result::BF_ERR_BAD_ARG;
+    }
+    if !e.world_ready {
+        set_err("world not ready");
+        return bf_result::BF_ERR_NOT_READY;
+    }
+    // SAFETY: caller guarantees `out` is a writable bf_village_view.
+    let view = unsafe { &mut *out };
+    *view = bf_village_view {
+        anchor: bf_ivec3 { x: 0, y: 0, z: 0 },
+        present: 0,
+        tier: 0,
+        _pad: [0; 2],
+        wood_cells: 0,
+        wood_total: 0,
+        progress: 0,
+        progress_needed: 0,
+        want: [0; 16],
+    };
+    if let Some((ax, az, tier, wood_cells, wood_total, progress, progress_needed)) =
+        e.world.village_view_nearest()
+    {
+        view.anchor = bf_ivec3 { x: ax, y: 0, z: az };
+        view.present = 1;
+        view.tier = tier;
+        view.wood_cells = wood_cells.max(0) as u32;
+        view.wood_total = wood_total.max(0) as u32;
+        view.progress = progress.max(0) as u32;
+        view.progress_needed = progress_needed.max(0) as u32;
+        // What the next villager wants, by tier.
+        let want: &[u8] = match tier {
+            0 => b"wood",
+            1 if wood_cells < wood_total => b"wood",
+            1 => b"stone",
+            2 => b"iron",
+            _ => b"",
+        };
+        let n = want.len().min(15);
+        view.want[..n].copy_from_slice(&want[..n]);
+    }
+    bf_result::BF_OK
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

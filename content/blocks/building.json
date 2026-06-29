@@ -170,5 +170,17 @@
     "textures": {
       "all": "mossy_stone"
     }
+  },
+  {
+    "id": 53,
+    "name": "iron_bars",
+    "display_name": "Iron Gate",
+    "hardness": 35,
+    "required_tier": 2,
+    "preferred_tool": "pickaxe",
+    "drop_item": "iron_ingot",
+    "textures": {
+      "all": "iron_bars"
+    }
   }
 ]

@@ -309,6 +309,32 @@ impl Default for ChestData {
     }
 }
 
+// Living-villages (epic #95): per-settlement upgrade progress, keyed by the settlement
+// anchor (ax, az) which is also every resident villager's home_x/home_z. This is PLAYER
+// PROGRESS, not worldgen: the baked structure stays a function of the seed, and the tier
+// only changes what extra blocks the player has donated to build on top of it. Persisted
+// to villages.dat (the chests.dat side-file pattern) so a developed town survives reload.
+//
+// The chain mirrors the villager profession chain and the village_npcs dialogue:
+//   tier 0 -> donate wood to the Woodcutter (npc 4): a WOOD PALISADE ring goes up.
+//   tier 1 -> donate stone to the Stone Mason  (npc 5): the wall + huts gain STONE.
+//   tier 2 -> donate iron  to the Blacksmith   (npc 6): an IRON GATE + lit LAMPS.
+// Each tier also expands the town (extra plots/huts) so a developed village reads as a
+// real town. `wood_cells` tracks how much palisade has been built so the woodcutter can
+// report completion; the other tiers are one-shot upgrades gated on a resource count.
+#[derive(Clone, Default)]
+struct VillageState {
+    // Highest completed tier: 0 none, 1 wood palisade, 2 stone, 3 iron. A tier only
+    // advances when the one below it is complete, so this is always a chain prefix.
+    tier: u8,
+    // Palisade wall cells built so far (the woodcutter's running progress). Used to know
+    // when the ring is complete (so tier can advance to 1) and for the HUD progress bar.
+    wood_cells: i32,
+    // Resource units donated toward the CURRENT tier's upgrade (stone bricks for tier 2,
+    // iron ingots for tier 3). Reset to 0 when a tier completes.
+    progress: i32,
+}
+
 // A block in mid air: undermined sand/gravel, or logs from a felled tree.
 #[derive(Clone)]
 struct FallingBlock {
@@ -464,6 +490,9 @@ pub struct World<'c> {
     // or None. The app polls this via bf_chest_interacted to open/close the chest panel.
     // Interacting on the SAME open chest again clears it (toggle closed).
     last_chest_open: Option<IVec3>,
+    // Living-villages (#95): per-settlement upgrade progress keyed by the settlement
+    // anchor (ax, az). Player progress, persisted to villages.dat. See VillageState.
+    villages: HashMap<(i32, i32), VillageState>,
     regrow_timer: f32,
     rng: u32,
     regions_restored: i32,
@@ -664,6 +693,7 @@ impl<'c> World<'c> {
             ruin_sites: HashMap::new(),
             chests: HashMap::new(),
             last_chest_open: None,
+            villages: HashMap::new(),
             regrow_timer: 3.0,
             rng: 0x1234567,
             regions_restored: 0,
@@ -1342,6 +1372,27 @@ impl<'c> World<'c> {
                 let _ = f.write_all(&buf);
             }
         }
+        // #95 living-villages tier progress (villages.dat). Player progress, kept OUT of
+        // the chunk blob (the actual upgraded blocks live in the edited chunks; this file
+        // only records the tier/progress bookkeeping so the HUD and donation gates restore
+        // correctly). One record per settlement: i32 ax,az then u8 tier, i32 wood_cells,
+        // i32 progress. Follows the chests.dat side-file pattern.
+        {
+            let path = format!("{}/villages.dat", dir);
+            let mut buf: Vec<u8> = Vec::new();
+            buf.extend_from_slice(b"BFVL");
+            buf.extend_from_slice(&(self.villages.len() as u32).to_le_bytes());
+            for (&(ax, az), v) in self.villages.iter() {
+                buf.extend_from_slice(&ax.to_le_bytes());
+                buf.extend_from_slice(&az.to_le_bytes());
+                buf.push(v.tier);
+                buf.extend_from_slice(&v.wood_cells.to_le_bytes());
+                buf.extend_from_slice(&v.progress.to_le_bytes());
+            }
+            if let Ok(mut f) = std::fs::File::create(&path) {
+                let _ = f.write_all(&buf);
+            }
+        }
         true
     }
 
@@ -1483,6 +1534,26 @@ impl<'c> World<'c> {
                         }
                     }
                     self.chests.insert((x, y, z), data);
+                }
+            }
+        }
+        // #95 living-villages tier progress (villages.dat).
+        self.villages.clear();
+        if let Ok(b) = std::fs::read(format!("{}/villages.dat", dir)) {
+            let mut cr = ByteReader::new(&b);
+            if cr.take(4) == Some(b"BFVL") {
+                let n = cr.u32().unwrap_or(0);
+                for _ in 0..n {
+                    let ax = cr.i32();
+                    let az = cr.i32();
+                    let (ax, az) = match (ax, az) {
+                        (Some(ax), Some(az)) => (ax, az),
+                        _ => break,
+                    };
+                    let tier = cr.u8().unwrap_or(0);
+                    let wood_cells = cr.i32().unwrap_or(0);
+                    let progress = cr.i32().unwrap_or(0);
+                    self.villages.insert((ax, az), VillageState { tier, wood_cells, progress });
                 }
             }
         }
@@ -2564,6 +2635,15 @@ impl<'c> World<'c> {
         self.last_chest_open = None;
     }
 
+    // #95 HUD: tier/donation status of the village nearest the player, or None when none
+    // is within range. Returns (anchor_x, anchor_z, tier, wood_cells, wood_total, progress,
+    // progress_needed). Pure read.
+    pub fn village_view_nearest(&self) -> Option<(i32, i32, u8, i32, i32, i32, i32)> {
+        let px = Self::ifloor(self.pos.x);
+        let pz = Self::ifloor(self.pos.z);
+        self.village_status_near(px, pz, 64)
+    }
+
     fn drop_ruin_clear_reward(&mut self) {
         if self.inv.is_none() {
             return;
@@ -2754,6 +2834,11 @@ impl<'c> World<'c> {
                     return false;
                 }
             }
+        }
+        // #95 walls keep monsters out: never spawn a hostile inside a walled village's
+        // protected interior.
+        if self.village_protects(Self::ifloor(cx), Self::ifloor(cz)).is_some() {
+            return false;
         }
         let mut c = Creature::default();
         c.pos = V3::new(cx, gy as f32, cz);
@@ -3180,13 +3265,24 @@ impl<'c> World<'c> {
         made
     }
 
-    // Build the next missing segment of a palisade ring (stateless: placed logs are
-    // the progress). Returns the number of wall cells built this call.
-    fn build_palisade_segment(&mut self, cx: i32, cz: i32, cells_to_build: i32) -> i32 {
-        const R: i32 = 8;
-        const WALL: BlockId = 21;
-        let mut built = 0;
-        // Order: top edge, right edge, bottom edge, left edge (matches C++).
+    // The palisade / wall ring is an R-radius square centred on the settlement anchor.
+    // Player progress (donations) builds it cell by cell; the same R defines the interior
+    // that walls keep monsters out of (see village_protects). The south edge holds a 2
+    // wide gate so the player can walk in.
+    const PALISADE_R: i32 = 8;
+    // Total buildable wall cells in the ring perimeter, minus the 2 gate cells. A ring of
+    // half-extent R has 8*R perimeter cells; the gate removes 2. At R=8 that is 62.
+    const PALISADE_CELLS: i32 = 8 * Self::PALISADE_R - 2;
+    // Block ids used by the tier upgrades (kept in step with worldgen_part3 + content).
+    const WALL_WOOD: BlockId = 21; // oak_log: tier-1 wooden palisade
+    const WALL_STONE: BlockId = 8; // stone_brick: tier-2 reinforced wall
+    const IRON_GATE: BlockId = 53; // iron_bars: tier-3 gate (new block, dark iron)
+    const LAMP: BlockId = 35; // crystal_lamp: emits light (lit at night), tier-3 lamps
+
+    // The ring cell offsets in build order (top, right, bottom, left), skipping the gate
+    // on the south edge. Pure function of R, so the order is stable and deterministic.
+    fn palisade_ring_cells() -> Vec<(i32, i32)> {
+        const R: i32 = World::PALISADE_R;
         let mut order: Vec<(i32, i32)> = Vec::new();
         for dx in -R..=R {
             order.push((dx, -R));
@@ -3200,24 +3296,211 @@ impl<'c> World<'c> {
         for dz in ((-R + 1)..=(R - 1)).rev() {
             order.push((-R, dz));
         }
-        for (dx, dz) in order {
+        // Drop the 2 gate cells on the south edge (dz == R, dx in {0,1}).
+        order.retain(|&(dx, dz)| !(dz == R && (dx == 0 || dx == 1)));
+        order
+    }
+
+    // Build the next missing segment of a palisade ring with the given wall block (stateless
+    // on the block placement: placed blocks are the progress). Returns the number of wall
+    // cells built this call. `cells_to_build` caps the work per donation.
+    fn build_palisade_segment(&mut self, cx: i32, cz: i32, cells_to_build: i32, wall: BlockId) -> i32 {
+        let mut built = 0;
+        for (dx, dz) in Self::palisade_ring_cells() {
             if built >= cells_to_build {
                 break;
-            }
-            if dz == R && (dx == 0 || dx == 1) {
-                continue; // gate on south edge
             }
             let wx = cx + dx;
             let wz = cz + dz;
             let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
-            if self.block_at(IVec3 { x: wx, y: surf + 1, z: wz }) == WALL {
+            if self.block_at(IVec3 { x: wx, y: surf + 1, z: wz }) == wall {
                 continue;
             }
-            self.set_block_internal(IVec3 { x: wx, y: surf + 1, z: wz }, WALL);
-            self.set_block_internal(IVec3 { x: wx, y: surf + 2, z: wz }, WALL);
+            self.set_block_internal(IVec3 { x: wx, y: surf + 1, z: wz }, wall);
+            self.set_block_internal(IVec3 { x: wx, y: surf + 2, z: wz }, wall);
             built += 1;
         }
         built
+    }
+
+    // Count wall cells already standing in the ring built of `wall`. Used to recover the
+    // woodcutter's running progress after a reload (the blocks are the source of truth).
+    fn count_palisade_cells(&self, cx: i32, cz: i32, wall: BlockId) -> i32 {
+        let mut n = 0;
+        for (dx, dz) in Self::palisade_ring_cells() {
+            let wx = cx + dx;
+            let wz = cz + dz;
+            let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
+            if self.block_at(IVec3 { x: wx, y: surf + 1, z: wz }) == wall {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    // Re-stamp the standing palisade ring in `wall` (a tier-up converts wood -> stone in
+    // place). Only cells that already have SOME wall block are upgraded, so the visible
+    // wall keeps exactly the shape the player built. Returns the number converted.
+    fn upgrade_palisade_material(&mut self, cx: i32, cz: i32, wall: BlockId) -> i32 {
+        let mut n = 0;
+        for (dx, dz) in Self::palisade_ring_cells() {
+            let wx = cx + dx;
+            let wz = cz + dz;
+            let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
+            let here = self.block_at(IVec3 { x: wx, y: surf + 1, z: wz });
+            if here == Self::WALL_WOOD || here == Self::WALL_STONE {
+                if here != wall {
+                    self.set_block_internal(IVec3 { x: wx, y: surf + 1, z: wz }, wall);
+                    self.set_block_internal(IVec3 { x: wx, y: surf + 2, z: wz }, wall);
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    // Tier-2 (stone mason): give the settlement's huts stone accents. We crown the wall
+    // top with stone brick all around (a parapet) and lay a stone-brick footing band one
+    // cell outside the wall on the corners, so the whole settlement reads as cut stone.
+    // Idempotent: only writes where the block is not already the target.
+    fn stamp_stone_accents(&mut self, cx: i32, cz: i32) {
+        for (dx, dz) in Self::palisade_ring_cells() {
+            let wx = cx + dx;
+            let wz = cz + dz;
+            let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
+            // A third course of stone on top of the wall: a proud parapet.
+            let p = IVec3 { x: wx, y: surf + 3, z: wz };
+            if self.block_at(p) == AIR {
+                self.set_block_internal(p, Self::WALL_STONE);
+            }
+        }
+        // Four corner towers: a 2x taller stone-brick pillar at each ring corner so the
+        // mason's "proud towers" promise reads at a glance.
+        const R: i32 = World::PALISADE_R;
+        for &(dx, dz) in &[(-R, -R), (R, -R), (-R, R), (R, R)] {
+            let wx = cx + dx;
+            let wz = cz + dz;
+            let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
+            for dy in 1..=5 {
+                let p = IVec3 { x: wx, y: surf + dy, z: wz };
+                if self.block_at(p) == AIR || self.block_at(p) == Self::WALL_STONE || self.block_at(p) == Self::WALL_WOOD {
+                    self.set_block_internal(p, Self::WALL_STONE);
+                }
+            }
+        }
+    }
+
+    // Tier-3 (blacksmith): an iron gate across the south opening plus lit lamps on the
+    // corner towers (crystal_lamp emits light, so they glow at night). Idempotent.
+    fn stamp_iron_gate_and_lamps(&mut self, cx: i32, cz: i32) {
+        const R: i32 = World::PALISADE_R;
+        // Iron gate: fill the 2-wide south gate, 2 tall, with iron bars.
+        for &dx in &[0, 1] {
+            let wx = cx + dx;
+            let wz = cz + R;
+            let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
+            self.set_block_internal(IVec3 { x: wx, y: surf + 1, z: wz }, Self::IRON_GATE);
+            self.set_block_internal(IVec3 { x: wx, y: surf + 2, z: wz }, Self::IRON_GATE);
+        }
+        // Lamps on top of each corner tower (or the wall corner if no tower) so the wall
+        // is lit through the night.
+        for &(dx, dz) in &[(-R, -R), (R, -R), (-R, R), (R, R)] {
+            let wx = cx + dx;
+            let wz = cz + dz;
+            let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
+            // Sit the lamp on the first air cell above the tower/wall.
+            let mut y = surf + 1;
+            while y < surf + 8 && self.block_at(IVec3 { x: wx, y, z: wz }) != AIR {
+                y += 1;
+            }
+            self.set_block_internal(IVec3 { x: wx, y, z: wz }, Self::LAMP);
+        }
+        // A lamp pair flanking the gate too, for legibility at the entrance.
+        for &dx in &[-1, 2] {
+            let wx = cx + dx;
+            let wz = cz + R;
+            let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
+            let p = IVec3 { x: wx, y: surf + 3, z: wz };
+            if self.block_at(p) == AIR {
+                self.set_block_internal(p, Self::LAMP);
+            }
+        }
+    }
+
+    // Tier-2/3 also EXPAND the town: stamp a couple of extra huts outside the wall so a
+    // developed village sprawls into a real town. Deterministic placement (fixed offsets
+    // per tier) and idempotent (place_player_hut skips if a building already stands there).
+    fn stamp_town_expansion(&mut self, cx: i32, cz: i32, tier: u8) {
+        // Offsets are outside the R=8 ring; two new plots per tier in opposite quadrants.
+        let plots: &[(i32, i32)] = match tier {
+            2 => &[(-13, -11), (13, 11)],
+            3 => &[(13, -11), (-13, 11)],
+            _ => &[],
+        };
+        for &(dx, dz) in plots {
+            self.place_player_hut(cx + dx, cz + dz, tier);
+        }
+    }
+
+    // Stamp a simple 5x5 hut at a town-expansion plot. Mirrors the worldgen hut look using
+    // blocks that already render: stone-brick walls (matching the developed-town tier),
+    // an oak-plank floor, a door gap, glass windows, and a glowing core. Skips entirely if
+    // a wall block already stands at the centre (so re-applying a tier never doubles up).
+    fn place_player_hut(&mut self, cx: i32, cz: i32, tier: u8) {
+        let wall: BlockId = if tier >= 2 { Self::WALL_STONE } else { 4 /* oak_planks */ };
+        const FLOOR: BlockId = 4; // oak_planks
+        const GLASS: BlockId = 25;
+        const DOOR: BlockId = 33; // oak_door
+        const GLOW: BlockId = 7;
+        let surf = worldgen::worldgen_surface_height(cx, cz, self.seed);
+        // Already built here? (centre floor present)
+        if self.block_at(IVec3 { x: cx, y: surf, z: cz }) == FLOOR
+            && self.block_at(IVec3 { x: cx, y: surf + 1, z: cz }) == GLOW
+        {
+            return;
+        }
+        for dz in -2..=2 {
+            for dx in -2..=2 {
+                let wx = cx + dx;
+                let wz = cz + dz;
+                let s = worldgen::worldgen_surface_height(wx, wz, self.seed);
+                // Floor.
+                self.set_block_internal(IVec3 { x: wx, y: s, z: wz }, FLOOR);
+                let edge = dx == -2 || dx == 2 || dz == -2 || dz == 2;
+                if edge {
+                    // Door gap on the south middle.
+                    if dz == 2 && dx == 0 {
+                        self.set_block_internal(IVec3 { x: wx, y: s + 1, z: wz }, DOOR);
+                        self.set_block_internal(IVec3 { x: wx, y: s + 2, z: wz }, DOOR);
+                        continue;
+                    }
+                    let win = (dx == 0 || dz == 0) && !(dz == 2 && dx == 0);
+                    for dy in 1..=3 {
+                        let b = if win && dy == 2 { GLASS } else { wall };
+                        self.set_block_internal(IVec3 { x: wx, y: s + dy, z: wz }, b);
+                    }
+                    // Flat roof corner caps.
+                    self.set_block_internal(IVec3 { x: wx, y: s + 4, z: wz }, wall);
+                }
+            }
+        }
+        // Roof over the interior.
+        for dz in -2..=2 {
+            for dx in -2..=2 {
+                let wx = cx + dx;
+                let wz = cz + dz;
+                let s = worldgen::worldgen_surface_height(wx, wz, self.seed);
+                self.set_block_internal(IVec3 { x: wx, y: s + 4, z: wz }, wall);
+            }
+        }
+        // Glowing core so the new home reads as inhabited and lights at night.
+        self.set_block_internal(IVec3 { x: cx, y: surf + 1, z: cz }, GLOW);
+    }
+
+    // Look up (creating if needed) the upgrade state for the settlement a villager calls
+    // home. The home_x/home_z is the settlement anchor, the same coordinate worldgen used.
+    fn village_state_mut(&mut self, ax: i32, az: i32) -> &mut VillageState {
+        self.villages.entry((ax, az)).or_default()
     }
 
     fn try_village_donation(&mut self, idx: usize) -> bool {
@@ -3230,34 +3513,198 @@ impl<'c> World<'c> {
         }
         let in_name = self.item_name(held.item);
         let npc_id = self.creatures[idx].npc_id;
-        if npc_id == 4 {
-            let is_log = in_name == "oak_log" || in_name == "birch_log" || in_name == "pine_log";
-            if !is_log {
-                return false;
-            }
-            if held.count < 2 {
-                self.ach_toast = "Woodcutter: bring me more logs for the wall.".into();
-                self.ach_toast_timer = 3.0;
-                return true;
-            }
-            let cells = (held.count.min(8) as i32) / 2;
-            let (hx, hz) = (self.creatures[idx].home_x, self.creatures[idx].home_z);
-            let built = self.build_palisade_segment(hx, hz, cells);
-            if built > 0 {
-                if let Some(inv) = self.inv.as_mut() {
-                    inv.remove_item(held.item, (built * 2) as u16);
+        let (ax, az) = (self.creatures[idx].home_x, self.creatures[idx].home_z);
+        match npc_id {
+            // ---- Woodcutter (npc 4): WOOD palisade, tier 0 -> 1 -------------------
+            4 => {
+                let is_log = in_name == "oak_log" || in_name == "birch_log" || in_name == "pine_log";
+                if !is_log {
+                    return false;
                 }
+                if held.count < 2 {
+                    self.toast("Woodcutter: bring me more logs for the wall.");
+                    return true;
+                }
+                let cells = (held.count.min(8) as i32) / 2;
+                let built = self.build_palisade_segment(ax, az, cells, Self::WALL_WOOD);
+                if built > 0 {
+                    if let Some(inv) = self.inv.as_mut() {
+                        inv.remove_item(held.item, (built * 2) as u16);
+                    }
+                    let pv = self.player_voxel();
+                    self.fx(1, pv, 0);
+                    // Record progress; once the ring is complete, advance to tier 1.
+                    let total = self.count_palisade_cells(ax, az, Self::WALL_WOOD);
+                    let vs = self.village_state_mut(ax, az);
+                    vs.wood_cells = total;
+                    if total >= Self::PALISADE_CELLS && vs.tier < 1 {
+                        vs.tier = 1;
+                        self.toast("Woodcutter: our wall is complete! Ask Bria the mason to make it stone.");
+                    } else {
+                        self.toast("Woodcutter: the village wall grows!");
+                    }
+                } else {
+                    // Ring already closed: make sure the tier reflects it.
+                    let total = self.count_palisade_cells(ax, az, Self::WALL_WOOD)
+                        + self.count_palisade_cells(ax, az, Self::WALL_STONE);
+                    let vs = self.village_state_mut(ax, az);
+                    if total >= Self::PALISADE_CELLS && vs.tier < 1 {
+                        vs.tier = 1;
+                    }
+                    self.toast("Woodcutter: our palisade is complete!");
+                }
+                true
+            }
+            // ---- Stone Mason (npc 5): STONE upgrade, tier 1 -> 2 ------------------
+            5 => {
+                let is_stone = in_name == "stone_brick" || in_name == "cobblestone" || in_name == "stone";
+                if !is_stone {
+                    return false;
+                }
+                let tier = self.villages.get(&(ax, az)).map(|v| v.tier).unwrap_or(0);
+                if tier < 1 {
+                    self.toast("Mason: build Finn's wooden wall first, then I can make it stone.");
+                    return true;
+                }
+                if tier >= 2 {
+                    self.toast("Mason: the stonework is done. Speak to Dov the blacksmith next.");
+                    return true;
+                }
+                // Need a stack of stone to do the conversion; spend up to 16 per donation
+                // and require 16 total before the tier flips, so it feels like a project.
+                const STONE_NEEDED: i32 = 16;
+                let take = (held.count as i32).min(STONE_NEEDED);
+                if let Some(inv) = self.inv.as_mut() {
+                    inv.remove_item(held.item, take as u16);
+                }
+                let progress = {
+                    let vs = self.village_state_mut(ax, az);
+                    vs.progress += take;
+                    vs.progress
+                };
                 let pv = self.player_voxel();
                 self.fx(1, pv, 0);
-                self.ach_toast = "Woodcutter: the village wall grows!".into();
-                self.ach_toast_timer = 3.0;
-            } else {
-                self.ach_toast = "Woodcutter: our palisade is complete!".into();
-                self.ach_toast_timer = 3.0;
+                if progress >= STONE_NEEDED {
+                    self.upgrade_palisade_material(ax, az, Self::WALL_STONE);
+                    self.stamp_stone_accents(ax, az);
+                    self.stamp_town_expansion(ax, az, 2);
+                    let vs = self.village_state_mut(ax, az);
+                    vs.tier = 2;
+                    vs.progress = 0;
+                    self.toast("Mason: cut stone and proud towers! Now Dov can forge the iron gate.");
+                } else {
+                    self.toast(&format!("Mason: good stone. ({}/{} for the upgrade)", progress, STONE_NEEDED));
+                }
+                true
             }
-            return true;
+            // ---- Blacksmith (npc 6): IRON gate + lamps, tier 2 -> 3 --------------
+            6 => {
+                let is_iron = in_name == "iron_ingot" || in_name == "raw_iron";
+                if !is_iron {
+                    return false;
+                }
+                let tier = self.villages.get(&(ax, az)).map(|v| v.tier).unwrap_or(0);
+                if tier < 2 {
+                    self.toast("Blacksmith: get Bria to finish the stonework, then bring me iron.");
+                    return true;
+                }
+                if tier >= 3 {
+                    self.toast("Blacksmith: the gate is hung and the lamps are lit. Our town is safe!");
+                    return true;
+                }
+                const IRON_NEEDED: i32 = 8;
+                let take = (held.count as i32).min(IRON_NEEDED);
+                if let Some(inv) = self.inv.as_mut() {
+                    inv.remove_item(held.item, take as u16);
+                }
+                let progress = {
+                    let vs = self.village_state_mut(ax, az);
+                    vs.progress += take;
+                    vs.progress
+                };
+                let pv = self.player_voxel();
+                self.fx(1, pv, 0);
+                if progress >= IRON_NEEDED {
+                    self.stamp_iron_gate_and_lamps(ax, az);
+                    self.stamp_town_expansion(ax, az, 3);
+                    let vs = self.village_state_mut(ax, az);
+                    vs.tier = 3;
+                    vs.progress = 0;
+                    self.toast("Blacksmith: iron gate hung, lamps lit! Our town will shine through the night.");
+                } else {
+                    self.toast(&format!("Blacksmith: fine iron. ({}/{} for the gate)", progress, IRON_NEEDED));
+                }
+                true
+            }
+            _ => false,
         }
-        false
+    }
+
+    // Small helper: set the achievement-toast banner with the standard 3s timer.
+    fn toast(&mut self, msg: &str) {
+        self.ach_toast = msg.into();
+        self.ach_toast_timer = 3.0;
+    }
+
+    // Living-villages: is world point (wx, wz) inside a walled settlement's protected
+    // interior? A settlement protects its interior once its wall ring exists (tier >= 1).
+    // Hostiles are kept from spawning in and from pathing/moving across the wall line into
+    // a protected interior. Returns the settlement anchor when protected, else None.
+    fn village_protects(&self, wx: i32, wz: i32) -> Option<(i32, i32)> {
+        // Interior is the open area strictly inside the ring (|dx|,|dz| < R). Cheap O(n)
+        // over the (usually tiny) set of settlements the player has begun upgrading.
+        const R: i32 = World::PALISADE_R;
+        for (&(ax, az), vs) in self.villages.iter() {
+            if vs.tier < 1 {
+                continue;
+            }
+            let dx = wx - ax;
+            let dz = wz - az;
+            if dx > -R && dx < R && dz > -R && dz < R {
+                return Some((ax, az));
+            }
+        }
+        None
+    }
+
+    // Read-only tier snapshot for the HUD ABI: the nearest walled-or-in-progress
+    // settlement to (wx, wz) within `radius`, as (anchor_x, anchor_z, tier, wood_cells,
+    // wood_total, progress, progress_needed). Returns None when no settlement is near.
+    // Deterministic given the village state.
+    fn village_status_near(&self, wx: i32, wz: i32, radius: i32) -> Option<(i32, i32, u8, i32, i32, i32, i32)> {
+        let mut best: Option<(i32, i32)> = None;
+        let mut best_d2 = (radius as i64) * (radius as i64);
+        // Consider settlements we have any state for (donations began) ...
+        for &(ax, az) in self.villages.keys() {
+            let d2 = ((ax - wx) as i64).pow(2) + ((az - wz) as i64).pow(2);
+            if d2 <= best_d2 {
+                best_d2 = d2;
+                best = Some((ax, az));
+            }
+        }
+        // ... and also the worldgen settlement the player is standing in, so the HUD shows
+        // tier 0 with the right "needs wood" hint before the first donation.
+        let (styp, sax, _saz, _sy) = worldgen::worldgen_structure_near(wx, wz, self.seed);
+        let (sax2, saz2) = (sax, _saz);
+        if styp == 8 /* STRUCT_VILLAGE */ || worldgen::worldgen_is_city(styp) {
+            let d2 = ((sax2 - wx) as i64).pow(2) + ((saz2 - wz) as i64).pow(2);
+            if d2 <= best_d2 {
+                best = Some((sax2, saz2));
+            }
+        }
+        let (ax, az) = best?;
+        let vs = self.villages.get(&(ax, az)).cloned().unwrap_or_default();
+        let (need, prog) = match vs.tier {
+            0 | 1 => (0, 0), // wood is cell-by-cell, tracked via wood_cells
+            _ => (0, 0),
+        };
+        // For tiers 2/3 the progress bar is the resource project; report it directly.
+        let (progress_needed, progress) = match vs.tier {
+            1 => (16, vs.progress), // working toward stone (mason)
+            2 => (8, vs.progress),  // working toward iron (blacksmith)
+            _ => (need, prog),
+        };
+        Some((ax, az, vs.tier, vs.wood_cells, Self::PALISADE_CELLS, progress, progress_needed))
     }
 
     fn grow_small_tree(&mut self, wx: i32, surf: i32, wz: i32) {
@@ -3475,10 +3922,18 @@ impl<'c> World<'c> {
             let into_water = !c.aquatic
                 && (self.block_at(IVec3 { x: nv.x, y: nv.y, z: nv.z }) == WATER
                     || self.block_at(IVec3 { x: nv.x, y: nv.y - 1, z: nv.z }) == WATER);
-            if !into_water && !self.collide_solid(nv.x, nv.y, nv.z) {
+            // #95 walls keep monsters out: a hostile may not cross into a walled village's
+            // protected interior. (The wall blocks itself stop a creature that bumps the
+            // line; this is the belt-and-braces guard so a hostile can never slip through
+            // the gate or a worldgen seam into a protected interior.) A hostile already
+            // somehow inside is free to leave.
+            let into_protected = c.hostile
+                && self.village_protects(nv.x, nv.z).is_some()
+                && self.village_protects(Self::ifloor(c.pos.x), Self::ifloor(c.pos.z)).is_none();
+            if !into_water && !into_protected && !self.collide_solid(nv.x, nv.y, nv.z) {
                 c.pos.x = next.x;
                 c.pos.z = next.z;
-            } else if !into_water {
+            } else if !into_water && !into_protected {
                 // Blocked horizontally by a step. Find the lowest height the creature
                 // could stand on top of: scan up from the blocking block to the first
                 // free cell, capped at MAX_CLIMB blocks. A step within reach starts a
@@ -3507,6 +3962,9 @@ impl<'c> World<'c> {
                 }
             } else if into_water {
                 // Edge of water: turn away rather than wade in (non-aquatic).
+                self.creature_blocked(&mut c, dt);
+            } else if into_protected {
+                // #95 turned back at a village wall: stay out and pick a new heading.
                 self.creature_blocked(&mut c, dt);
             }
             if c.climb > 0.0 {
@@ -5494,8 +5952,58 @@ impl<'c> World<'c> {
             self.creatures[i as usize].friendly = true;
         }
     }
+    // #95 test helper: a hostile that hunts the player (used to prove a village wall keeps
+    // monsters out of its protected interior).
+    pub fn debug_spawn_hostile_at(&mut self, x: f32, y: f32, z: f32) -> i32 {
+        let mut c = Creature::default();
+        c.pos = V3::new(x, y, z);
+        c.hostile = true;
+        c.scale = 1.0;
+        c.hp = 5;
+        c.speed = 1.6;
+        self.creatures.push(c);
+        (self.creatures.len() - 1) as i32
+    }
     pub fn debug_build_palisade(&mut self, cx: i32, cz: i32, cells: i32) -> i32 {
-        self.build_palisade_segment(cx, cz, cells)
+        self.build_palisade_segment(cx, cz, cells, Self::WALL_WOOD)
+    }
+    // Living-villages test helpers (#95): drive donation/tier logic without a live app.
+    pub fn debug_village_tier(&self, ax: i32, az: i32) -> i32 {
+        self.villages.get(&(ax, az)).map(|v| v.tier as i32).unwrap_or(0)
+    }
+    pub fn debug_village_progress(&self, ax: i32, az: i32) -> i32 {
+        self.villages.get(&(ax, az)).map(|v| v.progress).unwrap_or(0)
+    }
+    pub fn debug_village_wood_cells(&self, ax: i32, az: i32) -> i32 {
+        self.villages.get(&(ax, az)).map(|v| v.wood_cells).unwrap_or(0)
+    }
+    pub fn debug_palisade_cells_total() -> i32 {
+        Self::PALISADE_CELLS
+    }
+    pub fn debug_count_wall(&self, ax: i32, az: i32, wall: BlockId) -> i32 {
+        self.count_palisade_cells(ax, az, wall)
+    }
+    // Spawn a villager with a specific profession at a settlement anchor, for tier tests.
+    pub fn debug_spawn_villager_role(&mut self, ax: i32, az: i32, npc_id: i32) -> i32 {
+        let mut c = Creature::default();
+        c.model = 20;
+        c.npc_id = npc_id;
+        c.home_x = ax;
+        c.home_z = az;
+        let surf = worldgen::worldgen_surface_height(ax, az, self.seed);
+        c.pos = V3::new(ax as f32, surf as f32, az as f32);
+        self.creatures.push(c);
+        (self.creatures.len() - 1) as i32
+    }
+    // Run a donation against a villager index (the player must hold the item already).
+    pub fn debug_try_donation(&mut self, idx: i32) -> bool {
+        self.try_village_donation(idx as usize)
+    }
+    pub fn debug_village_protects(&self, wx: i32, wz: i32) -> bool {
+        self.village_protects(wx, wz).is_some()
+    }
+    pub fn debug_set_wall_block(&mut self, wx: i32, wy: i32, wz: i32, b: BlockId) {
+        self.set_block_internal(IVec3 { x: wx, y: wy, z: wz }, b);
     }
     pub fn debug_grow_tree(&mut self, wx: i32, wz: i32) -> bool {
         let surf = self.surface_top(wx, wz);

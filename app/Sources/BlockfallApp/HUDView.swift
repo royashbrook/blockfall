@@ -255,6 +255,23 @@ final class HUDView: NSView {
 
     var isChestOpen: Bool { chestOpen }
 
+    // --- #95 living villages: the tier/donation status of the nearest village, pushed
+    // each frame by the Renderer (bf_village_query). nil when no village is near. Drives
+    // a small donation panel so the player can see what each villager wants and the
+    // town's current tier + progress.
+    private var villageView: bf_village_view? = nil
+    func setVillage(_ v: bf_village_view?) {
+        let was = villageView
+        villageView = v
+        // Repaint when presence, tier, or progress changed (cheap field compare).
+        let changed: Bool = {
+            guard let a = was, let b = v else { return (was == nil) != (v == nil) }
+            return a.present != b.present || a.tier != b.tier
+                || a.wood_cells != b.wood_cells || a.progress != b.progress
+        }()
+        if changed { needsDisplay = true }
+    }
+
     // --- #29: FPS counter ---
     // Derived purely from the time between draw(_:) calls (the renderer already
     // drives one redraw per frame), so no timer is added. We keep an exponential
@@ -907,6 +924,80 @@ final class HUDView: NSView {
             NSColor(red: 1.0, green: 0.86, blue: 0.30, alpha: 0.8).setStroke()
             let bp = NSBezierPath(roundedRect: bg, xRadius: 10, yRadius: 10); bp.lineWidth = 2; bp.stroke()
             (toast as NSString).draw(at: NSPoint(x: b.midX - sz.width/2, y: by), withAttributes: attrs)
+        }
+
+        // #95 living-villages donation panel (only when standing near a village).
+        drawVillagePanel(in: b)
+    }
+
+    // #95: a compact bottom-center panel showing the nearest village's tier, what the
+    // next villager wants, and a progress bar. Hidden when no village is in range.
+    private func drawVillagePanel(in b: NSRect) {
+        guard let v = villageView, v.present != 0 else { return }
+        // Read the requested item name (a C char[16]).
+        let want = withUnsafeBytes(of: v.want) { raw -> String in
+            String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+        }
+        let tierName: String
+        switch v.tier {
+        case 0: tierName = "Village"
+        case 1: tierName = "Walled Village"
+        case 2: tierName = "Stone Town"
+        default: tierName = "Iron-Gated Town"
+        }
+        // Headline + the donation hint.
+        let title = "\(tierName)  ·  Tier \(v.tier)/3"
+        let hint: String
+        switch want {
+        case "wood":  hint = "Bring the Woodcutter LOGS for the wall"
+        case "stone": hint = "Bring the Stone Mason STONE to reinforce it"
+        case "iron":  hint = "Bring the Blacksmith IRON for the gate + lamps"
+        default:      hint = "This town is complete — safe through the night!"
+        }
+        // Progress fraction: wood tier uses wall cells; later tiers use the resource count.
+        let frac: CGFloat
+        if v.tier <= 1 && v.wood_cells < v.wood_total {
+            frac = v.wood_total > 0 ? CGFloat(v.wood_cells) / CGFloat(v.wood_total) : 0
+        } else if v.progress_needed > 0 {
+            frac = min(1, CGFloat(v.progress) / CGFloat(v.progress_needed))
+        } else {
+            frac = 1
+        }
+        let titleAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: fs(15)),
+            .foregroundColor: NSColor(red: 0.96, green: 0.90, blue: 0.66, alpha: 1),
+            .strokeColor: NSColor.black, .strokeWidth: -2.5,
+        ]
+        let hintAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: fs(12)),
+            .foregroundColor: NSColor(white: 0.92, alpha: 1),
+            .strokeColor: NSColor.black, .strokeWidth: -2.0,
+        ]
+        let tSz = (title as NSString).size(withAttributes: titleAttrs)
+        let hSz = (hint as NSString).size(withAttributes: hintAttrs)
+        let pad: CGFloat = 14
+        let barH: CGFloat = 8
+        let w = max(tSz.width, hSz.width) + pad * 2
+        let h = tSz.height + hSz.height + barH + 18
+        let bx = b.midX - w / 2
+        let by: CGFloat = 92   // sit just above the hotbar
+        let box = NSRect(x: bx, y: by, width: w, height: h)
+        NSColor(red: 0.08, green: 0.10, blue: 0.12, alpha: 0.82).setFill()
+        NSBezierPath(roundedRect: box, xRadius: 10, yRadius: 10).fill()
+        NSColor(red: 0.96, green: 0.86, blue: 0.40, alpha: 0.7).setStroke()
+        let bp = NSBezierPath(roundedRect: box, xRadius: 10, yRadius: 10); bp.lineWidth = 2; bp.stroke()
+        var cy = box.maxY - tSz.height - 6
+        (title as NSString).draw(at: NSPoint(x: box.midX - tSz.width/2, y: cy), withAttributes: titleAttrs)
+        cy -= hSz.height + 2
+        (hint as NSString).draw(at: NSPoint(x: box.midX - hSz.width/2, y: cy), withAttributes: hintAttrs)
+        // Progress bar.
+        let barRect = NSRect(x: box.minX + pad, y: box.minY + 8, width: box.width - pad*2, height: barH)
+        NSColor(white: 0.20, alpha: 1).setFill()
+        NSBezierPath(roundedRect: barRect, xRadius: 4, yRadius: 4).fill()
+        if frac > 0 {
+            let fillRect = NSRect(x: barRect.minX, y: barRect.minY, width: max(2, barRect.width * frac), height: barH)
+            NSColor(red: 0.42, green: 0.82, blue: 0.40, alpha: 1).setFill()
+            NSBezierPath(roundedRect: fillRect, xRadius: 4, yRadius: 4).fill()
         }
     }
 

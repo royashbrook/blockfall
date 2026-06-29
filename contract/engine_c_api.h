@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 20u  /* v20: bf_chest_* container API + bf_chest_view (openable chests, #109, append-only) */
+#define BF_ABI_VERSION 21u  /* v21: bf_village_query + bf_village_view (living-villages tier/donation HUD, #95, append-only) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -557,6 +557,37 @@ BF_API uint8_t bf_chest_deposit(bf_engine e, bf_ivec3 pos, uint32_t inv_slot);
 /* [MAIN] Close the chest panel (clears the open-chest state). The app also calls
  * this on ESC; interacting the same chest again toggles it closed too. */
 BF_API void bf_chest_close(bf_engine e);
+
+/* --------------------------------------------------------------------------
+ * Living villages (#95, v21, append-only)
+ * A walled settlement upgrades through donation tiers:
+ *   tier 0 -> donate WOOD  to the Woodcutter (a wooden palisade goes up)
+ *   tier 1 -> donate STONE to the Stone Mason (wall + huts become stone)
+ *   tier 2 -> donate IRON  to the Blacksmith  (iron gate + lit lamps)
+ *   tier 3 -> complete
+ * Tier state is per-settlement PLAYER PROGRESS, persisted in villages.dat. The
+ * HUD polls bf_village_query each frame to show what the nearest village wants
+ * and its progress, so the app needs no engine struct-layout change.
+ * ------------------------------------------------------------------------ */
+typedef struct bf_village_view {
+    bf_ivec3 anchor;          /* settlement anchor: x in .x, z in .z, .y = 0   */
+    uint8_t  present;         /* 1 = a village is in range, 0 = none (rest 0)  */
+    uint8_t  tier;            /* 0 none, 1 wood, 2 stone, 3 iron (complete)    */
+    uint8_t  _pad[2];
+    uint32_t wood_cells;      /* palisade wall cells built so far              */
+    uint32_t wood_total;      /* palisade wall cells in a complete ring        */
+    uint32_t progress;        /* units donated toward the CURRENT tier upgrade */
+    uint32_t progress_needed; /* units required to finish the current tier (0  */
+                              /* for the wood tier, which uses wood_cells)     */
+    char     want[16];        /* what the next villager wants: "wood","stone", */
+                              /* "iron", or "" when the town is complete       */
+} bf_village_view;
+
+/* [MAIN] Fill `out` with the tier/donation status of the village nearest the
+ * player (within an engine-chosen radius). Sets out->present=0 (rest zeroed) when
+ * no village is near. Returns BF_OK, BF_ERR_BAD_ARG on a null arg, or
+ * BF_ERR_NOT_READY before the world exists. Pure read; never mutates the world. */
+BF_API bf_result bf_village_query(bf_engine e, bf_village_view* out);
 
 #ifdef __cplusplus
 } /* extern "C" */

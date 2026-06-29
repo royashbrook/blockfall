@@ -240,6 +240,7 @@ func heldBlockColor(_ id: Int) -> SIMD3<Float>? {
     case 31: return SIMD3(0.78, 0.58, 0.26)   // chest
     case 48: return SIMD3(0.18, 0.42, 0.24)   // pine needles
     case 49: return SIMD3(0.40, 0.25, 0.15)   // pine log
+    case 53: return SIMD3(0.30, 0.32, 0.36)   // iron gate (#95)
     default: return nil
     }
 }
@@ -1900,6 +1901,16 @@ final class Renderer: NSObject, MTKViewDelegate {
             }
             // Release/recapture the pointer so the panel is clickable while open.
             gameView?.setChestPanel(open: nowOpen)
+
+            // #95 living villages: poll the nearest village's tier/donation status and
+            // push it to the HUD donation panel. One cheap read per frame; the engine
+            // returns present=0 when none is near, which hides the panel.
+            var vview = bf_village_view()
+            if bf_village_query(e, &vview) == BF_OK && vview.present != 0 {
+                hudView.setVillage(vview)
+            } else {
+                hudView.setVillage(nil)
+            }
         }
 
         bf_frame_end(e)
@@ -2779,6 +2790,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             case 33u: return float3(0.66, 0.46, 0.24);   // oak door: medium wood
             case 34u: return float3(0.52, 0.95, 0.98);   // beacon: glowing cyan
             case 35u: return float3(0.80, 0.66, 1.00);   // crystal lamp: soft lilac
+            case 53u: return float3(0.30, 0.32, 0.36);   // iron gate (#95): dark cool iron
             // ---- DECOR accents: kept vivid and saturated ------------------------------
             case 36u: return float3(0.96, 0.20, 0.20);   // red flower
             case 37u: return float3(1.00, 0.88, 0.12);   // yellow flower

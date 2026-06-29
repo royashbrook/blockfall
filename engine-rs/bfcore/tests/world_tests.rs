@@ -1418,3 +1418,289 @@ fn chest_deposit_moves_from_inventory() {
     let in_chest: u16 = slots.iter().filter(|s| s.item == item).map(|s| s.count).sum();
     assert_eq!(in_chest, 10, "the stack landed in the chest");
 }
+
+// ============================================================================
+// Living villages (#95): donation tiers (wood -> stone -> iron), persistence,
+// walls-keep-monsters-out, and deterministic generation.
+// ============================================================================
+
+// A creative world with content + extra loaded, ready for donation tests. Returns the
+// world and a known on-land settlement anchor (ax, az) for the seed.
+fn village_world(seed: u64) -> (World<'static>, (i32, i32)) {
+    let content: &'static ContentRegistry = {
+        let mut c = ContentRegistry::new();
+        assert!(c.load(CONTENT), "content load");
+        Box::leak(Box::new(c))
+    };
+    let extra: &'static ContentExtra = {
+        let mut x = ContentExtra::new();
+        assert!(x.load(CONTENT), "extra load");
+        Box::leak(Box::new(x))
+    };
+    let mut w = World::new(Some(TerrainGen::new()));
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_content(content);
+    w.set_extra(extra);
+    w.set_mode(bf_game_mode::BF_MODE_CREATIVE);
+    w.init_world(seed);
+    // Find a dry-land column to anchor a synthetic settlement (so the palisade footing
+    // never tries to sit in water). Scan a grid; the column at +4 above sea is dry.
+    let mut anchor = (204, 0);
+    'find: for r in (0..400).step_by(16) {
+        for &(sx, sz) in &[(r, 0), (-r, 0), (0, r), (0, -r), (r, r), (-r, -r)] {
+            let h = worldgen::worldgen_surface_height(sx, sz, seed);
+            if h > 36 && !worldgen::worldgen_is_ocean_col(sx, sz, seed) {
+                anchor = (sx, sz);
+                break 'find;
+            }
+        }
+    }
+    w.debug_clear_inventory();
+    (w, anchor)
+}
+
+#[test]
+fn village_woodcutter_builds_wall_to_tier1() {
+    let (mut w, (ax, az)) = village_world(11);
+    let wc = w.debug_spawn_villager_role(ax, az, 4); // woodcutter
+    let log = w.debug_item_id("oak_log");
+    assert_ne!(log, 0, "content has oak_log");
+    assert_eq!(w.debug_village_tier(ax, az), 0, "starts at tier 0");
+
+    // Donate logs repeatedly until the whole ring is up. Each donation builds up to 4
+    // cells (8 logs -> 4 cells). Refill and donate enough times to close the ring.
+    let total = World::debug_palisade_cells_total();
+    for _ in 0..40 {
+        w.debug_clear_inventory();
+        w.debug_give(log, 8);
+        w.debug_set_selected(0);
+        let _ = w.debug_try_donation(wc);
+        if w.debug_count_wall(ax, az, 21) >= total {
+            break;
+        }
+    }
+    assert!(
+        w.debug_count_wall(ax, az, 21) >= total,
+        "wood palisade ring is complete ({} of {})",
+        w.debug_count_wall(ax, az, 21),
+        total
+    );
+    assert_eq!(w.debug_village_tier(ax, az), 1, "tier advances to 1 (wood) when ring closes");
+}
+
+#[test]
+fn village_mason_upgrades_wood_to_stone_tier2() {
+    let (mut w, (ax, az)) = village_world(11);
+    let mason = w.debug_spawn_villager_role(ax, az, 5);
+    let stone = w.debug_item_id("stone_brick");
+    assert_ne!(stone, 0, "content has stone_brick");
+
+    // Build a complete wood ring first (the mason refuses before tier 1).
+    let wc = w.debug_spawn_villager_role(ax, az, 4);
+    let log = w.debug_item_id("oak_log");
+    let total = World::debug_palisade_cells_total();
+    for _ in 0..40 {
+        w.debug_clear_inventory();
+        w.debug_give(log, 8);
+        w.debug_set_selected(0);
+        let _ = w.debug_try_donation(wc);
+        if w.debug_count_wall(ax, az, 21) >= total {
+            break;
+        }
+    }
+    assert_eq!(w.debug_village_tier(ax, az), 1, "tier 1 reached");
+    let wood_before = w.debug_count_wall(ax, az, 21);
+    assert!(wood_before > 0, "wood wall stands before mason upgrade");
+
+    // Donate stone: 16 needed for the upgrade.
+    w.debug_clear_inventory();
+    w.debug_give(stone, 64);
+    w.debug_set_selected(0);
+    let _ = w.debug_try_donation(mason); // first donation: spends 16, flips tier
+    assert_eq!(w.debug_village_tier(ax, az), 2, "tier advances to 2 (stone)");
+    let stone_wall = w.debug_count_wall(ax, az, 8);
+    let wood_after = w.debug_count_wall(ax, az, 21);
+    assert!(stone_wall > 0, "wall is now stone brick ({} cells)", stone_wall);
+    assert!(wood_after < wood_before, "wood wall cells were converted to stone");
+}
+
+#[test]
+fn village_blacksmith_adds_iron_gate_tier3() {
+    let (mut w, (ax, az)) = village_world(11);
+    let bs = w.debug_spawn_villager_role(ax, az, 6);
+    let iron = w.debug_item_id("iron_ingot");
+    assert_ne!(iron, 0, "content has iron_ingot");
+
+    // Fast-forward through wood + stone by donating to each role.
+    let wc = w.debug_spawn_villager_role(ax, az, 4);
+    let log = w.debug_item_id("oak_log");
+    let total = World::debug_palisade_cells_total();
+    for _ in 0..40 {
+        w.debug_clear_inventory();
+        w.debug_give(log, 8);
+        w.debug_set_selected(0);
+        let _ = w.debug_try_donation(wc);
+        if w.debug_count_wall(ax, az, 21) >= total {
+            break;
+        }
+    }
+    let mason = w.debug_spawn_villager_role(ax, az, 5);
+    let stone = w.debug_item_id("stone_brick");
+    w.debug_clear_inventory();
+    w.debug_give(stone, 64);
+    w.debug_set_selected(0);
+    let _ = w.debug_try_donation(mason);
+    assert_eq!(w.debug_village_tier(ax, az), 2, "reached tier 2 before iron");
+
+    // Donate iron: 8 needed; flips to tier 3 and stamps the iron gate (block 53).
+    w.debug_clear_inventory();
+    w.debug_give(iron, 16);
+    w.debug_set_selected(0);
+    let _ = w.debug_try_donation(bs);
+    assert_eq!(w.debug_village_tier(ax, az), 3, "tier advances to 3 (iron)");
+    // Iron gate (block id 53) stands somewhere in the south gate columns.
+    let mut iron_blocks = 0;
+    for dx in -1..=2 {
+        let wx = ax + dx;
+        let wz = az + 8; // PALISADE_R
+        for wy in 0..=140 {
+            if w.debug_block_at(wx, wy, wz) == 53 {
+                iron_blocks += 1;
+            }
+        }
+    }
+    assert!(iron_blocks > 0, "an iron gate (block 53) was placed at the south opening");
+}
+
+#[test]
+fn village_tier_persists_round_trip() {
+    let dir = std::env::temp_dir().join(format!("bf_village_save_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.to_str().unwrap().to_string();
+
+    let (ax, az);
+    {
+        let (mut w, anchor) = village_world(11);
+        ax = anchor.0;
+        az = anchor.1;
+        // Drive to tier 2 (wood then stone).
+        let wc = w.debug_spawn_villager_role(ax, az, 4);
+        let log = w.debug_item_id("oak_log");
+        let total = World::debug_palisade_cells_total();
+        for _ in 0..40 {
+            w.debug_clear_inventory();
+            w.debug_give(log, 8);
+            w.debug_set_selected(0);
+            let _ = w.debug_try_donation(wc);
+            if w.debug_count_wall(ax, az, 21) >= total {
+                break;
+            }
+        }
+        let mason = w.debug_spawn_villager_role(ax, az, 5);
+        let stone = w.debug_item_id("stone_brick");
+        w.debug_clear_inventory();
+        w.debug_give(stone, 64);
+        w.debug_set_selected(0);
+        let _ = w.debug_try_donation(mason);
+        assert_eq!(w.debug_village_tier(ax, az), 2, "tier 2 before save");
+        assert!(w.save(&path), "save");
+    }
+
+    // Fresh world, load, and confirm the tier survived.
+    {
+        let content: &'static ContentRegistry = {
+            let mut c = ContentRegistry::new();
+            assert!(c.load(CONTENT));
+            Box::leak(Box::new(c))
+        };
+        let mut w2 = World::new(Some(TerrainGen::new()));
+        w2.debug_set_sync_streaming(true);
+        w2.set_allocator(allocator());
+        w2.set_content(content);
+        assert!(w2.load(&path), "load");
+        assert_eq!(w2.debug_village_tier(ax, az), 2, "tier 2 restored after reload");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn village_wall_marks_protected_interior() {
+    let (mut w, (ax, az)) = village_world(11);
+    // Before any donation, nothing is protected.
+    assert!(!w.debug_village_protects(ax, az), "no protection before tier 1");
+    // Build the wood ring to reach tier 1.
+    let wc = w.debug_spawn_villager_role(ax, az, 4);
+    let log = w.debug_item_id("oak_log");
+    let total = World::debug_palisade_cells_total();
+    for _ in 0..40 {
+        w.debug_clear_inventory();
+        w.debug_give(log, 8);
+        w.debug_set_selected(0);
+        let _ = w.debug_try_donation(wc);
+        if w.debug_count_wall(ax, az, 21) >= total {
+            break;
+        }
+    }
+    assert_eq!(w.debug_village_tier(ax, az), 1, "tier 1");
+    // The interior centre is protected; a point well outside the ring is not.
+    assert!(w.debug_village_protects(ax, az), "village centre is protected at tier 1");
+    assert!(!w.debug_village_protects(ax + 40, az + 40), "far away is not protected");
+}
+
+#[test]
+fn village_generation_is_deterministic() {
+    // The baked settlement structure must be identical for a seed regardless of player
+    // tier state (the tier overlays blocks but never changes worldgen).
+    let h_a = worldgen::worldgen_villager_home_scan(424242);
+    let h_b = worldgen::worldgen_villager_home_scan(424242);
+    assert_eq!(h_a.width, h_b.width, "home width deterministic");
+    assert_eq!(h_a.depth, h_b.depth, "home depth deterministic");
+    assert_eq!(h_a.bed_blocks, h_b.bed_blocks, "home bed deterministic");
+    // Two worlds at the same seed: the same structure anchor near origin.
+    let s1 = worldgen::worldgen_structure_near(0, 0, 99);
+    let s2 = worldgen::worldgen_structure_near(0, 0, 99);
+    assert_eq!(s1, s2, "structure-near query is deterministic");
+}
+
+#[test]
+fn village_wall_keeps_hostiles_out() {
+    let (mut w, (ax, az)) = village_world(11);
+    // Build the wood ring to reach tier 1 (protection active).
+    let wc = w.debug_spawn_villager_role(ax, az, 4);
+    let log = w.debug_item_id("oak_log");
+    let total = World::debug_palisade_cells_total();
+    for _ in 0..40 {
+        w.debug_clear_inventory();
+        w.debug_give(log, 8);
+        w.debug_set_selected(0);
+        let _ = w.debug_try_donation(wc);
+        if w.debug_count_wall(ax, az, 21) >= total {
+            break;
+        }
+    }
+    assert_eq!(w.debug_village_tier(ax, az), 1, "tier 1 (protected)");
+
+    // Survival mode so the hostile actively hunts. Put the player at the village centre
+    // (inside the protected ring) and a hostile just OUTSIDE the south wall.
+    w.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    let surf = worldgen::worldgen_surface_height(ax, az, 11) as f32;
+    w.debug_set_camera(ax as f32 + 0.5, surf + 2.0, az as f32 + 0.5, 0.0, 0.0);
+    let h = w.debug_spawn_hostile_at(ax as f32 + 0.5, surf + 1.0, az as f32 + 12.0);
+
+    // Drive the sim: the hostile will try to path toward the player but must never end up
+    // inside the protected interior (|dx|,|dz| < R = 8 of the anchor).
+    let mut breached = false;
+    for _ in 0..200 {
+        w.update(&unsafe { std::mem::zeroed::<bf_frame_input>() }, 0.05);
+        let (hx, _hy, hz) = w.debug_creature_pos(h);
+        let dx = (hx - ax as f32).abs();
+        let dz = (hz - az as f32).abs();
+        if dx < 7.0 && dz < 7.0 {
+            breached = true;
+            break;
+        }
+    }
+    assert!(!breached, "a hostile breached the walled village interior");
+}

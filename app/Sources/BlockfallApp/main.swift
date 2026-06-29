@@ -979,6 +979,48 @@ if let idx = CommandLine.arguments.firstIndex(of: "--chestshot"), idx + 1 < Comm
     exit(0)
 }
 
+// #95 --villageshot <path>: render the living-villages donation HUD panel at each tier
+// (wood -> stone -> iron) stacked into one PNG, so the kid-facing donation panel can be
+// reviewed without driving the live app. Mirrors --chestshot.
+if let idx = CommandLine.arguments.firstIndex(of: "--villageshot"), idx + 1 < CommandLine.arguments.count {
+    let W = 900, rowH = 220
+    // Four sample states: tier 0 (needs wood, half ring), tier 1->stone, tier 2->iron, tier 3 done.
+    let states: [(UInt8, UInt32, UInt32, UInt32, UInt32, String)] = [
+        (0, 30, 62, 0, 0, "wood"),    // building the wooden wall
+        (1, 62, 62, 8, 16, "stone"),  // wall done, donating stone to the mason
+        (2, 62, 62, 5, 8, "iron"),    // stone done, donating iron to the blacksmith
+        (3, 62, 62, 0, 0, ""),        // complete
+    ]
+    let H = rowH * states.count
+    let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+    let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    // Soft dusk backdrop so the panel reads (the panel itself is semi-transparent dark).
+    ctx.setFillColor(red: 0.18, green: 0.22, blue: 0.30, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: W, height: H))
+    for (i, st) in states.enumerated() {
+        let hv = HUDView(frame: NSRect(x: 0, y: 0, width: CGFloat(W), height: CGFloat(rowH)))
+        var v = bf_village_view()
+        v.present = 1
+        v.tier = st.0
+        v.wood_cells = st.1; v.wood_total = st.2
+        v.progress = st.3; v.progress_needed = st.4
+        withUnsafeMutableBytes(of: &v.want) { raw in
+            let p = raw.bindMemory(to: CChar.self)
+            for (j, byte) in Array(st.5.utf8).prefix(15).enumerated() { p[j] = CChar(bitPattern: byte) }
+        }
+        hv.setVillage(v)
+        hv.layoutSubtreeIfNeeded()
+        guard let rep = hv.bitmapImageRepForCachingDisplay(in: hv.bounds) else { exit(1) }
+        hv.cacheDisplay(in: hv.bounds, to: rep)
+        if let img = rep.cgImage {
+            ctx.draw(img, in: CGRect(x: 0, y: H - (i + 1) * rowH, width: W, height: rowH))
+        }
+    }
+    let rep = NSBitmapImageRep(cgImage: ctx.makeImage()!)
+    try? rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[idx + 1]))
+    exit(0)
+}
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

@@ -29,7 +29,9 @@ use core::ffi::{c_char, c_void};
 ///      sun shadows). No existing struct layout changed; purely additive.
 /// v20: appended bf_chest_view + bf_chest_* container API (openable chests, #109).
 ///      Purely additive; no existing struct layout changed.
-pub const BF_ABI_VERSION: u32 = 20;
+/// v21: appended bf_village_view + bf_village_query (living-villages tier/donation
+///      HUD, #95). Purely additive; no existing struct layout changed.
+pub const BF_ABI_VERSION: u32 = 21;
 
 // ---------------------------------------------------------------------------
 // Primitive types
@@ -419,6 +421,28 @@ pub struct bf_chest_view {
 }
 
 // ---------------------------------------------------------------------------
+// 10. LIVING VILLAGES (tier/donation HUD, ABI v21)
+// ---------------------------------------------------------------------------
+
+/// Mirror of `bf_village_view` in the C header. Tier/donation status of the village
+/// nearest the player, for the HUD donation panel (#95).
+/// Layout: anchor(12) + present(1) + tier(1) + _pad(2) + 4*u32(16) + want(16) = 48
+/// bytes, align 4.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct bf_village_view {
+    pub anchor: bf_ivec3,
+    pub present: u8,
+    pub tier: u8,
+    pub _pad: [u8; 2],
+    pub wood_cells: u32,
+    pub wood_total: u32,
+    pub progress: u32,
+    pub progress_needed: u32,
+    pub want: [u8; 16],
+}
+
+// ---------------------------------------------------------------------------
 // 6. EVENT CALLBACKS
 // ---------------------------------------------------------------------------
 
@@ -486,6 +510,7 @@ mod parity {
         assert_eq!(size_of::<bf_event>(), 36, "bf_event");
         assert_eq!(size_of::<bf_shadow_volume>(), 144, "bf_shadow_volume");
         assert_eq!(size_of::<bf_chest_view>(), 88, "bf_chest_view");
+        assert_eq!(size_of::<bf_village_view>(), 48, "bf_village_view");
     }
 
     #[test]
@@ -495,6 +520,20 @@ mod parity {
         assert_eq!(offset_of!(bf_chest_view, present), 12);
         assert_eq!(offset_of!(bf_chest_view, _pad), 13);
         assert_eq!(offset_of!(bf_chest_view, slots), 16);
+    }
+
+    #[test]
+    fn village_view_layout() {
+        assert_eq!(align_of::<bf_village_view>(), 4, "bf_village_view align");
+        assert_eq!(offset_of!(bf_village_view, anchor), 0);
+        assert_eq!(offset_of!(bf_village_view, present), 12);
+        assert_eq!(offset_of!(bf_village_view, tier), 13);
+        assert_eq!(offset_of!(bf_village_view, _pad), 14);
+        assert_eq!(offset_of!(bf_village_view, wood_cells), 16);
+        assert_eq!(offset_of!(bf_village_view, wood_total), 20);
+        assert_eq!(offset_of!(bf_village_view, progress), 24);
+        assert_eq!(offset_of!(bf_village_view, progress_needed), 28);
+        assert_eq!(offset_of!(bf_village_view, want), 32);
     }
 
     #[test]
