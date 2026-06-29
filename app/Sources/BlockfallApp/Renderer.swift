@@ -443,7 +443,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // day/night gated. Defaults ON. The pause-menu checkbox is owned by the UI layer
     // (main.swift); this reads the same persisted "gfxClouds" key so wiring a checkbox there
     // is a one-liner, and BF_CLOUDS=0/1 overrides headless for the clouds-off comparison shot.
-    // TODO(ui): add a "Volumetric Clouds" checkbox in the pause menu bound to "gfxClouds".
+    // Wired: the pause menu has a "Volumetric Clouds" checkbox (tag 8) bound to "gfxClouds".
     var gfxClouds = Renderer.cloudsDefault > 0.5
     // #47 stylized PBR: procedural per-material roughness/metalness drives a restrained
     // specular that complements the cel bands (wet/shiny vs matte). Strength 0..1; default
