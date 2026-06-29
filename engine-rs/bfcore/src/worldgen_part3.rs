@@ -59,6 +59,62 @@ fn struct_is_ruin(typ: i32) -> bool {
     typ == STRUCT_RUIN
 }
 
+// Half extent (in blocks, from the anchor) of a structure type's solid footprint.
+// Used to carve a no-tree clearance zone around placed structures so trunks and
+// canopies do not punch through walls or roofs (#143). Values track the widest
+// block each place_* builder stamps from its anchor (roof eaves / outer hut rings
+// / cross roads included), so the clearance fully covers the building.
+#[inline]
+fn struct_footprint_reach(typ: i32) -> i32 {
+    match typ {
+        x if x == STRUCT_CABIN => 4,       // hx up to 3, roof eaves reach hx + 1
+        x if x == STRUCT_OBELISK => 2,
+        x if x == STRUCT_CAMP => 1,
+        x if x == STRUCT_WATCHTOWER => 2,  // body 1, stairs reach +2
+        x if x == STRUCT_TEMPLE => 3,
+        x if x == STRUCT_CAIRN => 1,
+        x if x == STRUCT_WELL => 1,
+        x if x == STRUCT_VILLAGE => 9,     // huts on a +/-6 ring + hut radius 3
+        x if x == STRUCT_SHRINE => 3,
+        x if x == STRUCT_TALL_TOWER => 2,
+        x if x == STRUCT_KEEP => 4,        // curtain wall + turrets at +/-4
+        x if x == STRUCT_RUIN => 4,
+        x if x == STRUCT_CITY => 22,       // outer hut ring +/-18 + radius, cross roads to 22
+        _ => 0,
+    }
+}
+
+// Extra clearance, beyond the structure footprint, that must stay tree free. Chosen
+// to clear a typical canopy (CANOPY_MAX_REACH_XZ = 4) plus a block of breathing room
+// so leaves never brush a wall or roof. A tree is excluded when its root falls within
+// (footprint reach + this margin) of a structure anchor on either axis.
+const STRUCT_TREE_CLEARANCE: i32 = CANOPY_MAX_REACH_XZ + 2;
+
+// True if a tree rooted at (root_wx, root_wz) would fall inside the no-tree clearance
+// zone of any nearby structure. Structures live on a STRUCT_CELL_SIZE grid with at
+// most one per cell; the largest footprint + clearance is far under one cell, so it
+// is enough to test the structure cell containing the root and its 8 neighbours. Pure
+// function of (root, seed): determinism is preserved.
+fn tree_blocked_by_structure(root_wx: i32, root_wz: i32, seed: u64) -> bool {
+    let base_cx = struct_floordiv(root_wx, STRUCT_CELL_SIZE);
+    let base_cz = struct_floordiv(root_wz, STRUCT_CELL_SIZE);
+    for dcz in -1..=1 {
+        for dcx in -1..=1 {
+            let sd = struct_for_cell(base_cx + dcx, base_cz + dcz, seed);
+            if !sd.present {
+                continue;
+            }
+            let clear = struct_footprint_reach(sd.typ) + STRUCT_TREE_CLEARANCE;
+            let dx = (root_wx - sd.anchor_wx).abs();
+            let dz = (root_wz - sd.anchor_wz).abs();
+            if dx <= clear && dz <= clear {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[inline]
 fn struct_floordiv(a: i32, b: i32) -> i32 {
     a / b - if a % b != 0 && (a ^ b) < 0 { 1 } else { 0 }
@@ -346,7 +402,30 @@ fn place_cabin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_
         }
     }
 
-    struct_set(chunk, ax + door_dx, floor_h + 3, az, wx_min, wy_min, wz_min, TORCH);
+    // Door torch: mount it on the interior face of the door wall, just beside the
+    // doorway, instead of floating in the open lintel gap above the door (the door
+    // column is left open from floor + 3 up, so a torch placed there would hang on
+    // nothing). We put it in the interior air cell one block in from the wall, next
+    // to the door, with the solid wall block at (door wall plane, that dz) directly
+    // behind it. The flanking wall cell stays solid (no hole punched), so the torch
+    // reads as wall mounted inside the cabin.
+    //
+    // A flanking wall cell is glass at floor + 2 only when it is a window slot
+    // ((dx + dz) even). We choose a dz whose flanking wall is solid at the torch
+    // height: prefer dz = -1, fall back to +1, and if both flanking cells are window
+    // slots at eye height drop the torch to floor + 1 where the wall is always solid.
+    let door_solid_at = |dz: i32, wy: i32| -> bool {
+        let is_window = ((door_dx + dz) & 1) == 0;
+        !(is_window && wy == floor_h + 2)
+    };
+    let (torch_dz, torch_wy) = if door_solid_at(-1, floor_h + 2) {
+        (-1, floor_h + 2)
+    } else if door_solid_at(1, floor_h + 2) {
+        (1, floor_h + 2)
+    } else {
+        (-1, floor_h + 1)
+    };
+    struct_set(chunk, ax + door_dx - door_dx.signum(), torch_wy, az + torch_dz, wx_min, wy_min, wz_min, TORCH);
     struct_set(chunk, ax, floor_h + 1, az, wx_min, wy_min, wz_min, GLOW_BLOCK);
 
     {
@@ -947,9 +1026,14 @@ fn place_keep<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
     }
     struct_set(chunk, ax, base_h + 1, az, wx_min, wy_min, wz_min, CHEST);
     struct_set(chunk, ax, base_h + 2, az, wx_min, wy_min, wz_min, GLOW_BLOCK);
-    // Gate torches.
-    struct_set(chunk, ax - 1, base_h + 3, az - r, wx_min, wy_min, wz_min, TORCH);
-    struct_set(chunk, ax + 1, base_h + 3, az - r, wx_min, wy_min, wz_min, TORCH);
+    // Gate torches: mount them on the interior face of the gate wall, one cell in
+    // from the wall row (dz = -r + 1), against the solid wall sections that flank
+    // the 2 wide gate opening (which spans dx = 0 and dx = -1). Placing them at
+    // dx = +1 and dx = -2 puts each torch in courtyard air with a solid curtain
+    // wall block directly behind it at dz = -r, so the wall stays intact (no hole
+    // punched behind a torch) and the torch reads as wall mounted.
+    struct_set(chunk, ax + 1, base_h + 3, az - r + 1, wx_min, wy_min, wz_min, TORCH);
+    struct_set(chunk, ax - 2, base_h + 3, az - r + 1, wx_min, wy_min, wz_min, TORCH);
 
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }

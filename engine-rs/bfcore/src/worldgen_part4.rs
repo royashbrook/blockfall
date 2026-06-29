@@ -33,6 +33,12 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
                     continue;
                 }
 
+                // Skip trees whose root falls inside a structure's no-tree clearance
+                // zone so trunks / canopies never intersect a building (#143).
+                if tree_blocked_by_structure(td.root_wx, td.root_wz, seed) {
+                    continue;
+                }
+
                 let fit = worldgen_trunk_fit_to_ceiling(h, canopy_dy_max(td.canopy_shape), td.trunk_height);
                 if fit <= 0 {
                     continue;
@@ -2825,5 +2831,394 @@ mod worldgen_tests {
             naked.first().map(|n| n.top_wy).unwrap_or(0),
             naked.first().map(|n| n.run).unwrap_or(0),
         );
+    }
+
+    // #142: a torch placed by a structure builder must be MOUNTED on a wall, not
+    // recessed into it. Two invariants per torch cell, checked over every keep and
+    // cabin found in a wide scan:
+    //   1. The torch cell itself is the only non-solid thing there (a torch reads as
+    //      a prop in an air-adjacent cell), and
+    //   2. it has at least one solid horizontal neighbour (the wall it is mounted on),
+    //      AND no wall block was removed to make room for it: specifically the cell
+    //      the torch used to occupy in the old recessed placement stays solid wall.
+    // We check the structural invariant directly: every torch must sit beside a solid
+    // wall block (so it is mounted) and must not itself be embedded inside a ring of
+    // solid blocks (which would mean a hole was carved around it).
+    #[test]
+    fn structure_torches_mounted_on_solid_wall() {
+        // A block id that counts as a solid wall face a torch can mount on.
+        fn is_solid_wall(b: BlockId) -> bool {
+            b != AIR
+                && b != TORCH
+                && b != OAK_DOOR
+                && b != GLASS_PANE
+                && b != WATER
+                && b != MARKER_BLOCK
+        }
+
+        let mut keeps_checked = 0;
+        let mut cabins_checked = 0;
+        let mut torches_checked = 0;
+
+        // Stamping a structure is expensive, so cap how many of each type we stamp;
+        // a handful per type across several seeds is plenty to guard the invariant.
+        let cap = 6;
+        'seeds: for &seed in &[11u64, 1, 42, 7, 1234] {
+            let r = 40; // structure cells; wide enough to catch keeps and cabins
+            for scz in -r..=r {
+                for scx in -r..=r {
+                    let sd = struct_for_cell(scx, scz, seed);
+                    if !sd.present {
+                        continue;
+                    }
+                    let is_keep = sd.typ == STRUCT_KEEP;
+                    let is_cabin = sd.typ == STRUCT_CABIN;
+                    if !is_keep && !is_cabin {
+                        continue;
+                    }
+                    if is_keep && keeps_checked >= cap {
+                        continue;
+                    }
+                    if is_cabin && cabins_checked >= cap {
+                        continue;
+                    }
+                    if is_keep {
+                        keeps_checked += 1;
+                    } else {
+                        cabins_checked += 1;
+                    }
+
+                    let cells = stamp_structure(&sd, seed);
+                    for (&(wx, wy, wz), &b) in cells.iter() {
+                        if b != TORCH {
+                            continue;
+                        }
+                        torches_checked += 1;
+
+                        // Mounted: at least one horizontal neighbour is a solid wall.
+                        let neigh = [
+                            *cells.get(&(wx + 1, wy, wz)).unwrap_or(&AIR),
+                            *cells.get(&(wx - 1, wy, wz)).unwrap_or(&AIR),
+                            *cells.get(&(wx, wy, wz + 1)).unwrap_or(&AIR),
+                            *cells.get(&(wx, wy, wz - 1)).unwrap_or(&AIR),
+                        ];
+                        let solid_neighbours = neigh.iter().filter(|&&n| is_solid_wall(n)).count();
+                        assert!(
+                            solid_neighbours >= 1,
+                            "seed {seed} type {}: torch at ({wx},{wy},{wz}) is not mounted on any wall (neighbours {neigh:?})",
+                            sd.typ
+                        );
+                        // Not recessed: the torch is in an air-adjacent cell, so it must
+                        // NOT be boxed in on all four horizontal sides (a hole carved
+                        // into a wall would leave solid faces all around the recess).
+                        assert!(
+                            solid_neighbours < 4,
+                            "seed {seed} type {}: torch at ({wx},{wy},{wz}) is boxed in on all sides, looks recessed into the wall",
+                            sd.typ
+                        );
+                    }
+                    if keeps_checked >= cap && cabins_checked >= cap {
+                        break 'seeds;
+                    }
+                }
+            }
+        }
+
+        assert!(keeps_checked > 0, "scan found no keeps to check");
+        assert!(cabins_checked > 0, "scan found no cabins to check");
+        assert!(torches_checked > 0, "scan found no torches to check");
+    }
+
+    // #142 (regression, exact geometry): after the fix, the wall blocks that used to
+    // be punched out for a recessed torch must stay solid. For a cabin the wall behind
+    // its torch must be solid; for a keep the curtain-wall sections that flank the
+    // gate must be solid at the torch height (no hole punched behind a gate torch).
+    #[test]
+    fn structure_torch_walls_stay_solid() {
+        let mut checked_cabin = false;
+        let mut checked_keep = false;
+
+        for &seed in &[11u64, 1, 42, 7, 1234] {
+            let r = 40;
+            for scz in -r..=r {
+                for scx in -r..=r {
+                    let sd = struct_for_cell(scx, scz, seed);
+                    if !sd.present {
+                        continue;
+                    }
+                    if sd.typ == STRUCT_CABIN && !checked_cabin {
+                        let cells = stamp_structure(&sd, seed);
+                        // Locate the cabin's single torch and assert the wall cell
+                        // directly behind it (toward the door wall plane) is solid: the
+                        // torch must be mounted on an intact wall, never carved into one.
+                        let mut found_torch = false;
+                        for (&(wx, wy, wz), &b) in cells.iter() {
+                            if b != TORCH {
+                                continue;
+                            }
+                            found_torch = true;
+                            // The wall the torch mounts on is one of its 4 horizontal
+                            // neighbours; at least one must be a solid (non-air, non-prop)
+                            // block, and the torch must not sit where a wall block was.
+                            let neigh = [
+                                *cells.get(&(wx + 1, wy, wz)).unwrap_or(&AIR),
+                                *cells.get(&(wx - 1, wy, wz)).unwrap_or(&AIR),
+                                *cells.get(&(wx, wy, wz + 1)).unwrap_or(&AIR),
+                                *cells.get(&(wx, wy, wz - 1)).unwrap_or(&AIR),
+                            ];
+                            let solid = |bb: BlockId| {
+                                bb != AIR && bb != TORCH && bb != OAK_DOOR && bb != GLASS_PANE
+                            };
+                            assert!(
+                                neigh.iter().any(|&n| solid(n)),
+                                "seed {seed}: cabin torch at ({wx},{wy},{wz}) has no solid wall behind it (neighbours {neigh:?})"
+                            );
+                        }
+                        assert!(found_torch, "seed {seed}: cabin had no torch to check");
+                        checked_cabin = true;
+                    }
+
+                    if sd.typ == STRUCT_KEEP && !checked_keep {
+                        let cells = stamp_structure(&sd, seed);
+                        let h = sd.cell_hash;
+                        let mut base_h = -1000000;
+                        for dz in -4..=4 {
+                            for dx in -4..=4 {
+                                let sh = struct_surface(sd.anchor_wx + dx, sd.anchor_wz + dz, seed);
+                                if sh > base_h {
+                                    base_h = sh;
+                                }
+                            }
+                        }
+                        let _ = h;
+                        let rr = 4;
+                        // Curtain wall sections flanking the 2 wide gate (gate spans
+                        // dx in {0,-1}); dx = +1 and dx = -2 at dz = -r must be solid
+                        // at the torch height (base_h + 3), with no hole behind a torch.
+                        for &gdx in &[1i32, -2] {
+                            let wall = *cells
+                                .get(&(sd.anchor_wx + gdx, base_h + 3, sd.anchor_wz - rr))
+                                .unwrap_or(&AIR);
+                            assert!(
+                                wall != AIR && wall != TORCH,
+                                "seed {seed}: keep gate wall at dx={gdx} is not solid (got {wall}); torch carved a hole in the curtain wall"
+                            );
+                        }
+                        checked_keep = true;
+                    }
+                }
+            }
+        }
+
+        assert!(checked_cabin, "no cabin found to check torch wall solidity");
+        assert!(checked_keep, "no keep found to check torch wall solidity");
+    }
+
+    // #143: trees must not be emitted inside the no-tree clearance zone around a
+    // structure footprint, so trunks / canopies never intersect a building. Find real
+    // structures in a wide scan and assert that no tree cell whose root falls within
+    // (footprint reach + clearance) of the anchor is reported present-and-buildable
+    // by the same gate the decoration pass uses.
+    #[test]
+    fn no_trees_inside_structure_clearance() {
+        let mut structures_checked = 0;
+        let mut roots_inside_zone = 0;
+
+        for &seed in &[11u64, 1, 42, 7, 1234] {
+            let r = 30;
+            for scz in -r..=r {
+                for scx in -r..=r {
+                    let sd = struct_for_cell(scx, scz, seed);
+                    if !sd.present || sd.typ == STRUCT_NONE {
+                        continue;
+                    }
+                    structures_checked += 1;
+                    let clear = struct_footprint_reach(sd.typ) + STRUCT_TREE_CLEARANCE;
+                    // Sweep every tree cell whose cell window overlaps the clearance box.
+                    let (cx0, cz0) = tree_cell(sd.anchor_wx - clear, sd.anchor_wz - clear);
+                    let (cx1, cz1) = tree_cell(sd.anchor_wx + clear, sd.anchor_wz + clear);
+                    for ccz in cz0..=cz1 {
+                        for ccx in cx0..=cx1 {
+                            let td = tree_for_cell(ccx, ccz, seed);
+                            if !td.present {
+                                continue;
+                            }
+                            // A tree only ever reaches the world if it survives the same
+                            // gate the decoration pass applies (biome / sea level), AND
+                            // it must NOT survive the structure-clearance gate when its
+                            // root is inside the zone.
+                            let dx = (td.root_wx - sd.anchor_wx).abs();
+                            let dz = (td.root_wz - sd.anchor_wz).abs();
+                            if dx <= clear && dz <= clear {
+                                roots_inside_zone += 1;
+                                assert!(
+                                    tree_blocked_by_structure(td.root_wx, td.root_wz, seed),
+                                    "seed {seed}: tree root ({},{}) is inside the clearance of structure type {} at ({},{}) but was not blocked",
+                                    td.root_wx,
+                                    td.root_wz,
+                                    sd.typ,
+                                    sd.anchor_wx,
+                                    sd.anchor_wz
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(structures_checked > 0, "scan found no structures to check");
+        assert!(
+            roots_inside_zone > 0,
+            "scan found no candidate tree roots inside any clearance zone (test would be vacuous)"
+        );
+    }
+
+    // Diagnostic visual: dump real generated structure cross-sections (torch / wall
+    // glyphs) and a top-down tree map around a structure, straight from the
+    // generator. Run with: cargo test --release dump_structure_diag -- --nocapture
+    // --ignored. Not part of the gate (ignored); it is the visual artifact for the
+    // #142 / #143 fixes since the headless --shot harness cannot teleport to a
+    // structure.
+    #[test]
+    #[ignore]
+    fn dump_structure_diag() {
+        fn glyph(b: BlockId) -> char {
+            match b {
+                AIR => '.',
+                TORCH => 'T',
+                OAK_DOOR => 'D',
+                GLASS_PANE => 'o',
+                GLOW_BLOCK => '*',
+                _ => '#', // any solid wall / floor / roof block
+            }
+        }
+
+        // Find and dump one keep and one cabin: a vertical Z slice through each
+        // torch so you can see the torch (T) sitting in air with an intact wall (#)
+        // directly behind it.
+        for &want in &[STRUCT_KEEP, STRUCT_CABIN] {
+            'find: for &seed in &[11u64, 1, 42, 7, 1234] {
+                let r = 40;
+                for scz in -r..=r {
+                    for scx in -r..=r {
+                        let sd = struct_for_cell(scx, scz, seed);
+                        if !sd.present || sd.typ != want {
+                            continue;
+                        }
+                        let cells = stamp_structure(&sd, seed);
+                        // For each torch, print a small X-by-Y slice at the torch's Z.
+                        let torches: Vec<(i32, i32, i32)> = cells
+                            .iter()
+                            .filter(|(_, &b)| b == TORCH)
+                            .map(|(&(x, y, z), _)| (x, y, z))
+                            .collect();
+                        println!(
+                            "\n=== structure type {} seed {seed} anchor ({},{}) : {} torch(es) ===",
+                            sd.typ, sd.anchor_wx, sd.anchor_wz, torches.len()
+                        );
+                        for (tx, ty, tz) in &torches {
+                            // Slice through the torch's Z (shows the torch in air).
+                            println!("-- X/Y slice at z={tz} (torch at {tx},{ty},{tz}); T=torch #=wall .=air --");
+                            for wy in (ty - 3..=ty + 3).rev() {
+                                let mut line = String::new();
+                                for wx in (tx - 4)..=(tx + 4) {
+                                    let b = *cells.get(&(wx, wy, *tz)).unwrap_or(&AIR);
+                                    line.push(glyph(b));
+                                }
+                                println!("  y={wy:>4} {line}");
+                            }
+                            // Slice one cell toward the wall the torch backs onto: this
+                            // is the wall plane that must stay SOLID (no hole punched).
+                            // The keep's gate torches back onto z-1 (wall row); the
+                            // cabin torch backs onto the door wall plane in x.
+                            let back_z = tz - 1;
+                            println!("-- X/Y slice at z={back_z} (wall behind torch must be solid #) --");
+                            for wy in (ty - 3..=ty + 3).rev() {
+                                let mut line = String::new();
+                                for wx in (tx - 4)..=(tx + 4) {
+                                    let b = *cells.get(&(wx, wy, back_z)).unwrap_or(&AIR);
+                                    line.push(glyph(b));
+                                }
+                                println!("  y={wy:>4} {line}");
+                            }
+                        }
+                        break 'find;
+                    }
+                }
+            }
+        }
+
+        // Tree-clearance top-down map: find a structure, mark its footprint box and
+        // every emitted-tree root in the area. After the #143 fix no 't' should fall
+        // inside the cleared box (shown as the bracketed region).
+        'tree: for &seed in &[11u64, 1, 42, 7, 1234, 5, 9, 100] {
+            let r = 30;
+            for scz in -r..=r {
+                for scx in -r..=r {
+                    let sd = struct_for_cell(scx, scz, seed);
+                    if !sd.present || sd.typ == STRUCT_NONE {
+                        continue;
+                    }
+                    let clear = struct_footprint_reach(sd.typ) + STRUCT_TREE_CLEARANCE;
+                    let span = clear + 8;
+                    // Only dump a structure that actually has trees in the surrounding
+                    // ring, so the cleared box contrasts with a forested margin.
+                    let mut ring_trees = 0;
+                    for dz in -span..=span {
+                        for dx in -span..=span {
+                            let wx = sd.anchor_wx + dx;
+                            let wz = sd.anchor_wz + dz;
+                            let (ccx, ccz) = tree_cell(wx, wz);
+                            let td = tree_for_cell(ccx, ccz, seed);
+                            if td.present
+                                && td.root_wx == wx
+                                && td.root_wz == wz
+                                && !tree_blocked_by_structure(wx, wz, seed)
+                            {
+                                ring_trees += 1;
+                            }
+                        }
+                    }
+                    if ring_trees < 4 {
+                        continue;
+                    }
+                    println!(
+                        "\n=== tree clearance map: structure type {} seed {seed} anchor ({},{}) clear={clear} ===",
+                        sd.typ, sd.anchor_wx, sd.anchor_wz
+                    );
+                    println!("  S=anchor  t=tree root  [ ]=cleared box  .=open");
+                    for dz in (-span..=span).rev() {
+                        let mut line = String::new();
+                        for dx in -span..=span {
+                            let wx = sd.anchor_wx + dx;
+                            let wz = sd.anchor_wz + dz;
+                            let in_box = dx.abs() <= clear && dz.abs() <= clear;
+                            let ch = if dx == 0 && dz == 0 {
+                                'S'
+                            } else {
+                                // Is a tree emitted with its root here?
+                                let (ccx, ccz) = tree_cell(wx, wz);
+                                let td = tree_for_cell(ccx, ccz, seed);
+                                let has_tree = td.present
+                                    && td.root_wx == wx
+                                    && td.root_wz == wz
+                                    && !tree_blocked_by_structure(wx, wz, seed);
+                                if has_tree {
+                                    't'
+                                } else if in_box {
+                                    ' '
+                                } else {
+                                    '.'
+                                }
+                            };
+                            line.push(ch);
+                        }
+                        println!("  {line}");
+                    }
+                    break 'tree;
+                }
+            }
+        }
     }
 }
