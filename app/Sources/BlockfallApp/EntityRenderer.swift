@@ -4695,6 +4695,29 @@ final class EntityRenderer {
         return -1e9;
     }
 
+    // #139 Bug B: is there a solid (occupied) voxel ABOVE this world point within `span` cells?
+    // Used to detect a creature swimming UNDER a ceiling (fish under ice): if so we suppress the
+    // cast contact shadow so it never gets stamped on top of the ice. Mirrors gsGroundY's toroidal
+    // XZ wrap and y-origin handling, scanning UP instead of down. Starts one cell above startY so
+    // the creature's own foot cell (or the surface it rests on) is not counted as a ceiling.
+    static bool gsSolidAbove(texture3d<uint, access::read> occ,
+                             float3 gridOrigin, float3 gridDims,
+                             float wx, float startY, float wz, int span) {
+        int3 dims = int3(gridDims);
+        int3 iorigin = int3(round(gridOrigin));
+        int gx = int(floor(wx)) & (dims.x - 1);
+        int gz = int(floor(wz)) & (dims.z - 1);
+        int wy0 = int(floor(startY)) - iorigin.y;
+        for (int dyi = 1; dyi <= span; ++dyi) {
+            int vy = wy0 + dyi;
+            if (vy < 0 || vy >= dims.y) continue;
+            if (occ.read(uint3(uint(gx), uint(vy), uint(gz))).r != 0u) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     vertex GSOut groundShadowV(uint vid [[vertex_id]],
                                uint iid [[instance_id]],
                                constant GShadowU& u [[buffer(0)]],
@@ -4703,10 +4726,31 @@ final class EntityRenderer {
         GShadowInst e = insts[iid];
         float3 foot = e.footRadius.xyz;
         float r = e.footRadius.w;
+        // #139 Bug B: a creature swimming UNDER a solid ceiling (fish under ice) must not stamp a
+        // contact blob on top of that ceiling. If any solid voxel sits within a few cells ABOVE the
+        // feet, the creature is submerged/under cover; collapse the quad to a degenerate point so it
+        // is clipped with zero fragment work. Cheapest correct rule, no entity ABI change needed.
+        if (gsSolidAbove(occ, u.voxOrigin.xyz, u.voxDims.xyz, foot.x, foot.y, foot.z, 4)) {
+            GSOut o;
+            o.position  = float4(0.0, 0.0, 0.0, 0.0);   // degenerate: clipped, never rasterized
+            o.worldPos  = foot;
+            o.center    = foot;
+            o.radius    = r;
+            o.sunGround = float2(0.0, 1.0);
+            o.dayFactor = 0.0;                          // also gates the fragment off if it slips through
+            return o;
+        }
         // Snap the blob's plane to the real surface directly under the feet (search a couple blocks
         // up and down so it lands on the ground even if foot.y is slightly embedded or floating).
         float snapped = gsGroundY(occ, u.voxOrigin.xyz, u.voxDims.xyz, foot.x, foot.y + 2.0, foot.z, 6);
-        float planeY = (snapped > -1e8) ? snapped : foot.y;
+        // #139 Bug A: snow overlay (#118) is walk-through but still flagged as a casting voxel in the
+        // occupancy grid, so the downward snap finds the snow cell and returns its TOP face, one
+        // block ABOVE where the creature actually stands (snow at its feet). The engine seats the
+        // creature on the walked surface, so foot.y IS the true ground the blob must sit on. Clamp
+        // the snap so the plane never rises above the feet (the surface a creature rests on cannot be
+        // above it). Snow overshoots by a full cell so this catches it; sub-block slope snaps (which
+        // sit at or below foot.y) are unaffected, keeping normal/sloped ground correct.
+        float planeY = (snapped > -1e8) ? min(snapped, foot.y + 0.05) : foot.y;
 
         // Sun direction projected onto the ground (XZ). The shadow stretches AWAY from the sun
         // azimuth and the lower the sun the longer/more offset it gets.
