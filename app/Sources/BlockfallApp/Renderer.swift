@@ -4469,8 +4469,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Day/night gate (clouds fade out as the sun sets so night stays clean) AND the
         // toggle (cloudsOn). The ray must point above the horizon to enter the cloud slab.
         float cloudVis  = smoothstep(0.12, 0.38, dayT)
-                        * smoothstep(0.02, 0.12, ray.y)
-                        * fairCloud * step(0.5, cloudsOn);
+                        * smoothstep(0.08, 0.20, ray.y)
+                        * fairCloud * clamp(cloudsOn, 0.0, 1.0);
         if (cloudVis > 0.001) {
             // #47 REAL raymarched VOLUMETRIC clouds, styled BOLD/TOY (chunky, defined,
             // fluffy cumulus with a touch of cel banding and a bright sun rim), NOT wispy
@@ -4484,7 +4484,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             // off, and the march short-circuits once the accumulated alpha is near opaque.
             const float CLOUD_BOTTOM = 55.0;
             const float CLOUD_TOP    = 145.0;  // thick slab -> vertical structure, 3D puffs
-            const int   CLOUD_STEPS  = 28;     // THE perf knob (bounded march length)
+            const int   CLOUD_STEPS  = 44;     // THE perf knob (bounded march length)
             const float CLOUD_MID    = 100.0;  // slab centre (for the rounded vertical taper)
             const float CLOUD_HALF   = 45.0;   // half-thickness
             float ry   = max(ray.y, 0.04);
@@ -4512,7 +4512,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             // so we derive the screen-frequency coordinate from the ray itself.
             float2 cpix  = ray.xz * 720.0;
             float cdith  = fract(52.9829189 * fract(dot(cpix, float2(0.06711056, 0.00583715))));
-            tEnter += dt * (cdith - 0.5) * 0.35;
+            tEnter += dt * (cdith - 0.5) * 0.10;
             float wind = clk * 1.10;           // slow horizontal drift
             // `cover` modulates how much sky the clouds fill; a slow weather-ish breathe
             // keeps the sky from being uniformly packed. Kept modest so the sky still reads.
@@ -4585,8 +4585,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             // fade window LOWER (0.18..0.55 -> 0.10..0.42) so bold chunky puffs now fill more
             // of the visible sky instead of only the zenith, while the true grazing horizon
             // (ray.y < ~0.10, where any flat slab smears) still fades to clean blue.
-            float horizFade = smoothstep(0.10, 0.42, ray.y);
-            cloudA *= horizFade * 0.95;
+            float horizFade = smoothstep(0.18, 0.56, ray.y);
+            cloudA *= horizFade * 0.82;
             float3 cloudColor = (cloudA > 1e-4) ? (lum / max(1.0 - trans, 1e-3)) : float3(0.0);
             skyCol = mix(skyCol, cloudColor, clamp(cloudA, 0.0, 0.92));
         }

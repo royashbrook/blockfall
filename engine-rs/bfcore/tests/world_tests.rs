@@ -228,8 +228,20 @@ fn doors_open_close() {
     w.action(&usea);
     w.update(&zero, 0.016);
     assert!(
+        w.debug_block_at(ex, ey, ez) == 50 && w.debug_block_at(ex, ey + 1, ez) == 50,
+        "top-half interaction toggles from the bottom half and opens both halves together (#148)"
+    );
+
+    w.debug_edit(ex, ey, ez, 50);
+    w.debug_edit(ex, ey + 1, ez, 33);
+    w.debug_set_camera(ex as f32 + 0.5, ey as f32 + 5.0, ez as f32 + 0.5, 0.0, -1.5707);
+    w.update(&zero, 0.016);
+    assert!(w.debug_has_target(), "aimed at the bottom half of the mixed door");
+    w.action(&usea);
+    w.update(&zero, 0.016);
+    assert!(
         w.debug_block_at(ex, ey, ez) == 33 && w.debug_block_at(ex, ey + 1, ez) == 33,
-        "top-half interaction closes both door halves together (#148)"
+        "bottom-half interaction toggles from the bottom half and closes both halves together (#148)"
     );
 }
 

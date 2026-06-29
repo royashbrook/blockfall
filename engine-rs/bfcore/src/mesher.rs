@@ -630,6 +630,28 @@ fn door_mesh_rotated<S: ChunkStore>(
     wall_z_score > wall_x_score
 }
 
+fn door_mesh_run_state<S: ChunkStore>(
+    current_chunk: Option<&S::Chunk>,
+    cc: ChunkCoord,
+    store: &S,
+    x: i32,
+    y: i32,
+    z: i32,
+) -> BlockId {
+    let mut low_y = y;
+    let mut guard = 0;
+    while guard < KCHUNK_DIM * 4 && is_door(sample_block(current_chunk, cc, store, x, low_y - 1, z)) {
+        low_y -= 1;
+        guard += 1;
+    }
+    let bottom = sample_block(current_chunk, cc, store, x, low_y, z);
+    if is_door(bottom) {
+        bottom
+    } else {
+        sample_block(current_chunk, cc, store, x, y, z)
+    }
+}
+
 // ---- AO ---------------------------------------------------------------------
 
 // Compute the AO value (0..3) for one quad corner. Lysenko formula:
@@ -1552,7 +1574,8 @@ impl GreedyMesher {
                         let dsky = chunk.sky_light(x as usize, y as usize, z as usize);
                         let dblk = chunk.block_light(x as usize, y as usize, z as usize);
                         let rotated = door_mesh_rotated(chunk_opt, c, store, x, y, z);
-                        if !emit_door(x, y, z, here, rotated, dsky, dblk, &mut buf) {
+                        let render_id = door_mesh_run_state(chunk_opt, c, store, x, y, z);
+                        if !emit_door(x, y, z, render_id, rotated, dsky, dblk, &mut buf) {
                             buf.full = true;
                             return finalize(buf, false);
                         }
@@ -1997,6 +2020,21 @@ mod tests {
         let bottom = door_mesh_rotated(cur, ChunkCoord::default(), &store, 8, 4, 8);
         let top = door_mesh_rotated(cur, ChunkCoord::default(), &store, 8, 5, 8);
         assert_eq!(bottom, top, "both halves of one door must render on the same axis");
+    }
+
+    #[test]
+    fn door_state_is_shared_from_bottom_half() {
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(8, 4, 8, DOOR_CLOSED);
+        ch.set(8, 5, 8, DOOR_OPEN);
+        store.chunks.insert(ChunkCoord::default(), ch);
+
+        let cur = store.get(ChunkCoord::default());
+        let bottom = door_mesh_run_state(cur, ChunkCoord::default(), &store, 8, 4, 8);
+        let top = door_mesh_run_state(cur, ChunkCoord::default(), &store, 8, 5, 8);
+        assert_eq!(bottom, DOOR_CLOSED, "bottom half owns the canonical state");
+        assert_eq!(top, DOOR_CLOSED, "top half renders with the bottom half's state");
     }
 
     #[test]

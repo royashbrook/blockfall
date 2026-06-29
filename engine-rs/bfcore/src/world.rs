@@ -4207,6 +4207,22 @@ impl<'c> World<'c> {
     fn stream_backlog(&self) -> usize {
         self.gen_queue.len() + self.dirty.len()
     }
+    fn dirty_chunk_and_resident_neighbours(&mut self, cc: ChunkCoord) {
+        self.dirty.insert(cc);
+        let dirs = [
+            ChunkCoord { x: cc.x + 1, y: cc.y, z: cc.z },
+            ChunkCoord { x: cc.x - 1, y: cc.y, z: cc.z },
+            ChunkCoord { x: cc.x, y: cc.y + 1, z: cc.z },
+            ChunkCoord { x: cc.x, y: cc.y - 1, z: cc.z },
+            ChunkCoord { x: cc.x, y: cc.y, z: cc.z + 1 },
+            ChunkCoord { x: cc.x, y: cc.y, z: cc.z - 1 },
+        ];
+        for nc in dirs {
+            if self.store.is_resident(nc) {
+                self.dirty.insert(nc);
+            }
+        }
+    }
     // A LARGE backlog near an empty resident set means a startup/teleport bulk fill.
     // Once the world already has a substantial resident area, use a gentler catch-up
     // lane so crossing the first rendered boundary does not hit the frame thread with
@@ -4258,7 +4274,7 @@ impl<'c> World<'c> {
                     continue;
                 }
                 self.store.insert(ch);
-                self.dirty.insert(cc);
+                self.dirty_chunk_and_resident_neighbours(cc);
                 self.shadow.refill_cols.insert((cc.x, cc.z)); // new resident chunk: re-stamp its column
                 made += 1;
             }
@@ -4293,7 +4309,7 @@ impl<'c> World<'c> {
                 continue;
             }
             self.store.insert(r.chunk);
-            self.dirty.insert(r.cc);
+            self.dirty_chunk_and_resident_neighbours(r.cc);
             self.shadow.refill_cols.insert((r.cc.x, r.cc.z)); // new resident chunk: re-stamp its column
         }
 
@@ -4954,7 +4970,6 @@ impl<'c> World<'c> {
                 if self.has_target {
                     let tb = self.block_at(self.target);
                     if tb == 33 || tb == 50 {
-                        let nb = if tb == 33 { 50 } else { 33 };
                         let target = self.target;
                         let mut low_y = target.y;
                         while {
@@ -4970,6 +4985,8 @@ impl<'c> World<'c> {
                         } {
                             high_y += 1;
                         }
+                        let base = self.block_at(IVec3 { x: target.x, y: low_y, z: target.z });
+                        let nb = if base == 33 { 50 } else { 33 };
                         for y in low_y..=high_y {
                             self.set_block_internal(IVec3 { x: target.x, y, z: target.z }, nb);
                         }

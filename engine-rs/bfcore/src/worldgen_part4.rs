@@ -524,11 +524,13 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
                     }
                 }
 
-                if (kh & 0xFF) >= 56 {
+                let open_ocean = is_ocean_column(wx as f32, wz as f32, seed) && water_depth >= 5;
+                let kelp_cutoff = if open_ocean { 22 } else { 56 };
+                if (kh & 0xFF) >= kelp_cutoff {
                     continue;
                 }
 
-                let mut strand = 1 + ((kh >> 8) % 3) as i32;
+                let mut strand = 1 + ((kh >> 8) % if open_ocean { 2 } else { 3 }) as i32;
                 let max_strand = water_depth - 1;
                 if max_strand < 1 {
                     continue;
