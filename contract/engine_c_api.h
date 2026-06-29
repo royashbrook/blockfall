@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 19u  /* v19: bf_world_shadow_volume + bf_shadow_volume (world-space voxel sun shadows, append-only) */
+#define BF_ABI_VERSION 20u  /* v20: bf_chest_* container API + bf_chest_view (openable chests, #109, append-only) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -503,6 +503,60 @@ typedef struct bf_shadow_volume {
  * BF_ERR_NOT_READY pre-world, BF_OK otherwise. Cheap on movement: only the edge
  * slabs that scrolled in are rewritten, never the whole volume. */
 BF_API bf_result bf_world_shadow_volume(bf_engine e, bf_shadow_volume* vol);
+
+/* ==========================================================================
+ * 9. CHESTS  (openable containers, #109, ABI v20)
+ * --------------------------------------------------------------------------
+ * A chest is a block (id 31) that owns a fixed-size list of item stacks. Each
+ * chest's contents are keyed by its world block position, generated lazily and
+ * deterministically from the world seed the first time the chest is opened, and
+ * persisted to chests.dat so they survive chunk unload/reload and saves.
+ *
+ * The app drives this from the existing block-interaction path: send a normal
+ * BF_ACT_INTERACT while looking at a chest, then poll bf_chest_open_pos to learn
+ * which chest (if any) the engine opened, query its slots with bf_chest_query,
+ * and move items with bf_chest_take / bf_chest_deposit. All append-only: no
+ * existing struct layout changes. */
+#define BF_CHEST_SLOTS 9
+
+/* One chest's contents: a fixed BF_CHEST_SLOTS-long slot array (same bf_hud_slot
+ * shape the inventory uses) plus the chest's world position. `present` is 1 when a
+ * chest block exists at the queried position, 0 otherwise (slots then zeroed). */
+typedef struct bf_chest_view {
+    bf_ivec3    pos;                     /* chest block world position           */
+    uint8_t     present;                 /* 1 = chest exists here, 0 = none       */
+    uint8_t     _pad[3];
+    bf_hud_slot slots[BF_CHEST_SLOTS];   /* the chest's contents (item/count/dur) */
+} bf_chest_view;
+
+/* [MAIN] Return the world position of the chest the last BF_ACT_INTERACT opened
+ * via the app's right-click, writing it to `out_pos` and returning 1. Returns 0
+ * (and leaves `out_pos` untouched) when no chest is open or the open chest block
+ * is gone (broken/unloaded). Interacting the same open chest again toggles it
+ * closed. The app shows its chest panel while this returns 1. */
+BF_API uint8_t bf_chest_open_pos(bf_engine e, bf_ivec3* out_pos);
+
+/* [MAIN] Fill `out` with the contents of the chest at world position `pos`. Rolls
+ * the chest's deterministic loot on first query. Sets out->present=0 (slots
+ * zeroed) when no chest block is at `pos`. Returns BF_OK, or BF_ERR_BAD_ARG on a
+ * null/invalid argument, BF_ERR_NOT_READY pre-world. */
+BF_API bf_result bf_chest_query(bf_engine e, bf_ivec3 pos, bf_chest_view* out);
+
+/* [MAIN] Take the whole stack in chest slot `slot` (0..BF_CHEST_SLOTS-1) at `pos`
+ * into the player inventory. Adds as much as fits; anything that does NOT fit
+ * stays in the chest (items are never destroyed on a full inventory). Returns 1
+ * if anything moved, 0 otherwise. */
+BF_API uint8_t bf_chest_take(bf_engine e, bf_ivec3 pos, uint32_t slot);
+
+/* [MAIN] Deposit the stack in player inventory slot `inv_slot` (0..35) into the
+ * chest at `pos` (top up a matching stack, else the first empty chest slot). Adds
+ * as much as fits; the remainder stays in the inventory. Returns 1 if anything
+ * moved, 0 otherwise. */
+BF_API uint8_t bf_chest_deposit(bf_engine e, bf_ivec3 pos, uint32_t inv_slot);
+
+/* [MAIN] Close the chest panel (clears the open-chest state). The app also calls
+ * this on ESC; interacting the same chest again toggles it closed too. */
+BF_API void bf_chest_close(bf_engine e);
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -129,8 +129,12 @@ final class GameView: MTKView {
     // ---- keyboard ----------------------------------------------------------
     override func keyDown(with e: NSEvent) {
         if e.keyCode == K.esc {
-            // Esc priority: close the quest log, then the inventory, else pause.
-            if questLogOpen { toggleQuestLog() }
+            // Esc priority: close the chest panel, then the quest log, then the
+            // inventory, else pause. The chest is engine-owned, so we ask the engine to
+            // close it (bf_chest_close); the Renderer poll then clears the panel and
+            // re-captures the pointer next frame.
+            if chestOpen { onChestClose?() }
+            else if questLogOpen { toggleQuestLog() }
             else if invOpen { toggleInventory() }
             else { onPause?() }
             return
@@ -179,6 +183,23 @@ final class GameView: MTKView {
         invOpen.toggle()
         queue(invOpen ? BF_ACT_INV_OPEN : BF_ACT_INV_CLOSE)
         if invOpen { releasePointer() } else { capturePointer() }
+    }
+
+    // #109 chest panel: the Renderer drives this when the engine's open-chest state
+    // changes (right-click on a chest opens; right-click again / ESC / walking away
+    // closes). We release the pointer while the panel is up so the player can click
+    // slots, and re-capture when it closes. onChestClose is wired to bf_chest_close so
+    // ESC can dismiss the panel.
+    private(set) var chestOpen = false
+    var onChestClose: (() -> Void)?
+    func setChestPanel(open: Bool) {
+        guard open != chestOpen else { return }
+        chestOpen = open
+        if open {
+            releasePointer()
+        } else if !invOpen && !questLogOpen {
+            capturePointer()
+        }
     }
 
     // #42: quest-log toggle. The overlay is purely cosmetic (the game keeps

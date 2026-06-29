@@ -137,6 +137,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         h.onDestroy = { [weak mtkView] slot in
             mtkView?.enqueueDestroy(slot)
         }
+        // #109 chest panel: take from a chest slot / deposit from an inventory slot.
+        // Routed through the Renderer (direct ABI calls need the live engine handle).
+        h.onChestTake = { [weak r] slot in r?.enqueueChestTake(slot) }
+        h.onChestDeposit = { [weak r] slot in r?.enqueueChestDeposit(slot) }
+        // ESC in GameView while the chest panel is open closes the engine's chest.
+        mtkView.onChestClose = { [weak r] in r?.closeChest() }
         // #42: 'L' in GameView flips the quest-log overlay in the HUD.
         mtkView.onToggleQuestLog = { [weak h] in h?.toggleQuestLog() }
         // 'T' day/night pin: show a visible indicator so the player can confirm it.
@@ -934,6 +940,43 @@ if let idx = CommandLine.arguments.firstIndex(of: "--perftest") {
     let secs = (idx + 1 < CommandLine.arguments.count) ? (Double(CommandLine.arguments[idx + 1]) ?? 20) : 20
     let ok = runPerfTest(seconds: secs, jsonPath: "/tmp/blockfall_perf.json")
     exit(ok ? 0 : 1)
+}
+
+// #109 --chestshot <path>: render the chest panel overlay headlessly to a PNG so the
+// kid-friendly chest UI can be reviewed without driving the live app. Builds a HUDView,
+// seeds a few inventory items + a chest view with loot, and caches its display.
+if let idx = CommandLine.arguments.firstIndex(of: "--chestshot"), idx + 1 < CommandLine.arguments.count {
+    let W = 1000, H = 760
+    let hv = HUDView(frame: NSRect(x: 0, y: 0, width: CGFloat(W), height: CGFloat(H)))
+    // Seed a player inventory: a few stacks across the hotbar + main rows.
+    var hud = bf_hud_state()
+    hud.selected_slot = 2
+    withUnsafeMutableBytes(of: &hud.inventory) { raw in
+        let inv = raw.bindMemory(to: bf_hud_slot.self)
+        let seed: [(Int, UInt16, UInt16)] = [
+            (0, 3, 41), (1, 24, 12), (2, 13, 7), (4, 56, 4),
+            (9, 1, 33), (10, 51, 9), (12, 90, 6), (18, 16, 22),
+        ]
+        for (i, item, count) in seed { inv[i] = bf_hud_slot(item: item, count: count, durability: 0xFFFF, _pad: 0) }
+    }
+    hv.update(from: hud)
+    // A chest with mixed loot (matches the ruin/structure tables).
+    var view = bf_chest_view()
+    view.pos = bf_ivec3(x: 12, y: 80, z: -34)
+    view.present = 1
+    withUnsafeMutableBytes(of: &view.slots) { raw in
+        let s = raw.bindMemory(to: bf_hud_slot.self)
+        let loot: [(Int, UInt16, UInt16)] = [
+            (0, 56, 2), (1, 57, 3), (2, 61, 5), (3, 62, 2), (4, 92, 1), (6, 24, 8), (8, 51, 3),
+        ]
+        for (i, item, count) in loot { s[i] = bf_hud_slot(item: item, count: count, durability: 0xFFFF, _pad: 0) }
+    }
+    hv.setChestOpen(pos: view.pos, view: view)
+    hv.layoutSubtreeIfNeeded()
+    guard let rep = hv.bitmapImageRepForCachingDisplay(in: hv.bounds) else { exit(1) }
+    hv.cacheDisplay(in: hv.bounds, to: rep)
+    try? rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[idx + 1]))
+    exit(0)
 }
 
 let app = NSApplication.shared

@@ -489,6 +489,17 @@ final class Renderer: NSObject, MTKViewDelegate {
     weak var audio: GameAudio?
     private var lastUnderwater = false
 
+    // #109 chest moves requested by HUD clicks this frame, applied at the top of the
+    // next draw against the currently open chest. Each is (take: true => chest->inv from
+    // chest slot N; false => inv->chest from inventory slot N). Drained per frame. The
+    // engine resolves the position from its own open-chest state, so we only pass slots.
+    private var pendingChestMoves: [(take: Bool, slot: Int)] = []
+    private var openChestPos: bf_ivec3?
+    func enqueueChestTake(_ slot: Int) { pendingChestMoves.append((true, slot)) }
+    func enqueueChestDeposit(_ slot: Int) { pendingChestMoves.append((false, slot)) }
+    // ESC from GameView closes the engine's open chest; the next poll clears the panel.
+    func closeChest() { if let e = engine { bf_chest_close(e) } }
+
     // ---- #135 first-load readiness signal -----------------------------------
     // The app shows a loading overlay from launch and hides it once the spawn
     // neighbourhood has actually meshed + uploaded and the framerate has settled.
@@ -1233,6 +1244,22 @@ final class Renderer: NSObject, MTKViewDelegate {
             }
         }
 
+        // #109 apply any chest moves requested by HUD clicks this frame. The engine
+        // resolves the chest position from its own open-chest state (set by INTERACT);
+        // we use the last polled position. Items are never destroyed: a full inventory
+        // leaves the stack in the chest (engine-side). Done before acquire so the panel
+        // reflects the change on the same frame.
+        if !pendingChestMoves.isEmpty, let cpos = openChestPos {
+            for mv in pendingChestMoves {
+                if mv.take {
+                    _ = bf_chest_take(e, cpos, UInt32(mv.slot))
+                } else {
+                    _ = bf_chest_deposit(e, cpos, UInt32(mv.slot))
+                }
+            }
+        }
+        pendingChestMoves.removeAll(keepingCapacity: true)
+
         // 2) acquire render
         var frame = bf_render_frame()
         _ = bf_frame_acquire_render(e, &frame)
@@ -1849,6 +1876,32 @@ final class Renderer: NSObject, MTKViewDelegate {
         lastUnderwater = nowUnder
 
         hud?.update(from: frame.hud)
+
+        // #109 chests: poll the engine for an open chest (set by a right-click on a
+        // chest block) and push its live contents to the HUD so the chest panel shows
+        // and stays current after every take/deposit. When no chest is open the panel
+        // is hidden. One cheap poll per frame; no struct-layout change.
+        if let hudView = hud {
+            var cpos = bf_ivec3()
+            var nowOpen = false
+            if bf_chest_open_pos(e, &cpos) != 0 {
+                var view = bf_chest_view()
+                if bf_chest_query(e, cpos, &view) == BF_OK && view.present != 0 {
+                    openChestPos = cpos
+                    hudView.setChestOpen(pos: cpos, view: view)
+                    nowOpen = true
+                } else {
+                    openChestPos = nil
+                    hudView.setChestClosed()
+                }
+            } else {
+                openChestPos = nil
+                hudView.setChestClosed()
+            }
+            // Release/recapture the pointer so the panel is clickable while open.
+            gameView?.setChestPanel(open: nowOpen)
+        }
+
         bf_frame_end(e)
         registry.collect()
     }

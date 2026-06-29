@@ -23,11 +23,13 @@ use core::ffi::{c_char, c_void};
 // ABI version
 // ---------------------------------------------------------------------------
 
-/// Bumped on ANY breaking change to the header. v19.
+/// Bumped on ANY breaking change to the header. v20.
 /// v18: appended BF_ACT_SET_TIME_MODE (no struct layout change; append-only).
 /// v19: appended bf_shadow_volume + bf_world_shadow_volume (world-space voxel
 ///      sun shadows). No existing struct layout changed; purely additive.
-pub const BF_ABI_VERSION: u32 = 19;
+/// v20: appended bf_chest_view + bf_chest_* container API (openable chests, #109).
+///      Purely additive; no existing struct layout changed.
+pub const BF_ABI_VERSION: u32 = 20;
 
 // ---------------------------------------------------------------------------
 // Primitive types
@@ -398,6 +400,25 @@ pub struct bf_shadow_volume {
 pub const BF_SHADOW_MAX_DIRTY: usize = 4;
 
 // ---------------------------------------------------------------------------
+// 9. CHESTS (openable containers, ABI v20)
+// ---------------------------------------------------------------------------
+
+/// Mirror of BF_CHEST_SLOTS in the C header.
+pub const BF_CHEST_SLOTS: usize = 9;
+
+/// Mirror of `bf_chest_view` in the C header. One chest's contents (a fixed
+/// BF_CHEST_SLOTS slot array of bf_hud_slot) plus its world position and a present
+/// flag. Layout: pos(12) + present(1) + _pad(3) + slots(9*8=72) = 88 bytes, align 4.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct bf_chest_view {
+    pub pos: bf_ivec3,
+    pub present: u8,
+    pub _pad: [u8; 3],
+    pub slots: [bf_hud_slot; BF_CHEST_SLOTS],
+}
+
+// ---------------------------------------------------------------------------
 // 6. EVENT CALLBACKS
 // ---------------------------------------------------------------------------
 
@@ -464,6 +485,16 @@ mod parity {
         assert_eq!(size_of::<bf_gpu_allocator>(), 24, "bf_gpu_allocator");
         assert_eq!(size_of::<bf_event>(), 36, "bf_event");
         assert_eq!(size_of::<bf_shadow_volume>(), 144, "bf_shadow_volume");
+        assert_eq!(size_of::<bf_chest_view>(), 88, "bf_chest_view");
+    }
+
+    #[test]
+    fn chest_view_layout() {
+        assert_eq!(align_of::<bf_chest_view>(), 4, "bf_chest_view align");
+        assert_eq!(offset_of!(bf_chest_view, pos), 0);
+        assert_eq!(offset_of!(bf_chest_view, present), 12);
+        assert_eq!(offset_of!(bf_chest_view, _pad), 13);
+        assert_eq!(offset_of!(bf_chest_view, slots), 16);
     }
 
     #[test]

@@ -5,7 +5,7 @@
 
 use bfcore::abi::*;
 use bfcore::content::{ContentExtra, ContentRegistry};
-use bfcore::types::IVec3;
+use bfcore::types::{ItemId, IVec3};
 use bfcore::world::{self, World};
 use bfcore::worldgen::{self, TerrainGen};
 
@@ -1234,4 +1234,187 @@ fn creature_climbs_step_smoothly() {
         "a 3-block wall is NOT climbed (creature stayed near the ground, peak y={:.3})",
         max_y2
     );
+}
+
+// ============================================================================
+// #109 chests: container state, deterministic loot, take/full-inventory, persist.
+// ============================================================================
+
+// A world with content loaded, a chest block placed at a fixed spot, and an empty
+// player inventory. Returns (world, chest_xyz). The CHEST id comes from the engine
+// constant so it tracks content.
+fn chest_world(seed: u64) -> (World<'static>, (i32, i32, i32)) {
+    // Leak the content so the World can borrow it for 'static in a test (the process
+    // exits at test end; a small leak is harmless, like the malloc allocator above).
+    let content: &'static ContentRegistry = {
+        let mut c = ContentRegistry::new();
+        assert!(c.load(CONTENT), "content load");
+        Box::leak(Box::new(c))
+    };
+    let mut w = World::new(Some(TerrainGen::new()));
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_content(content);
+    w.set_mode(bf_game_mode::BF_MODE_CREATIVE);
+    w.init_world(seed);
+    // Place a chest near the spawn area at a known column and clear the inventory.
+    let (cx, cy, cz) = (120, 80, 120);
+    w.debug_edit(cx, cy, cz, world::CHEST);
+    w.debug_clear_inventory();
+    (w, (cx, cy, cz))
+}
+
+#[test]
+fn chest_loot_is_deterministic_from_seed() {
+    // Same seed + same position -> identical rolled loot, every time.
+    let (mut a, pa) = chest_world(777);
+    let (mut b, pb) = chest_world(777);
+    assert_eq!(pa, pb);
+    let mut any = false;
+    for s in 0..world::CHEST_SLOTS {
+        let ra = a.debug_chest_slot(pa.0, pa.1, pa.2, s);
+        let rb = b.debug_chest_slot(pb.0, pb.1, pb.2, s);
+        assert_eq!(ra, rb, "slot {} deterministic across two same-seed worlds", s);
+        if ra.0 != 0 {
+            any = true;
+        }
+    }
+    assert!(any, "a chest rolls at least one non-empty stack");
+
+    // A different seed produces different loot (overwhelmingly likely; assert the
+    // whole slot vector is not byte-identical).
+    let (mut c, pc) = chest_world(778);
+    let mut differs = false;
+    for s in 0..world::CHEST_SLOTS {
+        if a.debug_chest_slot(pa.0, pa.1, pa.2, s) != c.debug_chest_slot(pc.0, pc.1, pc.2, s) {
+            differs = true;
+        }
+    }
+    assert!(differs, "a different seed rolls different chest loot");
+}
+
+#[test]
+fn chest_take_moves_to_player_inventory() {
+    let (mut w, p) = chest_world(42);
+    let pos = IVec3 { x: p.0, y: p.1, z: p.2 };
+    // Find a non-empty chest slot.
+    let slots = w.chest_slots(pos).expect("chest present");
+    let slot = (0..world::CHEST_SLOTS)
+        .find(|&i| slots[i].item != 0)
+        .expect("at least one filled slot");
+    let item = slots[slot].item;
+    let count = slots[slot].count;
+    assert_eq!(w.debug_item_count(item), 0, "inventory starts without this item");
+
+    assert!(w.chest_take(pos, slot), "take moved the stack");
+    assert_eq!(w.debug_item_count(item), count as i32, "the whole stack landed in the inventory");
+    let after = w.chest_slots(pos).expect("chest present");
+    assert_eq!(after[slot].item, 0, "the chest slot is now empty");
+
+    // Re-querying (the panel reopening) shows the updated, reduced contents: taking the
+    // now-empty slot again moves nothing.
+    assert!(!w.chest_take(pos, slot), "taking an already-empty slot moves nothing");
+}
+
+#[test]
+fn chest_take_full_inventory_leaves_items() {
+    let (mut w, p) = chest_world(42);
+    let pos = IVec3 { x: p.0, y: p.1, z: p.2 };
+    let slots = w.chest_slots(pos).expect("chest present");
+    let slot = (0..world::CHEST_SLOTS)
+        .find(|&i| slots[i].item != 0)
+        .expect("at least one filled slot");
+    let chest_item = slots[slot].item;
+    let chest_count = slots[slot].count;
+
+    // Jam the inventory full with a DIFFERENT item so nothing of the chest item fits.
+    let filler = w.debug_item_id("dirt");
+    assert_ne!(filler, 0, "content has dirt");
+    assert_ne!(filler, chest_item, "filler differs from the chest item");
+    w.debug_fill_inventory(filler, 64);
+
+    let moved = w.chest_take(pos, slot);
+    assert!(!moved, "nothing moved: the inventory was full");
+    // The item is NOT destroyed: it is still in the chest, unchanged.
+    let after = w.chest_slots(pos).expect("chest present");
+    assert_eq!(after[slot].item, chest_item, "chest item preserved on a full inventory");
+    assert_eq!(after[slot].count, chest_count, "chest count preserved on a full inventory");
+    assert_eq!(w.debug_item_count(chest_item), 0, "no chest item leaked into the full inventory");
+}
+
+#[test]
+fn chest_contents_persist_round_trip() {
+    let dir = std::env::temp_dir().join("bf_chest_persist_rs");
+    let dir = dir.to_string_lossy().to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let pos = IVec3 { x: 120, y: 80, z: 120 };
+    let (taken_item, remaining): (ItemId, [(ItemId, u16); 9]);
+
+    // Session 1: open the chest (rolls loot), take one slot, then save.
+    {
+        let (mut w, p) = chest_world(31337);
+        assert_eq!((p.0, p.1, p.2), (pos.x, pos.y, pos.z));
+        let slots = w.chest_slots(pos).expect("chest present");
+        let slot = (0..world::CHEST_SLOTS).find(|&i| slots[i].item != 0).expect("a filled slot");
+        taken_item = slots[slot].item;
+        assert!(w.chest_take(pos, slot), "took a stack");
+        let after = w.chest_slots(pos).expect("chest present");
+        let mut snap = [(0u16, 0u16); 9];
+        for i in 0..world::CHEST_SLOTS {
+            snap[i] = (after[i].item, after[i].count);
+        }
+        remaining = snap;
+        assert!(w.save(&dir), "save succeeded");
+        let _ = taken_item;
+    }
+
+    // Session 2: load and confirm the chest's REMAINING contents survived the reload.
+    {
+        let content: &'static ContentRegistry = {
+            let mut c = ContentRegistry::new();
+            assert!(c.load(CONTENT), "content load");
+            Box::leak(Box::new(c))
+        };
+        let mut w = World::new(Some(TerrainGen::new()));
+        w.debug_set_sync_streaming(true);
+        w.set_allocator(allocator());
+        w.set_content(content);
+        assert!(w.load(&dir), "load succeeded");
+        // The chest block itself persisted via the chunk edit.
+        assert_eq!(w.debug_block_at(pos.x, pos.y, pos.z), world::CHEST, "chest block persisted");
+        let slots = w.chest_slots(pos).expect("chest present after reload");
+        for i in 0..world::CHEST_SLOTS {
+            assert_eq!(
+                (slots[i].item, slots[i].count),
+                remaining[i],
+                "chest slot {} survived the reload unchanged",
+                i
+            );
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn chest_deposit_moves_from_inventory() {
+    let (mut w, p) = chest_world(9000);
+    let pos = IVec3 { x: p.0, y: p.1, z: p.2 };
+    // Empty the chest so deposits land in clean slots, and give the player an item.
+    for s in 0..world::CHEST_SLOTS {
+        let _ = w.chest_take(pos, s);
+    }
+    let item = w.debug_item_id("stone");
+    assert_ne!(item, 0, "content has stone");
+    w.debug_clear_inventory();
+    w.debug_give(item, 10);
+    assert_eq!(w.debug_item_count(item), 10);
+
+    // Deposit from inventory slot 0 (debug_give fills the first empty slot, slot 0).
+    assert!(w.chest_deposit(pos, 0), "deposit moved the stack");
+    assert_eq!(w.debug_item_count(item), 0, "the stack left the inventory");
+    let slots = w.chest_slots(pos).expect("chest present");
+    let in_chest: u16 = slots.iter().filter(|s| s.item == item).map(|s| s.count).sum();
+    assert_eq!(in_chest, 10, "the stack landed in the chest");
 }

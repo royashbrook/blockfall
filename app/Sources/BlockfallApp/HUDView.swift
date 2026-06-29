@@ -211,6 +211,50 @@ final class HUDView: NSView {
     // Rect of the trash slot we last drew (inventory open only). .zero = not shown.
     private var trashRect: NSRect = .zero
 
+    // --- #109 chest panel ---
+    // The Renderer polls bf_chest_open_pos / bf_chest_query each frame and pushes the
+    // open chest's contents here (or closes it). When chestOpen is true we draw a panel
+    // with the chest's slots on top and the player inventory below, and clicking moves
+    // items between them. Closing on ESC / use-again is driven by the engine (the poll
+    // returns no open chest), so we just mirror that state. The lead wires:
+    //   onChestTake(slot)        -> bf_chest_take(pos, slot)      (chest slot -> inventory)
+    //   onChestDeposit(invSlot)  -> bf_chest_deposit(pos, invSlot)(inventory slot -> chest)
+    // Items are never destroyed: a full inventory leaves the stack in the chest (engine).
+    var onChestTake: ((Int) -> Void)?
+    var onChestDeposit: ((Int) -> Void)?
+    private var chestOpen = false
+    private var chestSlots: [bf_hud_slot] = []          // BF_CHEST_SLOTS live contents
+    private var chestSlotRects: [NSRect] = []           // hit-test rects for chest slots
+    private var chestInvRects: [NSRect] = []            // hit-test rects for the inventory grid
+
+    // Renderer: a chest was opened (right-click on a chest). Mirror its contents.
+    func setChestOpen(pos: bf_ivec3, view: bf_chest_view) {
+        var slots: [bf_hud_slot] = []
+        withUnsafeBytes(of: view.slots) { raw in
+            let p = raw.bindMemory(to: bf_hud_slot.self)
+            for i in 0..<Int(BF_CHEST_SLOTS) { slots.append(p[i]) }
+        }
+        let changed = !chestOpen || slots.count != chestSlots.count
+            || zip(slots, chestSlots).contains { $0.item != $1.item || $0.count != $1.count }
+        chestOpen = true
+        chestSlots = slots
+        if changed { needsDisplay = true }
+    }
+
+    // Renderer: no chest open. Hide the panel and drop any held stack.
+    func setChestClosed() {
+        if chestOpen {
+            chestOpen = false
+            chestSlots = []
+            chestSlotRects = []
+            chestInvRects = []
+            clearHeld()
+            needsDisplay = true
+        }
+    }
+
+    var isChestOpen: Bool { chestOpen }
+
     // --- #29: FPS counter ---
     // Derived purely from the time between draw(_:) calls (the renderer already
     // drives one redraw per frame), so no timer is added. We keep an exponential
@@ -323,7 +367,7 @@ final class HUDView: NSView {
     // Click-through during play; capture clicks only when an overlay (inventory
     // or quest log) is open so its scroll/close interactions work.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        (hud.inventory_open != 0 || questLogOpen) ? self : nil
+        (hud.inventory_open != 0 || questLogOpen || chestOpen) ? self : nil
     }
     // Never take key focus — the GameView must keep receiving Esc/E so the
     // inventory can always be closed (clicking a slot was stealing first
@@ -463,12 +507,32 @@ final class HUDView: NSView {
     override func mouseMoved(with event: NSEvent) {
         mouseInside = true
         mousePos = convert(event.locationInWindow, from: nil)
-        // Repaint only when the inventory is open (tooltip / held-stack ghost);
+        // Repaint only when an overlay is open (tooltip / held-stack ghost / chest hover);
         // during play the in-world HUD doesn't track the mouse.
-        if hud.inventory_open != 0 { needsDisplay = true }
+        if hud.inventory_open != 0 || chestOpen { needsDisplay = true }
     }
 
     override func mouseDown(with event: NSEvent) {
+        // #109 chest panel click-to-move: a click on a chest slot takes that stack into
+        // the inventory; a click on an inventory slot deposits it into the chest. The
+        // engine refreshes both sides next frame (it never destroys items: a full
+        // inventory leaves the stack in the chest). No "held/ghost" stack here — kid
+        // simple single-click moves, matching the panel's hint text.
+        if chestOpen {
+            let cp = convert(event.locationInWindow, from: nil)
+            mousePos = cp
+            for (i, r) in chestSlotRects.enumerated() where r.contains(cp) {
+                onChestTake?(i)
+                needsDisplay = true
+                return
+            }
+            for (i, r) in chestInvRects.enumerated() where r.contains(cp) {
+                onChestDeposit?(i)
+                needsDisplay = true
+                return
+            }
+            return
+        }
         guard hud.inventory_open != 0 else { return }   // gameplay: ignore
         let p = convert(event.locationInWindow, from: nil)
         mousePos = p
@@ -586,6 +650,10 @@ final class HUDView: NSView {
         // inventory / quest log, so the backslash key always gives feedback). Set by
         // the Renderer AFTER the captured frame, so it never appears in the saved PNG.
         drawScreenshotFlash(in: b)
+
+        // #109 the chest panel replaces the in-world HUD while a chest is open. It is
+        // its own screen (chest slots + player inventory + click-to-move).
+        if chestOpen { drawChestPanel(in: b); return }
 
         // When the inventory is open it replaces the in-world HUD.
         if hud.inventory_open != 0 { drawInventory(in: b); return }
@@ -1266,6 +1334,107 @@ final class HUDView: NSView {
             hx += slot + gap
         }
         return rects
+    }
+
+    // #109 chest screen: the chest's slots on top, the player inventory below, with
+    // single-click to move (chest slot -> inventory, inventory slot -> chest). Reuses
+    // the inventory's slot cell + item rendering so it matches the existing HUD style.
+    // Kid-simple: one row of chest slots, a clear "Treasure Chest" header, and a hint.
+    private func drawChestPanel(in b: NSRect) {
+        NSColor.black.withAlphaComponent(0.60).setFill()
+        b.fill()
+
+        let slot: CGFloat = 46, gap: CGFloat = 5
+        let cols = 9
+        let gridW = CGFloat(cols) * slot + CGFloat(cols - 1) * gap
+        let originX = b.midX - gridW / 2
+
+        // Shared cell renderer (same look as the inventory). `hot` highlights the
+        // selected hotbar slot so the player can still see their active slot.
+        func cell(_ rect: NSRect, _ s: bf_hud_slot, sel: Bool) {
+            (sel ? NSColor.white : NSColor.black.withAlphaComponent(0.5)).setFill()
+            let rr = NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5)
+            rr.fill()
+            (sel ? NSColor.white : NSColor.systemYellow.withAlphaComponent(0.5)).setStroke()
+            rr.lineWidth = sel ? 2.5 : 1
+            rr.stroke()
+            if s.item != 0 { drawCenteredItem(id: s.item, count: s.count, in: rect, selected: sel) }
+        }
+
+        // --- Chest row (the container) sits in the upper third. ---
+        let chestN = Int(BF_CHEST_SLOTS)
+        let chestRowW = CGFloat(chestN) * slot + CGFloat(chestN - 1) * gap
+        let chestX = b.midX - chestRowW / 2
+        let chestY = b.midY + 150
+
+        // A framed panel behind the chest row so it reads as "the chest".
+        let chestPanel = NSRect(x: chestX - 14, y: chestY - 16,
+                                width: chestRowW + 28, height: slot + 56)
+        NSColor(srgbRed: 0.30, green: 0.20, blue: 0.10, alpha: 0.55).setFill()
+        let cpp = NSBezierPath(roundedRect: chestPanel, xRadius: 10, yRadius: 10); cpp.fill()
+        NSColor.systemYellow.withAlphaComponent(0.6).setStroke()
+        cpp.lineWidth = 2; cpp.stroke()
+
+        drawText("Treasure Chest", at: NSPoint(x: chestX, y: chestY + slot + 16),
+                 size: fs(20), color: .systemYellow, bold: true)
+
+        var crects = [NSRect]()
+        for i in 0..<chestN {
+            let r = NSRect(x: chestX + CGFloat(i) * (slot + gap), y: chestY, width: slot, height: slot)
+            crects.append(r)
+            let s = i < chestSlots.count ? chestSlots[i] : bf_hud_slot()
+            cell(r, s, sel: false)
+        }
+        chestSlotRects = crects
+
+        // --- Player inventory below (hotbar + 3 main rows). ---
+        let invTopY = b.midY + 40
+        var irects = [NSRect](repeating: .zero, count: 36)
+        // Main inventory 9..35 (3 rows of 9).
+        var topY = invTopY
+        for row in 0..<3 {
+            for col in 0..<cols {
+                let i = 9 + row * 9 + col
+                irects[i] = NSRect(x: originX + CGFloat(col) * (slot + gap), y: topY, width: slot, height: slot)
+            }
+            topY -= slot + gap
+        }
+        // Hotbar row 0..8 a little below the main grid.
+        let hy = topY - 12
+        for col in 0..<9 {
+            irects[col] = NSRect(x: originX + CGFloat(col) * (slot + gap), y: hy, width: slot, height: slot)
+        }
+        chestInvRects = irects
+
+        drawText("Your Backpack", at: NSPoint(x: originX, y: invTopY + slot + 8),
+                 size: fs(18), color: .white, bold: true)
+
+        withUnsafeBytes(of: hud.inventory) { raw in
+            let inv = raw.bindMemory(to: bf_hud_slot.self)
+            for i in 9..<36 { cell(irects[i], inv[i], sel: false) }
+            for col in 0..<9 { cell(irects[col], inv[col], sel: Int(hud.selected_slot) == col) }
+        }
+
+        // Hints at the bottom.
+        drawText("Click a chest item to take it   •   click a backpack item to store it",
+                 at: NSPoint(x: originX, y: hy - 30), size: fs(13), color: .white, bold: true)
+        drawText("Press Esc to close",
+                 at: NSPoint(x: originX, y: 18), size: fs(12), color: .white, bold: false)
+
+        // Hover tooltip (which item is under the cursor).
+        if mouseInside {
+            if let i = chestSlotRects.firstIndex(where: { $0.contains(mousePos) }),
+               i < chestSlots.count, chestSlots[i].item != 0 {
+                drawTooltip(name: itemName(chestSlots[i].item), count: chestSlots[i].count,
+                            itemId: chestSlots[i].item, hint: "click to take", near: mousePos)
+            } else if let i = chestInvRects.firstIndex(where: { $0.contains(mousePos) }) {
+                let s = inventorySlot(i)
+                if s.item != 0 {
+                    drawTooltip(name: itemName(s.item), count: s.count, itemId: s.item,
+                                hint: "click to store", near: mousePos)
+                }
+            }
+        }
     }
 
     // Inventory screen: 27 main slots (3x9) + the 9-slot hotbar row, with a

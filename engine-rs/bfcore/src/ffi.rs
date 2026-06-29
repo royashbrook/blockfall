@@ -764,6 +764,123 @@ pub unsafe extern "C" fn bf_world_shadow_volume(
 }
 
 // ---------------------------------------------------------------------------
+// 9. CHESTS (openable containers, ABI v20)
+// ---------------------------------------------------------------------------
+
+/// One bf_hud_slot built from an ItemStack (the chest view reuses the inventory
+/// slot shape). Empty stacks become an all-zero slot.
+fn hud_slot_from(s: crate::types::ItemStack) -> bf_hud_slot {
+    if s.is_empty() {
+        bf_hud_slot { item: 0, count: 0, durability: 0, _pad: 0 }
+    } else {
+        bf_hud_slot { item: s.item, count: s.count, durability: s.durability, _pad: 0 }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn bf_chest_open_pos(e: bf_engine, out_pos: *mut bf_ivec3) -> u8 {
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => return 0,
+    };
+    if !e.world_ready {
+        return 0;
+    }
+    match e.world.chest_open_pos() {
+        Some(p) => {
+            if !out_pos.is_null() {
+                // SAFETY: caller guarantees out_pos is a writable bf_ivec3.
+                unsafe { *out_pos = bf_ivec3 { x: p.x, y: p.y, z: p.z } };
+            }
+            1
+        }
+        None => 0,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn bf_chest_query(
+    e: bf_engine,
+    pos: bf_ivec3,
+    out: *mut bf_chest_view,
+) -> bf_result {
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => {
+            set_err("null engine");
+            return bf_result::BF_ERR_BAD_ARG;
+        }
+    };
+    if out.is_null() {
+        set_err("null arg");
+        return bf_result::BF_ERR_BAD_ARG;
+    }
+    if !e.world_ready {
+        set_err("world not ready");
+        return bf_result::BF_ERR_NOT_READY;
+    }
+    let w = IVec3 { x: pos.x, y: pos.y, z: pos.z };
+    // SAFETY: caller guarantees `out` is a writable bf_chest_view.
+    let view = unsafe { &mut *out };
+    view.pos = pos;
+    view._pad = [0; 3];
+    match e.world.chest_slots(w) {
+        Some(slots) => {
+            view.present = 1;
+            for (i, s) in slots.iter().enumerate() {
+                view.slots[i] = hud_slot_from(*s);
+            }
+        }
+        None => {
+            view.present = 0;
+            view.slots = [bf_hud_slot { item: 0, count: 0, durability: 0, _pad: 0 }; BF_CHEST_SLOTS];
+        }
+    }
+    bf_result::BF_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn bf_chest_take(e: bf_engine, pos: bf_ivec3, slot: u32) -> u8 {
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => return 0,
+    };
+    if !e.world_ready {
+        return 0;
+    }
+    let w = IVec3 { x: pos.x, y: pos.y, z: pos.z };
+    if e.world.chest_take(w, slot as usize) {
+        1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn bf_chest_deposit(e: bf_engine, pos: bf_ivec3, inv_slot: u32) -> u8 {
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => return 0,
+    };
+    if !e.world_ready {
+        return 0;
+    }
+    let w = IVec3 { x: pos.x, y: pos.y, z: pos.z };
+    if e.world.chest_deposit(w, inv_slot as usize) {
+        1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn bf_chest_close(e: bf_engine) {
+    if let Some(e) = engine_mut(e) {
+        e.world.close_chest();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
