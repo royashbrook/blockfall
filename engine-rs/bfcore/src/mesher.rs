@@ -1030,9 +1030,19 @@ fn emit_door(
 // block under it shows on the sides and the snow reads as a covering rather than a
 // cube. Fresh snow (12) is taller with a slight raised lip; trodden snow (54, #117)
 // is flatter and uses a separate material id so the renderer tints the print darker.
-// 6 quads = 24 verts + 36 indices, same budget as a door. Top face is given an inset
-// lip: the top quad is one sixteenth narrower on each side so the rim catches light
-// and the blanket edge reads clearly.
+//
+// Fresh snow is the cheap path: 6 quads = 24 verts + 36 indices, same budget as a
+// door, with a flat full-width top so adjacent cells tile into one cohesive blanket.
+//
+// Trodden snow (#144) is a pressed-track shape instead of a flat slab. Stepping in
+// snow squeezes it up at the edges and packs it down in the middle, so the cell is
+// meshed as a shallow bowl: a raised compressed rim around the perimeter and a
+// recessed centre floor, joined by four inner walls. The rim catches light while the
+// sunken centre falls into shadow, so a line of these cells reads as pressed tracks
+// with clear edge definition against the surrounding fresh snow rather than a flat
+// cleared patch. The bowl is fully contained inside the cell (rim height stays below
+// fresh snow) and is deterministic from the cell alone, so it tiles with neighbours.
+// 14 quads = 56 verts + 84 indices for the trodden bowl; the cap check uses that.
 fn emit_snow_layer(
     bx: i32,
     by: i32,
@@ -1042,10 +1052,12 @@ fn emit_snow_layer(
     blk: u8,
     buf: &mut MeshBuffers,
 ) -> bool {
-    if buf.vtx_cap - buf.vtx.len() < 24 * VERTEX_SIZE {
+    // Trodden snow is the larger shape (a bowl); reserve for the worst case so a
+    // partial emit can never leave a half-written cell.
+    if buf.vtx_cap - buf.vtx.len() < 56 * VERTEX_SIZE {
         return false;
     }
-    if buf.idx_cap - buf.idx.len() < 36 * INDEX_SIZE {
+    if buf.idx_cap - buf.idx.len() < 84 * INDEX_SIZE {
         return false;
     }
 
@@ -1055,10 +1067,9 @@ fn emit_snow_layer(
     let y = by as u32;
     let z = bz as u32;
 
-    // Blanket thickness in sixteenths. Fresh snow stands a touch proud; a footprint
-    // compresses it almost flat so the trail reads as a sunken track in the snow (the
-    // bigger the step down from the surrounding fresh snow, the clearer the print).
-    let top: u32 = if id == TRODDEN_SNOW { 1 } else { 6 };
+    // Blanket thickness in sixteenths. Fresh snow stands a touch proud of the block.
+    // (Trodden snow ignores this and builds its own bowl heights below.)
+    let top: u32 = 6;
 
     // Fracs run 0..16 across the cell; split into integer block step + 4-bit frac.
     let vert = |fx: u32, fy: u32, fz: u32, normal: u32, u: u32, v: u32| -> BFVertex {
@@ -1078,6 +1089,14 @@ fn emit_snow_layer(
             reserved: 0,
         }
     };
+
+    // Trodden snow (#144): a pressed bowl rather than a flat slab. See the header
+    // comment. Built and returned here so the fresh-snow blanket path below is left
+    // exactly as #118 shaped it.
+    if id == TRODDEN_SNOW {
+        emit_trodden_bowl(&vert, buf);
+        return true;
+    }
 
     // Slab spans X/Z 0..16, Y 0..top, so adjacent snow cells tile seamlessly into one
     // blanket. The top cap is full width too: a per-cell lip inset made every cell border
@@ -1132,6 +1151,125 @@ fn emit_snow_layer(
         &vert(lo, 0, hi, BF_NY_NEG, 0, 1),
     );
     true
+}
+
+// Pressed-track bowl for trodden snow (#144). `vert` is emit_snow_layer's vertex
+// builder (already bound to this cell's origin, material and lighting), so the bowl
+// is purely a set of quads in cell-local frac space (0..16 per axis). The shape:
+//
+//   rim --__        __-- rim        a raised compressed lip around the perimeter,
+//          |        |               inner walls dropping into a sunken centre floor.
+//   floor  |________|  floor
+//
+// Heights are fixed constants (no per-cell variation), so the bowl is deterministic
+// and identical for every trodden cell, tiling cleanly along a trail. The rim stays
+// below fresh snow (6/16), so a print sits visibly sunk inside the surrounding
+// blanket; the inner walls + sunken floor give the print self-shadowing edges.
+fn emit_trodden_bowl<F>(vert: &F, buf: &mut MeshBuffers)
+where
+    F: Fn(u32, u32, u32, u32, u32, u32) -> BFVertex,
+{
+    // Cell-local fracs (0..16).
+    let lo: u32 = 0;
+    let hi: u32 = 16;
+    // Raised rim, below fresh snow (6) so the print reads as sunk in the blanket.
+    let rim: u32 = 3;
+    // Recessed centre floor, still a sliver of snow above the block below.
+    let floor: u32 = 1;
+    // Inner hole edges: a 5/16 rim band on each side, a 6/16 square pit in the middle.
+    let il: u32 = 5;
+    let ih: u32 = 11;
+
+    // --- outer side walls (full perimeter, y 0..rim) -------------------------
+    // +X side.
+    buf.quad(
+        &vert(hi, 0, lo, BF_NX_POS, 0, 0),
+        &vert(hi, rim, lo, BF_NX_POS, 0, 1),
+        &vert(hi, rim, hi, BF_NX_POS, 1, 1),
+        &vert(hi, 0, hi, BF_NX_POS, 1, 0),
+    );
+    // -X side.
+    buf.quad(
+        &vert(lo, 0, hi, BF_NX_NEG, 0, 0),
+        &vert(lo, rim, hi, BF_NX_NEG, 0, 1),
+        &vert(lo, rim, lo, BF_NX_NEG, 1, 1),
+        &vert(lo, 0, lo, BF_NX_NEG, 1, 0),
+    );
+    // +Z side.
+    buf.quad(
+        &vert(hi, 0, hi, BF_NZ_POS, 0, 0),
+        &vert(hi, rim, hi, BF_NZ_POS, 0, 1),
+        &vert(lo, rim, hi, BF_NZ_POS, 1, 1),
+        &vert(lo, 0, hi, BF_NZ_POS, 1, 0),
+    );
+    // -Z side.
+    buf.quad(
+        &vert(lo, 0, lo, BF_NZ_NEG, 0, 0),
+        &vert(lo, rim, lo, BF_NZ_NEG, 0, 1),
+        &vert(hi, rim, lo, BF_NZ_NEG, 1, 1),
+        &vert(hi, 0, lo, BF_NZ_NEG, 1, 0),
+    );
+
+    // --- bottom cap, flush on the block below --------------------------------
+    buf.quad(
+        &vert(lo, 0, lo, BF_NY_NEG, 0, 0),
+        &vert(hi, 0, lo, BF_NY_NEG, 1, 0),
+        &vert(hi, 0, hi, BF_NY_NEG, 1, 1),
+        &vert(lo, 0, hi, BF_NY_NEG, 0, 1),
+    );
+
+    // --- raised rim ring (flat top at y=rim, framing the pit) ----------------
+    // Built as four rectangles around the hole, same up-facing winding as a top cap.
+    let rim_band = |a0: u32, a2: u32, c0: u32, c2: u32, buf: &mut MeshBuffers| {
+        buf.quad(
+            &vert(a2, rim, c0, BF_NY_POS, 0, 0),
+            &vert(a0, rim, c0, BF_NY_POS, 1, 0),
+            &vert(a0, rim, c2, BF_NY_POS, 1, 1),
+            &vert(a2, rim, c2, BF_NY_POS, 0, 1),
+        );
+    };
+    rim_band(lo, hi, lo, il, buf); // -Z band
+    rim_band(lo, hi, ih, hi, buf); // +Z band
+    rim_band(lo, il, il, ih, buf); // -X band
+    rim_band(ih, hi, il, ih, buf); // +X band
+
+    // --- inner walls of the pit (y rim..floor), facing inward ----------------
+    // +X-facing wall at x=il (pit lies toward +X of it).
+    buf.quad(
+        &vert(il, floor, il, BF_NX_POS, 0, 0),
+        &vert(il, rim, il, BF_NX_POS, 0, 1),
+        &vert(il, rim, ih, BF_NX_POS, 1, 1),
+        &vert(il, floor, ih, BF_NX_POS, 1, 0),
+    );
+    // -X-facing wall at x=ih.
+    buf.quad(
+        &vert(ih, floor, ih, BF_NX_NEG, 0, 0),
+        &vert(ih, rim, ih, BF_NX_NEG, 0, 1),
+        &vert(ih, rim, il, BF_NX_NEG, 1, 1),
+        &vert(ih, floor, il, BF_NX_NEG, 1, 0),
+    );
+    // +Z-facing wall at z=il.
+    buf.quad(
+        &vert(ih, floor, il, BF_NZ_POS, 0, 0),
+        &vert(ih, rim, il, BF_NZ_POS, 0, 1),
+        &vert(il, rim, il, BF_NZ_POS, 1, 1),
+        &vert(il, floor, il, BF_NZ_POS, 1, 0),
+    );
+    // -Z-facing wall at z=ih.
+    buf.quad(
+        &vert(il, floor, ih, BF_NZ_NEG, 0, 0),
+        &vert(il, rim, ih, BF_NZ_NEG, 0, 1),
+        &vert(ih, rim, ih, BF_NZ_NEG, 1, 1),
+        &vert(ih, floor, ih, BF_NZ_NEG, 1, 0),
+    );
+
+    // --- recessed centre floor (flat at y=floor) -----------------------------
+    buf.quad(
+        &vert(ih, floor, il, BF_NY_POS, 0, 0),
+        &vert(il, floor, il, BF_NY_POS, 1, 0),
+        &vert(il, floor, ih, BF_NY_POS, 1, 1),
+        &vert(ih, floor, ih, BF_NY_POS, 0, 1),
+    );
 }
 
 // ============================================================================
@@ -1573,9 +1711,14 @@ mod tests {
         assert!(grass_top_faces >= 4, "grass keeps its top face under the non-opaque snow");
     }
 
+    // #144: trodden snow (54) is no longer a flat slab; it is a pressed bowl with a
+    // raised rim and a recessed centre. Two properties prove the shape: its rim stays
+    // sunk below fresh snow (so a print reads as compressed into the blanket), and it
+    // has a top surface ABOVE its lowest top surface (the rim sits proud of the sunken
+    // floor) so the cell reads as an indented track, not a flat patch.
     #[test]
-    fn trodden_snow_is_flatter_than_fresh_snow() {
-        let top_of = |id: BlockId| -> f32 {
+    fn trodden_snow_is_a_pressed_bowl_below_fresh_snow() {
+        let snow_ys = |id: BlockId| -> Vec<f32> {
             let mut store = TestStore::new();
             let mut ch = TestChunk::new();
             ch.set(8, 8, 8, 1);
@@ -1586,11 +1729,40 @@ mod tests {
                 .iter()
                 .filter(|&&(_, m)| m == id)
                 .map(|&(y, _)| y)
-                .fold(f32::MIN, f32::max)
+                .collect()
         };
-        let fresh = top_of(12);
-        let trod = top_of(54);
-        assert!(trod < fresh, "a footprint (54) compresses the snow below fresh (12): {trod} < {fresh}");
+        let max = |ys: &[f32]| ys.iter().cloned().fold(f32::MIN, f32::max);
+
+        let fresh = snow_ys(12);
+        let trod = snow_ys(54);
+        let fresh_top = max(&fresh);
+        let trod_rim = max(&trod);
+
+        // The bowl's raised rim is still sunk below fresh snow's surface.
+        assert!(
+            trod_rim < fresh_top,
+            "the trodden rim (54) sits below fresh snow (12): {trod_rim} < {fresh_top}"
+        );
+
+        // The bowl has at least two distinct top heights: the raised rim and the lower
+        // recessed centre floor. Both are above the grass top (y=9.0) but the rim is
+        // strictly higher than the sunken floor, so the cell is indented, not flat.
+        let mut tops: Vec<f32> = trod
+            .iter()
+            .cloned()
+            .filter(|&y| y > 9.0 + 1e-3) // exclude the bottom cap / wall feet at y=9.0
+            .collect();
+        tops.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        tops.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+        assert!(
+            tops.len() >= 2,
+            "the bowl has a raised rim and a lower recessed floor (distinct tops: {tops:?})"
+        );
+        let floor = tops[0];
+        assert!(
+            floor < trod_rim - 1e-3,
+            "the recessed floor ({floor}) is below the raised rim ({trod_rim})"
+        );
     }
 
     // Decode a packed vertex stream into (normal, sky_light, block_light) tuples,
