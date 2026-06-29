@@ -393,11 +393,11 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // ---- Graphics effect toggles (pause-menu Options) ------------------------
     // Each effect can be switched on/off live. Persisted in UserDefaults; loaded
-    // here so even the --playtest path picks them up. Waving foliage defaults OFF
-    // (too busy with dense plants); the rest default ON.
+    // here so even the --playtest path picks them up. Waving foliage and god rays
+    // default OFF (too busy/realistic for the kid target); most other effects default ON.
     var gfxFoliage = UserDefaults.standard.object(forKey: "gfxFoliage") as? Bool ?? false
     var gfxWater   = UserDefaults.standard.object(forKey: "gfxWater")   as? Bool ?? true
-    var gfxGodRays = UserDefaults.standard.object(forKey: "gfxGodRays") as? Bool ?? true
+    var gfxGodRays = UserDefaults.standard.object(forKey: "gfxGodRays") as? Bool ?? false
     // #132 lens flare: classic screen-space flare when the sun is on-screen and not
     // occluded. Separate toggle from God Rays (which drives the descending shafts).
     // Defaults ON; OFF removes the flare entirely (no cost, byte-identical to no-flare).
@@ -4044,7 +4044,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // =========================================================
     // Reflective water (#43) samples the sky along the reflected ray. evalSkyColor
     // is defined further down (after cloudFbm); declare it here so water can call it.
-    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk, float cloudsOn, float2 ditherPx);
+    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk, float cloudsOn);
 
     fragment float4 waterFmain(VOut in [[stage_in]],
                                constant WaterUniforms& wu [[buffer(2)]],
@@ -4121,7 +4121,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             // cloudsOn=0 for the water reflection: the volumetric raymarch is skipped in the
             // bounce (it would double the cloud cost per water fragment for a subtle gain).
             float3 skyRefl = evalSkyColor(normalize(refl),
-                                          wu.sunDirTime.xyz, wu.sunDirTime.w, t, 0.0, float2(0.0, 0.0));
+                                          wu.sunDirTime.xyz, wu.sunDirTime.w, t, 0.0);
             float ndv     = max(0.0, dot(-viewDir, perturbedN));
             float fres    = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);   // Schlick, F0≈0.02
             // NIGHT GROUND-WASH FIX (#117): the Fresnel sky reflection was NOT gated by
@@ -4293,7 +4293,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Sky colour along a view ray (gradient, sun/moon, stars, clouds, weather).
     // Shared by the sky pass AND reflective water (#43) — forward-declared above
     // waterFmain. Does NOT apply the underground fade (that's sky-pass only).
-    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk, float cloudsOn, float2 ditherPx) {
+    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk, float cloudsOn) {
         // dayT now tracks the real sun elevation (see dayLight) so the sky darkens
         // when the sun actually sets, instead of staying lit until t~1.0 (the old
         // sin(t*pi) was a quarter-cycle out of phase with the sun arc). The sun
@@ -4502,10 +4502,15 @@ final class Renderer: NSObject, MTKViewDelegate {
             float dt   = marchSpan / float(CLOUD_STEPS);     // along-ray step (XZ + height move)
             // #146 ANTI-RING, DECORRELATED: tEnter depends only on ray.y, so iso-elevation screen
             // circles sample the slab at the same depths and the value noise produced faint
-            // CONCENTRIC rings. Use true fragment-space coordinates for the sky pass so adjacent
-            // pixels receive a small well-distributed start offset. Falling back to ray-derived
-            // coordinates is only for non-screen callers; water passes cloudsOn=0 and skips this.
-            float2 cpix  = ((abs(ditherPx.x) + abs(ditherPx.y)) > 0.0) ? ditherPx : (ray.xz * 720.0);
+            // CONCENTRIC rings. The #140 jitter fed the IGN magic frequencies a CONTINUOUS world
+            // direction (ray.xz changes ~1e-3 per pixel), so fract(52.98*fract(tiny)) was nearly
+            // constant over many pixels: a smooth low-frequency screen pattern that BEAT against
+            // the march cadence into the scaly ripple bands the player saw. Scale ray.xz up so the
+            // hash input changes by ~O(1) per pixel BEFORE the IGN, which makes the dither truly
+            // blue-noise-like (well distributed over any small neighbourhood) so it breaks the ring
+            // without a coherent beat pattern. evalSkyColor is shared with water (no pixel coord),
+            // so we derive the screen-frequency coordinate from the ray itself.
+            float2 cpix  = ray.xz * 720.0;
             float cdith  = fract(52.9829189 * fract(dot(cpix, float2(0.06711056, 0.00583715))));
             tEnter += dt * (cdith - 0.5) * 0.10;
             float wind = clk * 1.10;           // slow horizontal drift
@@ -4597,7 +4602,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 ray = normalize(su.camFwd.xyz
                                + su.camRight.xyz * (in.ndc.x * aspect * tanHalfFov)
                                + su.camUp.xyz    * (in.ndc.y * tanHalfFov));
-        float3 skyCol = evalSkyColor(ray, su.sunDirTime.xyz, su.sunDirTime.w, wu.wallClockSecs, wu.cloudsOn, in.position.xy);
+        float3 skyCol = evalSkyColor(ray, su.sunDirTime.xyz, su.sunDirTime.w, wu.wallClockSecs, wu.cloudsOn);
 
         // FIX (#33): when the eye is underground (su.camFwd.w = underground 0..1),
         // fade the whole sky to a near-black cave colour. Surface-priority streaming

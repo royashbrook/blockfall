@@ -287,10 +287,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fxTitle.font = .boldSystemFont(ofSize: 16); fxTitle.textColor = .white
 
         // God Rays + Cel Shading: checkbox with an intensity slider beside it.
-        let godRayCb = gfxCheckbox("God Rays", tag: 2, on: renderer?.gfxGodRays ?? true)
+        let godRayCb = gfxCheckbox("God Rays", tag: 2, on: renderer?.gfxGodRays ?? false)
         let grSlider = gfxIntensitySlider(value: Double(renderer?.gfxGodRayStr ?? 0.5),
                                           sel: #selector(godRayStrChanged(_:)),
-                                          enabled: renderer?.gfxGodRays ?? true)
+                                          enabled: renderer?.gfxGodRays ?? false)
         godRaySlider = grSlider
 
         let celCb = gfxCheckbox("Cel Shading", tag: 5, on: renderer?.gfxCelShade ?? true)
