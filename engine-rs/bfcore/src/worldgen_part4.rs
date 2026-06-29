@@ -2929,6 +2929,135 @@ mod worldgen_tests {
         assert!(torches_checked > 0, "scan found no torches to check");
     }
 
+    // #148 / #149: every structure doorway must be a single 2-block-tall door opening
+    // with a SOLID lintel directly above it and solid wall flanking the jambs. The two
+    // bugs this guards:
+    //   #148: a doorway that reads as two separate 1-tall doors (a lone 1-tall door, or
+    //         a stack taller / shorter than 2, or two doors side by side).
+    //   #149: a gap over the doorway (the cell directly above the 2-tall door left open
+    //         instead of a solid lintel block).
+    // We stamp a capped sample of cabins / keeps / towers from a wide scan, group the
+    // door cells into vertical runs per (wx, wz) column, and assert each run is exactly
+    // 2 tall, has a solid block right above, solid wall on both jamb sides along the
+    // run, and no door block as a horizontal neighbour (no side-by-side double door).
+    #[test]
+    fn structure_doors_are_single_2tall_with_solid_lintel() {
+        // A block that counts as a solid wall / lintel (not air, not the door, not a
+        // see-through pane or prop).
+        fn is_solid(b: BlockId) -> bool {
+            b != AIR
+                && b != OAK_DOOR
+                && b != TORCH
+                && b != GLASS_PANE
+                && b != WATER
+                && b != MARKER_BLOCK
+        }
+
+        let mut doorways_checked = 0;
+        let samples = [
+            (11u64, -20, -40, STRUCT_CABIN),
+            (11u64, 36, -40, STRUCT_KEEP),
+            (11u64, -25, -40, STRUCT_TALL_TOWER),
+        ];
+
+        for &(seed, scx, scz, expected_typ) in &samples {
+            let sd = struct_for_cell(scx, scz, seed);
+            assert!(
+                sd.present,
+                "door regression sample missing: seed {seed} cell ({scx},{scz})"
+            );
+            assert_eq!(
+                sd.typ, expected_typ,
+                "door regression sample type changed: seed {seed} cell ({scx},{scz})"
+            );
+
+            let cells = stamp_structure(&sd, seed);
+
+            // Collect every door cell, grouped by (wx, wz) column.
+            let mut columns: std::collections::HashMap<(i32, i32), Vec<i32>> =
+                std::collections::HashMap::new();
+            for (&(wx, wy, wz), &b) in cells.iter() {
+                if b == OAK_DOOR {
+                    columns.entry((wx, wz)).or_default().push(wy);
+                }
+            }
+            if columns.is_empty() {
+                continue;
+            }
+
+            for ((wx, wz), mut ys) in columns {
+                ys.sort_unstable();
+
+                // A single column of door blocks must be exactly 2 tall and
+                // contiguous: a lone 1-tall door, or any run != 2, reads as a
+                // broken / doubled door (#148).
+                assert_eq!(
+                    ys.len(),
+                    2,
+                    "seed {seed} type {}: door column at ({wx},{wz}) has {} door blocks (ys={ys:?}), expected exactly 2 (single 2-tall door)",
+                    sd.typ,
+                    ys.len()
+                );
+                let (low, high) = (ys[0], ys[1]);
+                assert_eq!(
+                    high,
+                    low + 1,
+                    "seed {seed} type {}: door column at ({wx},{wz}) is not two contiguous cells (ys={ys:?})",
+                    sd.typ
+                );
+
+                // #149: the cell directly above the door run is a solid lintel.
+                let above = *cells.get(&(wx, high + 1, wz)).unwrap_or(&AIR);
+                assert!(
+                    is_solid(above),
+                    "seed {seed} type {}: gap over doorway at ({wx},{wz}) y={} (block above = {above}); lintel must be solid wall",
+                    sd.typ,
+                    high + 1
+                );
+
+                // No door block as a horizontal neighbour of either door cell:
+                // rules out two doorways placed side by side (#148).
+                for &dy in &[low, high] {
+                    for (nx, nz) in [(wx + 1, wz), (wx - 1, wz), (wx, wz + 1), (wx, wz - 1)] {
+                        let nb = *cells.get(&(nx, dy, nz)).unwrap_or(&AIR);
+                        assert!(
+                            nb != OAK_DOOR,
+                            "seed {seed} type {}: door cell at ({wx},{dy},{wz}) has an adjacent door at ({nx},{dy},{nz}); reads as two side-by-side doors",
+                            sd.typ
+                        );
+                    }
+                }
+
+                // The doorway is flanked by closed wall jambs. The wall the door
+                // sits in runs along one horizontal axis; whichever axis it is,
+                // both cells flanking the door along that axis must be filled (a
+                // solid wall block or a glass window pane, never air and never
+                // another door) at both door heights. Requiring a closed jamb on
+                // BOTH sides of one axis forbids an opening wider than the single
+                // door (#148). A glass pane beside the door is a normal window, so
+                // it counts as a closed jamb here.
+                let jamb_filled = |b: BlockId| b != AIR && b != OAK_DOOR;
+                let jamb_solid_axis = |a: [(i32, i32); 2]| -> bool {
+                    a.iter().all(|&(jx, jz)| {
+                        jamb_filled(*cells.get(&(jx, low, jz)).unwrap_or(&AIR))
+                            && jamb_filled(*cells.get(&(jx, high, jz)).unwrap_or(&AIR))
+                    })
+                };
+                let x_axis = [(wx + 1, wz), (wx - 1, wz)];
+                let z_axis = [(wx, wz + 1), (wx, wz - 1)];
+                assert!(
+                    jamb_solid_axis(x_axis) || jamb_solid_axis(z_axis),
+                    "seed {seed} type {}: doorway at ({wx},{wz}) is not flanked by solid wall on either axis (opening too wide / no jambs)",
+                    sd.typ
+                );
+
+                doorways_checked += 1;
+            }
+        }
+
+        assert!(doorways_checked > 0, "scan found no doorways to check");
+    }
+
     // #142 (regression, exact geometry): after the fix, the wall blocks that used to
     // be punched out for a recessed torch must stay solid. For a cabin the wall behind
     // its torch must be solid; for a keep the curtain-wall sections that flank the

@@ -4495,13 +4495,18 @@ final class Renderer: NSObject, MTKViewDelegate {
             float tExit  = CLOUD_TOP    / ry;
             float marchSpan = tExit - tEnter;
             float dt   = marchSpan / float(CLOUD_STEPS);     // along-ray step (XZ + height move)
-            // #140 ANTI-RING: tEnter depends only on ray.y, so iso-elevation screen circles all
-            // sample the slab at the same depths and the value noise produced faint CONCENTRIC
-            // rings. Nudge the march start by a SMALL blue-noise-like hash of the ray direction
-            // so neighbouring pixels start at slightly staggered depths and the rings break up.
-            // Kept small (0.35 of a step) so it dithers the ring WITHOUT introducing visible
-            // grain on the thin cloud edges (a full-step jitter speckled the edges). One hash.
-            float cdith = fract(52.9829189 * fract(dot(ray.xz, float2(0.06711056, 0.00583715))));
+            // #146 ANTI-RING, DECORRELATED: tEnter depends only on ray.y, so iso-elevation screen
+            // circles sample the slab at the same depths and the value noise produced faint
+            // CONCENTRIC rings. The #140 jitter fed the IGN magic frequencies a CONTINUOUS world
+            // direction (ray.xz changes ~1e-3 per pixel), so fract(52.98*fract(tiny)) was nearly
+            // constant over many pixels: a smooth low-frequency screen pattern that BEAT against
+            // the march cadence into the scaly ripple bands the player saw. Scale ray.xz up so the
+            // hash input changes by ~O(1) per pixel BEFORE the IGN, which makes the dither truly
+            // blue-noise-like (well distributed over any small neighbourhood) so it breaks the ring
+            // without a coherent beat pattern. evalSkyColor is shared with water (no pixel coord),
+            // so we derive the screen-frequency coordinate from the ray itself.
+            float2 cpix  = ray.xz * 720.0;
+            float cdith  = fract(52.9829189 * fract(dot(cpix, float2(0.06711056, 0.00583715))));
             tEnter += dt * (cdith - 0.5) * 0.35;
             float wind = clk * 1.10;           // slow horizontal drift
             // `cover` modulates how much sky the clouds fill; a slow weather-ish breathe
@@ -4545,12 +4550,12 @@ final class Renderer: NSObject, MTKViewDelegate {
                     float ls2 = cloudDensity(p + sunL * 20.0, wind, cover);
                     float shadowAcc = ls1 * 0.6 + ls2 * 0.4;
                     float lit = exp(-shadowAcc * 3.0);       // Beer toward the sun (deeper = bolder pop)
-                    // BOLD cel touch: a gentle quantization into a few bands keeps the cloud
-                    // reading as defined toy forms with a crisp-ish lit/shadow break (cohesive
-                    // with the terrain banding) without the hard concentric rings a strong
-                    // quantize produced. Mix 60% toward the 4-band version, 40% smooth.
-                    float litB = floor(lit * 4.0 + 0.5) / 4.0;
-                    lit = mix(lit, litB, 0.6);
+                    // #146 NO QUANTIZE: the old 4-band floor() of the lit term carved concentric
+                    // iso-value contours into the self-shadow. As the camera moved those contour
+                    // rings slid across the puffs and read as a scaly / fish-scale ripple. Use a
+                    // SMOOTH contrast curve instead (a smoothstep keeps the bold lit/shadow break
+                    // and crisp toy pop) so the shading varies continuously with no banded scales.
+                    lit = smoothstep(0.10, 0.85, lit);
                     float3 cCol = mix(shadowCol, litCol, lit);
                     // Front-to-back compositing: each step occludes the steps behind it. A
                     // high per-step opacity makes the puff cores go solid quickly (chunky toy
@@ -4761,7 +4766,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // DENSITY ~2.3x (the in-scatter the eye reads as the shaft body), HG_G sharper
     // (a tighter forward lobe so the glow concentrates into distinct rays toward the
     // sun instead of a broad haze). See the floor / saturation / clamp tuning below.
-    constant int   GR_STEPS   = 64;   // #141: up from 48 for smoother shafts (finer sampling)
+    constant int   GR_STEPS   = 80;   // #147: up from 64 for finer sampling (less grain to denoise)
     constant float GR_MAXDIST = 140.0;
     constant float GR_DENSITY = 0.030;
     constant float GR_HG_G    = 0.88;
@@ -4968,6 +4973,22 @@ final class Renderer: NSObject, MTKViewDelegate {
                 t += stepLen;
             }
             float litFrac = (totLen > 1e-4) ? (litLen / totLen) : 0.0;   // 0..1
+
+            // #147 DENOISE THE LIT FRACTION (before the steep shaping). The jittered march
+            // leaves a little high-frequency variance in litFrac; the floor/gamma/contrast curves
+            // below are steep, so that small per-pixel noise gets AMPLIFIED into the visible grain
+            // in the shafts near the sun. Box-average litFrac over the 2x2 fragment quad FIRST so
+            // the shaping operates on a clean signal. quad_shuffle_xor reaches the three other
+            // lanes of this pixel's quad (xor 1 = horizontal, 2 = vertical, 3 = diagonal), so the
+            // mean of all four is the EXACT 2x2 box filter, parity-independent. This removes the
+            // jitter grain while preserving the real beam structure (which varies far more slowly
+            // than one pixel). Cost: three lane shuffles, no extra voxel marches (the dominant cost
+            // stays at GR_STEPS); the grain that survived the march is averaged out for free.
+            float lfq = (litFrac
+                         + quad_shuffle_xor(litFrac, 1u)
+                         + quad_shuffle_xor(litFrac, 2u)
+                         + quad_shuffle_xor(litFrac, 3u)) * 0.25;
+            litFrac = clamp(lfq, 0.0, 1.0);
 
             // A floor cut that keeps ONLY the shaft cores: it suppresses the broad,
             // uniform low-level glow (the "fog wash" failure mode and the ground-wash

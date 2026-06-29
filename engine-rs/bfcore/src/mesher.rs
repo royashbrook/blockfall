@@ -1459,6 +1459,19 @@ impl GreedyMesher {
 
                     // #118 snow overlay: a thin blanket slab at the bottom of the cell.
                     if is_snow_overlay(here) {
+                        // #151 floating snow: a snow blanket only renders when it has a
+                        // real surface to sit on. Walking into a carved ravine used to
+                        // show snow slabs hanging in the air because the overlay emitted
+                        // even where the cell directly below had been dug out. Gate the
+                        // emit on the cell below being a solid (opaque) block, using the
+                        // same is_opaque check the mesher uses for face culling. Snow,
+                        // water, glass, doors and props are non-opaque, so a snow cell
+                        // floating over air (or over another snow blanket) is skipped and
+                        // nothing hangs in the gap. Snow on real ground is unchanged.
+                        let below = sample_block(chunk_opt, c, store, x, y - 1, z);
+                        if !is_opaque(below) {
+                            continue;
+                        }
                         let ssky = chunk.sky_light(x as usize, y as usize, z as usize);
                         let sblk = chunk.block_light(x as usize, y as usize, z as usize);
                         if !emit_snow_layer(x, y, z, here, ssky, sblk, &mut buf) {
@@ -1762,6 +1775,59 @@ mod tests {
         assert!(
             floor < trod_rim - 1e-3,
             "the recessed floor ({floor}) is below the raised rim ({trod_rim})"
+        );
+    }
+
+    // #151 floating snow: the snow overlay only renders when the cell directly below is
+    // a solid (opaque) block. A snow cell over a carved-out ravine (air below) must emit
+    // NO snow geometry, so nothing hangs in the gap; a snow cell over real ground emits
+    // its slab unchanged. Both fresh (12) and trodden (54) snow are gated the same way.
+    #[test]
+    fn snow_only_emits_with_a_solid_block_below() {
+        // Count snow-material vertices for a given snow id and a given block below it.
+        let snow_verts = |snow_id: BlockId, below: BlockId| -> usize {
+            let mut store = TestStore::new();
+            let mut ch = TestChunk::new();
+            if below != 0 {
+                ch.set(8, 8, 8, below); // supporting block (or none for air)
+            }
+            ch.set(8, 9, 8, snow_id); // snow blanket in the cell above
+            store.chunks.insert(ChunkCoord::default(), ch);
+            let (_, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+            decode_y_and_mat(&vtx)
+                .iter()
+                .filter(|&&(_, m)| m == snow_id)
+                .count()
+        };
+
+        // Solid ground below (grass=1, opaque): snow emits its slab.
+        assert!(
+            snow_verts(12, 1) > 0,
+            "fresh snow on solid ground must emit a slab"
+        );
+        assert!(
+            snow_verts(54, 1) > 0,
+            "trodden snow on solid ground must emit its bowl"
+        );
+
+        // Air below (carved ravine, #151): snow emits nothing, so it cannot float.
+        assert_eq!(
+            snow_verts(12, 0),
+            0,
+            "fresh snow over air must emit no geometry"
+        );
+        assert_eq!(
+            snow_verts(54, 0),
+            0,
+            "trodden snow over air must emit no geometry"
+        );
+
+        // Snow over snow is also unsupported (snow is non-opaque): the upper blanket is
+        // skipped so a stranded stack does not hang in the air.
+        assert_eq!(
+            snow_verts(12, 12),
+            0,
+            "fresh snow over a non-opaque snow cell must emit no geometry"
         );
     }
 

@@ -355,14 +355,20 @@ fn place_cabin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_
             let corner = on_x && on_z;
 
             let is_door = dx == door_dx && dz == 0;
-            if is_door {
-                struct_set(chunk, ax + dx, floor_h + 1, az + dz, wx_min, wy_min, wz_min, OAK_DOOR);
-                struct_set(chunk, ax + dx, floor_h + 2, az + dz, wx_min, wy_min, wz_min, OAK_DOOR);
-                continue;
-            }
 
             let window = !corner && (((dx + dz) & 1) == 0);
             for wy in (floor_h + 1)..=wall_top {
+                // Single 2-tall door opening: the bottom two cells (floor + 1, floor + 2)
+                // are door blocks, and the cell above (floor + 3 = wall_top) stays solid
+                // wall as a lintel so there is no gap over the doorway (#148, #149).
+                if is_door {
+                    if wy <= floor_h + 2 {
+                        struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, OAK_DOOR);
+                    } else {
+                        struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, wall);
+                    }
+                    continue;
+                }
                 let mut b = if corner { trim } else { wall };
                 if window && wy == floor_h + 2 {
                     b = GLASS_PANE;
@@ -403,12 +409,11 @@ fn place_cabin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_
     }
 
     // Door torch: mount it on the interior face of the door wall, just beside the
-    // doorway, instead of floating in the open lintel gap above the door (the door
-    // column is left open from floor + 3 up, so a torch placed there would hang on
-    // nothing). We put it in the interior air cell one block in from the wall, next
-    // to the door, with the solid wall block at (door wall plane, that dz) directly
-    // behind it. The flanking wall cell stays solid (no hole punched), so the torch
-    // reads as wall mounted inside the cabin.
+    // doorway. The door column is now a solid lintel above floor + 2, so we keep the
+    // torch off the door cells themselves and put it in the interior air cell one
+    // block in from the wall, next to the door, with the solid wall block at (door
+    // wall plane, that dz) directly behind it. The flanking wall cell stays solid
+    // (no hole punched), so the torch reads as wall mounted inside the cabin.
     //
     // A flanking wall cell is glass at floor + 2 only when it is a window slot
     // ((dx + dz) even). We choose a dz whose flanking wall is solid at the torch

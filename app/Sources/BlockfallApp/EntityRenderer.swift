@@ -4743,14 +4743,37 @@ final class EntityRenderer {
         // Snap the blob's plane to the real surface directly under the feet (search a couple blocks
         // up and down so it lands on the ground even if foot.y is slightly embedded or floating).
         float snapped = gsGroundY(occ, u.voxOrigin.xyz, u.voxDims.xyz, foot.x, foot.y + 2.0, foot.z, 6);
-        // #139 Bug A: snow overlay (#118) is walk-through but still flagged as a casting voxel in the
-        // occupancy grid, so the downward snap finds the snow cell and returns its TOP face, one
-        // block ABOVE where the creature actually stands (snow at its feet). The engine seats the
-        // creature on the walked surface, so foot.y IS the true ground the blob must sit on. Clamp
-        // the snap so the plane never rises above the feet (the surface a creature rests on cannot be
-        // above it). Snow overshoots by a full cell so this catches it; sub-block slope snaps (which
-        // sit at or below foot.y) are unaffected, keeping normal/sloped ground correct.
-        float planeY = (snapped > -1e8) ? min(snapped, foot.y + 0.05) : foot.y;
+
+        // #150 snow-walk case (follow-up to #139). Fresh snow (#118) is a thin walk-through overlay:
+        // the snow cell sits ON TOP of a surface block and casts in occupancy, but the engine seats
+        // the creature on the block UNDER the snow, so foot.y = top of that block = BOTTOM of the
+        // snow blanket. The blanket renders as a slab SNOW_LAYER tall (6/16, mirroring
+        // emit_snow_layer's top=6 in mesher.rs) from foot.y up to foot.y + SNOW_LAYER. Because snow
+        // casts in occupancy, the downward snap finds the snow cell TOP and overshoots a full block
+        // above the feet (snapped is about foot.y + 1). That full-block overshoot ONLY happens for
+        // walk-through snow, so it is our in-shader detector: when snapped lands ~1 block above the
+        // feet, the creature stands on snow and the blob must sit on the VISIBLE snow SURFACE
+        // (foot.y + SNOW_LAYER), not buried at foot.y (the #139 over-clamp, hidden under the opaque
+        // slab) and not floating at the snap (foot.y + 1, the original #139 bug).
+        const float SNOW_LAYER = 6.0 / 16.0;   // 0.375, mirrors emit_snow_layer top=6 (mesher.rs)
+        float planeY;
+        if (snapped > -1e8) {
+            // Snow overshoot: snap sits roughly a full block (~1.0) above the feet. Use a tolerant
+            // window (0.5 .. 1.5) so only the walk-through-snow full-cell overshoot qualifies; real
+            // surfaces (slopes, flat ground) snap at or below foot.y and fall through to the clamp.
+            float rise = snapped - foot.y;
+            if (rise > 0.5 && rise < 1.5) {
+                // Stand the blob just above the snow surface (tiny epsilon so it is not buried in or
+                // z-fighting the opaque snow slab).
+                planeY = foot.y + SNOW_LAYER + 0.01;
+            } else {
+                // #139 Bug A bare/sloped ground: clamp so the plane never rises above the feet (the
+                // surface a creature rests on cannot be above it). Unchanged from #139.
+                planeY = min(snapped, foot.y + 0.05);
+            }
+        } else {
+            planeY = foot.y;
+        }
 
         // Sun direction projected onto the ground (XZ). The shadow stretches AWAY from the sun
         // azimuth and the lower the sun the longer/more offset it gets.
