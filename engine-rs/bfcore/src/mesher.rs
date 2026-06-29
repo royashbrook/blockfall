@@ -1477,8 +1477,8 @@ impl GreedyMesher {
                         if is_opaque(here) {
                             emit = !is_opaque(nb); // air, water, or glass neighbour
                         } else if here == 9 || is_waterlogged(here) {
-                            emit = match neighbour_block_known(chunk_opt, c, store, fd, x, y, z) {
-                                Some(known) => known == 0, // water surface only against loaded air
+                            emit = fd.normal == BF_NY_POS && match neighbour_block_known(chunk_opt, c, store, fd, x, y, z) {
+                                Some(known) => known == 0, // water top surface only against loaded air
                                 None => false,
                             };
                         } else if is_glass(here) {
@@ -1998,6 +1998,26 @@ mod tests {
         assert!(
             !faces.iter().any(|&(n, m)| m == 9 && n == BF_NX_POS),
             "water at x=15 must not draw a blue +X chunk-edge wall while the neighbour chunk is missing"
+        );
+    }
+
+    #[test]
+    fn water_only_emits_top_surface() {
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(8, 8, 8, 9);
+        store.chunks.insert(ChunkCoord::default(), ch);
+
+        let (_, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+        let water_faces: Vec<u32> = decode_normal_and_mat(&vtx)
+            .iter()
+            .filter(|&&(_, m)| m == 9)
+            .map(|&(n, _)| n)
+            .collect();
+        assert!(!water_faces.is_empty(), "water must still render its top surface");
+        assert!(
+            water_faces.iter().all(|&n| n == BF_NY_POS),
+            "water must not emit side/bottom faces that can become blue chunk-line walls: {water_faces:?}"
         );
     }
 
