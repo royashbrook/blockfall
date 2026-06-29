@@ -4130,7 +4130,45 @@ final class Renderer: NSObject, MTKViewDelegate {
             // fade the reflection out with day brightness. The moon/star sky is still drawn
             // by the sky pass; only the water MIRROR of it stops washing the surface.
             float dayRefl = dayLight(wu.sunDirTime.w);   // 1 day .. 0 night (same gate as terrain)
-            float reflAmt = clamp(fres * 0.9 + 0.05, 0.0, 0.60) * wu.reflectScale * dayRefl;
+            // #138 DAYTIME WATER WASH FIX: the raw daytime sky is a bright near-white sheet,
+            // and mirroring it straight onto the surface made water read as a pale white
+            // panel that dominated daylight scenes. Tint the reflected sky toward a believable
+            // deep water-blue and pull its brightness down BEFORE the Fresnel blend, so the
+            // surface still mirrors the sky's HUE and the sun glint (sky reflection is kept,
+            // just much less blown-out) but reads as blue water, not a white mirror. This is
+            // gated by dayRefl (=daytime only): the night path is untouched (dayRefl~0 there
+            // already fades the whole reflection out), so the night ground-whiteout cannot
+            // return. tintAmt and the lower reflAmt ceiling are the two day-only knobs.
+            // The reflected daytime sky is a bright, near-white sheet. We must keep it
+            // CLEARLY reflecting (so water still mirrors the sky and the day reflection stays
+            // visible) but stop it reading as a blown-out white panel. Two daytime-only steps:
+            //  1) HUE: push the reflection toward water-blue so a clear sky mirrors as blue,
+            //     not white, but keep most of its brightness so the reflection is still a
+            //     distinct, visible highlight on the surface (not flattened into the base).
+            //  2) BRIGHTNESS CAP: clamp the reflected luminance to a ceiling so the brightest
+            //     part of the sky can't push the surface into the white/bloom range.
+            // Both are gated by dayRefl, so the night path (and the night ground-whiteout
+            // guard) is untouched: at night dayRefl~0 so skyRefl is unchanged and reflAmt~0.
+            // NOTE: we fold these INTO skyRefl and keep the `col = mix(col, skyRefl, reflAmt)`
+            // blend line verbatim below, because the --groundnighttest gate string-replaces
+            // that exact line to neutralize the reflection for its A/B.
+            float3 waterTint = float3(0.30, 0.52, 0.78);   // believable blue-water reflection hue
+            float skyLuma    = dot(skyRefl, float3(0.299, 0.587, 0.114));
+            // Re-tint toward blue while preserving the sky's relative brightness (so a clear
+            // bright sky still reads as a bright blue reflection, a sunset still warm). Modest
+            // mix so the reflection stays a real, visible highlight (keeps the day-reflection
+            // gate happy) rather than collapsing onto the water base colour.
+            float tintAmt    = 0.55 * dayRefl;
+            float3 blueRefl  = waterTint * (0.45 + 0.85 * skyLuma);
+            skyRefl = mix(skyRefl, blueRefl, tintAmt);
+            // Cap the reflected luminance in daytime so the brightest sky cannot blow the
+            // surface to white (the #138 wash), without dimming a normal blue reflection.
+            float cap = mix(10.0, 0.62, dayRefl);          // day: ceiling 0.62 ; night: no cap
+            float curLuma = dot(skyRefl, float3(0.299, 0.587, 0.114));
+            if (curLuma > cap) skyRefl *= cap / max(curLuma, 1e-3);
+            // Lower the daytime ceiling (0.60 -> 0.42) so a grazing Fresnel edge no longer
+            // turns the surface into a near-full sky mirror. Night unaffected (dayRefl gate).
+            float reflAmt = clamp(fres * 0.9 + 0.05, 0.0, 0.42) * wu.reflectScale * dayRefl;
             col = mix(col, skyRefl, reflAmt);
             col += float3(1.0, 0.98, 0.88) * spec * 0.45 * in.shade;
         }
@@ -4222,6 +4260,15 @@ final class Renderer: NSObject, MTKViewDelegate {
         // puff, which the sun light-march turns into internal 3D shading (bright crown,
         // shadowed base) instead of a flat overcast disc. Cells are ~30-40 units wide.
         float3 q = p * float3(0.026, 0.020, 0.026);
+        // #140 DOMAIN WARP: nudge the sample by a low-frequency 3D noise so the lobes are not
+        // axis-aligned to the integer-hash grid. This breaks the residual grid/streak look of
+        // the trilinear value noise into rounded, separated, organic puffs while staying cheap
+        // (one extra low-octave fetch per axis-shared warp). The warp also adds real vertical
+        // variation so a near-vertical view ray crosses lobe boundaries (chunky, not layered).
+        float3 w3 = float3(cloudNoise3(q * 0.7 + float3(11.3, 5.1, 19.7)),
+                           cloudNoise3(q * 0.7 + float3(31.7, 17.9, 3.3)),
+                           cloudNoise3(q * 0.7 + float3(7.2, 23.4, 41.1)));
+        q += (w3 - 0.5) * 1.6;
         float base = cloudNoise3(q);                   // big puffy lobes (dominant)
         base += cloudNoise3(q * 2.4) * 0.34;           // medium billow
         base += cloudNoise3(q * 5.3) * 0.14;           // fluffy edge
@@ -4230,8 +4277,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         // cumulus with clear blue gaps), not a soft connected haze. `cover` sets how much
         // sky the puffs fill. A vertical falloff thins the slab edges so the puffs have
         // rounded tops/bottoms rather than a hard sliced top and bottom.
+        // #140 crisper silhouette: a TIGHTER smoothstep window (0.10 -> 0.065) gives the toy
+        // cumulus a more defined, graphic edge with clear blue gaps, so the forms read as
+        // separated chunky puffs instead of fuzzy feathered wisps near grazing angles.
         float lo = 0.52 - cover * 0.16;
-        float d  = smoothstep(lo, lo + 0.10, base);
+        float d  = smoothstep(lo, lo + 0.065, base);
         return d;
     }
 
@@ -4429,23 +4479,38 @@ final class Renderer: NSObject, MTKViewDelegate {
             // off, and the march short-circuits once the accumulated alpha is near opaque.
             const float CLOUD_BOTTOM = 55.0;
             const float CLOUD_TOP    = 145.0;  // thick slab -> vertical structure, 3D puffs
-            const int   CLOUD_STEPS  = 24;     // THE perf knob (bounded march length)
+            const int   CLOUD_STEPS  = 28;     // THE perf knob (bounded march length)
             const float CLOUD_MID    = 100.0;  // slab centre (for the rounded vertical taper)
             const float CLOUD_HALF   = 45.0;   // half-thickness
             float ry   = max(ray.y, 0.04);
-            // STABLE horizontal cloud coordinate: project the ray onto the slab-centre plane.
-            // The horizontal sample position is FIXED per pixel (it does not vary with the
-            // march step), so the noise lobes do NOT stretch radially with t — that radial
-            // smear was the artifact of sampling p=ray*t directly. We march only in HEIGHT
-            // through the slab, sampling density at (cloudXZ, h), so a near-vertical view ray
-            // still passes through varying density inside a puff (giving real 3D shading from
-            // the sun light-march) while the silhouette stays crisp and defined.
-            float2 cloudXZ = ray.xz / ry * CLOUD_MID;        // plane projection at slab centre
-            float dh   = (CLOUD_TOP - CLOUD_BOTTOM) / float(CLOUD_STEPS);  // height step
+            // #140 ANTI-STREAK: march the ACTUAL 3D world position along the ray through the
+            // slab, not a single fixed XZ column. The old scheme held cloudXZ constant across
+            // the whole height march, so at grazing angles a column of pixels all sampled the
+            // same lobe and the silhouette smeared into long horizontal streaks. Here the
+            // sample point steps in X and Z as well as height (p = eye + ray*t), so each pixel
+            // traverses different lobes and the forms read as separated chunky puffs. The eye
+            // sits below the slab; we walk from the slab bottom-entry t to the top-exit t.
+            // Both t's are finite because cloudVis already gates ray.y > ~0.02.
+            float tEnter = CLOUD_BOTTOM / ry;
+            float tExit  = CLOUD_TOP    / ry;
+            float marchSpan = tExit - tEnter;
+            float dt   = marchSpan / float(CLOUD_STEPS);     // along-ray step (XZ + height move)
+            // #140 ANTI-RING: tEnter depends only on ray.y, so iso-elevation screen circles all
+            // sample the slab at the same depths and the value noise produced faint CONCENTRIC
+            // rings. Nudge the march start by a SMALL blue-noise-like hash of the ray direction
+            // so neighbouring pixels start at slightly staggered depths and the rings break up.
+            // Kept small (0.35 of a step) so it dithers the ring WITHOUT introducing visible
+            // grain on the thin cloud edges (a full-step jitter speckled the edges). One hash.
+            float cdith = fract(52.9829189 * fract(dot(ray.xz, float2(0.06711056, 0.00583715))));
+            tEnter += dt * (cdith - 0.5) * 0.35;
             float wind = clk * 1.10;           // slow horizontal drift
             // `cover` modulates how much sky the clouds fill; a slow weather-ish breathe
             // keeps the sky from being uniformly packed. Kept modest so the sky still reads.
-            float cover = 0.50 + 0.16 * (sin(clk * (3.14159265 / 90.0)) * 0.5 + 0.5);
+            // #140 bolder presence: raise the coverage floor so the puffs read as solid toy
+            // cumulus (chunky, opaque cores) rather than thin translucent wisps, which also
+            // masks the faint radial sampling ringing under solid cloud. Still breathes so the
+            // sky is not uniformly packed.
+            float cover = 0.62 + 0.14 * (sin(clk * (3.14159265 / 90.0)) * 0.5 + 0.5);
             float3 sunL = normalize(-sd);                    // toward the sun
 
             float trans = 1.0;        // remaining transparency (front-to-back)
@@ -4460,8 +4525,13 @@ final class Renderer: NSObject, MTKViewDelegate {
                                    float3(0.45, 0.34, 0.40), sunsetT * 0.55);
             for (int s = 0; s < CLOUD_STEPS; ++s) {
                 if (trans < 0.02) break;                     // already ~opaque, stop
-                float h  = CLOUD_BOTTOM + (float(s) + 0.5) * dh;  // sample height in the slab
-                float3 p = float3(cloudXZ.x, h, cloudXZ.y);  // stable XZ, marching in height
+                // March the REAL 3D position along the ray: XZ advances with t too, so the
+                // sample sweeps across distinct lobes instead of one fixed column (kills the
+                // horizontal streak). The virtual eye is at the origin (sky is at infinity, so
+                // only the ray direction matters for the silhouette).
+                float tt = tEnter + (float(s) + 0.5) * dt;
+                float3 p = ray * tt;                         // true 3D world-ish sample point
+                float h  = p.y;                              // actual sample height in the slab
                 float d  = cloudDensity(p, wind, cover);
                 // Rounded vertical profile: density tapers to 0 at the slab top/bottom so the
                 // puffs have domed crowns and soft bases (3D billows) rather than a hard
@@ -4484,8 +4554,13 @@ final class Renderer: NSObject, MTKViewDelegate {
                     float3 cCol = mix(shadowCol, litCol, lit);
                     // Front-to-back compositing: each step occludes the steps behind it. A
                     // high per-step opacity makes the puff cores go solid quickly (chunky toy
-                    // cumulus) rather than a thin translucent smear.
-                    float a = clamp(d * 1.6, 0.0, 1.0);
+                    // cumulus) rather than a thin translucent smear. #140: the along-ray step
+                    // length grows toward the horizon (dt = (top-bottom)/ry/STEPS), so scale the
+                    // opacity by the step length relative to the slab thickness. Without this the
+                    // long grazing steps would over-accumulate and re-smear the horizon into a
+                    // solid band; with it the same lobe reads the same density at every angle.
+                    float stepRef = dt / ((CLOUD_TOP - CLOUD_BOTTOM) / float(CLOUD_STEPS));
+                    float a = clamp(d * 1.6 * clamp(stepRef, 0.5, 2.0), 0.0, 1.0);
                     lum   += trans * a * cCol;
                     trans *= (1.0 - a);
                 }
@@ -4496,7 +4571,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             // sky colour breathes through the thin edges (keeps the sky from washing).
             // Keep clouds in the upper sky where the slab reads as defined puffs. The low
             // grazing band (where a flat slab inevitably smears) fades to clean blue sky.
-            float horizFade = smoothstep(0.18, 0.55, ray.y);
+            // #140: with the along-ray 3D march the mid-sky no longer streaks, so bring the
+            // fade window LOWER (0.18..0.55 -> 0.10..0.42) so bold chunky puffs now fill more
+            // of the visible sky instead of only the zenith, while the true grazing horizon
+            // (ray.y < ~0.10, where any flat slab smears) still fades to clean blue.
+            float horizFade = smoothstep(0.10, 0.42, ray.y);
             cloudA *= horizFade * 0.95;
             float3 cloudColor = (cloudA > 1e-4) ? (lum / max(1.0 - trans, 1e-3)) : float3(0.0);
             skyCol = mix(skyCol, cloudColor, clamp(cloudA, 0.0, 0.92));
@@ -4682,7 +4761,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // DENSITY ~2.3x (the in-scatter the eye reads as the shaft body), HG_G sharper
     // (a tighter forward lobe so the glow concentrates into distinct rays toward the
     // sun instead of a broad haze). See the floor / saturation / clamp tuning below.
-    constant int   GR_STEPS   = 48;
+    constant int   GR_STEPS   = 64;   // #141: up from 48 for smoother shafts (finer sampling)
     constant float GR_MAXDIST = 140.0;
     constant float GR_DENSITY = 0.030;
     constant float GR_HG_G    = 0.88;
@@ -4856,10 +4935,15 @@ final class Renderer: NSObject, MTKViewDelegate {
             float  cosT  = dot(viewDir, toSun);
             float  phase = hgPhase(cosT, GR_HG_G);
 
-            // Per-pixel dither so the modest step count does not band. Bayer-ish hash
-            // of the pixel coord -> [0,1), used to jitter the first step.
+            // #141 BLUE-NOISE JITTER: the old jitter was fract(sin(dot(px,...))), a white-noise
+            // hash whose value jumps randomly between neighbouring pixels, so the residual
+            // banding turned into salt-and-pepper GRAIN in the shafts. Interleaved Gradient
+            // Noise (Jimenez 2014) is a cheap blue-noise-like dither: its values are
+            // well-distributed over any small pixel neighbourhood, so the per-pixel start
+            // offsets are spread evenly and the eye reads the result as a smooth gradient
+            // instead of grain. Same one-line cost, far cleaner shafts.
             float2 px = in.position.xy;
-            float dither = fract(sin(dot(px, float2(12.9898, 78.233))) * 43758.5453);
+            float dither = fract(52.9829189 * fract(dot(px, float2(0.06711056, 0.00583715))));
 
             float farR      = vu.camPosW.w;
             float voxMaxDist = vu.voxOrigin.w;
