@@ -1478,8 +1478,11 @@ impl GreedyMesher {
                             emit = !is_opaque(nb); // air, water, or glass neighbour
                         } else if here == 9 || is_waterlogged(here) {
                             emit = fd.normal == BF_NY_POS && match neighbour_block_known(chunk_opt, c, store, fd, x, y, z) {
-                                Some(known) => known == 0, // water top surface only against loaded air
-                                None => false,
+                                Some(known) => known == 0,
+                                // Top water faces are allowed against an unknown +Y chunk: all-air chunks
+                                // above the sea are intentionally skipped by streaming, so requiring a
+                                // resident air chunk can erase chunk-aligned strips of ocean surface.
+                                None => true,
                             };
                         } else if is_glass(here) {
                             emit = nb == 0 || nb == 9; // glass against air/water, cull glass-glass
@@ -2018,6 +2021,25 @@ mod tests {
         assert!(
             water_faces.iter().all(|&n| n == BF_NY_POS),
             "water must not emit side/bottom faces that can become blue chunk-line walls: {water_faces:?}"
+        );
+    }
+
+    #[test]
+    fn water_at_chunk_ceiling_emits_top_without_air_chunk_above() {
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(8, (KCHUNK_DIM - 1) as usize, 8, 9);
+        store.chunks.insert(ChunkCoord::default(), ch);
+
+        let (_, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+        let water_faces: Vec<u32> = decode_normal_and_mat(&vtx)
+            .iter()
+            .filter(|&&(_, m)| m == 9)
+            .map(|&(n, _)| n)
+            .collect();
+        assert!(
+            water_faces.contains(&BF_NY_POS),
+            "water at the top of a chunk must still draw its surface when the all-air chunk above is not resident"
         );
     }
 

@@ -5128,12 +5128,19 @@ impl<'c> World<'c> {
     // resident chunk changed (`shadow.dirty`); otherwise the persistent buffer is
     // reused and the revision is unchanged so the app can skip the GPU re-upload.
 
-    /// Horizontal half-extent of the shadow region in CHUNKS. Fixed at 8 chunks so the
-    /// horizontal grid dimension is 2*8*16 = 256, a POWER OF TWO. That lets the shader wrap
-    /// the toroidal lookup with a cheap bitmask (& 255) instead of an integer modulo, which is
-    /// the per-march-step hot path. 256 x 80 x 256 = ~5.2 MB at 1 byte/voxel (Air-friendly).
+    /// Horizontal half-extent of the shadow region in CHUNKS. Keep the horizontal grid
+    /// dimension a power of two so the shader can wrap with a cheap bitmask instead of
+    /// integer modulo. At high render distances, widen the resident-world occupancy window
+    /// so high-altitude views do not show a hard "trees exist but shadows vanished" cutoff.
     fn shadow_radius_chunks(&self) -> i32 {
-        8
+        if self.stream_r >= 16 { 16 } else { 8 }
+    }
+
+    /// How far from the camera to include sub-voxel tree/prop instances. These are separate
+    /// from chunk meshes; a fixed 120-block cutoff made high-altitude creative flight show
+    /// terrain without its trees. Scale with render distance, bounded for the M1 Air target.
+    fn prop_radius_blocks(&self) -> f32 {
+        ((self.stream_r as f32) * KCHUNK_DIM as f32).clamp(120.0, 384.0)
     }
 
     /// Wrap a world voxel coord into the toroidal buffer cell on one axis.
@@ -5465,7 +5472,7 @@ impl<'c> World<'c> {
             d.dim_sat_pz = self.region_sat(ChunkCoord { x: cc.x, y: cc.y, z: cc.z + 1 });
             d.dim_sat_pxz = self.region_sat(ChunkCoord { x: cc.x + 1, y: cc.y, z: cc.z + 1 });
             draws.push(d);
-            if dist < 120.0 {
+            if dist < self.prop_radius_blocks() {
                 let props = self.meshes[cc].props.clone();
                 if !props.is_empty() {
                     prop_instances.extend_from_slice(&props);
@@ -6257,6 +6264,21 @@ impl<'a> ByteReader<'a> {
 #[cfg(test)]
 mod time_mode_tests {
     use super::*;
+
+    #[test]
+    fn visual_detail_radii_scale_with_render_distance() {
+        let mut w = World::new(None);
+        assert_eq!(w.shadow_radius_chunks(), 8);
+        assert_eq!(w.prop_radius_blocks(), 120.0);
+
+        w.set_render_distance(24);
+        assert_eq!(w.shadow_radius_chunks(), 16);
+        assert_eq!(w.prop_radius_blocks(), 384.0);
+
+        w.set_render_distance(40);
+        assert_eq!(w.shadow_radius_chunks(), 16);
+        assert_eq!(w.prop_radius_blocks(), 384.0);
+    }
 
     fn set_mode(w: &mut World, mode: i32) {
         let act = bf_action {
