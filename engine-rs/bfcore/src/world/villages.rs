@@ -43,7 +43,13 @@ impl<'c> World<'c> {
         order
     }
 
-    fn build_palisade_segment(&mut self, cx: i32, cz: i32, cells_to_build: i32, wall: BlockId) -> i32 {
+    fn build_palisade_segment(
+        &mut self,
+        cx: i32,
+        cz: i32,
+        cells_to_build: i32,
+        wall: BlockId,
+    ) -> i32 {
         let mut built = 0;
         for (dx, dz) in Self::palisade_ring_cells() {
             if built >= cells_to_build {
@@ -52,11 +58,30 @@ impl<'c> World<'c> {
             let wx = cx + dx;
             let wz = cz + dz;
             let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
-            if self.block_at(IVec3 { x: wx, y: surf + 1, z: wz }) == wall {
+            if self.block_at(IVec3 {
+                x: wx,
+                y: surf + 1,
+                z: wz,
+            }) == wall
+            {
                 continue;
             }
-            self.set_block_internal(IVec3 { x: wx, y: surf + 1, z: wz }, wall);
-            self.set_block_internal(IVec3 { x: wx, y: surf + 2, z: wz }, wall);
+            self.set_block_internal(
+                IVec3 {
+                    x: wx,
+                    y: surf + 1,
+                    z: wz,
+                },
+                wall,
+            );
+            self.set_block_internal(
+                IVec3 {
+                    x: wx,
+                    y: surf + 2,
+                    z: wz,
+                },
+                wall,
+            );
             built += 1;
         }
         built
@@ -68,7 +93,12 @@ impl<'c> World<'c> {
             let wx = cx + dx;
             let wz = cz + dz;
             let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
-            if self.block_at(IVec3 { x: wx, y: surf + 1, z: wz }) == wall {
+            if self.block_at(IVec3 {
+                x: wx,
+                y: surf + 1,
+                z: wz,
+            }) == wall
+            {
                 n += 1;
             }
         }
@@ -81,11 +111,29 @@ impl<'c> World<'c> {
             let wx = cx + dx;
             let wz = cz + dz;
             let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
-            let here = self.block_at(IVec3 { x: wx, y: surf + 1, z: wz });
+            let here = self.block_at(IVec3 {
+                x: wx,
+                y: surf + 1,
+                z: wz,
+            });
             if here == Self::WALL_WOOD || here == Self::WALL_STONE {
                 if here != wall {
-                    self.set_block_internal(IVec3 { x: wx, y: surf + 1, z: wz }, wall);
-                    self.set_block_internal(IVec3 { x: wx, y: surf + 2, z: wz }, wall);
+                    self.set_block_internal(
+                        IVec3 {
+                            x: wx,
+                            y: surf + 1,
+                            z: wz,
+                        },
+                        wall,
+                    );
+                    self.set_block_internal(
+                        IVec3 {
+                            x: wx,
+                            y: surf + 2,
+                            z: wz,
+                        },
+                        wall,
+                    );
                     n += 1;
                 }
             }
@@ -98,7 +146,11 @@ impl<'c> World<'c> {
             let wx = cx + dx;
             let wz = cz + dz;
             let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
-            let p = IVec3 { x: wx, y: surf + 3, z: wz };
+            let p = IVec3 {
+                x: wx,
+                y: surf + 3,
+                z: wz,
+            };
             if self.block_at(p) == AIR {
                 self.set_block_internal(p, Self::WALL_STONE);
             }
@@ -109,8 +161,15 @@ impl<'c> World<'c> {
             let wz = cz + dz;
             let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
             for dy in 1..=5 {
-                let p = IVec3 { x: wx, y: surf + dy, z: wz };
-                if self.block_at(p) == AIR || self.block_at(p) == Self::WALL_STONE || self.block_at(p) == Self::WALL_WOOD {
+                let p = IVec3 {
+                    x: wx,
+                    y: surf + dy,
+                    z: wz,
+                };
+                if self.block_at(p) == AIR
+                    || self.block_at(p) == Self::WALL_STONE
+                    || self.block_at(p) == Self::WALL_WOOD
+                {
                     self.set_block_internal(p, Self::WALL_STONE);
                 }
             }
@@ -123,8 +182,22 @@ impl<'c> World<'c> {
             let wx = cx + dx;
             let wz = cz + R;
             let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
-            self.set_block_internal(IVec3 { x: wx, y: surf + 1, z: wz }, Self::IRON_GATE);
-            self.set_block_internal(IVec3 { x: wx, y: surf + 2, z: wz }, Self::IRON_GATE);
+            self.set_block_internal(
+                IVec3 {
+                    x: wx,
+                    y: surf + 1,
+                    z: wz,
+                },
+                Self::IRON_GATE,
+            );
+            self.set_block_internal(
+                IVec3 {
+                    x: wx,
+                    y: surf + 2,
+                    z: wz,
+                },
+                Self::IRON_GATE,
+            );
         }
         for &(dx, dz) in &[(-R, -R), (R, -R), (-R, R), (R, R)] {
             let wx = cx + dx;
@@ -140,7 +213,11 @@ impl<'c> World<'c> {
             let wx = cx + dx;
             let wz = cz + R;
             let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
-            let p = IVec3 { x: wx, y: surf + 3, z: wz };
+            let p = IVec3 {
+                x: wx,
+                y: surf + 3,
+                z: wz,
+            };
             if self.block_at(p) == AIR {
                 self.set_block_internal(p, Self::LAMP);
             }
@@ -165,8 +242,16 @@ impl<'c> World<'c> {
         const DOOR: BlockId = 33;
         const GLOW: BlockId = 7;
         let surf = worldgen::worldgen_surface_height(cx, cz, self.seed);
-        if self.block_at(IVec3 { x: cx, y: surf, z: cz }) == FLOOR
-            && self.block_at(IVec3 { x: cx, y: surf + 1, z: cz }) == GLOW
+        if self.block_at(IVec3 {
+            x: cx,
+            y: surf,
+            z: cz,
+        }) == FLOOR
+            && self.block_at(IVec3 {
+                x: cx,
+                y: surf + 1,
+                z: cz,
+            }) == GLOW
         {
             return;
         }
@@ -179,16 +264,44 @@ impl<'c> World<'c> {
                 let edge = dx == -2 || dx == 2 || dz == -2 || dz == 2;
                 if edge {
                     if dz == 2 && dx == 0 {
-                        self.set_block_internal(IVec3 { x: wx, y: s + 1, z: wz }, DOOR);
-                        self.set_block_internal(IVec3 { x: wx, y: s + 2, z: wz }, DOOR);
+                        self.set_block_internal(
+                            IVec3 {
+                                x: wx,
+                                y: s + 1,
+                                z: wz,
+                            },
+                            DOOR,
+                        );
+                        self.set_block_internal(
+                            IVec3 {
+                                x: wx,
+                                y: s + 2,
+                                z: wz,
+                            },
+                            DOOR,
+                        );
                         continue;
                     }
                     let win = (dx == 0 || dz == 0) && !(dz == 2 && dx == 0);
                     for dy in 1..=3 {
                         let b = if win && dy == 2 { GLASS } else { wall };
-                        self.set_block_internal(IVec3 { x: wx, y: s + dy, z: wz }, b);
+                        self.set_block_internal(
+                            IVec3 {
+                                x: wx,
+                                y: s + dy,
+                                z: wz,
+                            },
+                            b,
+                        );
                     }
-                    self.set_block_internal(IVec3 { x: wx, y: s + 4, z: wz }, wall);
+                    self.set_block_internal(
+                        IVec3 {
+                            x: wx,
+                            y: s + 4,
+                            z: wz,
+                        },
+                        wall,
+                    );
                 }
             }
         }
@@ -197,10 +310,24 @@ impl<'c> World<'c> {
                 let wx = cx + dx;
                 let wz = cz + dz;
                 let s = worldgen::worldgen_surface_height(wx, wz, self.seed);
-                self.set_block_internal(IVec3 { x: wx, y: s + 4, z: wz }, wall);
+                self.set_block_internal(
+                    IVec3 {
+                        x: wx,
+                        y: s + 4,
+                        z: wz,
+                    },
+                    wall,
+                );
             }
         }
-        self.set_block_internal(IVec3 { x: cx, y: surf + 1, z: cz }, GLOW);
+        self.set_block_internal(
+            IVec3 {
+                x: cx,
+                y: surf + 1,
+                z: cz,
+            },
+            GLOW,
+        );
     }
 
     fn village_state_mut(&mut self, ax: i32, az: i32) -> &mut VillageState {
@@ -220,7 +347,8 @@ impl<'c> World<'c> {
         let (ax, az) = (self.creatures[idx].home_x, self.creatures[idx].home_z);
         match npc_id {
             4 => {
-                let is_log = in_name == "oak_log" || in_name == "birch_log" || in_name == "pine_log";
+                let is_log =
+                    in_name == "oak_log" || in_name == "birch_log" || in_name == "pine_log";
                 if !is_log {
                     return false;
                 }
@@ -257,7 +385,8 @@ impl<'c> World<'c> {
                 true
             }
             5 => {
-                let is_stone = in_name == "stone_brick" || in_name == "cobblestone" || in_name == "stone";
+                let is_stone =
+                    in_name == "stone_brick" || in_name == "cobblestone" || in_name == "stone";
                 if !is_stone {
                     return false;
                 }
@@ -289,9 +418,14 @@ impl<'c> World<'c> {
                     let vs = self.village_state_mut(ax, az);
                     vs.tier = 2;
                     vs.progress = 0;
-                    self.toast("Mason: cut stone and proud towers! Now Dov can forge the iron gate.");
+                    self.toast(
+                        "Mason: cut stone and proud towers! Now Dov can forge the iron gate.",
+                    );
                 } else {
-                    self.toast(&format!("Mason: good stone. ({}/{} for the upgrade)", progress, STONE_NEEDED));
+                    self.toast(&format!(
+                        "Mason: good stone. ({}/{} for the upgrade)",
+                        progress, STONE_NEEDED
+                    ));
                 }
                 true
             }
@@ -306,7 +440,9 @@ impl<'c> World<'c> {
                     return true;
                 }
                 if tier >= 3 {
-                    self.toast("Blacksmith: the gate is hung and the lamps are lit. Our town is safe!");
+                    self.toast(
+                        "Blacksmith: the gate is hung and the lamps are lit. Our town is safe!",
+                    );
                     return true;
                 }
                 const IRON_NEEDED: i32 = 8;
@@ -329,7 +465,10 @@ impl<'c> World<'c> {
                     vs.progress = 0;
                     self.toast("Blacksmith: iron gate hung, lamps lit! Our town will shine through the night.");
                 } else {
-                    self.toast(&format!("Blacksmith: fine iron. ({}/{} for the gate)", progress, IRON_NEEDED));
+                    self.toast(&format!(
+                        "Blacksmith: fine iron. ({}/{} for the gate)",
+                        progress, IRON_NEEDED
+                    ));
                 }
                 true
             }
@@ -352,7 +491,12 @@ impl<'c> World<'c> {
         None
     }
 
-    fn village_status_near(&self, wx: i32, wz: i32, radius: i32) -> Option<(i32, i32, u8, i32, i32, i32, i32)> {
+    fn village_status_near(
+        &self,
+        wx: i32,
+        wz: i32,
+        radius: i32,
+    ) -> Option<(i32, i32, u8, i32, i32, i32, i32)> {
         let mut best: Option<(i32, i32)> = None;
         let mut best_d2 = (radius as i64) * (radius as i64);
         for &(ax, az) in self.villages.keys() {
@@ -376,7 +520,15 @@ impl<'c> World<'c> {
             2 => (8, vs.progress),
             _ => (0, 0),
         };
-        Some((ax, az, vs.tier, vs.wood_cells, Self::PALISADE_CELLS, progress, progress_needed))
+        Some((
+            ax,
+            az,
+            vs.tier,
+            vs.wood_cells,
+            Self::PALISADE_CELLS,
+            progress,
+            progress_needed,
+        ))
     }
 
     pub fn debug_build_palisade(&mut self, cx: i32, cz: i32, cells: i32) -> i32 {
@@ -384,15 +536,24 @@ impl<'c> World<'c> {
     }
 
     pub fn debug_village_tier(&self, ax: i32, az: i32) -> i32 {
-        self.villages.get(&(ax, az)).map(|v| v.tier as i32).unwrap_or(0)
+        self.villages
+            .get(&(ax, az))
+            .map(|v| v.tier as i32)
+            .unwrap_or(0)
     }
 
     pub fn debug_village_progress(&self, ax: i32, az: i32) -> i32 {
-        self.villages.get(&(ax, az)).map(|v| v.progress).unwrap_or(0)
+        self.villages
+            .get(&(ax, az))
+            .map(|v| v.progress)
+            .unwrap_or(0)
     }
 
     pub fn debug_village_wood_cells(&self, ax: i32, az: i32) -> i32 {
-        self.villages.get(&(ax, az)).map(|v| v.wood_cells).unwrap_or(0)
+        self.villages
+            .get(&(ax, az))
+            .map(|v| v.wood_cells)
+            .unwrap_or(0)
     }
 
     pub fn debug_palisade_cells_total() -> i32 {
@@ -405,5 +566,169 @@ impl<'c> World<'c> {
 
     pub fn debug_village_protects(&self, wx: i32, wz: i32) -> bool {
         self.village_protects(wx, wz).is_some()
+    }
+
+    pub(super) fn maintain_villagers(&mut self, dt: f32) {
+        if self.gen.is_none() || self.extra.is_none() || self.store.resident_count() < 20 {
+            return;
+        }
+        self.villager_timer -= dt;
+        if self.villager_timer > 0.0 {
+            return;
+        }
+        self.villager_timer = 2.0;
+        const KVCAP: i32 = 6;
+        let mut have = self.creatures.iter().filter(|c| c.model == 20).count() as i32;
+        if have >= KVCAP {
+            return;
+        }
+        let px = Self::ifloor(self.pos.x);
+        let pz = Self::ifloor(self.pos.z);
+        let mut dz = -128;
+        while dz <= 128 {
+            let mut dx = -128;
+            while dx <= 128 {
+                if have >= KVCAP {
+                    return;
+                }
+                let (typ, ax, az, ay) =
+                    worldgen::worldgen_structure_near(px + dx, pz + dz, self.seed);
+                if typ == 0 {
+                    dx += 64;
+                    continue;
+                }
+                let ddx = ax as f32 - self.pos.x;
+                let ddz = az as f32 - self.pos.z;
+                if ddx * ddx + ddz * ddz > 80.0 * 80.0 {
+                    dx += 64;
+                    continue;
+                }
+                if !self.store.is_resident(Self::to_chunk(IVec3 {
+                    x: ax,
+                    y: ay,
+                    z: az,
+                })) {
+                    dx += 64;
+                    continue;
+                }
+                let present = self.creatures.iter().any(|c| {
+                    c.model == 20
+                        && (c.pos.x - ax as f32).abs() < 10.0
+                        && (c.pos.z - az as f32).abs() < 10.0
+                });
+                if present {
+                    dx += 64;
+                    continue;
+                }
+                have += self.spawn_villager_at(ax, ay, az, KVCAP - have);
+                dx += 64;
+            }
+            dz += 64;
+        }
+    }
+
+    // Profession (npc_id) for the villager at `idx` within a single settlement.
+    //
+    // The trade roles form a tool chain: Woodcutter (4, wood) -> Stone Mason (5, stone)
+    // -> Blacksmith (6, iron). A higher tier is useless without the ones below it, so a
+    // small village must never hand the player a stranded high tier. Roles 1..=3 (Elder,
+    // Builder, Herbalist) are social / quest givers and carry no chain requirement.
+    //
+    // Villages fill from the bottom of the chain up, interleaving social roles so a
+    // higher trade tier only appears at a later index than every lower tier. The result
+    // is always a chain prefix: a 1-villager hamlet has only a Woodcutter, and stone /
+    // iron arrive only once the settlement is large enough to have the tiers below them.
+    //
+    // Cities are the place to complete progression, so they front-load the full chain
+    // (wood, stone, iron in the first three slots); a city reliably reaches the cap, so
+    // all three tiers are guaranteed present.
+    //
+    // Both orders are pure functions of (is_city, idx): deterministic, no RNG, so the
+    // same villager index in the same settlement always gets the same role.
+    pub(super) fn villager_npc_for_index(is_city: bool, idx: i32) -> i32 {
+        // npc_id roster: 1 Elder, 2 Builder, 3 Herbalist, 4 Woodcutter (wood),
+        // 5 Stone Mason (stone), 6 Blacksmith (iron).
+        let city_order = [4, 5, 6, 1, 2, 3];
+        let village_order = [4, 1, 5, 2, 6, 3];
+        let order = if is_city { &city_order } else { &village_order };
+        let i = if idx < 0 { 0 } else { idx as usize };
+        // Beyond the roster (a settlement bigger than 6 villagers) we cycle, which only
+        // ever repeats roles whose prerequisites are already present, so the prefix
+        // property still holds.
+        order[i % order.len()]
+    }
+
+    pub(super) fn spawn_villager_at(&mut self, ax: i32, ay: i32, az: i32, budget: i32) -> i32 {
+        let pool: Vec<CreatureDefX> = match self.extra {
+            Some(x) => x
+                .creatures()
+                .iter()
+                .filter(|d| d.model == 20)
+                .cloned()
+                .collect(),
+            None => return 0,
+        };
+        if pool.is_empty() || budget <= 0 {
+            return 0;
+        }
+        // Is this settlement a city? Cities host the full profession chain; villages get
+        // an ordered chain prefix. The structure type comes straight from worldgen so the
+        // worldgen city upgrade and the profession assignment stay in sync (one source of
+        // truth for "city vs village").
+        let (styp, _sx, _sz, _sy) = worldgen::worldgen_structure_near(ax, az, self.seed);
+        let is_city = worldgen::worldgen_is_city(styp);
+        // Index of the next villager within THIS settlement: count the ones already
+        // anchored at this home. Spawning is incremental, so this keeps the per-settlement
+        // role sequence stable as the village fills up over time.
+        let mut idx_in_settlement = self
+            .creatures
+            .iter()
+            .filter(|c| c.model == 20 && c.home_x == ax && c.home_z == az)
+            .count() as i32;
+        let n = budget.min(1 + if self.rand01() < 0.5 { 1 } else { 0 });
+        let mut made = 0;
+        for _ in 0..n {
+            let ox = ax as f32 + (self.rand01() * 5.0 - 2.5);
+            let oz = az as f32 + (self.rand01() * 5.0 - 2.5);
+            let gy = self.floor_below(Self::ifloor(ox), ay + 4, Self::ifloor(oz));
+            if gy == NO_FLOOR {
+                continue;
+            }
+            if self.block_at(IVec3 {
+                x: Self::ifloor(ox),
+                y: gy + 1,
+                z: Self::ifloor(oz),
+            }) == WATER
+            {
+                continue;
+            }
+            let pick = (self.rand01() * pool.len() as f32) as usize % pool.len();
+            let d = &pool[pick];
+            let mut c = Creature::default();
+            c.pos = V3::new(ox, gy as f32, oz);
+            c.yaw = self.rand01() * 6.2831853;
+            c.model = d.model;
+            c.npc_id = Self::villager_npc_for_index(is_city, idx_in_settlement);
+            idx_in_settlement += 1;
+            c.home_x = ax;
+            c.home_z = az;
+            c.name = d.name.clone();
+            c.speed = if d.move_speed > 0.0 {
+                d.move_speed * 0.5
+            } else {
+                0.8
+            };
+            c.hp = if d.max_health > 0 {
+                d.max_health as i32
+            } else {
+                20
+            };
+            c.scale = 0.95;
+            c.color = Self::color_for("passive", d.id);
+            c.wander = 1.0 + self.rand01() * 2.0;
+            self.creatures.push(c);
+            made += 1;
+        }
+        made
     }
 }
