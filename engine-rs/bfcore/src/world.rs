@@ -40,8 +40,10 @@ mod quests;
 mod crafting;
 mod regions;
 mod time;
+mod falling;
 
 use self::chests::ChestData;
+use self::falling::FallingBlock;
 use self::quests::K_ACHIEVEMENT_COUNT;
 use self::regions::RegionKey;
 use self::shadows::ShadowVol;
@@ -309,19 +311,6 @@ struct RuinSite {
     // True once the clear reward has been granted for this ruin. The reward fires only
     // the first time the ruin is cleared, never again (even after a re-arm + reclear).
     rewarded: bool,
-}
-
-// A block in mid air: undermined sand/gravel, or logs from a felled tree.
-#[derive(Clone)]
-struct FallingBlock {
-    pos: V3,
-    vel: V3,
-    spin: f32,
-    spin_rate: f32,
-    block: BlockId,
-    color: V3,
-    as_item: bool,
-    life: f32,
 }
 
 // A meshed chunk's GPU buffers + cached prop instances (#51).
@@ -1375,176 +1364,6 @@ impl<'c> World<'c> {
             self.apply_gravity_above(t);
             self.flow_water(t);
         }
-    }
-
-    // ---- destruction physics ---------------------------------------------
-    fn falling_color(b: BlockId) -> V3 {
-        match b {
-            6 => V3::new(0.86, 0.79, 0.55),
-            11 => V3::new(0.55, 0.53, 0.50),
-            21 => V3::new(0.50, 0.36, 0.20),
-            22 => V3::new(0.78, 0.72, 0.56),
-            5 => V3::new(0.27, 0.55, 0.24),
-            27 => V3::new(0.40, 0.62, 0.32),
-            _ => V3::new(0.6, 0.6, 0.6),
-        }
-    }
-    fn spawn_falling(&mut self, w: IVec3, b: BlockId, as_item: bool, vel: V3) {
-        if self.falling.len() > 200 {
-            return;
-        }
-        let spin = self.rand01() * 6.2831853;
-        let spin_rate = (self.rand01() - 0.5) * 8.0;
-        self.falling.push(FallingBlock {
-            pos: V3::new(w.x as f32 + 0.5, w.y as f32, w.z as f32 + 0.5),
-            vel,
-            spin,
-            spin_rate,
-            block: b,
-            color: Self::falling_color(b),
-            as_item,
-            life: 6.0,
-        });
-    }
-    fn flow_water(&mut self, t: IVec3) {
-        if self.block_at(t) != AIR {
-            return;
-        }
-        let fed = self.block_at(IVec3 { x: t.x, y: t.y + 1, z: t.z }) == WATER
-            || self.block_at(IVec3 { x: t.x + 1, y: t.y, z: t.z }) == WATER
-            || self.block_at(IVec3 { x: t.x - 1, y: t.y, z: t.z }) == WATER
-            || self.block_at(IVec3 { x: t.x, y: t.y, z: t.z + 1 }) == WATER
-            || self.block_at(IVec3 { x: t.x, y: t.y, z: t.z - 1 }) == WATER;
-        if !fed {
-            return;
-        }
-        self.set_block_internal(t, WATER);
-        let mut w = t;
-        for _ in 0..64 {
-            let below = IVec3 { x: w.x, y: w.y - 1, z: w.z };
-            if self.block_at(below) != AIR {
-                break;
-            }
-            self.set_block_internal(w, AIR);
-            self.set_block_internal(below, WATER);
-            w = below;
-        }
-    }
-    fn apply_gravity_above(&mut self, w: IVec3) {
-        let mut up = IVec3 { x: w.x, y: w.y + 1, z: w.z };
-        while Self::is_gravity_block(self.block_at(up)) {
-            let b = self.block_at(up);
-            self.set_block_internal(up, AIR);
-            self.spawn_falling(up, b, false, V3::new(0.0, -1.0, 0.0));
-            up.y += 1;
-        }
-    }
-    fn fell_tree(&mut self, base: IVec3) {
-        let mut logs: Vec<IVec3> = Vec::new();
-        let mut stack: Vec<IVec3> = vec![base];
-        let mut seen: HashSet<(i32, i32, i32)> = HashSet::new();
-        seen.insert((base.x, base.y, base.z));
-        while let Some(w) = stack.pop() {
-            if logs.len() >= 12 {
-                break;
-            }
-            logs.push(w);
-            for dx in -1..=1 {
-                for dy in 0..=1 {
-                    for dz in -1..=1 {
-                        let n = IVec3 { x: w.x + dx, y: w.y + dy, z: w.z + dz };
-                        if !Self::is_log(self.block_at(n)) {
-                            continue;
-                        }
-                        if seen.insert((n.x, n.y, n.z)) {
-                            stack.push(n);
-                        }
-                    }
-                }
-            }
-        }
-        // Logs fall outward+up from base, then drop as items.
-        for w in &logs {
-            let b = self.block_at(*w);
-            self.set_block_internal(*w, AIR);
-            let h = (w.y - base.y) as f32;
-            let vx = (self.rand01() - 0.5) * 2.0;
-            let vz = (self.rand01() - 0.5) * 2.0;
-            self.spawn_falling(*w, b, true, V3::new(vx, 1.5 + h * 0.4, vz));
-        }
-        // Attached leaves removed; a FEW particle bursts (capped).
-        let mut leaf_bursts = 0;
-        let mut leaves_removed = 0;
-        let logs_copy = logs.clone();
-        for lw in &logs_copy {
-            if leaves_removed >= 160 {
-                break;
-            }
-            for dx in -3..=3 {
-                for dy in -1..=4 {
-                    for dz in -3..=3 {
-                        let n = IVec3 { x: lw.x + dx, y: lw.y + dy, z: lw.z + dz };
-                        let lf = self.block_at(n);
-                        if !Self::is_leaf(lf) {
-                            continue;
-                        }
-                        self.set_block_internal(n, AIR);
-                        leaves_removed += 1;
-                        if leaf_bursts < 6 {
-                            self.fx(0, n, ((lf as i32) << 4) | 6);
-                            leaf_bursts += 1;
-                        }
-                    }
-                }
-            }
-        }
-        self.fx(2, base, 0);
-    }
-    fn update_falling(&mut self, dt: f32) {
-        // Mutate falling positions first (no self.block_at borrow conflict since
-        // falling is a separate field, but landing logic needs block reads, so
-        // process landings into a list then apply).
-        let n = self.falling.len();
-        for i in 0..n {
-            let (px, py, pz) = {
-                let fb = &mut self.falling[i];
-                fb.vel.y -= 26.0 * dt;
-                fb.pos = fb.pos + fb.vel * dt;
-                fb.spin += fb.spin_rate * dt;
-                fb.life -= dt;
-                (fb.pos.x, fb.pos.y, fb.pos.z)
-            };
-            let fy = self.floor_below(Self::ifloor(px), py.floor() as i32 + 1, Self::ifloor(pz));
-            if fy != NO_FLOOR && py <= fy as f32 {
-                let land = IVec3 { x: Self::ifloor(px), y: fy, z: Self::ifloor(pz) };
-                let (as_item, block) = {
-                    let fb = &self.falling[i];
-                    (fb.as_item, fb.block)
-                };
-                if as_item {
-                    let id = self.item_that_places(block);
-                    if id != 0 {
-                        if let Some(inv) = self.inv.as_mut() {
-                            inv.add(ItemStack { item: id, count: 1, durability: 0xFFFF });
-                        }
-                    }
-                    self.fx(7, land, 0);
-                } else {
-                    let mut settle = land;
-                    let mut guard = 0;
-                    while self.block_at(settle) != AIR && guard < 64 {
-                        settle.y += 1;
-                        guard += 1;
-                    }
-                    if self.block_at(settle) == AIR {
-                        self.set_block_internal(settle, block);
-                        self.fx(0, settle, ((block as i32) << 4) | Self::sound_class_for(block));
-                    }
-                }
-                self.falling[i].life = 0.0;
-            }
-        }
-        self.falling.retain(|f| f.life > 0.0);
     }
 
     // ---- raycast + combat ------------------------------------------------
