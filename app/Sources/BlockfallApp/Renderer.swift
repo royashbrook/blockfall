@@ -42,6 +42,7 @@ final class BufferRegistry {
     private let lock = NSLock()
     let device: MTLDevice
     var currentFrame = 0
+    private var completedFrame = -1
     private let maxReusableBytes = 96 * 1024 * 1024
     init(device: MTLDevice) { self.device = device }
 
@@ -88,13 +89,19 @@ final class BufferRegistry {
                      newBuffers: newBuffers,
                      reusedBuffers: reusedBuffers)
     }
-    // Release buffers retired more than a few frames ago (GPU done with them).
+    func markFrameCompleted(_ frame: Int) {
+        lock.lock(); defer { lock.unlock() }
+        completedFrame = max(completedFrame, frame)
+    }
+    // Release buffers only after Metal tells us the command buffer that could
+    // have referenced them has completed. A frame-count heuristic is not a fence
+    // when the GPU is under backpressure.
     func collect() {
         lock.lock(); defer { lock.unlock() }
         var keep: [(buf: MTLBuffer, frame: Int)] = []
         keep.reserveCapacity(retired.count)
         for item in retired {
-            if currentFrame - item.frame > 3 {
+            if item.frame <= completedFrame {
                 recycle(item.buf)
             } else {
                 keep.append(item)
@@ -1775,7 +1782,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // night and zero when the player turns it off. THE TUNING KNOB is kGodRayStrength.
         let dayT  = Renderer.dayLight(frame.camera.time_of_day)
         var grStrength: Float = 0
-        if gfxGodRays {                                   // #: god-ray toggle
+        if gfxGodRays && haveShadowVol {                  // #: god-ray toggle
             // #136 fold in the intensity slider (0..1) so the rays scale from off to the
             // kGodRayStrength ceiling; defaults to 0.5 = half the old full-strength look.
             grStrength = dayT * (1 - frame.camera.underground) * Renderer.kGodRayStrength * gfxGodRayStr
@@ -1918,6 +1925,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         // the default async present the metal content draws over the overlay and
         // the HUD is invisible. Requires view.presentsWithTransaction = true.
         // This path is unchanged regardless of whether MetalFX is active.
+        let encodedFrame = frameCounter
+        cmd.addCompletedHandler { [registry] _ in
+            registry.markFrameCompleted(encodedFrame)
+        }
         if view.presentsWithTransaction {
             cmd.commit()
             cmd.waitUntilScheduled()
@@ -4121,7 +4132,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // =========================================================
     // Reflective water (#43) samples the sky along the reflected ray. evalSkyColor
     // is defined further down (after cloudFbm); declare it here so water can call it.
-    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk, float cloudsOn);
+    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk, float cloudsOn, float2 pixelCoord);
 
     fragment float4 waterFmain(VOut in [[stage_in]],
                                constant WaterUniforms& wu [[buffer(2)]],
@@ -4198,7 +4209,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             // cloudsOn=0 for the water reflection: the volumetric raymarch is skipped in the
             // bounce (it would double the cloud cost per water fragment for a subtle gain).
             float3 skyRefl = evalSkyColor(normalize(refl),
-                                          wu.sunDirTime.xyz, wu.sunDirTime.w, t, 0.0);
+                                          wu.sunDirTime.xyz, wu.sunDirTime.w, t, 0.0,
+                                          float2(0.0));
             float ndv     = max(0.0, dot(-viewDir, perturbedN));
             float fres    = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);   // Schlick, F0≈0.02
             // NIGHT GROUND-WASH FIX (#117): the Fresnel sky reflection was NOT gated by
@@ -4370,7 +4382,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Sky colour along a view ray (gradient, sun/moon, stars, clouds, weather).
     // Shared by the sky pass AND reflective water (#43) — forward-declared above
     // waterFmain. Does NOT apply the underground fade (that's sky-pass only).
-    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk, float cloudsOn) {
+    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk, float cloudsOn, float2 pixelCoord) {
         // dayT now tracks the real sun elevation (see dayLight) so the sky darkens
         // when the sun actually sets, instead of staying lit until t~1.0 (the old
         // sin(t*pi) was a quarter-cycle out of phase with the sun arc). The sun
@@ -4585,9 +4597,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             // the march cadence into the scaly ripple bands the player saw. Scale ray.xz up so the
             // hash input changes by ~O(1) per pixel BEFORE the IGN, which makes the dither truly
             // blue-noise-like (well distributed over any small neighbourhood) so it breaks the ring
-            // without a coherent beat pattern. evalSkyColor is shared with water (no pixel coord),
-            // so we derive the screen-frequency coordinate from the ray itself.
-            float2 cpix  = ray.xz * 720.0;
+            // without a coherent beat pattern. Use real pixel coordinates in the sky pass;
+            // water passes cloudsOn=0 and skips this block.
+            float2 cpix  = pixelCoord;
             float cdith  = fract(52.9829189 * fract(dot(cpix, float2(0.06711056, 0.00583715))));
             tEnter += dt * (cdith - 0.5) * 0.10;
             float wind = clk * 1.10;           // slow horizontal drift
@@ -4679,7 +4691,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 ray = normalize(su.camFwd.xyz
                                + su.camRight.xyz * (in.ndc.x * aspect * tanHalfFov)
                                + su.camUp.xyz    * (in.ndc.y * tanHalfFov));
-        float3 skyCol = evalSkyColor(ray, su.sunDirTime.xyz, su.sunDirTime.w, wu.wallClockSecs, wu.cloudsOn);
+        float3 skyCol = evalSkyColor(ray, su.sunDirTime.xyz, su.sunDirTime.w, wu.wallClockSecs,
+                                     wu.cloudsOn, in.position.xy);
 
         // FIX (#33): when the eye is underground (su.camFwd.w = underground 0..1),
         // fade the whole sky to a near-black cave colour. Surface-priority streaming
@@ -4979,6 +4992,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                                   texture3d<uint, access::read> occ         [[texture(3)]],
                                   texture3d<uint, access::read> occCoarse   [[texture(4)]]) {
         constexpr sampler s(filter::linear, address::clamp_to_edge);
+        constexpr sampler sDepth(filter::nearest, address::clamp_to_edge);
 
         // hdrTex is at the capped internal resolution; bilinear upscale is free here.
         float3 hdr   = hdrTex.sample(s, in.uv).rgb;
@@ -5001,7 +5015,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         if (volStrength > 0.001) {
             // Reconstruct this pixel's world position from depth (clip -> world).
             // FSVOut uv is Metal top-left; NDC y is flipped, z in [0,1] on Metal.
-            float d = sceneDepth.sample(s, in.uv);
+            float d = sceneDepth.sample(sDepth, in.uv);
             float2 ndcXY = float2(in.uv.x * 2.0 - 1.0, (1.0 - in.uv.y) * 2.0 - 1.0);
             float4 clip  = float4(ndcXY, d, 1.0);
             float4 wp    = vu.invViewProj * clip;
@@ -6086,6 +6100,7 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
         }
 
         cmd.commit(); cmd.waitUntilCompleted()
+        registry.markFrameCompleted(f)
         bf_frame_end(e); registry.collect()
     }
     guard rendered else { print("no draws encoded"); return false }
@@ -6338,6 +6353,7 @@ func runWashoutTest() -> Bool {
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3); enc.endEncoding()
             }
             cmd.commit(); cmd.waitUntilCompleted()
+            registry.markFrameCompleted(64 + yi)
             bf_frame_end(e); registry.collect()
 
             // Measure washed pixels: bright (luma>0.82) AND desaturated (sat<0.18).

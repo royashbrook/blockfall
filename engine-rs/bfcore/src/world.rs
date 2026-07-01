@@ -191,6 +191,7 @@ struct GenResult {
 // allocator. Carries the packed CPU buffers (the allocator is frame-thread only).
 struct MeshJobResult {
     cc: ChunkCoord,
+    version: u64,
     vbytes: Vec<u8>,
     ibytes: Vec<u8>,
     index_count: u32,
@@ -552,6 +553,11 @@ pub struct World<'c> {
     // Far chunks can be meshed once without frame-thread lighting, then promoted
     // to a fully lit mesh when the player approaches.
     unlit_far_meshes: HashSet<ChunkCoord>,
+    // Monotonic dirty stamps for async meshing. Worker results carry the stamp
+    // from submit time; if a chunk changed while the worker was meshing, the old
+    // snapshot is discarded instead of overwriting the newer edit for a frame.
+    mesh_versions: HashMap<ChunkCoord, u64>,
+    mesh_next_version: u64,
 
     // World-space voxel sun-shadow occupancy (ABI v19). A persistent occupancy
     // grid (1 byte/voxel: 1 = casts sun shadow) covering a fixed-size region
@@ -745,6 +751,8 @@ impl<'c> World<'c> {
             pending_gen_results: Vec::new(),
             pending_mesh_results: Vec::new(),
             unlit_far_meshes: HashSet::new(),
+            mesh_versions: HashMap::new(),
+            mesh_next_version: 0,
             shadow: ShadowVol::new(),
         }
     }
@@ -930,7 +938,7 @@ impl<'c> World<'c> {
             Self::mod16(w.z) as usize,
             b,
         );
-        self.dirty.insert(cc);
+        self.mark_dirty(cc);
         self.edited.insert(cc);
         // A block changed: re-stamp this chunk's column into the toroidal shadow grid.
         self.shadow.refill_cols.insert((cc.x, cc.z));
@@ -950,7 +958,7 @@ impl<'c> World<'c> {
         for d in dirs {
             let nc = Self::to_chunk(IVec3 { x: w.x + d.x, y: w.y + d.y, z: w.z + d.z });
             if nc != cc && self.store.is_resident(nc) {
-                self.dirty.insert(nc);
+                self.mark_dirty(nc);
             }
         }
     }
@@ -1205,7 +1213,7 @@ impl<'c> World<'c> {
             }
             if !(ch.is_uniform() && ch.get(0, 0, 0) == AIR) {
                 self.store.insert(ch);
-                self.dirty.insert(cc);
+                self.mark_dirty(cc);
             }
         }
         // Eye 3.2 above the surface so the feet clear the top block.
@@ -1255,7 +1263,7 @@ impl<'c> World<'c> {
             if let Some(ch) = self.gen_chunk(cc) {
                 if !(ch.is_uniform() && ch.get(0, 0, 0) == AIR) {
                     self.store.insert(ch);
-                    self.dirty.insert(cc);
+                    self.mark_dirty(cc);
                 }
             }
         }
@@ -1294,7 +1302,7 @@ impl<'c> World<'c> {
                         }
                     }
                 }
-                self.dirty.insert(cc);
+                self.mark_dirty(cc);
                 self.restore_region(cc);
             }
         }
@@ -1308,7 +1316,7 @@ impl<'c> World<'c> {
     pub fn save(&self, dir: &str) -> bool {
         use std::io::Write;
         if std::fs::create_dir_all(dir).is_err() {
-            // C++ ignores the error_code and keeps going; mirror that.
+            return false;
         }
         // world.meta
         {
@@ -1365,8 +1373,12 @@ impl<'c> World<'c> {
                 buf.push(if self.ach_done[i] { 1 } else { 0 });
                 buf.extend_from_slice(&self.ach_progress[i].to_le_bytes());
             }
-            if let Ok(mut f) = std::fs::File::create(&path) {
-                let _ = f.write_all(&buf);
+            let mut f = match std::fs::File::create(&path) {
+                Ok(f) => f,
+                Err(_) => return false,
+            };
+            if f.write_all(&buf).is_err() {
+                return false;
             }
         }
         // edited chunks
@@ -1380,8 +1392,12 @@ impl<'c> World<'c> {
                 continue;
             }
             let name = format!("{}/c_{}_{}_{}.chunk", dir, cc.x, cc.y, cc.z);
-            if let Ok(mut f) = std::fs::File::create(&name) {
-                let _ = f.write_all(&bytes);
+            let mut f = match std::fs::File::create(&name) {
+                Ok(f) => f,
+                Err(_) => return false,
+            };
+            if f.write_all(&bytes).is_err() {
+                return false;
             }
         }
         // #109 chest contents (chests.dat). Kept OUT of the chunk blob (whose
@@ -1406,8 +1422,12 @@ impl<'c> World<'c> {
                     buf.extend_from_slice(&s.durability.to_le_bytes());
                 }
             }
-            if let Ok(mut f) = std::fs::File::create(&path) {
-                let _ = f.write_all(&buf);
+            let mut f = match std::fs::File::create(&path) {
+                Ok(f) => f,
+                Err(_) => return false,
+            };
+            if f.write_all(&buf).is_err() {
+                return false;
             }
         }
         // #95 living-villages tier progress (villages.dat). Player progress, kept OUT of
@@ -1427,8 +1447,12 @@ impl<'c> World<'c> {
                 buf.extend_from_slice(&v.wood_cells.to_le_bytes());
                 buf.extend_from_slice(&v.progress.to_le_bytes());
             }
-            if let Ok(mut f) = std::fs::File::create(&path) {
-                let _ = f.write_all(&buf);
+            let mut f = match std::fs::File::create(&path) {
+                Ok(f) => f,
+                Err(_) => return false,
+            };
+            if f.write_all(&buf).is_err() {
+                return false;
             }
         }
         true
@@ -1541,7 +1565,7 @@ impl<'c> World<'c> {
                 if let Some(ch) = PaletteChunk::deserialize(&bytes) {
                     let cc = ch.coord();
                     self.store.insert(ch);
-                    self.dirty.insert(cc);
+                    self.mark_dirty(cc);
                     self.edited.insert(cc);
                 }
             }
@@ -1822,6 +1846,7 @@ impl<'c> World<'c> {
                 return false;
             }
         }
+        let before = inv.clone();
         // Consume.
         for (&item, &need) in &required {
             inv.remove_item(item, need);
@@ -1829,9 +1854,7 @@ impl<'c> World<'c> {
         // Add result; roll back on no room.
         let result = ItemStack { item: m.result, count: m.count, durability: 0xFFFF };
         if !inv.add(result) {
-            for (&item, &need) in &required {
-                inv.add(ItemStack { item, count: need, durability: 0xFFFF });
-            }
+            *inv = before;
             return false;
         }
         true
@@ -4222,6 +4245,8 @@ impl<'c> World<'c> {
             }
             self.meshes.remove(&cc);
             self.unlit_far_meshes.remove(&cc);
+            self.mesh_versions.remove(&cc);
+            self.mesh_inflight.remove(&cc);
             self.store.evict(cc);
         }
     }
@@ -4230,8 +4255,19 @@ impl<'c> World<'c> {
     fn stream_backlog(&self) -> usize {
         self.gen_queue.len() + self.pending_gen_results.len() + self.dirty.len() + self.pending_mesh_results.len()
     }
-    fn dirty_chunk_and_resident_neighbours(&mut self, cc: ChunkCoord) {
+    fn mark_dirty(&mut self, cc: ChunkCoord) {
         self.dirty.insert(cc);
+        self.mesh_next_version = self.mesh_next_version.wrapping_add(1);
+        if self.mesh_next_version == 0 {
+            self.mesh_next_version = 1;
+        }
+        self.mesh_versions.insert(cc, self.mesh_next_version);
+    }
+    fn mesh_version(&self, cc: ChunkCoord) -> u64 {
+        self.mesh_versions.get(&cc).copied().unwrap_or(0)
+    }
+    fn dirty_chunk_and_resident_neighbours(&mut self, cc: ChunkCoord) {
+        self.mark_dirty(cc);
         let dirs = [
             ChunkCoord { x: cc.x + 1, y: cc.y, z: cc.z },
             ChunkCoord { x: cc.x - 1, y: cc.y, z: cc.z },
@@ -4242,7 +4278,7 @@ impl<'c> World<'c> {
         ];
         for nc in dirs {
             if self.store.is_resident(nc) {
-                self.dirty.insert(nc);
+                self.mark_dirty(nc);
             }
         }
     }
@@ -4659,7 +4695,7 @@ impl<'c> World<'c> {
                     if faces & (1 << f) != 0 {
                         let nc = ChunkCoord { x: cc.x + dirs[f].x, y: cc.y + dirs[f].y, z: cc.z + dirs[f].z };
                         if self.store.is_resident(nc) {
-                            self.dirty.insert(nc);
+                            self.mark_dirty(nc);
                         }
                     }
                 }
@@ -4702,6 +4738,7 @@ impl<'c> World<'c> {
         if self.pool.is_none() {
             return;
         }
+        let version = self.mesh_version(cc);
         self.mesh_inflight.insert(cc);
         // The mesher is a zero-size, stateless unit struct; make a fresh one for the
         // job rather than borrowing self.mesher into the closure.
@@ -4712,6 +4749,7 @@ impl<'c> World<'c> {
             let empty = mr.empty || mr.index_count == 0;
             let _ = tx.send(MeshJobResult {
                 cc,
+                version,
                 vbytes: if empty { Vec::new() } else { vbytes },
                 ibytes: if empty { Vec::new() } else { ibytes },
                 index_count: mr.index_count,
@@ -4727,6 +4765,10 @@ impl<'c> World<'c> {
     fn upload_mesh_result(&mut self, r: MeshJobResult) {
         if !self.store.is_resident(r.cc) {
             return; // evicted while meshing — drop the result
+        }
+        if r.version != self.mesh_version(r.cc) {
+            self.dirty.insert(r.cc);
+            return;
         }
         let props = self.scan_chunk_props(r.cc);
         let has_water = self.chunk_has_water(r.cc);
@@ -5521,7 +5563,7 @@ impl<'c> World<'c> {
             let to_c = V3::new(ctr.x - cam_pos.x, ctr.y - cam_pos.y, ctr.z - cam_pos.z);
             let dist = dot(to_c, to_c).sqrt();
             if dist < 176.0 && self.unlit_far_meshes.contains(cc) {
-                self.dirty.insert(*cc);
+                self.mark_dirty(*cc);
             }
             let facing = dot(to_c, cam_fwd) / dist;
             if dist > knear_keep && facing < kcull_cos {

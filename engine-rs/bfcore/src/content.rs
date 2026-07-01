@@ -532,6 +532,9 @@ impl ContentRegistry {
                 if let Some(gs) = get(obj, "grid_size") {
                     grid_size = as_int(gs) as i32;
                 }
+                if !(1..=3).contains(&grid_size) {
+                    return;
+                }
 
                 let mut shapeless = false;
                 if let Some(sl) = get(obj, "shapeless") {

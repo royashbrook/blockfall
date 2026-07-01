@@ -37,7 +37,7 @@
 //! (host broadcasts; client sends to host). The FFI layer calls it each frame.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::abi::{bf_entity_draw, bf_game_mode, bf_vec3};
@@ -175,6 +175,7 @@ pub struct NetSession {
     role: NetRole,
     sender: Option<Sender>,
     peers: Vec<u16>,
+    joined_peers: HashSet<u16>,
     remote: HashMap<u16, RemotePlayer>,
     local_edits: LocalEditQueue,
     snap_timer: f64,
@@ -187,6 +188,7 @@ impl NetSession {
             role,
             sender: None,
             peers: Vec::new(),
+            joined_peers: HashSet::new(),
             remote: HashMap::new(),
             local_edits: Rc::new(RefCell::new(Vec::new())),
             snap_timer: 0.0,
@@ -228,6 +230,7 @@ impl NetSession {
     #[allow(dead_code)]
     pub fn on_peer_leave(&mut self, peer: u16, world: &mut World) {
         self.peers.retain(|&p| p != peer);
+        self.joined_peers.remove(&peer);
         self.remote.remove(&peer);
         self.rebuild_avatars(world);
     }
@@ -245,11 +248,15 @@ impl NetSession {
                 // Host welcomes the client with the seed (+ mode) so it can gen
                 // the identical world locally.
                 if self.role == NetRole::Host {
+                    self.joined_peers.insert(peer);
                     let w = Self::welcome(world);
                     self.send_to(peer, NetChannel::ReliableOrdered, &w);
                 }
             }
             Some(PktType::Welcome) => {
+                if self.role != NetRole::Client {
+                    return;
+                }
                 let seed = match r.get_u64() {
                     Some(s) => s,
                     None => return, // ignore truncated packets
@@ -263,6 +270,13 @@ impl NetSession {
                 self.joined = true;
             }
             Some(PktType::BlockEdit) => {
+                if self.role == NetRole::Host {
+                    if !self.joined_peers.contains(&peer) {
+                        return;
+                    }
+                } else if !self.joined {
+                    return;
+                }
                 let w = match r.get_ivec3() {
                     Some(v) => v,
                     None => return, // truncated: don't corrupt the world
@@ -421,5 +435,51 @@ impl NetSession {
             0 => bf_game_mode::BF_MODE_SURVIVAL,
             _ => bf_game_mode::BF_MODE_CREATIVE,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn edit_packet(w: IVec3, b: BlockId) -> Vec<u8> {
+        let mut p = PktWriter::new();
+        p.put_type(PktType::BlockEdit);
+        p.put_ivec3(w);
+        p.put_u16(b);
+        p.buf
+    }
+
+    fn welcome_packet(seed: u64) -> Vec<u8> {
+        let mut p = PktWriter::new();
+        p.put_type(PktType::Welcome);
+        p.put_u64(seed);
+        p.put_u8(bf_game_mode::BF_MODE_CREATIVE as u8);
+        p.buf
+    }
+
+    #[test]
+    fn host_ignores_inbound_welcome() {
+        let mut world = World::new(None);
+        world.init_world(123);
+        let mut session = NetSession::new(NetRole::Host);
+
+        session.on_payload(7, NetChannel::ReliableOrdered, &welcome_packet(999), &mut world);
+
+        assert_eq!(world.world_seed(), 123);
+        assert!(!session.joined());
+    }
+
+    #[test]
+    fn host_ignores_block_edit_before_hello() {
+        let mut world = World::new(None);
+        world.init_world(123);
+        let pos = IVec3 { x: 1, y: 1, z: 1 };
+        let before = world.debug_block_at(pos.x, pos.y, pos.z);
+        let mut session = NetSession::new(NetRole::Host);
+
+        session.on_payload(7, NetChannel::ReliableOrdered, &edit_packet(pos, 42), &mut world);
+
+        assert_eq!(world.debug_block_at(pos.x, pos.y, pos.z), before);
     }
 }

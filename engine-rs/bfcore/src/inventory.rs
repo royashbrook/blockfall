@@ -5,6 +5,7 @@
 
 use crate::types::{ItemId, ItemRegistry, ItemStack};
 
+#[derive(Clone)]
 pub struct Inventory<'r> {
     slots: Vec<ItemStack>,
     registry: Option<&'r dyn ItemRegistry>,
@@ -28,7 +29,7 @@ impl<'r> Inventory<'r> {
         if slot >= self.slots.len() {
             return false;
         }
-        self.slots[slot] = s;
+        self.slots[slot] = self.clamp_stack(s);
         true
     }
 
@@ -40,6 +41,14 @@ impl<'r> Inventory<'r> {
             }
         }
         64
+    }
+
+    fn clamp_stack(&self, mut s: ItemStack) -> ItemStack {
+        if s.item == 0 || s.count == 0 {
+            return ItemStack::default();
+        }
+        s.count = s.count.min(self.max_stack(s.item));
+        s
     }
 
     /// Merge `s` into same-item stacks (slot 0..N), then fill empties (slot 0..N).
@@ -197,6 +206,14 @@ mod tests {
         assert_eq!(inv.get(0).count, 16);
         assert_eq!(inv.get(1).count, 16);
         assert_eq!(inv.get(2).count, 8);
+    }
+
+    #[test]
+    fn direct_set_clamps_to_registry_stack_size() {
+        let reg = Reg;
+        let mut inv = Inventory::new(1, Some(&reg));
+        assert!(inv.set(0, stack(99, 40)));
+        assert_eq!(inv.get(0), stack(99, 16));
     }
 
     #[test]

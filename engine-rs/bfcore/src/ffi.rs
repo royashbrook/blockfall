@@ -319,9 +319,22 @@ pub unsafe extern "C" fn bf_world_load(e: bf_engine) -> bf_result {
     };
     let dir = cstr_or(e.cfg.save_dir, "");
     e.world.set_render_distance(e.cfg.render_distance_chunks as i32);
-    if !e.world.load(&dir) {
-        let seed = if e.cfg.world_seed != 0 { e.cfg.world_seed } else { 1337 };
-        e.world.init_world(seed);
+    let meta_path = format!("{}/world.meta", dir);
+    match std::fs::metadata(&meta_path) {
+        Ok(_) => {
+            if !e.world.load(&dir) {
+                set_err("corrupt save");
+                return bf_result::BF_ERR_CORRUPT_SAVE;
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let seed = if e.cfg.world_seed != 0 { e.cfg.world_seed } else { 1337 };
+            e.world.init_world(seed);
+        }
+        Err(_) => {
+            set_err("save metadata error");
+            return bf_result::BF_ERR_IO;
+        }
     }
     e.world_ready = true;
     bf_result::BF_OK
