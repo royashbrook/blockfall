@@ -38,9 +38,11 @@ mod villages;
 mod shadows;
 mod quests;
 mod crafting;
+mod regions;
 
 use self::chests::ChestData;
 use self::quests::K_ACHIEVEMENT_COUNT;
+use self::regions::RegionKey;
 use self::shadows::ShadowVol;
 use self::villages::VillageState;
 
@@ -342,13 +344,6 @@ impl Default for MeshRec {
             props: Vec::new(),
         }
     }
-}
-
-// Region saturation key (region = 8x8 chunks horizontally).
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct RegionKey {
-    x: i32,
-    z: i32,
 }
 
 // ============================================================================
@@ -903,20 +898,6 @@ impl<'c> World<'c> {
         } else {
             Some(f)
         }
-    }
-
-    // ---- region saturation ----------------------------------------------
-    fn region_key(cc: ChunkCoord) -> RegionKey {
-        RegionKey { x: Self::floordiv(cc.x, KREGION_CHUNKS), z: Self::floordiv(cc.z, KREGION_CHUNKS) }
-    }
-    fn region_sat(&self, cc: ChunkCoord) -> f32 {
-        match self.region_sat.get(&Self::region_key(cc)) {
-            Some(&v) => v,
-            None => DIM_SAT,
-        }
-    }
-    fn restore_region(&mut self, cc: ChunkCoord) {
-        self.region_sat.insert(Self::region_key(cc), 1.0);
     }
 
     // Top standable block at a world column, GENERATING the column if not resident.
