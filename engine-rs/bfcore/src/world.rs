@@ -39,6 +39,7 @@ mod shadows;
 mod quests;
 mod crafting;
 mod regions;
+mod time;
 
 use self::chests::ChestData;
 use self::quests::K_ACHIEVEMENT_COUNT;
@@ -929,33 +930,6 @@ impl<'c> World<'c> {
         }
         NO_FLOOR
     }
-
-    // day/night cycle phase in 0..1.
-    //
-    // Phase convention (shared with the app's dayLight / skyColor / sun_dir):
-    // 0.25 is high noon (sun highest, brightest) and 0.75 is deep midnight. The
-    // sun direction is sun_dir.y = -sin(2*pi*t) - 0.25, so the sun sits ABOVE the
-    // horizon for t in [0, 0.5403] U [0.9598, 1.0] (about 0.58 of the cycle) and
-    // BELOW for t in [0.5403, 0.9598]. That 0.58 daylight band is ~14 of 24 hours,
-    // with the night taking the remaining ~10 hours, which is the generous-day
-    // balance we want. Phase advances LINEARLY with the clock, so the sun traces
-    // one smooth continuous arc per cycle (no discontinuity at noon or midnight).
-    //
-    // The whole cycle takes DAY_CYCLE_SECS of world_clock, so a fresh world opens
-    // at DAY_START_PHASE (dawn) and the sun climbs from there.
-    fn day_time(clock: f64) -> f32 {
-        ((clock * Self::DAY_RATE + Self::DAY_START_PHASE) % 1.0) as f32
-    }
-
-    // One full day/night cycle in seconds of world_clock. 24 minutes maps one real
-    // minute to one in-game hour, so the ~0.58 daylight band is ~14 real minutes of
-    // day and ~10 of night. Not so fast the day blinks by, not so slow it drags.
-    const DAY_CYCLE_SECS: f64 = 24.0 * 60.0;
-    // Phase advanced per second of world_clock (one full 0..1 sweep per cycle).
-    const DAY_RATE: f64 = 1.0 / Self::DAY_CYCLE_SECS;
-    // Phase at world_clock = 0. 0.0 reads as ~06:00 under the 0.25 = noon
-    // convention, so a new world starts at dawn just as the sun clears the horizon.
-    const DAY_START_PHASE: f64 = 0.0;
 
     // Generate a chunk via the worldgen (pure fn of seed+coord). Borrows gen
     // immutably and returns an owned chunk so the caller can mutate the store
@@ -3084,47 +3058,6 @@ impl<'c> World<'c> {
                 };
             }
             BF_ACT_SET_TIME_MODE => self.set_time_mode(a.arg_i),
-        }
-    }
-
-    // Representative day/night phases (in day_time's 0..1 space) used to pin the
-    // sun for lighting tests. day_time feeds sun_dir as y = -sin(2*pi*t) - 0.25:
-    // sin peaks at t = 0.25 (sun highest, brightest day) and bottoms at t = 0.75
-    // (sun below the horizon, deepest night).
-    const TIME_PHASE_DAY: f32 = 0.25;
-    const TIME_PHASE_NIGHT: f32 = 0.75;
-
-    // Invert day_time (phase = (clock * DAY_RATE + DAY_START_PHASE) % 1.0) to the
-    // smallest non-negative world_clock that yields the given phase. Mirrors the
-    // math in debug_set_day_time so the pinned clock reads back as exactly `phase`.
-    fn clock_for_phase(phase: f32) -> f64 {
-        let p = phase.rem_euclid(1.0) as f64;
-        let frac = (p - Self::DAY_START_PHASE).rem_euclid(1.0);
-        frac / Self::DAY_RATE
-    }
-
-    // Set the day/night pin: 0 = auto (clock advances normally), 1 = always-day,
-    // 2 = always-night. Driven purely by player input, never by wall-clock, so
-    // the headless/sync path is untouched unless the action is sent. When a pin
-    // is selected we snap the clock immediately so the change is visible without
-    // waiting for the next tick; update() then holds it there each frame.
-    fn set_time_mode(&mut self, mode: i32) {
-        self.time_mode = mode;
-        match mode {
-            1 => self.world_clock = Self::clock_for_phase(Self::TIME_PHASE_DAY),
-            2 => self.world_clock = Self::clock_for_phase(Self::TIME_PHASE_NIGHT),
-            _ => self.time_mode = 0, // auto: leave the clock where it is
-        }
-    }
-
-    // Re-pin the clock when a day/night mode is active. Called each tick after
-    // the normal advance so always-day / always-night hold a fixed sun; in auto
-    // mode this is a no-op and time advances as usual.
-    fn apply_time_pin(&mut self) {
-        match self.time_mode {
-            1 => self.world_clock = Self::clock_for_phase(Self::TIME_PHASE_DAY),
-            2 => self.world_clock = Self::clock_for_phase(Self::TIME_PHASE_NIGHT),
-            _ => {}
         }
     }
 
