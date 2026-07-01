@@ -4371,20 +4371,15 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 w3 = float3(cloudNoise3(q * 0.7 + float3(11.3, 5.1, 19.7)),
                            cloudNoise3(q * 0.7 + float3(31.7, 17.9, 3.3)),
                            cloudNoise3(q * 0.7 + float3(7.2, 23.4, 41.1)));
-        q += (w3 - 0.5) * 1.6;
+        q += (w3 - 0.5) * 0.85;
         float base = cloudNoise3(q);                   // big puffy lobes (dominant)
-        base += cloudNoise3(q * 2.4) * 0.34;           // medium billow
-        base += cloudNoise3(q * 5.3) * 0.14;           // fluffy edge
-        base /= 1.48;
-        // BOLD shaping: a tight smoothstep carves a CRISP, graphic silhouette (defined toy
-        // cumulus with clear blue gaps), not a soft connected haze. `cover` sets how much
-        // sky the puffs fill. A vertical falloff thins the slab edges so the puffs have
-        // rounded tops/bottoms rather than a hard sliced top and bottom.
-        // #140 crisper silhouette: a TIGHTER smoothstep window (0.10 -> 0.065) gives the toy
-        // cumulus a more defined, graphic edge with clear blue gaps, so the forms read as
-        // separated chunky puffs instead of fuzzy feathered wisps near grazing angles.
+        base += cloudNoise3(q * 2.1) * 0.24;           // medium billow
+        base += cloudNoise3(q * 4.0) * 0.05;           // soft edge detail
+        base /= 1.29;
+        // Soft shaping: keep the chunky cumulus layout, but avoid hard, high-frequency
+        // silhouettes that can read as detached shredding while the wind moves the field.
         float lo = 0.52 - cover * 0.16;
-        float d  = smoothstep(lo, lo + 0.065, base);
+        float d  = smoothstep(lo, lo + 0.16, base);
         return d;
     }
 
@@ -4668,7 +4663,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                     // long grazing steps would over-accumulate and re-smear the horizon into a
                     // solid band; with it the same lobe reads the same density at every angle.
                     float stepRef = dt / ((CLOUD_TOP - CLOUD_BOTTOM) / float(CLOUD_STEPS));
-                    float a = clamp(d * 1.6 * clamp(stepRef, 0.5, 2.0), 0.0, 1.0);
+                    float a = clamp(d * 1.10 * clamp(stepRef, 0.4, 1.35), 0.0, 1.0);
                     lum   += trans * a * cCol;
                     trans *= (1.0 - a);
                 }
@@ -4872,8 +4867,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     // sun instead of a broad haze). See the floor / saturation / clamp tuning below.
     constant int   GR_STEPS   = 80;   // #147: up from 64 for finer sampling (less grain to denoise)
     constant float GR_MAXDIST = 140.0;
-    constant float GR_DENSITY = 0.030;
-    constant float GR_HG_G    = 0.88;
+    constant float GR_DENSITY = 0.024;
+    constant float GR_HG_G    = 0.82;
 
     // Bold-shaft shaping knobs (all easy to tune):
     //   GR_FLOOR_LO/HI : the lit-fraction window the shaft is remapped from. The cores of
@@ -4887,9 +4882,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     //   GR_WARM_TINT   : multiplies the (saturated) sun color to bias the beams warm-gold.
     //   GR_MAX_ADD     : HARD per-channel additive ceiling. The night/ground-wash guard:
     //                    even a runaway in-scatter can never lift a channel past this.
-    constant float GR_FLOOR_LO    = 0.30;
-    constant float GR_FLOOR_HI    = 0.95;
-    constant float GR_SHAFT_GAMMA = 2.20;
+    constant float GR_FLOOR_LO    = 0.14;
+    constant float GR_FLOOR_HI    = 0.88;
+    constant float GR_SHAFT_GAMMA = 1.25;
     constant float GR_SATURATION  = 1.45;
     constant float3 GR_WARM_TINT  = float3(1.12, 1.02, 0.78);
     constant float GR_MAX_ADD     = 0.85;
@@ -4905,7 +4900,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     //                    dawn/dusk feel like god-rays streaming down.
     //   GR_LOWSUN_POW  : shapes the low-sun ramp (higher = the boost concentrates nearer the
     //                    horizon so noon stays subtle).
-    constant float GR_SHAFT_SHARP  = 1.7;
+    constant float GR_SHAFT_SHARP  = 1.0;
     constant float GR_LOWSUN_BOOST = 1.6;
     constant float GR_LOWSUN_POW   = 2.0;
 
@@ -5120,12 +5115,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             // broad warm glare. A logistic-ish contrast about 0.5 keeps it in [0,1] (cannot
             // raise the mean past the carved beams, so it cannot reintroduce a wash).
             shaft = clamp((shaft - 0.5) * GR_SHAFT_SHARP + 0.5, 0.0, 1.0);
-            shaft *= shaft;   // square biases toward the cores: gaps go darker, beams stay
             float shaftQ = (shaft
                             + quad_shuffle_xor(shaft, 1u)
                             + quad_shuffle_xor(shaft, 2u)
                             + quad_shuffle_xor(shaft, 3u)) * 0.25;
-            shaft = mix(shaft, clamp(shaftQ, 0.0, 1.0), 0.82);
+            shaft = mix(shaft, clamp(shaftQ, 0.0, 1.0), 0.90);
             // #132 LOW-SUN BOOST: shafts read as god-rays streaming DOWN at dawn/dusk and stay
             // subtle at noon. sunDir points downward, so -sunDir.y is the sun elevation
             // (~1 noon, ~0 horizon). lowSun is ~1 near the horizon, ~0 high up.
