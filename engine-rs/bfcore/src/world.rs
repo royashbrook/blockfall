@@ -542,6 +542,11 @@ pub struct World<'c> {
     // Chunks currently being generated / meshed on a worker (do not re-enqueue).
     gen_inflight: HashSet<ChunkCoord>,
     mesh_inflight: HashSet<ChunkCoord>,
+    // Finished worker results waiting for the frame thread. Completion order is not
+    // visual priority: simple far chunks can finish before nearby ocean/shore chunks,
+    // so the frame thread buffers a small batch and consumes nearest-first.
+    pending_gen_results: Vec<GenResult>,
+    pending_mesh_results: Vec<MeshJobResult>,
 
     // World-space voxel sun-shadow occupancy (ABI v19). A persistent occupancy
     // grid (1 byte/voxel: 1 = casts sun shadow) covering a fixed-size region
@@ -732,6 +737,8 @@ impl<'c> World<'c> {
             mesh_rx: None,
             gen_inflight: HashSet::new(),
             mesh_inflight: HashSet::new(),
+            pending_gen_results: Vec::new(),
+            pending_mesh_results: Vec::new(),
             shadow: ShadowVol::new(),
         }
     }
@@ -4205,7 +4212,7 @@ impl<'c> World<'c> {
 
     // How much terrain is still waiting to be generated + meshed.
     fn stream_backlog(&self) -> usize {
-        self.gen_queue.len() + self.dirty.len()
+        self.gen_queue.len() + self.pending_gen_results.len() + self.dirty.len() + self.pending_mesh_results.len()
     }
     fn dirty_chunk_and_resident_neighbours(&mut self, cc: ChunkCoord) {
         self.dirty.insert(cc);
@@ -4290,16 +4297,21 @@ impl<'c> World<'c> {
         // so inserting the whole worker backlog at once explodes dirty_ and the
         // per-frame dirty scan, tanking FPS (mirrors the C++ kGenCollect).
         let gen_collect = if bulk { 48 } else if catchup { 24 } else { 16 };
-        let mut done: Vec<GenResult> = Vec::new();
+        let gen_drain = gen_collect * 4;
         if let Some(rx) = self.gen_rx.as_ref() {
-            while done.len() < gen_collect {
+            while self.pending_gen_results.len() < gen_drain {
                 match rx.try_recv() {
-                    Ok(r) => done.push(r),
+                    Ok(r) => self.pending_gen_results.push(r),
                     Err(_) => break,
                 }
             }
         }
-        for r in done {
+        self.pending_gen_results
+            .sort_by(|a, b| Self::dist2(b.cc, self.last_center).cmp(&Self::dist2(a.cc, self.last_center)));
+        let mut handled = 0;
+        while handled < gen_collect {
+            let Some(r) = self.pending_gen_results.pop() else { break };
+            handled += 1;
             self.gen_inflight.remove(&r.cc);
             if self.store.is_resident(r.cc) {
                 continue;
@@ -4499,18 +4511,23 @@ impl<'c> World<'c> {
         // kUploadBudget); the rest waits a frame rather than tanking FPS.
         if async_mode {
             let upload_budget = if bulk { 12 } else if catchup { 10 } else { 8 };
-            let mut batch: Vec<MeshJobResult> = Vec::new();
+            let upload_drain = upload_budget * 4;
             if let Some(rx) = self.mesh_rx.as_ref() {
-                while batch.len() < upload_budget {
+                while self.pending_mesh_results.len() < upload_drain {
                     match rx.try_recv() {
-                        Ok(r) => batch.push(r),
+                        Ok(r) => self.pending_mesh_results.push(r),
                         Err(_) => break,
                     }
                 }
             }
-            for r in batch {
+            self.pending_mesh_results
+                .sort_by(|a, b| Self::dist2(b.cc, self.last_center).cmp(&Self::dist2(a.cc, self.last_center)));
+            let mut uploaded = 0;
+            while uploaded < upload_budget {
+                let Some(r) = self.pending_mesh_results.pop() else { break };
                 self.mesh_inflight.remove(&r.cc);
                 self.upload_mesh_result(r);
+                uploaded += 1;
             }
         }
 
@@ -5136,11 +5153,18 @@ impl<'c> World<'c> {
         if self.stream_r >= 16 { 16 } else { 8 }
     }
 
-    /// How far from the camera to include sub-voxel tree/prop instances. These are separate
+    /// How far from the camera to include all sub-voxel detail props. These are separate
     /// from chunk meshes; a fixed 120-block cutoff made high-altitude creative flight show
-    /// terrain without its trees. Scale with render distance, bounded for the M1 Air target.
-    fn prop_radius_blocks(&self) -> f32 {
+    /// terrain without nearby scenery. Keep small ground clutter bounded for the M1 Air target.
+    fn prop_detail_radius_blocks(&self) -> f32 {
         ((self.stream_r as f32) * KCHUNK_DIM as f32).clamp(120.0, 384.0)
+    }
+
+    /// Far scenery LOD: keep tree trunks/leaves visible through the render distance even
+    /// after tiny grass/flower props drop out. This is the first step toward real prop LOD
+    /// without expanding the ABI yet.
+    fn prop_scenery_radius_blocks(&self) -> f32 {
+        ((self.stream_r as f32) * KCHUNK_DIM as f32).clamp(120.0, 640.0)
     }
 
     /// Wrap a world voxel coord into the toroidal buffer cell on one axis.
@@ -5472,10 +5496,16 @@ impl<'c> World<'c> {
             d.dim_sat_pz = self.region_sat(ChunkCoord { x: cc.x, y: cc.y, z: cc.z + 1 });
             d.dim_sat_pxz = self.region_sat(ChunkCoord { x: cc.x + 1, y: cc.y, z: cc.z + 1 });
             draws.push(d);
-            if dist < self.prop_radius_blocks() {
+            let detail_radius = self.prop_detail_radius_blocks();
+            let scenery_radius = self.prop_scenery_radius_blocks();
+            if dist < scenery_radius {
                 let props = self.meshes[cc].props.clone();
                 if !props.is_empty() {
-                    prop_instances.extend_from_slice(&props);
+                    if dist < detail_radius {
+                        prop_instances.extend_from_slice(&props);
+                    } else {
+                        prop_instances.extend(props.iter().copied().filter(|p| Self::is_tree_block(p.type_ as BlockId)));
+                    }
                 }
             }
         }
@@ -6269,15 +6299,18 @@ mod time_mode_tests {
     fn visual_detail_radii_scale_with_render_distance() {
         let mut w = World::new(None);
         assert_eq!(w.shadow_radius_chunks(), 8);
-        assert_eq!(w.prop_radius_blocks(), 120.0);
+        assert_eq!(w.prop_detail_radius_blocks(), 120.0);
+        assert_eq!(w.prop_scenery_radius_blocks(), 120.0);
 
         w.set_render_distance(24);
         assert_eq!(w.shadow_radius_chunks(), 16);
-        assert_eq!(w.prop_radius_blocks(), 384.0);
+        assert_eq!(w.prop_detail_radius_blocks(), 384.0);
+        assert_eq!(w.prop_scenery_radius_blocks(), 384.0);
 
         w.set_render_distance(40);
         assert_eq!(w.shadow_radius_chunks(), 16);
-        assert_eq!(w.prop_radius_blocks(), 384.0);
+        assert_eq!(w.prop_detail_radius_blocks(), 384.0);
+        assert_eq!(w.prop_scenery_radius_blocks(), 640.0);
     }
 
     fn set_mode(w: &mut World, mode: i32) {

@@ -260,6 +260,10 @@ private final class WorldRowView: NSView {
     }
 
     @objc private func tappedDelete() {
+        if !MenuController.confirmWorldDelete {
+            delegate?.worldRowDidTapDelete(name: info.name, saveDir: info.saveDir)
+            return
+        }
         guard let window = self.window else { return }
         let alert = NSAlert()
         alert.messageText = "Delete \"\(info.name)\"?"
@@ -267,9 +271,15 @@ private final class WorldRowView: NSView {
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Keep It")
         alert.alertStyle = .warning
+        let skipConfirm = NSButton(checkboxWithTitle: "Don't ask me again", target: nil, action: nil)
+        skipConfirm.font = NSFont.systemFont(ofSize: 12)
+        alert.accessoryView = skipConfirm
         alert.beginSheetModal(for: window) { [weak self] resp in
             if resp == .alertFirstButtonReturn {
                 guard let self = self else { return }
+                if skipConfirm.state == .on {
+                    MenuController.confirmWorldDelete = false
+                }
                 self.delegate?.worldRowDidTapDelete(name: self.info.name, saveDir: self.info.saveDir)
             }
         }
@@ -538,6 +548,16 @@ private final class NewWorldPanel: NSView {
 /// Install `rootView` as the window's contentView, then wire
 /// `onPlayWorld` and `onQuit` before showing the window.
 final class MenuController: NSObject {
+    private static let confirmWorldDeleteKey = "confirmWorldDelete"
+
+    static var confirmWorldDelete: Bool {
+        get {
+            UserDefaults.standard.object(forKey: confirmWorldDeleteKey) as? Bool ?? true
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: confirmWorldDeleteKey)
+        }
+    }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -571,6 +591,9 @@ final class MenuController: NSObject {
 
     /// How-to-play overlay.
     private var howToPlayOverlay: HowToPlayOverlay!
+
+    /// Worlds-screen safety toggle that also lets players undo "Don't ask me again".
+    private var confirmDeleteCheckbox: NSButton!
 
     // ── Worlds-folder convention ──────────────────────────────────────────────
 
@@ -752,6 +775,14 @@ final class MenuController: NSObject {
         header.textColor = .white
         header.translatesAutoresizingMaskIntoConstraints = false
 
+        confirmDeleteCheckbox = NSButton(checkboxWithTitle: "Confirm Deletes",
+                                         target: self,
+                                         action: #selector(confirmDeleteChanged(_:)))
+        confirmDeleteCheckbox.state = MenuController.confirmWorldDelete ? .on : .off
+        confirmDeleteCheckbox.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        confirmDeleteCheckbox.contentTintColor = NSColor.white.withAlphaComponent(0.90)
+        confirmDeleteCheckbox.translatesAutoresizingMaskIntoConstraints = false
+
         // New-world button
         let newBtn = RoundButton(frame: .zero)
         newBtn.normalColor = NSColor(red: 0.15, green: 0.55, blue: 0.85, alpha: 1)
@@ -761,7 +792,13 @@ final class MenuController: NSObject {
         newBtn.action = #selector(newWorldTapped)
         newBtn.translatesAutoresizingMaskIntoConstraints = false
 
-        let headerRow = NSStackView(views: [header, newBtn])
+        let rightTools = NSStackView(views: [confirmDeleteCheckbox, newBtn])
+        rightTools.orientation = .horizontal
+        rightTools.alignment = .centerY
+        rightTools.spacing = 12
+        rightTools.translatesAutoresizingMaskIntoConstraints = false
+
+        let headerRow = NSStackView(views: [header, rightTools])
         headerRow.orientation = .horizontal
         headerRow.alignment = .centerY
         headerRow.distribution = .equalSpacing
@@ -853,6 +890,10 @@ final class MenuController: NSObject {
         }
         let seed = UInt64.random(in: 1...999_999)
         onPlayWorld?(saveDir, name, true, seed)
+    }
+
+    @objc private func confirmDeleteChanged(_ sender: NSButton) {
+        MenuController.confirmWorldDelete = (sender.state == .on)
     }
 
     private func showError(_ msg: String) {
