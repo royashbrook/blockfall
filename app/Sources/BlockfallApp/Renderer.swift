@@ -4606,14 +4606,19 @@ final class Renderer: NSObject, MTKViewDelegate {
             float2 cpix  = pixelCoord;
             float cdith  = fract(52.9829189 * fract(dot(cpix, float2(0.06711056, 0.00583715))));
             tEnter += dt * (cdith - 0.5) * 0.10;
-            float wind = clk * 1.10;           // slow horizontal drift
+            // #146: Roy found the startup/reload shred resolves in exactly ~15s,
+            // which means it is a deterministic bad cloud animation phase, not
+            // engine loading. Start the cloud field after that bad phase while
+            // leaving the rest of the sky/weather clock untouched.
+            float cloudClk = clk + 18.0;
+            float wind = cloudClk * 1.10;      // slow horizontal drift
             // `cover` modulates how much sky the clouds fill; a slow weather-ish breathe
             // keeps the sky from being uniformly packed. Kept modest so the sky still reads.
             // #140 bolder presence: raise the coverage floor so the puffs read as solid toy
             // cumulus (chunky, opaque cores) rather than thin translucent wisps, which also
             // masks the faint radial sampling ringing under solid cloud. Still breathes so the
             // sky is not uniformly packed.
-            float cover = 0.62 + 0.14 * (sin(clk * (3.14159265 / 90.0)) * 0.5 + 0.5);
+            float cover = 0.62 + 0.14 * (sin(cloudClk * (3.14159265 / 90.0)) * 0.5 + 0.5);
             float3 sunL = normalize(-sd);                    // toward the sun
 
             float trans = 1.0;        // remaining transparency (front-to-back)
