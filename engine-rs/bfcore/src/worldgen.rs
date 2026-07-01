@@ -1097,6 +1097,47 @@ fn build_column_cache(wx_min: i32, wz_min: i32, seed: u64, anchor_cache: &SeamAn
     out
 }
 
+// ---------------------------------------------------------------------------
+// Shared per-column data, memoized across the Y stack and across worker threads.
+//
+// The anchor and column caches are pure functions of (seed, wx_min, wz_min), but a
+// column of terrain spans several Y chunks (CY -1..3) and generate() used to rebuild
+// both caches for every one of them: the same 256 columns of climate + voronoi +
+// seam-cone height noise computed five times per column (about a third of total gen
+// time, measured). This memo computes them once per column and shares the Arc.
+//
+// Determinism: the cached value is a pure function of the key, so a hit, a miss, a
+// concurrent duplicate compute, or a cleared map all yield byte-identical chunks.
+// The map is bounded (cleared at CAP) so long sessions cannot grow it unbounded.
+// ---------------------------------------------------------------------------
+struct SharedColumnData {
+    anchors: SeamAnchorCache,
+    cols: ChunkColumnCache,
+}
+
+fn shared_column_data(wx_min: i32, wz_min: i32, seed: u64) -> std::sync::Arc<SharedColumnData> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    const CAP: usize = 512;
+    static MEMO: OnceLock<Mutex<HashMap<(u64, i32, i32), Arc<SharedColumnData>>>> = OnceLock::new();
+    let memo = MEMO.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (seed, wx_min, wz_min);
+    if let Some(hit) = memo.lock().unwrap().get(&key) {
+        return hit.clone();
+    }
+    // Compute outside the lock; a racing thread may duplicate the work but the
+    // value is identical either way.
+    let anchors = build_anchor_cache(wx_min, wz_min, seed);
+    let cols = build_column_cache(wx_min, wz_min, seed, &anchors);
+    let data = Arc::new(SharedColumnData { anchors, cols });
+    let mut m = memo.lock().unwrap();
+    if m.len() >= CAP {
+        m.clear();
+    }
+    m.insert(key, data.clone());
+    data
+}
+
 // ===========================================================================
 // (continued in part 2 below: trees, canopies, structures, deadwood, caves,
 //  decorations, generate, public API)

@@ -830,8 +830,10 @@ impl TerrainGen {
         let seed_ = self.seed;
         let wx_min0 = c.x * K_CHUNK_DIM;
         let wz_min0 = c.z * K_CHUNK_DIM;
-        let anchor_cache = build_anchor_cache(wx_min0, wz_min0, seed_);
-        let col_cache = build_column_cache(wx_min0, wz_min0, seed_, &anchor_cache);
+        // One shared build per (seed, x, z) column, reused by all Y chunks and workers.
+        let shared = shared_column_data(wx_min0, wz_min0, seed_);
+        let anchor_cache = &shared.anchors;
+        let col_cache = &shared.cols;
 
         let height_at = |wx: i32, wz: i32| -> i32 {
             let lx = wx - wx_min0;

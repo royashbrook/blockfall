@@ -2086,4 +2086,50 @@ mod worldgen_tests {
             }
         }
     }
+
+#[test]
+#[ignore] // manual bench: measures the shared_column_data memo win (run with --ignored --nocapture)
+fn bench_gen_cache_share() {
+    use std::time::Instant;
+    let seed = 2026u64;
+    let mut g = TerrainGen::new();
+    g.seed(seed);
+    let mut ch = crate::chunk::PaletteChunk::new(ChunkCoord { x: 0, y: 0, z: 0 }, 0);
+    g.generate(ChunkCoord { x: 0, y: 0, z: 0 }, &mut ch); // warm
+
+    let t0 = Instant::now();
+    let mut n = 0u32;
+    for cx in -5..=5 {
+        for cz in -5..=5 {
+            for cy in -1..=3 {
+                let cc = ChunkCoord { x: cx, y: cy, z: cz };
+                let mut ch = crate::chunk::PaletteChunk::new(cc, 0);
+                g.generate(cc, &mut ch);
+                n += 1;
+            }
+        }
+    }
+    let full = t0.elapsed();
+
+    // cache-build cost alone, once per (x,z) column (what a shared cache would pay)
+    let t1 = Instant::now();
+    let mut k = 0u32;
+    for cx in -5..=5 {
+        for cz in -5..=5 {
+            let wx = cx * K_CHUNK_DIM;
+            let wz = cz * K_CHUNK_DIM;
+            let ac = build_anchor_cache(wx, wz, seed);
+            let cc2 = build_column_cache(wx, wz, seed, &ac);
+            std::hint::black_box((&ac, &cc2));
+            k += 1;
+        }
+    }
+    let caches = t1.elapsed();
+    println!(
+        "FULL: {} chunks in {:?} ({:.3} ms/chunk) | CACHES once-per-column: {} cols in {:?} ({:.3} ms/col)",
+        n, full, full.as_secs_f64() * 1000.0 / n as f64,
+        k, caches, caches.as_secs_f64() * 1000.0 / k as f64
+    );
+}
+
 }
