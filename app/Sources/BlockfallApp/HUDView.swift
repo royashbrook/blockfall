@@ -897,11 +897,13 @@ final class HUDView: NSView {
         lines.append(StatusLine(text: fpsText,
                                 color: NSColor.white.withAlphaComponent(0.9), bold: false))
 
-        // Weather: 0=Clear, 1=Rain, 2=Snow.
+        // Weather: 0=Clear, 1=Rain, 2=Snow, 3=Partly Cloudy, 4=Overcast (#162).
         let weather: (String, NSColor)
         switch hud.weather {
         case 1:  weather = ("Weather: Rain", NSColor(srgbRed: 0.62, green: 0.78, blue: 0.95, alpha: 1))
         case 2:  weather = ("Weather: Snow", NSColor(srgbRed: 0.92, green: 0.95, blue: 0.98, alpha: 1))
+        case 3:  weather = ("Weather: Partly Cloudy", NSColor(srgbRed: 0.86, green: 0.89, blue: 0.94, alpha: 1))
+        case 4:  weather = ("Weather: Overcast", NSColor(srgbRed: 0.72, green: 0.75, blue: 0.80, alpha: 1))
         default: weather = ("Weather: Clear", NSColor.white.withAlphaComponent(0.85))
         }
         lines.append(StatusLine(text: weather.0, color: weather.1, bold: false))

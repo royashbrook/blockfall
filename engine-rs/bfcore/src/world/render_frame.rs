@@ -180,17 +180,34 @@ impl<'c> World<'c> {
                 y -= 1;
             }
             out.camera.biome_cold = if cold { 1.0 } else { 0.0 };
-            let storm = (self.world_clock / 240.0) % 1.0 > 0.75;
-            self.weather = if storm {
+            // #162 deterministic weather: cloud coverage + precip from (seed,
+            // world_clock), see time.rs. State for the HUD:
+            //   0 = Clear, 1 = Rain, 2 = Snow, 3 = Partly Cloudy, 4 = Overcast.
+            // Precip only under heavy coverage, so rain never falls from blue sky.
+            let cover = Self::weather_cover(self.seed, self.world_clock);
+            let precip = cover > 0.78 && Self::weather_precip(self.seed, self.world_clock);
+            self.weather = if precip {
                 if cold {
                     2
                 } else {
                     1
                 }
-            } else {
+            } else if cover < 0.30 {
                 0
+            } else if cover < 0.62 {
+                3
+            } else {
+                4
             };
-            out.camera.weather = self.weather as f32;
+            // camera.weather packs the renderer's two weather inputs into the
+            // existing f32 (no ABI change): integer part = precip mode (0 none,
+            // 1 rain, 2 snow), fraction = cloud coverage scaled by 0.98 so a
+            // full-cover value never bumps the integer part.
+            let precip_mode = match self.weather {
+                1 | 2 => self.weather as f32,
+                _ => 0.0,
+            };
+            out.camera.weather = precip_mode + (cover * 0.98).clamp(0.0, 0.98);
         }
         {
             let surf = worldgen::worldgen_surface_height(

@@ -19,6 +19,34 @@ impl<'c> World<'c> {
         frac / Self::DAY_RATE
     }
 
+    // ---- Weather (#162) ---------------------------------------------------
+    // Deterministic weather as a pure function of (seed, world_clock). The
+    // clock freezes on pause and pins under the T time modes, so weather
+    // freezes with it, and the same seed always replays the same skies.
+    //
+    // Cloud coverage 0..1: two slow sine waves with incommensurate periods
+    // (a large fraction of the 24-minute day) and seed-derived phases. Their
+    // sum overshoots both endpoints and is clamped, so genuinely clear-blue
+    // stretches and full overcast sheets both actually happen, and coverage
+    // drifts smoothly between them (no popping).
+    pub(super) fn weather_cover(seed: u64, clock: f64) -> f32 {
+        let tau = std::f64::consts::TAU;
+        let p1 = (seed & 0xFFFF) as f64 * (tau / 65536.0);
+        let p2 = ((seed >> 16) & 0xFFFF) as f64 * (tau / 65536.0);
+        let a = (clock * (tau / 2210.0) + p1).sin();
+        let b = (clock * (tau / 863.0) + p2).sin();
+        (0.5 + 0.36 * a + 0.30 * b).clamp(0.0, 1.0) as f32
+    }
+
+    // Precipitation gate: its own slow seeded wave, so not every overcast
+    // stretch rains. Rain/snow only happens when this is true AND coverage is
+    // already heavy (see render_frame), so precip never falls from a clear sky.
+    pub(super) fn weather_precip(seed: u64, clock: f64) -> bool {
+        let tau = std::f64::consts::TAU;
+        let p3 = ((seed >> 32) & 0xFFFF) as f64 * (tau / 65536.0);
+        (clock * (tau / 1531.0) + p3).sin() > 0.15
+    }
+
     pub(super) fn set_time_mode(&mut self, mode: i32) {
         self.time_mode = mode;
         match mode {

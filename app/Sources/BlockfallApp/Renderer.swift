@@ -147,6 +147,32 @@ final class Renderer: NSObject, MTKViewDelegate {
         if let s = ProcessInfo.processInfo.environment["BF_PBR"], let v = Float(s) { return max(0, min(1, v)) }
         return Float(UserDefaults.standard.object(forKey: "gfxPBRStr") as? Double ?? 0.6)
     }()
+    // #162 weather control. The engine owns weather (a deterministic function of
+    // seed + world_clock) and packs it into frame.camera.weather: integer part =
+    // precip mode (0 none, 1 rain, 2 snow), fraction = cloud coverage * 0.98.
+    // BF_WEATHER forces the precip mode and BF_CLOUDCOVER forces coverage (0..1)
+    // so headless shots can render any weather without waiting for it.
+    static let weatherOverride: Int? =
+        ProcessInfo.processInfo.environment["BF_WEATHER"].flatMap { Int($0) }
+    static let cloudCoverOverride: Float? =
+        ProcessInfo.processInfo.environment["BF_CLOUDCOVER"].flatMap { Float($0) }
+    // Default WaterUniforms.weatherPack for paths that never see an engine frame
+    // (the headless --shot harness): env overrides, else a mid partly-cloudy sky.
+    static let weatherPackDefault: Float =
+        packWeather(precip: weatherOverride ?? 0, cover: cloudCoverOverride ?? 0.5)
+    // Shader-side packing (see WaterUniforms.weatherPack): states land at 0/2/4
+    // so the 0..0.98 coverage fraction can never bleed into the state.
+    static func packWeather(precip: Int, cover: Float) -> Float {
+        Float(max(0, min(2, precip))) * 2 + max(0, min(1, cover)) * 0.98
+    }
+    // Decode the engine's camera.weather packing, applying the env overrides.
+    static func decodeWeather(_ packed: Float) -> (precip: Int, cover: Float) {
+        var p = max(0, min(2, Int(packed)))
+        var c = max(0, min(1, (packed - Float(Int(packed))) / 0.98))
+        if let f = weatherOverride { p = max(0, min(2, f)) }
+        if let cc = cloudCoverOverride { c = max(0, min(1, cc)) }
+        return (p, c)
+    }
     // World-space precipitation (rain streaks / snow flakes) — renderer-owned,
     // instanced billboards in a volume around the camera. Drives off frame.camera.weather.
     private var precipPipeline: MTLRenderPipelineState!
@@ -1041,10 +1067,13 @@ final class Renderer: NSObject, MTKViewDelegate {
             hud.setQuests(rows)
         }
 
-        // Weather is now fully engine-owned: frame.camera.weather = 0=clear, 1=rain, 2=snow.
-        // Map that to a rain strength for wind/wet-darkening (0 when clear or snow, 1 when rain).
-        let engineWeather = Int(frame.camera.weather)   // 0, 1, or 2
+        // Weather is engine-owned: frame.camera.weather packs precip mode (integer
+        // part: 0=clear, 1=rain, 2=snow) + cloud coverage (fraction, #162). Coverage
+        // drives how much sky the #146 cloud layer fills. BF_WEATHER/BF_CLOUDCOVER
+        // override for headless shots (decodeWeather applies them).
+        let (engineWeather, cloudCover) = Renderer.decodeWeather(frame.camera.weather)
         let rainStrength: Float = (engineWeather == 1) ? 1.0 : 0.0
+        let weatherPack = Renderer.packWeather(precip: engineWeather, cover: cloudCover)
 
         // Wind uniforms (index 3 on vertex shaders — new dedicated buffer)
         var windU = WindUniforms(wallClockSecs: wallClock, rainStrength: rainStrength,
@@ -1144,6 +1173,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 let ug = max(0, min(1, (frame.camera.underground - 0.05) / 0.40))
                 let undergroundCloudFade = 1 - ug * ug * (3 - 2 * ug)
                 wuSky.cloudsOn = gfxClouds ? undergroundCloudFade : 0   // #47 volumetric cloud toggle (sky pass)
+                wuSky.weatherPack = weatherPack   // #162 coverage + precip drive the sky
                 enc.setFragmentBytes(&wuSky, length: MemoryLayout<WaterUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             }
@@ -1164,6 +1194,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             wu.pbrStr   = gfxPBRStr             // #47 stylized PBR specular strength (terrain)
             wu.voxOrigin = voxOriginU           // world-space voxel sun-shadow grid
             wu.voxDims   = voxDimsU
+            wu.weatherPack = weatherPack        // #162 water reflection mirrors the weather sky
             enc.setFragmentBytes(&wu, length: MemoryLayout<WaterUniforms>.stride, index: 2)
             if let occ = shadowVolTex { enc.setFragmentTexture(occ, index: 0) }  // world occupancy grid (fine)
             if let occc = shadowVolCoarseTex { enc.setFragmentTexture(occc, index: 1) }  // coarse mip (empty-space skip)

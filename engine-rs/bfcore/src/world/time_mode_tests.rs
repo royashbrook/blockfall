@@ -301,3 +301,33 @@ fn cycle_length_matches_constant() {
         "half cycle should be ~0.5 phase, got {half}"
     );
 }
+
+// #162 weather is a pure function of (seed, world_clock): deterministic, in
+// range, and the coverage actually sweeps the whole 0..1 span across a few
+// in-game days (genuinely clear days AND full overcast both happen).
+#[test]
+fn weather_cover_deterministic_and_full_range() {
+    let seed = 0xB10C_FA11_u64;
+    let (mut lo, mut hi) = (1.0f32, 0.0f32);
+    let mut prev = World::weather_cover(seed, 0.0);
+    let mut t = 0.0f64;
+    while t < World::DAY_CYCLE_SECS * 3.0 {
+        let c = World::weather_cover(seed, t);
+        assert_eq!(c, World::weather_cover(seed, t), "must be deterministic");
+        assert!((0.0..=1.0).contains(&c), "coverage out of range: {c}");
+        // Smooth: one second of world time never jumps coverage (no popping).
+        assert!((c - prev).abs() < 0.01, "coverage popped: {prev} -> {c}");
+        prev = c;
+        lo = lo.min(c);
+        hi = hi.max(c);
+        t += 1.0;
+    }
+    assert!(lo < 0.05, "never reached a clear sky (min {lo})");
+    assert!(hi > 0.95, "never reached overcast (max {hi})");
+    // A different seed produces a different sky on the same clock somewhere.
+    let differs = (0..100).any(|i| {
+        let t = i as f64 * 60.0;
+        (World::weather_cover(seed, t) - World::weather_cover(seed ^ 0x5EED, t)).abs() > 0.05
+    });
+    assert!(differs, "seed does not influence weather");
+}

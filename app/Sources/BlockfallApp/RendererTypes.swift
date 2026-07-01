@@ -41,7 +41,13 @@ struct WaterUniforms {
     // can drive a clouds-off or pbr-off comparison shot without touching the harness file.
     var cloudsOn:      Float = Renderer.cloudsDefault   // #47 cloud toggle (sky pass reads this)
     var pbrStr:        Float = Renderer.pbrDefault      // #47 stylized PBR specular strength
-    var pad2:          Float = 0
+    // #162 packed weather for the sky/water shaders: precip mode (0/1/2) * 2 +
+    // cloud coverage (0..1) * 0.98. Coverage drives how much sky the #146 cloud
+    // layer fills (0 = clear blue, mid = scattered puffs, high = overcast sheet).
+    // The default is env-driven (BF_WEATHER / BF_CLOUDCOVER) so the headless
+    // --shot harness, which default-builds WaterUniforms, can force any weather;
+    // the live renderer overwrites it per frame from the engine weather state.
+    var weatherPack:   Float = Renderer.weatherPackDefault
     // ---- World-space voxel sun shadows (replaces the cascaded shadow map) ----
     // The renderer marches each fragment toward the sun through a 3D occupancy
     // texture (the engine's bf_world_shadow_volume). The shadow is a property of

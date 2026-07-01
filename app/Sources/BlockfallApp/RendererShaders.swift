@@ -45,7 +45,7 @@ extension Renderer {
         float celShade;      // #130 toon-band the diffuse term (0=off, 1=on)
         float cloudsOn;      // #47 volumetric cloud toggle (sky pass)
         float pbrStr;        // #47 stylized PBR specular strength (terrain pass)
-        float pad2;
+        float weatherPack;   // #162 precip mode (0/1/2) * 2 + cloud coverage * 0.98
         // World-space voxel sun shadows (replaces the cascaded shadow map).
         float4 voxOrigin;    // xyz = grid origin (world block coords), w = march distance
         float4 voxDims;      // xyz = grid dims (voxels), w = soft-shadow flag (0=hard,1=soft)
@@ -1492,7 +1492,7 @@ extension Renderer {
     // =========================================================
     // Reflective water (#43) samples the sky along the reflected ray. evalSkyColor
     // is defined further down (after cloudFbm); declare it here so water can call it.
-    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk, float cloudsOn, float2 pixelCoord);
+    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk, float cloudsOn, float weatherPack, float2 pixelCoord);
 
     fragment float4 waterFmain(VOut in [[stage_in]],
                                constant WaterUniforms& wu [[buffer(2)]],
@@ -1570,7 +1570,7 @@ extension Renderer {
             // bounce (it would double the cloud cost per water fragment for a subtle gain).
             float3 skyRefl = evalSkyColor(normalize(refl),
                                           wu.sunDirTime.xyz, wu.sunDirTime.w, t, 0.0,
-                                          float2(0.0));
+                                          wu.weatherPack, float2(0.0));
             float ndv     = max(0.0, dot(-viewDir, perturbedN));
             float fres    = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);   // Schlick, F0≈0.02
             // NIGHT GROUND-WASH FIX (#117): the Fresnel sky reflection was NOT gated by
@@ -1757,7 +1757,7 @@ extension Renderer {
     // Sky colour along a view ray (gradient, sun/moon, stars, clouds, weather).
     // Shared by the sky pass AND reflective water (#43) — forward-declared above
     // waterFmain. Does NOT apply the underground fade (that's sky-pass only).
-    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk, float cloudsOn, float2 pixelCoord) {
+    float3 evalSkyColor(float3 ray, float3 sd, float t, float clk, float cloudsOn, float weatherPack, float2 pixelCoord) {
         // dayT now tracks the real sun elevation (see dayLight) so the sky darkens
         // when the sun actually sets, instead of staying lit until t~1.0 (the old
         // sin(t*pi) was a quarter-cycle out of phase with the sun arc). The sun
@@ -1885,9 +1885,14 @@ extension Renderer {
             }
         }
 
-        float weatherCycle = sin(clk * (3.14159265f / 150.0f)) * 0.5f + 0.5f;
-        float overcast = smoothstep(0.52, 0.80, weatherCycle) * 0.65;
-        float rainStrength = smoothstep(0.60, 0.82, weatherCycle);
+        // #162 weather-driven sky. The old free-running sin(clk) weatherCycle is
+        // gone: coverage + precip now come from the engine weather state via
+        // weatherPack (precip mode * 2 + coverage * 0.98), deterministic per
+        // world seed + world clock, frozen while paused.
+        int   wPrecip = int(weatherPack * 0.5 + 0.25);   // 0 none, 1 rain, 2 snow
+        float cover   = clamp((weatherPack - float(wPrecip) * 2.0) / 0.98, 0.0, 1.0);
+        float overcast = smoothstep(0.55, 0.92, cover) * 0.65;
+        float rainStrength = (wPrecip == 1) ? 1.0 : ((wPrecip == 2) ? 0.6 : 0.0);
 
         if (overcast > 0.01) {
             float cloudPlaneHit = (ray.y > 0.02) ? (1.0 / ray.y) : 0.0;
@@ -1900,12 +1905,17 @@ extension Renderer {
             float3 ocColor = mix(float3(stormDark, stormDark + 0.02, stormDark + 0.09),
                                  float3(stormBright, stormBright + 0.02, stormBright + 0.06),
                                  dayT);
+            // #162 night gate: an overcast sheet at night must be DARK (a 0.55 grey
+            // over the 0.05 night sky read as a pale wash). Keep a whisper of
+            // moonlit grey so the sheet still exists, but no night brightening.
+            ocColor *= mix(0.16, 1.0, dayT);
             float ocFade = smoothstep(0.0, 0.12, ray.y);
             skyCol = mix(skyCol, ocColor, ocCloud * overcast * ocFade);
         }
 
         // Lightning: rare (appears ~every 45s during storm), brief full-sky flash.
-        if (rainStrength > 0.5) {
+        // Rain only (#162): snow's soft dimming must not flash.
+        if (wPrecip == 1) {
             // Use a sawtooth phase in seconds, trigger a flash near the top.
             float ltPhase = fmod(clk * (1.0 / 45.0), 1.0);
             float ltFlash = smoothstep(0.97, 0.99, ltPhase) * smoothstep(1.00, 0.99, ltPhase);
@@ -1929,17 +1939,15 @@ extension Renderer {
         //  dims the sky during rain; the actual falling precipitation is
         //  composited on top of the final LDR image for cheapness.)
 
-        // Keep fair-weather clouds stable through the shader-only weather cycle.
-        // The old `1 - overcast*1.6` made the volumetric layer visibly fade during
-        // the first ~15s after load, which is exactly when the startup shreds
-        // appeared to "heal". Let overcast tint the sky above, but do not use it
-        // as a hard visibility gate for normal clouds.
-        float fairCloud = clamp(1.0 - overcast * 0.20, 0.82, 1.0);
-        // Day/night gate (clouds fade out as the sun sets so night stays clean) AND the
-        // toggle (cloudsOn). The ray must point above the horizon to enter the cloud slab.
+        // #162 coverage gate: at near-zero coverage the cloud layer is fully OFF,
+        // giving a genuinely clear blue sky (the old constant-coverage layer made
+        // every day read as partly cloudy). Day/night gate (no wash at night) and
+        // the hard cloudsOn toggle are unchanged. The ray must point above the
+        // horizon to enter the cloud slab.
         float cloudVis  = smoothstep(0.12, 0.38, dayT)
                         * smoothstep(0.08, 0.20, ray.y)
-                        * fairCloud * clamp(cloudsOn, 0.0, 1.0);
+                        * smoothstep(0.02, 0.10, cover)
+                        * clamp(cloudsOn, 0.0, 1.0);
         if (cloudVis > 0.001) {
             // #146: smooth, bold sky-projected cumulus. This is a 2D layer painted on the
             // sky dome, NOT a raymarch: there is no per-step march to beat against, so it
@@ -1964,15 +1972,27 @@ extension Renderer {
             float broad = cloudFbm(cuv * 0.85);
             float soft  = cloudFbm(cuv * 1.90 + float2(7.3, -3.9));
             float field = broad * 0.72 + soft * 0.28;
-            // Narrow band => more defined puff edges (bolder cores, cleaner blue gaps)
-            // while staying wide enough that the bounded projection never aliases the edge.
-            float mask  = smoothstep(0.46, 0.58, field);
+            // #162 COVERAGE CONTROL: the smoothstep threshold slides with the weather
+            // coverage. Low cover carves only the densest lobes into small scattered
+            // puffs; mid cover is the classic partly-cloudy layout; high cover drops
+            // the threshold so the field closes into a near-continuous overcast sheet.
+            // The band stays narrow (defined puff edges, no aliasing) at every cover.
+            float lo    = mix(0.68, 0.16, cover);
+            float mask  = smoothstep(lo, lo + 0.12, field);
             // Horizon fade (the slab edge does not hard-line) plus a soft fade toward zenith.
             mask *= smoothstep(0.14, 0.34, ray.y) * smoothstep(1.02, 0.62, ray.y);
             // Bold lit crown / cool shadow base, warmed at sunrise/sunset. Sun-facing puffs
             // read brighter via a gentle continuous gradient (no banding, no quantize).
             float3 cloudTop  = mix(float3(0.95, 0.97, 1.00), float3(1.00, 0.84, 0.62), sunsetT * 0.55);
             float3 cloudBase = mix(float3(0.62, 0.68, 0.80), float3(0.60, 0.46, 0.52), sunsetT * 0.45);
+            // #162 as coverage closes toward a full sheet, flatten the palette toward
+            // an even grey so heavy skies read overcast (dimmer, low-contrast) rather
+            // than a wall of bright toy puffs. Rain darkens the sheet a step further.
+            float sheet = smoothstep(0.65, 0.95, cover);
+            cloudTop  = mix(cloudTop,  float3(0.78, 0.80, 0.85), sheet);
+            cloudBase = mix(cloudBase, float3(0.50, 0.53, 0.61), sheet);
+            cloudTop  *= 1.0 - rainStrength * 0.18;
+            cloudBase *= 1.0 - rainStrength * 0.18;
             float lit = smoothstep(-0.20, 0.70, dot(ray, sunDir3));
             float3 cloudColor = mix(cloudBase, cloudTop, 0.45 + 0.55 * lit);
             // Bolder presence than the old faint sheet (0.58/cap 0.70 -> 0.90/cap 0.90) so the
@@ -2117,7 +2137,7 @@ extension Renderer {
                                + su.camRight.xyz * (in.ndc.x * aspect * tanHalfFov)
                                + su.camUp.xyz    * (in.ndc.y * tanHalfFov));
         float3 skyCol = evalSkyColor(ray, su.sunDirTime.xyz, su.sunDirTime.w, wu.wallClockSecs,
-                                     wu.cloudsOn, in.position.xy);
+                                     wu.cloudsOn, wu.weatherPack, in.position.xy);
 
         // FIX (#33): when the eye is underground (su.camFwd.w = underground 0..1),
         // fade the whole sky to a near-black cave colour. Surface-priority streaming
