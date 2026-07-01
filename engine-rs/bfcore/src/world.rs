@@ -35,8 +35,10 @@ mod meshing;
 mod persistence;
 mod chests;
 mod villages;
+mod shadows;
 
 use self::chests::ChestData;
+use self::shadows::ShadowVol;
 use self::villages::VillageState;
 
 // M1 block ids (engine/include/blockcore/world.hpp enum M1Block).
@@ -530,89 +532,6 @@ pub struct World<'c> {
     shadow: ShadowVol,
 }
 
-/// Persistent TOROIDAL occupancy grid for the world-space sun-shadow march (ABI v19).
-///
-/// The buffer is wrap-addressed: the cell for a world voxel w is at (w mod dim) on
-/// each axis, a mapping that is INDEPENDENT of the origin. So when the player walks
-/// and the window scrolls, only the newly-exposed edge slabs are rewritten, never the
-/// whole volume (that per-frame full rebuild + 4 MB re-upload was the walk-stutter).
-/// `origin` is the world min corner of the currently-valid window (chunk-aligned);
-/// dims are exact multiples of the chunk size so the ring tiles by whole chunk columns.
-/// X-fastest: cell = gx + dim_x*(gy + dim_y*gz).
-struct ShadowVol {
-    voxels: Vec<u8>,
-    origin: IVec3,
-    dim_x: i32,
-    dim_y: i32,
-    dim_z: i32,
-    revision: u32,
-    /// True before the first build (forces a full populate + full dirty box).
-    needs_full: bool,
-    /// World-voxel AABBs of cells changed since the last successful fill (inclusive).
-    /// A LIST, not one AABB: a diagonal scroll dirties two thin perpendicular strips
-    /// whose single bounding box would cover most of the volume. Capped at MAX_DIRTY;
-    /// when it would overflow we collapse to one full-window box.
-    dirty: Vec<(IVec3, IVec3)>,
-    /// Chunk columns (x,z) the buffer currently holds, so a re-center knows which
-    /// columns scrolled in. Stored as the column anchor chunk coords range.
-    have_cx0: i32,
-    have_cz0: i32,
-    /// Chunk columns (cx,cz) whose voxels changed (block edit / new stream-in) and
-    /// must be re-stamped into the toroidal buffer on the next ensure.
-    refill_cols: std::collections::HashSet<(i32, i32)>,
-}
-
-/// Max dirty boxes reported per fill (must match BF_SHADOW_MAX_DIRTY in the C ABI).
-const SHADOW_MAX_DIRTY: usize = 4;
-
-impl ShadowVol {
-    fn new() -> ShadowVol {
-        ShadowVol {
-            voxels: Vec::new(),
-            origin: IVec3::default(),
-            dim_x: 0,
-            dim_y: 0,
-            dim_z: 0,
-            revision: 0,
-            needs_full: true,
-            dirty: Vec::new(),
-            have_cx0: i32::MIN,
-            have_cz0: i32::MIN,
-            refill_cols: std::collections::HashSet::new(),
-        }
-    }
-    fn empty_dirty(&mut self) {
-        self.dirty.clear();
-    }
-    /// Mark the full window dirty (one box), collapsing any prior boxes.
-    fn mark_full(&mut self) {
-        self.dirty.clear();
-        self.dirty.push((
-            self.origin,
-            IVec3 {
-                x: self.origin.x + self.dim_x - 1,
-                y: self.origin.y + self.dim_y - 1,
-                z: self.origin.z + self.dim_z - 1,
-            },
-        ));
-    }
-    /// Push one dirty box; if the list would exceed MAX_DIRTY, collapse to the full window.
-    fn mark_dirty(&mut self, lo: IVec3, hi: IVec3) {
-        // Already collapsed to a single full-window box? Nothing more to track.
-        if self.dirty.len() == 1
-            && self.dirty[0].0 == self.origin
-            && self.dirty[0].1.x == self.origin.x + self.dim_x - 1
-        {
-            return;
-        }
-        if self.dirty.len() >= SHADOW_MAX_DIRTY {
-            self.mark_full();
-            return;
-        }
-        self.dirty.push((lo, hi));
-    }
-}
-
 // Lets the creature AI pathfinder (creature_ai.rs) query terrain without seeing any
 // World internals. Both methods are thin shims over existing helpers (epic #131).
 impl<'c> creature_ai::WorldQuery for World<'c> {
@@ -951,18 +870,6 @@ impl<'c> World<'c> {
     }
     fn is_leaf(b: BlockId) -> bool {
         b == 5 || b == 27
-    }
-    /// Does this block cast a sun shadow in the world-space voxel march (ABI v19)?
-    /// Opaque solids cast; leaves cast (foliage casts like the old shadow map);
-    /// air, water, and most plants/props do NOT. Mirrors the shadow-map occluder
-    /// set so the new world-space shadows match the old look.
-    /// Snow overlay (#118) is walk-through but still occupies the surface cell in the
-    /// occupancy grid: it sits where the ground visually is, so keeping it as an occluder
-    /// keeps the world-fixed shadow ground-top aligned with the rendered snow surface
-    /// (matching the old full-cube snow). Without this a snowy region's ground-top would
-    /// drop a cell and the shadow reconstruction would vary per camera.
-    fn casts_shadow(b: BlockId) -> bool {
-        Self::solid_block(b) || Self::is_leaf(b) || Self::is_snow_overlay(b)
     }
     fn is_prop_block(id: BlockId) -> bool {
         (36..=47).contains(&id)
@@ -3494,24 +3401,6 @@ impl<'c> World<'c> {
         }
     }
 
-    // ---- world-space sun-shadow occupancy (ABI v19) ----------------------
-    //
-    // Export a compact occupancy grid (1 byte/voxel: 1 = casts sun shadow) for a
-    // fixed-size axis-aligned region centred on the player chunk. The renderer
-    // uploads this to a 3D texture and DDA-marches each fragment toward the sun,
-    // so the shadow is a property of the WORLD (identical for every camera). The
-    // grid is rebuilt only when its origin moves (player crossed a chunk) or a
-    // resident chunk changed (`shadow.dirty`); otherwise the persistent buffer is
-    // reused and the revision is unchanged so the app can skip the GPU re-upload.
-
-    /// Horizontal half-extent of the shadow region in CHUNKS. Keep the horizontal grid
-    /// dimension a power of two so the shader can wrap with a cheap bitmask instead of
-    /// integer modulo. At high render distances, widen the resident-world occupancy window
-    /// so high-altitude views do not show a hard "trees exist but shadows vanished" cutoff.
-    fn shadow_radius_chunks(&self) -> i32 {
-        if self.stream_r >= 16 { 16 } else { 8 }
-    }
-
     /// How far from the camera to include all sub-voxel detail props. These are separate
     /// from chunk meshes; a fixed 120-block cutoff made high-altitude creative flight show
     /// terrain without nearby scenery. Keep small ground clutter bounded for the M1 Air target.
@@ -3524,275 +3413,6 @@ impl<'c> World<'c> {
     /// without expanding the ABI yet.
     fn prop_scenery_radius_blocks(&self) -> f32 {
         ((self.stream_r as f32) * KCHUNK_DIM as f32).clamp(120.0, 640.0)
-    }
-
-    /// Wrap a world voxel coord into the toroidal buffer cell on one axis.
-    #[inline]
-    fn wrap(v: i32, dim: i32) -> i32 {
-        let m = v % dim;
-        if m < 0 { m + dim } else { m }
-    }
-
-    /// Clear, then stamp, one chunk COLUMN (cx,cz) across all resident cy into the
-    /// toroidal buffer at its wrapped cells. A wrapped 16-wide slab maps to exactly one
-    /// column at a time, so clearing the slab first removes whatever scrolled out of it.
-    fn shadow_fill_column(&mut self, cx: i32, cz: i32) {
-        let dim_x = self.shadow.dim_x;
-        let dim_y = self.shadow.dim_y;
-        let dim_z = self.shadow.dim_z;
-        let y_lo = self.shadow.origin.y;
-        let base_wx = cx * KCHUNK_DIM;
-        let base_wz = cz * KCHUNK_DIM;
-        // Wrapped cell origin of this column's slab.
-        let gx0 = Self::wrap(base_wx, dim_x);
-        let gz0 = Self::wrap(base_wz, dim_z);
-        // Clear the 16 x dim_y x 16 wrapped slab for this column.
-        for lz in 0..KCHUNK_DIM {
-            let gz = gz0 + lz; // gz0 is chunk-aligned and dim_z % 16 == 0, so no wrap inside a column
-            for gy in 0..dim_y {
-                let row = (gz as usize) * (dim_y as usize) * (dim_x as usize)
-                    + (gy as usize) * (dim_x as usize)
-                    + gx0 as usize;
-                for lx in 0..KCHUNK_DIM {
-                    self.shadow.voxels[row + lx as usize] = 0;
-                }
-            }
-        }
-        // Stamp each resident chunk of this column.
-        for cy in CY_MIN..=CY_MAX {
-            let cc = ChunkCoord { x: cx, y: cy, z: cz };
-            let ch = match self.store.get(cc) {
-                Some(c) => c,
-                None => continue,
-            };
-            if ch.is_uniform() && !Self::casts_shadow(ch.get(0, 0, 0)) {
-                continue;
-            }
-            let base_wy = cy * KCHUNK_DIM;
-            for lz in 0..KCHUNK_DIM {
-                let gz = gz0 + lz;
-                for ly in 0..KCHUNK_DIM {
-                    let gy = base_wy + ly - y_lo;
-                    if gy < 0 || gy >= dim_y {
-                        continue;
-                    }
-                    let row = (gz as usize) * (dim_y as usize) * (dim_x as usize)
-                        + (gy as usize) * (dim_x as usize)
-                        + gx0 as usize;
-                    for lx in 0..KCHUNK_DIM {
-                        let b = ch.get(lx as usize, ly as usize, lz as usize);
-                        if Self::casts_shadow(b) {
-                            self.shadow.voxels[row + lx as usize] = 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Ensure `self.shadow` holds a current TOROIDAL occupancy grid covering the window
-    /// around the player. On movement only the chunk columns that scrolled in are
-    /// re-stamped (cheap); on a block edit only the edited column. The dirty AABB
-    /// (world voxel coords) accumulates exactly which cells changed so the app uploads
-    /// just that sub-region.
-    fn ensure_shadow_volume(&mut self) {
-        let pv = self.player_voxel();
-        let pc = Self::to_chunk(pv);
-        let rc = self.shadow_radius_chunks();
-        let dim_x = rc * 2 * KCHUNK_DIM;
-        let dim_z = rc * 2 * KCHUNK_DIM;
-        let dim_y = (CY_MAX - CY_MIN + 1) * KCHUNK_DIM;
-        let y_lo = CY_MIN * KCHUNK_DIM;
-        // Chunk-aligned window: columns [cx0 .. cx0+2rc), centred on the player chunk.
-        let cx0 = pc.x - rc;
-        let cz0 = pc.z - rc;
-        let origin = IVec3 { x: cx0 * KCHUNK_DIM, y: y_lo, z: cz0 * KCHUNK_DIM };
-
-        let dims_changed = self.shadow.dim_x != dim_x
-            || self.shadow.dim_y != dim_y
-            || self.shadow.dim_z != dim_z;
-
-        if self.shadow.needs_full || dims_changed {
-            // Allocate + fill every column once (first build or a render-distance change).
-            let total = (dim_x as usize) * (dim_y as usize) * (dim_z as usize);
-            self.shadow.voxels.clear();
-            self.shadow.voxels.resize(total, 0u8);
-            self.shadow.dim_x = dim_x;
-            self.shadow.dim_y = dim_y;
-            self.shadow.dim_z = dim_z;
-            self.shadow.origin = origin;
-            self.shadow.have_cx0 = cx0;
-            self.shadow.have_cz0 = cz0;
-            for cz in cz0..cz0 + 2 * rc {
-                for cx in cx0..cx0 + 2 * rc {
-                    self.shadow_fill_column(cx, cz);
-                }
-            }
-            self.shadow.refill_cols.clear();
-            self.shadow.mark_full(); // whole window dirty
-            self.shadow.revision = self.shadow.revision.wrapping_add(1);
-            self.shadow.needs_full = false;
-            return;
-        }
-
-        let old_cx0 = self.shadow.have_cx0;
-        let old_cz0 = self.shadow.have_cz0;
-        let moved = old_cx0 != cx0 || old_cz0 != cz0;
-
-        if !moved && self.shadow.refill_cols.is_empty() {
-            return; // nothing changed; reuse buffer + keep revision + empty dirty box
-        }
-
-        let mut changed = false;
-        // Window scrolled: the origin is purely metadata for the wrap math; the buffer cells
-        // stay put (toroidal). Re-stamp only the columns now in-window that were NOT before,
-        // and report the change as up to TWO strips (an x-edge strip spanning full z, and a
-        // z-edge strip spanning full x) so the upload is proportional to the movement, not to
-        // the bounding box of the L-shaped scroll region. A big jump (no column overlap) just
-        // collapses to a full-window box via mark_dirty's cap.
-        if moved {
-            self.shadow.origin = origin;
-            self.shadow.have_cx0 = cx0;
-            self.shadow.have_cz0 = cz0;
-            let cx1 = cx0 + 2 * rc; // exclusive
-            let cz1 = cz0 + 2 * rc;
-            let oxx0 = old_cx0;
-            let oxx1 = old_cx0 + 2 * rc;
-            let ozz0 = old_cz0;
-            let ozz1 = old_cz0 + 2 * rc;
-            // New columns in x (outside the old x-range), across the FULL new z-range.
-            let mut x_lo = i32::MAX;
-            let mut x_hi = i32::MIN;
-            for cx in cx0..cx1 {
-                if cx >= oxx0 && cx < oxx1 {
-                    continue;
-                }
-                x_lo = x_lo.min(cx);
-                x_hi = x_hi.max(cx);
-                for cz in cz0..cz1 {
-                    self.shadow_fill_column(cx, cz);
-                    self.shadow.refill_cols.remove(&(cx, cz));
-                }
-            }
-            // New columns in z (outside the old z-range), across the x-range that WAS already
-            // present (the corner is covered by the x-strip above, so skip it here).
-            let mut z_lo = i32::MAX;
-            let mut z_hi = i32::MIN;
-            for cz in cz0..cz1 {
-                if cz >= ozz0 && cz < ozz1 {
-                    continue;
-                }
-                z_lo = z_lo.min(cz);
-                z_hi = z_hi.max(cz);
-                for cx in cx0..cx1 {
-                    if cx < oxx0 || cx >= oxx1 {
-                        continue; // already filled by the x-strip
-                    }
-                    self.shadow_fill_column(cx, cz);
-                    self.shadow.refill_cols.remove(&(cx, cz));
-                }
-            }
-            if x_hi >= x_lo {
-                self.shadow.mark_dirty(
-                    IVec3 { x: x_lo * KCHUNK_DIM, y: y_lo, z: cz0 * KCHUNK_DIM },
-                    IVec3 { x: (x_hi + 1) * KCHUNK_DIM - 1, y: y_lo + dim_y - 1, z: cz1 * KCHUNK_DIM - 1 },
-                );
-                changed = true;
-            }
-            if z_hi >= z_lo {
-                // The z-strip's x-extent is the OLD x-overlap (the part not in the x-strip).
-                let zx0 = oxx0.max(cx0);
-                let zx1 = oxx1.min(cx1);
-                if zx1 > zx0 {
-                    self.shadow.mark_dirty(
-                        IVec3 { x: zx0 * KCHUNK_DIM, y: y_lo, z: z_lo * KCHUNK_DIM },
-                        IVec3 { x: zx1 * KCHUNK_DIM - 1, y: y_lo + dim_y - 1, z: (z_hi + 1) * KCHUNK_DIM - 1 },
-                    );
-                }
-                changed = true;
-            }
-        }
-
-        // Re-stamp edited columns that are inside the current window.
-        if !self.shadow.refill_cols.is_empty() {
-            let cols: Vec<(i32, i32)> = self.shadow.refill_cols.drain().collect();
-            for (cx, cz) in cols {
-                if cx < cx0 || cx >= cx0 + 2 * rc || cz < cz0 || cz >= cz0 + 2 * rc {
-                    continue; // outside the window; ignore
-                }
-                self.shadow_fill_column(cx, cz);
-                let wx = cx * KCHUNK_DIM;
-                let wz = cz * KCHUNK_DIM;
-                self.shadow.mark_dirty(
-                    IVec3 { x: wx, y: y_lo, z: wz },
-                    IVec3 { x: wx + KCHUNK_DIM - 1, y: y_lo + dim_y - 1, z: wz + KCHUNK_DIM - 1 },
-                );
-                changed = true;
-            }
-        }
-
-        if changed {
-            self.shadow.revision = self.shadow.revision.wrapping_add(1);
-        }
-    }
-
-    /// Fill a caller-provided `bf_shadow_volume` with the current toroidal occupancy grid,
-    /// plus the dirty AABB of cells that changed since the caller's last successful fill.
-    /// Returns BF_OK, or BF_ERR_BAD_ARG when the caller buffer is too small (dims are still
-    /// written so the caller can resize; the dirty box is then forced to the full window so
-    /// the resized buffer is fully repopulated next time).
-    pub fn fill_shadow_volume(&mut self, vol: &mut bf_shadow_volume) -> bf_result {
-        self.ensure_shadow_volume();
-        let need = self.shadow.voxels.len();
-        vol.origin = bf_ivec3 {
-            x: self.shadow.origin.x,
-            y: self.shadow.origin.y,
-            z: self.shadow.origin.z,
-        };
-        vol.dim_x = self.shadow.dim_x as u32;
-        vol.dim_y = self.shadow.dim_y as u32;
-        vol.dim_z = self.shadow.dim_z as u32;
-        vol.revision = self.shadow.revision;
-        // Helper: write the dirty box list into the ABI arrays.
-        let write_boxes = |vol: &mut bf_shadow_volume, boxes: &[(IVec3, IVec3)]| {
-            let n = boxes.len().min(SHADOW_MAX_DIRTY);
-            vol.dirty_count = n as u32;
-            for i in 0..n {
-                vol.dirty_lo[i] = bf_ivec3 { x: boxes[i].0.x, y: boxes[i].0.y, z: boxes[i].0.z };
-                vol.dirty_hi[i] = bf_ivec3 { x: boxes[i].1.x, y: boxes[i].1.y, z: boxes[i].1.z };
-            }
-        };
-        // Always report the current accumulated dirty boxes (so a probe sees them too).
-        write_boxes(vol, &self.shadow.dirty);
-
-        // PROBE (null buffer): metadata only. Do NOT copy, do NOT clear the dirty boxes, do
-        // NOT force a rebuild. The app uses this to read revision/dims/dirty cheaply each frame.
-        if vol.voxels.is_null() {
-            return bf_result::BF_OK;
-        }
-        // Real fill but buffer too small: report the full window dirty + force a full
-        // repopulate so the resized buffer gets every cell next time.
-        if (vol.voxel_cap as usize) < need {
-            let full = (
-                self.shadow.origin,
-                IVec3 {
-                    x: self.shadow.origin.x + self.shadow.dim_x - 1,
-                    y: self.shadow.origin.y + self.shadow.dim_y - 1,
-                    z: self.shadow.origin.z + self.shadow.dim_z - 1,
-                },
-            );
-            write_boxes(vol, &[full]);
-            self.shadow.needs_full = true;
-            return bf_result::BF_ERR_BAD_ARG;
-        }
-        // SAFETY: the caller guarantees `voxels` points at >= voxel_cap writable bytes;
-        // we copy exactly `need` (<= voxel_cap) bytes into it.
-        unsafe {
-            core::ptr::copy_nonoverlapping(self.shadow.voxels.as_ptr(), vol.voxels, need);
-        }
-        // The caller has taken this update; clear the accumulated dirty boxes.
-        self.shadow.empty_dirty();
-        bf_result::BF_OK
     }
 
     // ---- build_frame -----------------------------------------------------
@@ -4357,33 +3977,6 @@ impl<'c> World<'c> {
     }
     pub fn debug_set_selected(&mut self, s: u8) {
         self.selected = s;
-    }
-    /// Build (if needed) and sample the world-space shadow occupancy at a world
-    /// block coord. Returns 1 if that voxel casts a sun shadow, 0 if not, and -1
-    /// if the coord is outside the exported region. For tests.
-    pub fn debug_shadow_occupancy(&mut self, x: i32, y: i32, z: i32) -> i32 {
-        self.ensure_shadow_volume();
-        let o = self.shadow.origin;
-        // World voxel must be inside the valid window [origin, origin+dim).
-        if x < o.x || x >= o.x + self.shadow.dim_x
-            || y < o.y || y >= o.y + self.shadow.dim_y
-            || z < o.z || z >= o.z + self.shadow.dim_z
-        {
-            return -1;
-        }
-        // Toroidal: the cell is at (world mod dim) on each axis.
-        let gx = Self::wrap(x, self.shadow.dim_x);
-        let gy = y - o.y; // y does not wrap (fixed range)
-        let gz = Self::wrap(z, self.shadow.dim_z);
-        let idx = (gz as usize) * (self.shadow.dim_y as usize) * (self.shadow.dim_x as usize)
-            + (gy as usize) * (self.shadow.dim_x as usize)
-            + gx as usize;
-        self.shadow.voxels[idx] as i32
-    }
-    /// The current shadow-grid revision (bumps on rebuild). For tests.
-    pub fn debug_shadow_revision(&mut self) -> u32 {
-        self.ensure_shadow_volume();
-        self.shadow.revision
     }
     pub fn debug_region_sat(&self, cx: i32, cz: i32) -> f32 {
         self.region_sat(ChunkCoord { x: cx, y: 0, z: cz })
