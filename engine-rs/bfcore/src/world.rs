@@ -470,13 +470,6 @@ pub struct World<'c> {
     sync_stream: bool,
     moving: bool,
 
-    // Progressive detail streaming (#159): chunks generated base-terrain-only
-    // that still owe their deferred decoration pass (trees, plants, props,
-    // structures). Drained nearest-first, one pass per chunk, in detail_tick.
-    // Membership here is what enforces one-time-per-chunk: a chunk is removed
-    // the moment its detail pass runs, and only base generation ever re-adds it.
-    detail_pending: HashSet<ChunkCoord>,
-
     // Async streaming (#25): worker pool + result channels. Created lazily on the
     // first live (sync_stream == false) stream_tick and torn down on Drop. The
     // sync test path never creates these (so it stays deterministic + inline).

@@ -67,7 +67,6 @@ impl<'c> World<'c> {
             self.unlit_far_meshes.remove(&cc);
             self.mesh_versions.remove(&cc);
             self.mesh_inflight.remove(&cc);
-            self.detail_pending.remove(&cc);
             self.store.evict(cc);
         }
     }
@@ -198,10 +197,6 @@ impl<'c> World<'c> {
                 continue;
             }
             self.store.insert(r.chunk);
-            // Worker generated base terrain only; queue the deferred detail pass
-            // (decorations) so this chunk resolves its trees/props a beat later,
-            // nearest-first, in detail_tick.
-            self.detail_pending.insert(r.cc);
             self.dirty_chunk_and_resident_neighbours(r.cc);
             self.shadow.refill_cols.insert((r.cc.x, r.cc.z));
         }
@@ -225,75 +220,10 @@ impl<'c> World<'c> {
                 let mut g = TerrainGen::new();
                 g.seed(seed);
                 let mut ch = PaletteChunk::new(cc, 0);
-                // Base terrain only. The cosmetic decoration pass is deferred to
-                // detail_tick on the frame thread so ground shows up sooner; base
-                // + detail together reproduce generate() exactly (same final world).
-                g.generate_base(cc, &mut ch);
+                g.generate(cc, &mut ch);
                 let _ = tx.send(GenResult { cc, chunk: ch });
             };
             self.pool.as_ref().unwrap().submit(job);
-        }
-    }
-
-    // Deferred decoration pass (#159). Base terrain streams in first; this runs
-    // afterward, resolving the cosmetic detail (trees, plants, props, structures)
-    // for a bounded number of chunks per tick, nearest to the player first. Each
-    // chunk gets exactly one detail pass: it is removed from detail_pending the
-    // instant it is processed and only base generation ever re-adds it, so there
-    // is no re-mesh thrash. Applying generate_detail to the stored base chunk
-    // reproduces the exact voxels of the non-deferred generate() path.
-    pub(super) fn detail_tick(&mut self) {
-        if self.detail_pending.is_empty() || self.gen.is_none() {
-            return;
-        }
-        // Do not compete with the base-terrain fill: while there is a large base
-        // backlog, spend the frame budget getting ground on screen. Detail catches
-        // up once the near bubble is mostly resident. This preserves drop-in-sooner.
-        let budget = if self.bulk_fill() || self.catchup_fill() { 2 } else { 6 };
-
-        // Drop any pending entries that are no longer resident (evicted before we
-        // got to them) so the set does not leak. Only consider chunks whose base
-        // terrain has already meshed at least once: that is what guarantees the
-        // ground shows FIRST and the decorations arrive as a visible second step
-        // (not squeezed into the same frame the base was generated).
-        let center = self.last_center;
-        let mut cand: Vec<ChunkCoord> = Vec::with_capacity(self.detail_pending.len());
-        let mut stale: Vec<ChunkCoord> = Vec::new();
-        for &cc in self.detail_pending.iter() {
-            if !self.store.is_resident(cc) {
-                stale.push(cc);
-            } else if self.meshes.contains_key(&cc) {
-                cand.push(cc);
-            }
-        }
-        for cc in stale {
-            self.detail_pending.remove(&cc);
-        }
-        // Nearest-first: smallest squared chunk distance to the player center.
-        cand.sort_by(|a, b| Self::dist2(*a, center).cmp(&Self::dist2(*b, center)));
-        cand.truncate(budget);
-
-        // A local generator keyed on the world seed reproduces the same decoration
-        // pass the worker's generate() would have run (worldgen is a pure function
-        // of seed + coord), without borrowing self.gen across the store mutation.
-        let mut g = TerrainGen::new();
-        g.seed(self.seed);
-        for cc in cand {
-            // One-time: remove from pending up front so this chunk is never
-            // re-detailed unless it is evicted and base-regenerated.
-            self.detail_pending.remove(&cc);
-            let mut ch = match self.store.get(cc) {
-                Some(c) => c.clone(),
-                None => continue,
-            };
-            g.generate_detail(cc, &mut ch);
-            self.store.insert(ch);
-            // Re-mesh this chunk and its resident neighbours: decorations can add
-            // blocks at the chunk boundary, so neighbour boundary faces may change.
-            // This mirrors what base insertion already does and is bounded by the
-            // per-tick detail budget, so no re-mesh storm.
-            self.dirty_chunk_and_resident_neighbours(cc);
-            self.shadow.refill_cols.insert((cc.x, cc.z));
         }
     }
 }

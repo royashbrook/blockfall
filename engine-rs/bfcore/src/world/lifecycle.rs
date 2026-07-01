@@ -86,7 +86,6 @@ impl<'c> World<'c> {
             surf_cy_cache: HashMap::new(),
             sync_stream: false,
             moving: false,
-            detail_pending: HashSet::new(),
             pool: None,
             gen_tx: None,
             gen_rx: None,
