@@ -430,8 +430,14 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
                         }
                     }
                 } else if dom == Biome::Desert {
-                    if surf == SAND && roll < 7 {
-                        plant = CACTUS_PLANT;
+                    if surf == SAND {
+                        if roll < 2 {
+                            plant = CACTUS_PLANT;
+                        } else if roll2 < 2 {
+                            plant = FALLEN_STICK;
+                        } else if roll3 >= 254 {
+                            plant = PEBBLE;
+                        }
                     }
                 } else if dom == Biome::Beach {
                     if surf == SAND && roll < 14 {
@@ -473,7 +479,7 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
                     }
                 }
 
-                if plant == AIR && roll3 >= 249 && (surf == GRASS || surf == DIRT || surf == STONE || surf == SAND) {
+                if plant == AIR && dom != Biome::Desert && roll3 >= 249 && (surf == GRASS || surf == DIRT || surf == STONE || surf == SAND) {
                     plant = PEBBLE;
                 }
 
@@ -1530,13 +1536,110 @@ mod worldgen_tests {
                     }
                 }
                 chunks_checked += 1;
-                if chunks_checked >= 8 {
+                if chunks_checked >= 24 {
                     break 'scan;
                 }
             }
         }
 
         assert!(desert_columns > 0, "sample set no longer covers desert columns");
+    }
+
+    #[test]
+    fn desert_ground_cover_stays_sparse_and_dry() {
+        let mut g = TerrainGen::new();
+        g.seed(SEED);
+        let mut desert_columns = 0;
+        let mut desert_props = 0;
+        let mut cacti = 0;
+        let mut chunks_checked = 0;
+
+        'scan: for cz in -64..=64 {
+            for cx in -64..=64 {
+                let center_wx = cx * K_CHUNK_DIM + K_CHUNK_DIM / 2;
+                let center_wz = cz * K_CHUNK_DIM + K_CHUNK_DIM / 2;
+                if worldgen_dominant_biome(center_wx, center_wz, SEED) != Biome::Desert as i32 {
+                    continue;
+                }
+
+                let c = ChunkCoord { x: cx, y: 0, z: cz };
+                let mut chunk = DenseChunk::new(AIR);
+                g.generate(c, &mut chunk);
+
+                for lz in 0..K_CHUNK_DIM {
+                    for lx in 0..K_CHUNK_DIM {
+                        let wx = c.x * K_CHUNK_DIM + lx;
+                        let wz = c.z * K_CHUNK_DIM + lz;
+                        if worldgen_dominant_biome(wx, wz, SEED) != Biome::Desert as i32 {
+                            continue;
+                        }
+
+                        let h = worldgen_surface_height(wx, wz, SEED);
+                        if h <= SEA_LEVEL {
+                            continue;
+                        }
+                        let ly_surface = h - c.y * K_CHUNK_DIM;
+                        let ly_above = ly_surface + 1;
+                        if ly_surface < 0
+                            || ly_surface >= K_CHUNK_DIM
+                            || ly_above < 0
+                            || ly_above >= K_CHUNK_DIM
+                        {
+                            continue;
+                        }
+                        let surf = chunk.get(lx, ly_surface, lz);
+                        if surf != SAND && surf != STONE && surf != GRAVEL {
+                            continue;
+                        }
+
+                        desert_columns += 1;
+                        let b = chunk.get(lx, ly_above, lz);
+                        assert_ne!(
+                            b, TALL_GRASS,
+                            "dry desert surface generated tall grass at world ({wx},{},{wz})",
+                            h + 1
+                        );
+                        assert_ne!(
+                            b, FLOWER_RED,
+                            "dry desert surface generated red flowers at world ({wx},{},{wz})",
+                            h + 1
+                        );
+                        assert_ne!(
+                            b, FLOWER_YELLOW,
+                            "dry desert surface generated yellow flowers at world ({wx},{},{wz})",
+                            h + 1
+                        );
+                        assert_ne!(
+                            b, BERRY_BUSH,
+                            "dry desert surface generated berry bush at world ({wx},{},{wz})",
+                            h + 1
+                        );
+
+                        if b == CACTUS_PLANT || b == PEBBLE || b == FALLEN_STICK {
+                            desert_props += 1;
+                        }
+                        if b == CACTUS_PLANT {
+                            cacti += 1;
+                        }
+                    }
+                }
+
+                chunks_checked += 1;
+                if chunks_checked >= 24 {
+                    break 'scan;
+                }
+            }
+        }
+
+        assert!(desert_columns > 0, "sample set no longer covers desert columns");
+        assert!(
+            desert_props * 100 <= desert_columns * 4,
+            "desert props too dense: {desert_props} props across {desert_columns} columns"
+        );
+        assert!(
+            cacti * 100 <= desert_columns * 2,
+            "desert cactus too dense: {cacti} cacti across {desert_columns} columns"
+        );
     }
 
     // Biome borders must NOT be axis-aligned straight lines (#: natural, eroded

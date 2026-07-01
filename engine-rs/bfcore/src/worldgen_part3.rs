@@ -1368,6 +1368,11 @@ fn place_cave_features<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64) {
 
                 match ftype {
                     x if x == CFEAT_MUSHROOMS => {
+                        let surface_y = cave_surface_h(ax, az, seed);
+                        let surface_biome = voronoi_biome(ax, az, seed);
+                        if surface_biome == Biome::Desert || surface_biome == Biome::Beach || ay >= surface_y - 4 {
+                            continue;
+                        }
                         if !anchor_air || !floor_below {
                             continue;
                         }
