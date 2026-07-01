@@ -826,7 +826,34 @@ impl TerrainGen {
         self.seed = s;
     }
 
+    /// Full chunk generation: base terrain plus the cosmetic decoration pass.
+    /// The result is a pure function of (seed, coord) and is what content_hash,
+    /// tests, and any non-streaming caller rely on. Streaming splits this into
+    /// generate_base + generate_detail so base terrain can appear before the
+    /// decorations resolve, but base+detail together reproduce this byte for byte.
     pub fn generate<C: Chunk>(&self, c: ChunkCoord, chunk: &mut C) {
+        self.generate_base(c, chunk);
+        self.generate_detail(c, chunk);
+    }
+
+    /// Detail pass only: stamps trees, plants, props and structures into an
+    /// already base-generated chunk. place_decorations only writes cells inside
+    /// this chunk's own bounds and only reads this chunk's own base terrain, so
+    /// running it as a deferred second pass on the stored chunk yields exactly
+    /// the same voxels as the combined generate(). The caches it needs are pure
+    /// functions of (seed, coord), so rebuilding them here is deterministic.
+    pub fn generate_detail<C: Chunk>(&self, c: ChunkCoord, chunk: &mut C) {
+        let seed_ = self.seed;
+        let wx_min0 = c.x * K_CHUNK_DIM;
+        let wz_min0 = c.z * K_CHUNK_DIM;
+        let anchor_cache = build_anchor_cache(wx_min0, wz_min0, seed_);
+        let col_cache = build_column_cache(wx_min0, wz_min0, seed_, &anchor_cache);
+        place_decorations(c, chunk, seed_, &anchor_cache, &col_cache);
+    }
+
+    /// Base terrain generation: ground columns, water, swamp pools and cave
+    /// features, but NOT the decoration pass. Deterministic from (seed, coord).
+    pub fn generate_base<C: Chunk>(&self, c: ChunkCoord, chunk: &mut C) {
         let seed_ = self.seed;
         let wx_min0 = c.x * K_CHUNK_DIM;
         let wz_min0 = c.z * K_CHUNK_DIM;
@@ -1045,7 +1072,6 @@ impl TerrainGen {
         }
 
         place_cave_features(c, chunk, seed_);
-        place_decorations(c, chunk, seed_, &anchor_cache, &col_cache);
     }
 
     pub fn content_hash(&self, c: ChunkCoord) -> u64 {

@@ -190,6 +190,9 @@ impl<'c> World<'c> {
         }
         self.stream_tick();
         self.maybe_expand_stream_radius();
+        // Deferred decoration pass: base terrain (above) shows first, cosmetic
+        // detail fills in afterward, nearest-first and bounded per tick (#159).
+        self.detail_tick();
 
         self.raycast_target();
         if self.mining && self.has_target {
