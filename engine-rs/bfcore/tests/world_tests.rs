@@ -880,6 +880,13 @@ fn async_streaming_fills_world() {
     w.set_allocator(allocator());
     w.set_render_distance(8);
     w.init_world(424242);
+    assert_eq!(w.debug_stream_target_radius(), 8);
+    assert_eq!(w.debug_stream_active_radius(), 2);
+    assert!(
+        w.debug_stream_backlog() < 200,
+        "initial stream is staged to the playable bubble, backlog={}",
+        w.debug_stream_backlog()
+    );
 
     let zero: bf_frame_input = unsafe { std::mem::zeroed() };
     let mut f = empty_frame();

@@ -530,6 +530,7 @@ pub struct World<'c> {
 
     // Streaming.
     stream_r: i32,
+    stream_active_r: i32,
     surf_cy_cache: HashMap<i64, i32>,
     sync_stream: bool,
     moving: bool,
@@ -738,6 +739,7 @@ impl<'c> World<'c> {
             target: IVec3::default(),
             place: IVec3::default(),
             stream_r: 6,
+            stream_active_r: 2,
             surf_cy_cache: HashMap::new(),
             sync_stream: false,
             moving: false,
@@ -767,6 +769,7 @@ impl<'c> World<'c> {
     }
     pub fn set_render_distance(&mut self, chunks: i32) {
         self.stream_r = chunks.clamp(4, 40);
+        self.stream_active_r = self.stream_active_r.clamp(2, self.stream_r);
     }
     pub fn apply_render_distance(&mut self, chunks: i32) {
         self.set_render_distance(chunks);
@@ -1235,6 +1238,7 @@ impl<'c> World<'c> {
             y: Self::ifloor(self.pos.y),
             z: Self::ifloor(self.pos.z),
         });
+        self.stream_active_r = 2.min(self.stream_r);
         self.recompute_stream_set();
         self.creatures.clear();
         self.chests.clear();
@@ -1626,6 +1630,7 @@ impl<'c> World<'c> {
             z: Self::ifloor(self.pos.z),
         });
         self.first_stream = true;
+        self.stream_active_r = 2.min(self.stream_r);
         self.creatures.clear();
         self.creature_timer = 0.0;
         if !quest_loaded {
@@ -1993,6 +1998,7 @@ impl<'c> World<'c> {
         self.regen_cd = 0.0;
         self.drown_cd = 0.0;
         self.first_stream = true;
+        self.stream_active_r = 2.min(self.stream_r);
         self.recompute_stream_set();
         self.creatures.retain(|c| !c.hostile);
         let pv = self.player_voxel();
@@ -4185,10 +4191,11 @@ impl<'c> World<'c> {
         self.gen_queue.clear();
         let c = self.last_center;
         let creative = self.mode == bf_game_mode::BF_MODE_CREATIVE;
-        let near_r = 5;
+        let target_r = self.stream_active_r.clamp(2, self.stream_r);
+        let near_r = 5.min(target_r);
         let player_cy = Self::floordiv(Self::ifloor(self.pos.y), KCHUNK_DIM);
-        for dx in -self.stream_r..=self.stream_r {
-            for dz in -self.stream_r..=self.stream_r {
+        for dx in -target_r..=target_r {
+            for dz in -target_r..=target_r {
                 let near = creative || (dx.abs() <= near_r && dz.abs() <= near_r);
                 let mut surf_cy = player_cy;
                 if !near {
@@ -4253,7 +4260,23 @@ impl<'c> World<'c> {
 
     // How much terrain is still waiting to be generated + meshed.
     fn stream_backlog(&self) -> usize {
-        self.gen_queue.len() + self.pending_gen_results.len() + self.dirty.len() + self.pending_mesh_results.len()
+        self.gen_queue.len()
+            + self.gen_inflight.len()
+            + self.pending_gen_results.len()
+            + self.dirty.len()
+            + self.mesh_inflight.len()
+            + self.pending_mesh_results.len()
+    }
+
+    fn maybe_expand_stream_radius(&mut self) {
+        if self.stream_active_r >= self.stream_r {
+            return;
+        }
+        if self.stream_backlog() > 48 {
+            return;
+        }
+        self.stream_active_r += 1;
+        self.recompute_stream_set();
     }
     fn mark_dirty(&mut self, cc: ChunkCoord) {
         self.dirty.insert(cc);
@@ -4348,7 +4371,7 @@ impl<'c> World<'c> {
         // 1) Drain finished gen chunks. Budgeted: meshing downstream is the limit,
         // so inserting the whole worker backlog at once explodes dirty_ and the
         // per-frame dirty scan, tanking FPS (mirrors the C++ kGenCollect).
-        let gen_collect = if bulk { 48 } else if catchup { 24 } else { 16 };
+        let gen_collect = if bulk { 24 } else if catchup { 16 } else { 12 };
         let gen_drain = gen_collect * 4;
         if let Some(rx) = self.gen_rx.as_ref() {
             while self.pending_gen_results.len() < gen_drain {
@@ -4379,7 +4402,7 @@ impl<'c> World<'c> {
 
         // 2) Submit more gen jobs, keeping a bounded number in flight (the queue is
         // sorted farthest-first, so popping the back submits nearest-first).
-        let max_inflight = if bulk { 96 } else if catchup { 48 } else { 32 };
+        let max_inflight = if bulk { 48 } else if catchup { 32 } else { 24 };
         // worldgen is a pure fn of coord + seed; each job builds its own seeded
         // generator from this seed (TerrainGen does not derive Clone, so we re-seed
         // a fresh one rather than capture self.gen).
@@ -4579,7 +4602,7 @@ impl<'c> World<'c> {
         // Budgeted: buffer alloc + memcpy is the main-thread cost (mirrors the C++
         // kUploadBudget); the rest waits a frame rather than tanking FPS.
         if async_mode {
-            let upload_budget = if bulk { 12 } else if catchup { 10 } else { 8 };
+            let upload_budget = if bulk { 8 } else if catchup { 6 } else { 4 };
             let upload_drain = upload_budget * 4;
             if let Some(rx) = self.mesh_rx.as_ref() {
                 while self.pending_mesh_results.len() < upload_drain {
@@ -4632,14 +4655,14 @@ impl<'c> World<'c> {
         let mesh_budget = if !async_mode {
             MESH_BUDGET
         } else if bulk {
-            18
+            12
         } else if catchup {
-            16
+            10
         } else {
-            MESH_BUDGET
+            8
         };
-        let kremesh_cap = if bulk { 8 } else { 4 };
-        let mesh_inflight_cap = if bulk { 96 } else if catchup { 72 } else { 64 };
+        let kremesh_cap = if bulk { 6 } else { 3 };
+        let mesh_inflight_cap = if bulk { 48 } else if catchup { 40 } else { 32 };
         // NaN-safe: a finite score sorts normally; if pos ever went NaN we keep order
         // instead of panicking (the C++ comparator tolerated NaN as UB-but-non-crashing).
         todo.sort_by(|a, b| score(*a).partial_cmp(&score(*b)).unwrap_or(std::cmp::Ordering::Equal));
@@ -4983,6 +5006,7 @@ impl<'c> World<'c> {
             }
         }
         self.stream_tick();
+        self.maybe_expand_stream_radius();
 
         self.raycast_target();
         if self.mining && self.has_target {
@@ -6069,6 +6093,15 @@ impl<'c> World<'c> {
         let back = *self.gen_queue.last().unwrap();
         let front = self.gen_queue[0];
         Self::dist2(back, self.last_center) <= Self::dist2(front, self.last_center)
+    }
+    pub fn debug_stream_active_radius(&self) -> i32 {
+        self.stream_active_r
+    }
+    pub fn debug_stream_target_radius(&self) -> i32 {
+        self.stream_r
+    }
+    pub fn debug_stream_backlog(&self) -> usize {
+        self.stream_backlog()
     }
     pub fn debug_has_target(&self) -> bool {
         self.has_target
