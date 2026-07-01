@@ -33,6 +33,9 @@ use std::collections::{HashMap, HashSet};
 mod streaming;
 mod meshing;
 mod persistence;
+mod chests;
+
+use self::chests::ChestData;
 
 // M1 block ids (engine/include/blockcore/world.hpp enum M1Block).
 pub const AIR: BlockId = 0;
@@ -296,26 +299,6 @@ struct RuinSite {
     // True once the clear reward has been granted for this ruin. The reward fires only
     // the first time the ruin is cleared, never again (even after a re-arm + reclear).
     rewarded: bool,
-}
-
-// #109 per-chest container state, keyed in the world by the chest block's world
-// position. A chest owns a fixed CHEST_SLOTS-long list of item stacks. Contents are
-// generated lazily and DETERMINISTICALLY the first time the chest is opened (from the
-// world seed + the chest position), so they survive chunk unload/reload (the chunk
-// blob only stores the block id) and are identical for a given seed. Once `filled`,
-// the slots are authoritative and persist verbatim through the chests.dat save file.
-#[derive(Clone)]
-struct ChestData {
-    slots: [ItemStack; CHEST_SLOTS],
-    // True once this chest's loot has been rolled (or it was loaded from a save). A
-    // never-opened chest stays unfilled so its loot stays purely a function of the seed
-    // until the player actually touches it.
-    filled: bool,
-}
-impl Default for ChestData {
-    fn default() -> ChestData {
-        ChestData { slots: [ItemStack::default(); CHEST_SLOTS], filled: false }
-    }
 }
 
 // Living-villages (epic #95): per-settlement upgrade progress, keyed by the settlement
@@ -1739,38 +1722,7 @@ impl<'c> World<'c> {
         // keyed at the position so it is not lost (the block becomes air, but a freshly
         // placed chest at the same spot would re-expose it; acceptable + safe).
         if broken == CHEST {
-            if self.last_chest_open == Some(t) {
-                self.last_chest_open = None;
-            }
-            self.ensure_chest(t);
-            if let Some(data) = self.chests.get(&(t.x, t.y, t.z)).cloned() {
-                let mut leftover = ChestData::default();
-                leftover.filled = true;
-                let mut any_left = false;
-                for (i, s) in data.slots.iter().enumerate() {
-                    if s.is_empty() {
-                        continue;
-                    }
-                    let mut remaining = s.count;
-                    while remaining > 0 {
-                        let one = ItemStack { item: s.item, count: 1, durability: s.durability };
-                        let placed = self.inv.as_mut().map(|inv| inv.add(one)).unwrap_or(false);
-                        if !placed {
-                            break;
-                        }
-                        remaining -= 1;
-                    }
-                    if remaining > 0 {
-                        leftover.slots[i] = ItemStack { item: s.item, count: remaining, durability: s.durability };
-                        any_left = true;
-                    }
-                }
-                if any_left {
-                    self.chests.insert((t.x, t.y, t.z), leftover);
-                } else {
-                    self.chests.remove(&(t.x, t.y, t.z));
-                }
-            }
+            self.spill_chest_on_break(t);
         }
         self.fx(0, t, ((broken as i32) << 4) | Self::sound_class_for(broken));
         let bn = self.block_name(broken);
@@ -2175,231 +2127,6 @@ impl<'c> World<'c> {
     // granted once when the last defender falls. Reuses give_loot (the same path
     // creatures use to drop loot on death), so it respects the existing inventory
     // behavior. Item ids are sensible existing content (food + a material + a block).
-    // ---- #109 chests: per-block container state -------------------------
-    //
-    // A chest's contents are a deterministic function of the world seed and the
-    // chest's world position, rolled lazily the first time the chest is opened. We
-    // never store contents in the chunk blob (its serialization is byte-golden against
-    // the C++ engine), so they live in a side table that is saved to chests.dat. This
-    // keeps determinism (same seed + same chest = same starting loot) AND persistence
-    // (once opened/edited, the slots are saved verbatim and survive chunk reloads).
-
-    // splitmix64 finaliser: a stable, seed+position-derived hash for deterministic
-    // loot. Self-contained so it does not perturb self.rng (which other systems rely
-    // on for their own determinism).
-    fn chest_hash(seed: u64, w: IVec3, salt: u64) -> u64 {
-        let mut z = seed
-            ^ (w.x as i64 as u64).wrapping_mul(0x9E3779B97F4A7C15)
-            ^ (w.y as i64 as u64).wrapping_mul(0xC2B2AE3D27D4EB4F)
-            ^ (w.z as i64 as u64).wrapping_mul(0x165667B19E3779F9)
-            ^ salt.wrapping_mul(0xD6E8FEB86659FD93);
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-        z ^ (z >> 31)
-    }
-
-    // Deterministically roll a chest's starting loot from its seed+position. Ruin
-    // chests (near a known ruin anchor) get a richer table so clearing a ruin and
-    // opening its chest is rewarding; ordinary structure chests get a friendly basic
-    // table. All item names are existing content; unknown names are skipped safely.
-    fn roll_chest_loot(&self, w: IVec3) -> [ItemStack; CHEST_SLOTS] {
-        let mut out = [ItemStack::default(); CHEST_SLOTS];
-        // A ruin chest if a deterministic ruin anchor sits within a few blocks of this
-        // chest column. worldgen_dangerous_site_near is a pure function of seed+pos (the
-        // same anchor grid the danger sites use), so this classification is deterministic
-        // and does not depend on whether the danger system has run yet. Ruin chests get
-        // the richer loot table, so clearing a ruin and opening its chest is rewarding.
-        let is_ruin = worldgen::worldgen_dangerous_site_near(w.x, w.z, 8, self.seed)
-            .map(|(ax, _ay, az)| (ax - w.x).abs() <= 6 && (az - w.z).abs() <= 6)
-            .unwrap_or(false);
-        // (name, min, max) weighted-ish loot. We just pick a fixed set of entries and
-        // roll a count in [min,max] for each, dropping ~1/3 of slots to keep it sparse.
-        let table: &[(&str, u16, u16)] = if is_ruin {
-            &[
-                ("iron_ingot", 1, 2),
-                ("crystal_shard", 1, 3),
-                ("color_dust", 2, 5),
-                ("glow_dust", 1, 3),
-                ("honey_cake", 1, 2),
-                ("torch", 4, 8),
-                ("coal", 1, 3),
-            ]
-        } else {
-            &[
-                ("oak_planks", 4, 8),
-                ("torch", 2, 6),
-                ("berry_cluster", 2, 4),
-                ("stick", 4, 8),
-                ("coal", 1, 3),
-                ("mushroom", 1, 2),
-            ]
-        };
-        for slot in 0..CHEST_SLOTS {
-            let h = Self::chest_hash(self.seed, w, slot as u64 + 1);
-            // ~1 in 3 slots stays empty so a chest is not stuffed full.
-            if h % 3 == 0 {
-                continue;
-            }
-            let (name, lo, hi) = table[(h >> 8) as usize % table.len()];
-            let id = self.item_id_by_name(name);
-            if id == 0 {
-                continue;
-            }
-            let span = (hi - lo + 1) as u64;
-            let count = lo + ((h >> 24) % span) as u16;
-            out[slot] = ItemStack { item: id, count, durability: 0xFFFF };
-        }
-        out
-    }
-
-    // Ensure the chest at `w` has rolled its loot. Idempotent: a chest that has been
-    // opened (or loaded) before keeps its current contents. Returns nothing; callers
-    // read self.chests afterward.
-    fn ensure_chest(&mut self, w: IVec3) {
-        let key = (w.x, w.y, w.z);
-        let needs_fill = match self.chests.get(&key) {
-            Some(c) => !c.filled,
-            None => true,
-        };
-        if needs_fill {
-            let slots = self.roll_chest_loot(w);
-            self.chests.insert(key, ChestData { slots, filled: true });
-        }
-    }
-
-    // Public: read a chest's slots at `w`. Returns None if there is no chest block
-    // there. Rolls the loot lazily on first read so an unopened chest is empty in the
-    // table until touched (its loot is purely a function of the seed until then).
-    pub fn chest_slots(&mut self, w: IVec3) -> Option<[ItemStack; CHEST_SLOTS]> {
-        if self.block_at(w) != CHEST {
-            return None;
-        }
-        self.ensure_chest(w);
-        self.chests.get(&(w.x, w.y, w.z)).map(|c| c.slots)
-    }
-
-    // Public: take the stack from chest slot `slot` at `w` into the player inventory.
-    // Adds as much as fits; whatever does NOT fit stays in the chest (no item is ever
-    // destroyed on a full inventory). Returns true if anything moved.
-    pub fn chest_take(&mut self, w: IVec3, slot: usize) -> bool {
-        if slot >= CHEST_SLOTS || self.block_at(w) != CHEST {
-            return false;
-        }
-        self.ensure_chest(w);
-        let key = (w.x, w.y, w.z);
-        let src = match self.chests.get(&key) {
-            Some(c) => c.slots[slot],
-            None => return false,
-        };
-        if src.is_empty() {
-            return false;
-        }
-        // add() tops up existing stacks then fills empties, returning true only if EVERY
-        // unit was placed. We need the leftover either way, so add unit by unit until a
-        // unit fails to place (inventory full), leaving the rest in the chest.
-        let inv = match self.inv.as_mut() {
-            Some(i) => i,
-            None => return false,
-        };
-        let mut remaining = src.count;
-        while remaining > 0 {
-            let one = ItemStack { item: src.item, count: 1, durability: src.durability };
-            if !inv.add(one) {
-                break; // inventory full: stop, keep the rest in the chest
-            }
-            remaining -= 1;
-        }
-        let moved = remaining != src.count;
-        if moved {
-            let c = self.chests.get_mut(&key).expect("chest present");
-            if remaining == 0 {
-                c.slots[slot] = ItemStack::default();
-            } else {
-                c.slots[slot].count = remaining;
-            }
-            let nm = self.item_name(src.item);
-            self.notify_quest("collect_item", &nm);
-        }
-        moved
-    }
-
-    // Public: deposit the stack from player inventory slot `inv_slot` into the first
-    // chest slot that can hold it (top up a matching stack, else an empty slot). Adds
-    // as much as fits; the remainder stays in the player inventory. Returns true if
-    // anything moved. Two-way so the chest is a real storage container.
-    pub fn chest_deposit(&mut self, w: IVec3, inv_slot: usize) -> bool {
-        if inv_slot >= BF_INVENTORY_SLOTS || self.block_at(w) != CHEST {
-            return false;
-        }
-        self.ensure_chest(w);
-        let key = (w.x, w.y, w.z);
-        let held = match self.inv.as_ref() {
-            Some(i) => i.get(inv_slot),
-            None => return false,
-        };
-        if held.is_empty() {
-            return false;
-        }
-        let max_s = self.content.map(|c| c.item_max_stack(held.item)).filter(|&m| m > 0).unwrap_or(64);
-        let mut remaining = held.count;
-        {
-            let c = self.chests.get_mut(&key).expect("chest present");
-            // Top up matching stacks first.
-            for s in c.slots.iter_mut() {
-                if remaining == 0 {
-                    break;
-                }
-                if !s.is_empty() && s.item == held.item && s.count < max_s {
-                    let take = remaining.min(max_s - s.count);
-                    s.count += take;
-                    remaining -= take;
-                }
-            }
-            // Then fill empty slots.
-            for s in c.slots.iter_mut() {
-                if remaining == 0 {
-                    break;
-                }
-                if s.is_empty() {
-                    let take = remaining.min(max_s);
-                    *s = ItemStack { item: held.item, count: take, durability: held.durability };
-                    remaining -= take;
-                }
-            }
-        }
-        let moved = remaining != held.count;
-        if moved {
-            if let Some(inv) = self.inv.as_mut() {
-                if remaining == 0 {
-                    inv.set(inv_slot, ItemStack::default());
-                } else {
-                    let mut s = held;
-                    s.count = remaining;
-                    inv.set(inv_slot, s);
-                }
-            }
-        }
-        moved
-    }
-
-    // Public: the chest block position the last INTERACT opened, if the app should show
-    // the chest panel. Returns None when no chest is open or the open chest block is gone
-    // (broken / unloaded), in which case the open state is cleared so the panel closes.
-    pub fn chest_open_pos(&mut self) -> Option<IVec3> {
-        if let Some(p) = self.last_chest_open {
-            if self.block_at(p) != CHEST {
-                self.last_chest_open = None;
-            }
-        }
-        self.last_chest_open
-    }
-
-    // Public: explicitly close the chest panel (the app's ESC / use-again path can also
-    // toggle it via INTERACT, but ESC closes directly).
-    pub fn close_chest(&mut self) {
-        self.last_chest_open = None;
-    }
-
     // #95 HUD: tier/donation status of the village nearest the player, or None when none
     // is within range. Returns (anchor_x, anchor_z, tier, wood_cells, wood_total, progress,
     // progress_needed). Pure read.
@@ -4122,14 +3849,7 @@ impl<'c> World<'c> {
                     // Takes priority over place/befriend so a chest is always openable.
                     // Toggle: interacting the same open chest again closes it.
                     if tb == CHEST {
-                        let target = self.target;
-                        if self.last_chest_open == Some(target) {
-                            self.last_chest_open = None;
-                        } else {
-                            self.ensure_chest(target);
-                            self.last_chest_open = Some(target);
-                            self.fx(1, target, 0);
-                        }
+                        self.toggle_chest_open(self.target);
                         return;
                     }
                 }
