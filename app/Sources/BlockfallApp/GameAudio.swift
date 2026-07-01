@@ -45,8 +45,12 @@ final class GameAudio {
     // -----------------------------------------------------------------------
 
     init() {
+        initTime = CFAbsoluteTimeGetCurrent()
         setupEngine()
     }
+
+    // #161 timestamp of init, so the launch-to-music delay is visible in logs.
+    private let initTime: CFAbsoluteTime
 
     // -----------------------------------------------------------------------
     // MARK: Lifecycle
@@ -54,13 +58,15 @@ final class GameAudio {
 
     /// Start the engine and begin looping background music + ambience.
     func start() {
-        guard let engine else { return }
+        guard let engine else { NSLog("[Blockfall #161] audio start: no engine"); return }
         do {
             if !engine.isRunning { try engine.start() }
         } catch {
             // Audio unavailable at runtime — stay silent.
+            NSLog("[Blockfall #161] audio engine failed to start: %@", "\(error)")
             return
         }
+        NSLog("[Blockfall #161] audio engine running, %.2fs after init", CFAbsoluteTimeGetCurrent() - initTime)
         if musicEnabled    { startMusic() }
         if ambienceEnabled { startAmbience() }
     }
@@ -484,7 +490,8 @@ final class GameAudio {
     // Rotation: tracks cycle within their group every 90 s via crossFadeToTrack.
 
     private func startMusic() {
-        guard isReady else { return }
+        guard isReady else { NSLog("[Blockfall #161] startMusic: buffers not ready yet"); return }
+        NSLog("[Blockfall #161] music starting, %.2fs after audio init", CFAbsoluteTimeGetCurrent() - initTime)
         // Buffers are always built (off the main thread) before isReady flips; never
         // synthesize here — that would freeze the main thread for seconds.
         guard !allTrackBuffers.isEmpty else { return }
