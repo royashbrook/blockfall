@@ -23,17 +23,42 @@ import MetalFX
 // MARK: - GPU buffer registry (Swift owns MTLBuffers; engine refs by handle)
 
 final class BufferRegistry {
+    struct Stats {
+        var liveBuffers: Int
+        var retiredBuffers: Int
+        var reusableBuffers: Int
+        var reusableBytes: Int
+        var newBuffers: UInt64
+        var reusedBuffers: UInt64
+    }
+
     private var buffers: [UInt64: MTLBuffer] = [:]
     private var retired: [(buf: MTLBuffer, frame: Int)] = []
+    private var reusable: [Int: [MTLBuffer]] = [:]
+    private var reusableBytes = 0
+    private var newBuffers: UInt64 = 0
+    private var reusedBuffers: UInt64 = 0
     private var next: UInt64 = 1
     private let lock = NSLock()
     let device: MTLDevice
     var currentFrame = 0
+    private let maxReusableBytes = 96 * 1024 * 1024
     init(device: MTLDevice) { self.device = device }
 
     func make(_ bytes: Int) -> (handle: UInt64, ptr: UnsafeMutableRawPointer)? {
-        guard let buf = device.makeBuffer(length: max(bytes, 16), options: .storageModeShared) else { return nil }
         lock.lock(); defer { lock.unlock() }
+        let wanted = BufferRegistry.bucketSize(max(bytes, 16))
+        let buf: MTLBuffer
+        if var bucket = reusable[wanted], let reused = bucket.popLast() {
+            reusable[wanted] = bucket.isEmpty ? nil : bucket
+            reusableBytes -= reused.length
+            reusedBuffers += 1
+            buf = reused
+        } else {
+            guard let made = device.makeBuffer(length: wanted, options: .storageModeShared) else { return nil }
+            newBuffers += 1
+            buf = made
+        }
         let h = next; next += 1
         buffers[h] = buf
         return (h, buf.contents())
@@ -53,10 +78,44 @@ final class BufferRegistry {
         lock.lock(); defer { lock.unlock() }
         return buffers
     }
+    func stats() -> Stats {
+        lock.lock(); defer { lock.unlock() }
+        let reusableCount = reusable.values.reduce(0) { $0 + $1.count }
+        return Stats(liveBuffers: buffers.count,
+                     retiredBuffers: retired.count,
+                     reusableBuffers: reusableCount,
+                     reusableBytes: reusableBytes,
+                     newBuffers: newBuffers,
+                     reusedBuffers: reusedBuffers)
+    }
     // Release buffers retired more than a few frames ago (GPU done with them).
     func collect() {
         lock.lock(); defer { lock.unlock() }
-        retired.removeAll { currentFrame - $0.frame > 3 }
+        var keep: [(buf: MTLBuffer, frame: Int)] = []
+        keep.reserveCapacity(retired.count)
+        for item in retired {
+            if currentFrame - item.frame > 3 {
+                recycle(item.buf)
+            } else {
+                keep.append(item)
+            }
+        }
+        retired = keep
+    }
+
+    private static func bucketSize(_ bytes: Int) -> Int {
+        var n = 16 * 1024
+        while n < bytes { n <<= 1 }
+        return n
+    }
+
+    private func recycle(_ buf: MTLBuffer) {
+        if reusableBytes + buf.length > maxReusableBytes {
+            return
+        }
+        let bucket = BufferRegistry.bucketSize(buf.length)
+        reusable[bucket, default: []].append(buf)
+        reusableBytes += buf.length
     }
 }
 
@@ -342,6 +401,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
     private let queue: MTLCommandQueue
     private let registry: BufferRegistry
+    private let perfLogEnabled = ProcessInfo.processInfo.environment["BF_PERF_LOG"] == "1"
+    private var perfLogLastTime: CFTimeInterval = 0
+    private var perfLogFrames = 0
     // Scene pipelines (chunk terrain + sky + underwater)
     private var pipeline: MTLRenderPipelineState!
     private var depthState: MTLDepthStencilState!
@@ -1211,6 +1273,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         let now = CACurrentMediaTime()
         let dt = now - lastTime; lastTime = now
         frameCounter += 1
+        perfLogFrames += 1
         registry.currentFrame = frameCounter
 
         // Lazy texture init / resize check
@@ -1490,7 +1553,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                     chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime:    SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
                     lightViewProj: matrix_identity_float4x4,
-                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
+                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, Float(d.material_id & 1)))
                 enc.setVertexBuffer(vbuf, offset: Int(d.vertex_offset), index: 0)
                 enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
@@ -1579,7 +1642,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             enc.setVertexBytes(&windU, length: MemoryLayout<WindUniforms>.stride, index: 3)
             for i in 0..<Int(frame.draw_count) {
                 let d = frame.draws[i]
-                guard d.index_count > 0,
+                guard (d.material_id & 2) != 0,
+                      d.index_count > 0,
                       let vbuf = bufs[d.vertex_buffer],
                       let ibuf = bufs[d.index_buffer] else { continue }
                 var u = Uniforms(
@@ -1587,7 +1651,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                     chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime:    SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
                     lightViewProj: matrix_identity_float4x4,
-                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, 0))
+                    dimSatN:       SIMD4<Float>(d.dim_sat_px, d.dim_sat_pz, d.dim_sat_pxz, Float(d.material_id & 1)))
                 enc.setVertexBuffer(vbuf, offset: Int(d.vertex_offset), index: 0)
                 enc.setVertexBytes(&u, length: MemoryLayout<Uniforms>.stride, index: 1)
                 enc.drawIndexedPrimitives(type: .triangle, indexCount: Int(d.index_count),
@@ -1917,6 +1981,16 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         bf_frame_end(e)
         registry.collect()
+        if perfLogEnabled && now - perfLogLastTime >= 1.0 {
+            let s = registry.stats()
+            let fps = perfLogLastTime > 0 ? Double(perfLogFrames) / (now - perfLogLastTime) : 0
+            NSLog("[Blockfall perf] fps=%.1f draws=%u props=%u buffers live=%d retired=%d reusable=%d %.1fMB new=%llu reused=%llu",
+                  fps, frame.draw_count, frame.prop_instance_count,
+                  s.liveBuffers, s.retiredBuffers, s.reusableBuffers,
+                  Double(s.reusableBytes) / 1048576.0, s.newBuffers, s.reusedBuffers)
+            perfLogLastTime = now
+            perfLogFrames = 0
+        }
     }
 
     // ---- In-game screenshot (backslash key) ---------------------------------
@@ -2668,6 +2742,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         float3 worldPos;
         uint   faceNorm  [[flat]];
         uint   material  [[flat]];
+        float  lod       [[flat]];
         float  ao;               // 0=fully occluded, 1=fully open (from bits [3:5])
     };
 
@@ -3421,6 +3496,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         o.worldPos = swayedWorld;
         o.faceNorm = n;
         o.material = uint(p.material);
+        o.lod      = u.dimSatN.w;
         o.ao       = ao;
         // Sun shadows are now computed in the fragment shader by marching the world
         // occupancy grid from o.worldPos toward the sun; no per-vertex light-space
@@ -3548,6 +3624,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                           texture3d<uint, access::read> occ    [[texture(0)]],
                           texture3d<uint, access::read> occCoarse [[texture(1)]]) {
         uint mat = in.material;
+        bool farLod = in.lod > 0.5;
 
         // ---- Glowing blocks skip shadowing (they emit light) ----
         bool isEmissive = (mat==7u||mat==32u||mat==34u||mat==35u||mat==40u);
@@ -3560,7 +3637,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // regardless of camera position or yaw (no map, no cascade, no coverage ring,
         // no crawl). Daylight-gated via in.shade so there are no sun shadows at night.
         float shadowFactor = 1.0;
-        if (!isEmissive && wu.shadowScale > 0.5) {
+        if (!farLod && !isEmissive && wu.shadowScale > 0.5) {
             float dayFactor = clamp(in.shade * 1.5, 0.0, 1.0);
             if (dayFactor > 0.001) {
                 float3 toSun = normalize(-wu.sunDirTime.xyz);
@@ -3781,7 +3858,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         // ---- Standard block path ----
-        float3 detail = blockDetail(in.worldPos, in.faceNorm, in.material);
+        float3 detail = farLod ? float3(1.0) : blockDetail(in.worldPos, in.faceNorm, in.material);
 
         // ---- Fake bump / normal perturbation from procedural height -----------
         // Derive a small per-fragment normal offset from finite-differencing the
@@ -3795,7 +3872,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // New: sunTilt capped at 1.0 so the bump can only darken, never brighten.
         float bumpLight = 1.0;
         float3 specAdd = float3(0.0);   // #47 stylized PBR specular (float3 so metals can tint it)
-        if (!isEmissive) {
+        if (!farLod && !isEmissive) {
             // #134 cheaper relief: the visible #133 detail is now low-frequency and smooth,
             // so the bump height field is sampled at the matching low frequency and with TWO
             // taps instead of three (a centre sample plus one diagonal offset). The diagonal

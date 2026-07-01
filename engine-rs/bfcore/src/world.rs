@@ -359,6 +359,7 @@ struct MeshRec {
     ibuf: bf_gpu_buffer,
     index_count: u32,
     has_buffers: bool,
+    has_water: bool,
     props: Vec<bf_prop_instance>,
 }
 impl Default for MeshRec {
@@ -368,6 +369,7 @@ impl Default for MeshRec {
             ibuf: bf_gpu_buffer { handle: 0, contents: std::ptr::null_mut(), bytes: 0 },
             index_count: 0,
             has_buffers: false,
+            has_water: false,
             props: Vec::new(),
         }
     }
@@ -547,6 +549,9 @@ pub struct World<'c> {
     // so the frame thread buffers a small batch and consumes nearest-first.
     pending_gen_results: Vec<GenResult>,
     pending_mesh_results: Vec<MeshJobResult>,
+    // Far chunks can be meshed once without frame-thread lighting, then promoted
+    // to a fully lit mesh when the player approaches.
+    unlit_far_meshes: HashSet<ChunkCoord>,
 
     // World-space voxel sun-shadow occupancy (ABI v19). A persistent occupancy
     // grid (1 byte/voxel: 1 = casts sun shadow) covering a fixed-size region
@@ -739,6 +744,7 @@ impl<'c> World<'c> {
             mesh_inflight: HashSet::new(),
             pending_gen_results: Vec::new(),
             pending_mesh_results: Vec::new(),
+            unlit_far_meshes: HashSet::new(),
             shadow: ShadowVol::new(),
         }
     }
@@ -883,6 +889,15 @@ impl<'c> World<'c> {
         let dx = (a.x - c.x) as i64;
         let dz = (a.z - c.z) as i64;
         dx * dx + dz * dz
+    }
+    fn chunk_center_distance_from(&self, cc: ChunkCoord, pos: V3) -> f32 {
+        let ctr = V3::new(
+            (cc.x as f32 + 0.5) * KCHUNK_DIM as f32,
+            (cc.y as f32 + 0.5) * KCHUNK_DIM as f32,
+            (cc.z as f32 + 0.5) * KCHUNK_DIM as f32,
+        );
+        let to_c = V3::new(ctr.x - pos.x, ctr.y - pos.y, ctr.z - pos.z);
+        dot(to_c, to_c).sqrt()
     }
     fn forward_dir(&self) -> V3 {
         normalize(V3::new(
@@ -4206,6 +4221,7 @@ impl<'c> World<'c> {
                 }
             }
             self.meshes.remove(&cc);
+            self.unlit_far_meshes.remove(&cc);
             self.store.evict(cc);
         }
     }
@@ -4494,6 +4510,23 @@ impl<'c> World<'c> {
         props
     }
 
+    fn chunk_has_water(&self, cc: ChunkCoord) -> bool {
+        let ch = match self.store.get(cc) {
+            Some(c) => c,
+            None => return false,
+        };
+        for lz in 0..KCHUNK_DIM {
+            for ly in 0..KCHUNK_DIM {
+                for lx in 0..KCHUNK_DIM {
+                    if ch.get(lx as usize, ly as usize, lz as usize) == WATER {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     fn remesh_dirty(&mut self) {
         if !self.has_alloc {
             return;
@@ -4601,11 +4634,18 @@ impl<'c> World<'c> {
                 remeshes += 1;
             }
             done += 1;
+            let far_lod = self.chunk_center_distance_from(cc, self.pos) > 192.0;
+            if async_mode && far_lod && (fresh || self.unlit_far_meshes.contains(&cc)) {
+                self.unlit_far_meshes.insert(cc);
+                self.submit_mesh_job(cc);
+                continue;
+            }
             // Light before meshing; re-dirty only neighbours whose boundary changed.
             // Lighting stays on the FRAME THREAD (it mutates the live store and drives
             // the re-dirty cascade); the worker only meshes the resulting lit snapshot,
             // so async results match the sync inline path exactly.
             let faces = lighting::light_chunk(&mut self.store, cc);
+            self.unlit_far_meshes.remove(&cc);
             if faces != 0 {
                 let dirs = [
                     IVec3 { x: 1, y: 0, z: 0 },
@@ -4689,6 +4729,7 @@ impl<'c> World<'c> {
             return; // evicted while meshing — drop the result
         }
         let props = self.scan_chunk_props(r.cc);
+        let has_water = self.chunk_has_water(r.cc);
         if let Some(rec) = self.meshes.get(&r.cc) {
             if rec.has_buffers {
                 self.gpu_free(rec.vbuf.handle);
@@ -4697,6 +4738,7 @@ impl<'c> World<'c> {
         }
         let rec = self.meshes.entry(r.cc).or_default();
         rec.props = props;
+        rec.has_water = has_water;
         rec.has_buffers = false;
         if r.empty {
             rec.index_count = 0;
@@ -4726,6 +4768,7 @@ impl<'c> World<'c> {
 
     fn remesh_one(&mut self, cc: ChunkCoord) {
         let props = self.scan_chunk_props(cc);
+        let has_water = self.chunk_has_water(cc);
         let (mr, vbytes, ibytes) = self.mesher.mesh(cc, &self.store, false);
         // Free old buffers if any.
         if let Some(rec) = self.meshes.get(&cc) {
@@ -4736,6 +4779,7 @@ impl<'c> World<'c> {
         }
         let rec = self.meshes.entry(cc).or_default();
         rec.props = props;
+        rec.has_water = has_water;
         rec.has_buffers = false;
         if mr.empty || mr.index_count == 0 {
             rec.index_count = 0;
@@ -5455,6 +5499,7 @@ impl<'c> World<'c> {
         let cam_fwd = self.forward_dir();
         let cam_pos = self.pos;
         let kcull_cos = 0.30f32;
+        let kfar_cull_cos = 0.55f32;
         let knear_keep = KCHUNK_DIM as f32 * 1.5;
         // Iterate meshes in a stable-enough order (HashMap order is fine; the C++
         // also iterates an unordered_map). Collect coords first to avoid borrow
@@ -5475,16 +5520,25 @@ impl<'c> World<'c> {
             );
             let to_c = V3::new(ctr.x - cam_pos.x, ctr.y - cam_pos.y, ctr.z - cam_pos.z);
             let dist = dot(to_c, to_c).sqrt();
-            if dist > knear_keep && dot(to_c, cam_fwd) / dist < kcull_cos {
+            if dist < 176.0 && self.unlit_far_meshes.contains(cc) {
+                self.dirty.insert(*cc);
+            }
+            let facing = dot(to_c, cam_fwd) / dist;
+            if dist > knear_keep && facing < kcull_cos {
                 continue;
             }
+            if dist > 192.0 && facing < kfar_cull_cos {
+                continue;
+            }
+            let lod = if dist > 192.0 { 1 } else { 0 };
+            let has_water = if self.meshes[cc].has_water { 2 } else { 0 };
             let mut d = bf_draw_item {
                 vertex_buffer: vbuf_h,
                 index_buffer: ibuf_h,
                 vertex_offset: 0,
                 index_offset: 0,
                 index_count,
-                material_id: 0,
+                material_id: lod | has_water,
                 chunk_origin: bf_ivec3 { x: cc.x * KCHUNK_DIM, y: cc.y * KCHUNK_DIM, z: cc.z * KCHUNK_DIM },
                 dim_saturation: 0.0,
                 dim_sat_px: 0.0,
