@@ -590,6 +590,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     // under the healthy-frame budget (the 1-2 fps load frames blow way past it).
     private let kReadyHealthyFrames = 6
     private let kHealthyFrameSecs: CFTimeInterval = 1.0 / 40.0   // <=25ms = settled
+    private let kReadyFallbackSecs: CFTimeInterval = 12.0
+    private let kReadyFallbackChunkDraws = 4
+    private let loadStartedAt: CFTimeInterval = CACurrentMediaTime()
     private var healthyFrameRun = 0
     // Progress fraction (0..1) for a bar: resident chunk draws / threshold.
     private(set) var loadProgress: Float = 0
@@ -1359,11 +1362,12 @@ final class Renderer: NSObject, MTKViewDelegate {
             } else {
                 healthyFrameRun = 0
             }
-            if healthyFrameRun >= kReadyHealthyFrames {
+            let fallbackReady = now - loadStartedAt >= kReadyFallbackSecs && residentDraws >= kReadyFallbackChunkDraws
+            if healthyFrameRun >= kReadyHealthyFrames || fallbackReady {
                 isWorldReady = true
                 loadProgress = 1.0
-                NSLog("[Blockfall #135] world ready: %d chunk draws resident, %d healthy frames (frame %d) — hiding loading overlay",
-                      residentDraws, healthyFrameRun, frameCounter)
+                NSLog("[Blockfall #135/#159] world ready: %d chunk draws resident, %d healthy frames, fallback=%d (frame %d) — hiding loading overlay",
+                      residentDraws, healthyFrameRun, fallbackReady ? 1 : 0, frameCounter)
                 let cb = onReady
                 DispatchQueue.main.async { cb?() }
             }
