@@ -4319,7 +4319,11 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Cheap 3D value noise (trilinear hash lerp). Reuses the same integer hash the
     // 2D noise uses so the cost is 8 hashes per sample, no trig, no texture fetch.
     static float cloudHash3(float3 i) {
-        return uhash(uint(i.x) * 1597u + uint(i.y) * 2749u + uint(i.z) * 3433u);
+        int3 ii = int3(i);
+        uint x = uint(ii.x + 32768);
+        uint y = uint(ii.y + 32768);
+        uint z = uint(ii.z + 32768);
+        return uhash(x * 1597u ^ y * 2749u ^ z * 3433u);
     }
     static float cloudNoise3(float3 p) {
         float3 i = floor(p);
@@ -4345,7 +4349,12 @@ final class Renderer: NSObject, MTKViewDelegate {
     // edges (not wispy haze) and squashing Y keeps the slab reading as flat-bottomed
     // cumulus rather than vertical streaks. wind drifts the field over time. 0..1.
     static float cloudDensity(float3 p, float wind, float cover) {
-        p.xz += wind;                                  // slow drift
+        // Start away from the integer lattice origin and drift on non-matching
+        // X/Z speeds. The old scalar `p.xz += wind` could sit on a diagonal hash
+        // alignment for the first seconds after load, then visibly "heal" as wind
+        // moved the cloud field off that unlucky lattice.
+        p.x += wind * 0.73 + 37.0;
+        p.z += wind * 1.11 - 19.0;
         // Scale DOWN hard so the noise cells are big (tens of units across): looking up
         // through the slab a screen region stays inside one lobe (big puffs, no speckle).
         // Y is squashed so the puffs are wide and flat-bottomed like real cumulus.
@@ -5015,7 +5024,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         if (volStrength > 0.001) {
             // Reconstruct this pixel's world position from depth (clip -> world).
             // FSVOut uv is Metal top-left; NDC y is flipped, z in [0,1] on Metal.
+            float2 depthTexel = 1.0 / float2(sceneDepth.get_width(), sceneDepth.get_height());
             float d = sceneDepth.sample(sDepth, in.uv);
+            d = min(d, sceneDepth.sample(sDepth, in.uv + float2( depthTexel.x, 0.0)));
+            d = min(d, sceneDepth.sample(sDepth, in.uv + float2(-depthTexel.x, 0.0)));
+            d = min(d, sceneDepth.sample(sDepth, in.uv + float2(0.0,  depthTexel.y)));
+            d = min(d, sceneDepth.sample(sDepth, in.uv + float2(0.0, -depthTexel.y)));
             float2 ndcXY = float2(in.uv.x * 2.0 - 1.0, (1.0 - in.uv.y) * 2.0 - 1.0);
             float4 clip  = float4(ndcXY, d, 1.0);
             float4 wp    = vu.invViewProj * clip;
