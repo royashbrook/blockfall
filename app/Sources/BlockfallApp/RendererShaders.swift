@@ -1629,8 +1629,19 @@ extension Renderer {
 
         // Saturation — drained water matches terrain: a dim cold slate, not bright
         // greyscale (which read as washout). (#33)
+        // #153 CHUNK-LINE PLANES FIX: in.sat is the per-REGION saturation the terrain uses
+        // for the danger-site / regrowth "drain" (default DIM_SAT=0.18 until a region is
+        // restored). It is uniform per region and bilinearly blended per chunk, so applying
+        // it to the OCEAN surface painted whole regions of water grey while restored
+        // neighbours stayed blue -- reading as large flat pale planes with hard seams on the
+        // region/chunk grid (the reported "chunk-line grid in the water"). The ocean is a
+        // single global body, not danger-site terrain that regrows, so it must read as one
+        // continuous blue surface everywhere. Floor the water saturation high so a drained
+        // region can still cool the tint very slightly (keeps a drained puddle from looking
+        // out of place) but can never grey the sea into per-region planes. This removes the
+        // seams without touching the mesh or the day/night-gated reflection above.
         float lum = dot(col, float3(0.299, 0.587, 0.114));
-        float sat = clamp(in.sat, 0.0, 1.0);
+        float sat = clamp(in.sat, 0.85, 1.0);
         float3 drained = float3(0.22, 0.25, 0.32) * (0.45 + lum * 0.85);
         col = mix(drained, col, sat);
         col = clamp(col, 0.0, 1.0);
@@ -1930,22 +1941,44 @@ extension Renderer {
                         * smoothstep(0.08, 0.20, ray.y)
                         * fairCloud * clamp(cloudsOn, 0.0, 1.0);
         if (cloudVis > 0.001) {
-            // #146: replace the visible cloud layer with a soft sky-projected
-            // sheet. The old bounded 3D raymarch could spawn detached density
-            // fragments that drifted out over ~15s; for the kid-play target a
-            // stable, fluffy sheet beats fragile "real" volume here.
+            // #146: smooth, bold sky-projected cumulus. This is a 2D layer painted on the
+            // sky dome, NOT a raymarch: there is no per-step march to beat against, so it
+            // cannot produce the scaly/fish-scale ripple the bounded 3D march did, and no
+            // start-jitter to decorrelate.
+            //
+            // The ripple in the PREVIOUS 2D attempt came from the PROJECTION, not the noise:
+            // it divided ray.xz by ray.y (a flat plane at infinity), so near the horizon the
+            // UV scale blew up (1/0.10 = 10x) and packed many noise cells into a few pixels.
+            // That undersampling aliased into concentric wave striations, and because the
+            // scale is a pure function of elevation the pattern slid as a moving beat when
+            // the camera turned. Divide by (ray.y + k) with a constant floor instead: at the
+            // horizon the scale is ~1/0.42 rather than 1/0.10, so the on-screen noise
+            // frequency stays bounded and smooth from ANY camera angle. No 1/ray.y blow-up
+            // means no undersampling means no ripple.
             float cloudClk = clk + 18.0;
-            float planeHit = 1.0 / max(ray.y, 0.10);
-            float2 cuv = ray.xz * planeHit * 0.075 + float2(cloudClk * 0.010, cloudClk * 0.006);
-            float broad = cloudFbm(cuv);
-            float soft  = cloudFbm(cuv * 2.15 + float2(7.3, -3.9));
-            float mask = smoothstep(0.48, 0.76, broad * 0.78 + soft * 0.22);
-            mask *= smoothstep(0.12, 0.34, ray.y) * smoothstep(0.98, 0.58, ray.y);
-            float3 cloudTop = mix(float3(0.86, 0.90, 0.98), float3(1.00, 0.82, 0.60), sunsetT * 0.55);
-            float3 cloudBase = mix(float3(0.58, 0.64, 0.76), float3(0.55, 0.42, 0.48), sunsetT * 0.45);
-            float lit = smoothstep(-0.15, 0.65, dot(ray, sunDir3));
-            float3 cloudColor = mix(cloudBase, cloudTop, 0.55 + 0.45 * lit);
-            skyCol = mix(skyCol, cloudColor, clamp(mask * cloudVis * 0.58, 0.0, 0.70));
+            float2 cuv = ray.xz / (ray.y + 0.42) * 1.10 + float2(cloudClk * 0.010, cloudClk * 0.006);
+            // Two smooth octaves only: a dominant LOW-frequency octave lays out big chunky
+            // lobes (bold puffs, not speckle) and one medium octave rounds their edges. A
+            // tight smoothstep on a low threshold carves defined, opaque puff cores (bold
+            // toy cumulus) instead of the thin translucent haze the old sheet showed.
+            float broad = cloudFbm(cuv * 0.85);
+            float soft  = cloudFbm(cuv * 1.90 + float2(7.3, -3.9));
+            float field = broad * 0.72 + soft * 0.28;
+            // Narrow band => more defined puff edges (bolder cores, cleaner blue gaps)
+            // while staying wide enough that the bounded projection never aliases the edge.
+            float mask  = smoothstep(0.46, 0.58, field);
+            // Horizon fade (the slab edge does not hard-line) plus a soft fade toward zenith.
+            mask *= smoothstep(0.14, 0.34, ray.y) * smoothstep(1.02, 0.62, ray.y);
+            // Bold lit crown / cool shadow base, warmed at sunrise/sunset. Sun-facing puffs
+            // read brighter via a gentle continuous gradient (no banding, no quantize).
+            float3 cloudTop  = mix(float3(0.95, 0.97, 1.00), float3(1.00, 0.84, 0.62), sunsetT * 0.55);
+            float3 cloudBase = mix(float3(0.62, 0.68, 0.80), float3(0.60, 0.46, 0.52), sunsetT * 0.45);
+            float lit = smoothstep(-0.20, 0.70, dot(ray, sunDir3));
+            float3 cloudColor = mix(cloudBase, cloudTop, 0.45 + 0.55 * lit);
+            // Bolder presence than the old faint sheet (0.58/cap 0.70 -> 0.90/cap 0.90) so the
+            // puffs read clearly, while still letting a little sky breathe through the thin
+            // edges (keeps the washout guard happy: cloud pixels stay tinted, never full white).
+            skyCol = mix(skyCol, cloudColor, clamp(mask * cloudVis * 0.90, 0.0, 0.90));
         }
         if (false && cloudVis > 0.001) {
             // #47 REAL raymarched VOLUMETRIC clouds, styled BOLD/TOY (chunky, defined,
