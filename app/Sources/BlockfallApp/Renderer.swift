@@ -4558,13 +4558,36 @@ final class Renderer: NSObject, MTKViewDelegate {
         //  dims the sky during rain; the actual falling precipitation is
         //  composited on top of the final LDR image for cheapness.)
 
-        float fairCloud = clamp(1.0 - overcast * 1.6, 0.0, 1.0);
+        // Keep fair-weather clouds stable through the shader-only weather cycle.
+        // The old `1 - overcast*1.6` made the volumetric layer visibly fade during
+        // the first ~15s after load, which is exactly when the startup shreds
+        // appeared to "heal". Let overcast tint the sky above, but do not use it
+        // as a hard visibility gate for normal clouds.
+        float fairCloud = clamp(1.0 - overcast * 0.20, 0.82, 1.0);
         // Day/night gate (clouds fade out as the sun sets so night stays clean) AND the
         // toggle (cloudsOn). The ray must point above the horizon to enter the cloud slab.
         float cloudVis  = smoothstep(0.12, 0.38, dayT)
                         * smoothstep(0.08, 0.20, ray.y)
                         * fairCloud * clamp(cloudsOn, 0.0, 1.0);
         if (cloudVis > 0.001) {
+            // #146: replace the visible cloud layer with a soft sky-projected
+            // sheet. The old bounded 3D raymarch could spawn detached density
+            // fragments that drifted out over ~15s; for the kid-play target a
+            // stable, fluffy sheet beats fragile "real" volume here.
+            float cloudClk = clk + 18.0;
+            float planeHit = 1.0 / max(ray.y, 0.10);
+            float2 cuv = ray.xz * planeHit * 0.075 + float2(cloudClk * 0.010, cloudClk * 0.006);
+            float broad = cloudFbm(cuv);
+            float soft  = cloudFbm(cuv * 2.15 + float2(7.3, -3.9));
+            float mask = smoothstep(0.48, 0.76, broad * 0.78 + soft * 0.22);
+            mask *= smoothstep(0.12, 0.34, ray.y) * smoothstep(0.98, 0.58, ray.y);
+            float3 cloudTop = mix(float3(0.86, 0.90, 0.98), float3(1.00, 0.82, 0.60), sunsetT * 0.55);
+            float3 cloudBase = mix(float3(0.58, 0.64, 0.76), float3(0.55, 0.42, 0.48), sunsetT * 0.45);
+            float lit = smoothstep(-0.15, 0.65, dot(ray, sunDir3));
+            float3 cloudColor = mix(cloudBase, cloudTop, 0.55 + 0.45 * lit);
+            skyCol = mix(skyCol, cloudColor, clamp(mask * cloudVis * 0.58, 0.0, 0.70));
+        }
+        if (false && cloudVis > 0.001) {
             // #47 REAL raymarched VOLUMETRIC clouds, styled BOLD/TOY (chunky, defined,
             // fluffy cumulus with a touch of cel banding and a bright sun rim), NOT wispy
             // photoreal haze. The clouds live in a slab between two heights; we intersect
