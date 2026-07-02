@@ -84,7 +84,15 @@ impl<'c> World<'c> {
         if self.stream_active_r >= self.stream_r {
             return;
         }
-        if self.stream_backlog() > 48 {
+        // Gate on the GENERATION backlog only. The full stream_backlog() includes the
+        // dirty set and mesh queues, which never drain in live play (shadow refills,
+        // footprints, block edits keep them busy), so gating on it stalled the radius
+        // at the starting bubble forever: the player saw a tiny loaded disc ahead and
+        // a long trail of old chunks behind. Meshing continues in parallel; the radius
+        // only needs the near terrain to be GENERATED before it widens.
+        let gen_backlog =
+            self.gen_queue.len() + self.gen_inflight.len() + self.pending_gen_results.len();
+        if gen_backlog > 24 {
             return;
         }
         self.stream_active_r += 1;
