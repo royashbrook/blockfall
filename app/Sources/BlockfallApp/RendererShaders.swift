@@ -3002,7 +3002,9 @@ extension Renderer {
         float3(-0.5,-0.5,-0.5), float3(0.5,-0.5,-0.5), float3(0.5,0.5,-0.5), float3(-0.5,0.5,-0.5)    // -Z
     };
     constant uint kTriIdx[6] = { 0u,1u,2u, 0u,2u,3u };
-    constant uint kPropMaxCuboids = 4u;   // model table stride per type
+    constant uint kPropMaxCuboids = 5u;   // model table stride per type; MUST equal makePropModelTable slots (5).
+                                          // 6d4aeaf grew the CPU table to 5 slots without this constant, so every
+                                          // prop row past 0 read shifted cuboids (pink grass, lily-pad trees).
     constant uint kVertsPerShape  = 144u; // max verts per part (an 8x3 sphere)
 
     // #62: build a unit primitive (extent [-0.5,0.5]) from a local vertex id, as a
