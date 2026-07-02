@@ -41,6 +41,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var bloomBlurHPipeline: MTLRenderPipelineState!  // horizontal Gaussian
     private var bloomBlurVPipeline: MTLRenderPipelineState!  // vertical Gaussian
     private var compositePipeline: MTLRenderPipelineState!   // ACES + grade + vignette → drawable
+    private var godrayPipeline: MTLRenderPipelineState!      // #167 half-res god-ray march pre-pass
     // Ambient life (birds + fireflies) — renderer-owned, no engine data needed
     private var ambientLifePipeline: MTLRenderPipelineState!
     private var ambientLifeDepthState: MTLDepthStencilState!
@@ -84,7 +85,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     // default OFF (too busy/realistic for the kid target); most other effects default ON.
     var gfxFoliage = UserDefaults.standard.object(forKey: "gfxFoliage") as? Bool ?? false
     var gfxWater   = UserDefaults.standard.object(forKey: "gfxWater")   as? Bool ?? true
-    var gfxGodRays = UserDefaults.standard.object(forKey: "gfxGodRays") as? Bool ?? false
+    // #167: default ON again, the quarter-res pass cut the cost 3x (was disabled for FPS).
+    var gfxGodRays = UserDefaults.standard.object(forKey: "gfxGodRays") as? Bool ?? true
     // #132 lens flare: classic screen-space flare when the sun is on-screen and not
     // occluded. Separate toggle from God Rays (which drives the descending shafts).
     // Defaults ON; OFF removes the flare entirely (no cost, byte-identical to no-flare).
@@ -252,6 +254,8 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var bloomBright: MTLTexture?  // rgba16Float half-res bright pass
     private var bloomBlurA:  MTLTexture?  // rgba16Float blur ping
     private var bloomBlurB:  MTLTexture?  // rgba16Float blur pong
+    // #167 half-res god-ray in-scatter (r = shaft, g = litFrac debug, b = hit distance)
+    private var godrayTex:   MTLTexture?
     private var currentDrawableSize: CGSize = .zero
     // Capped internal render size (the long edge is limited to kRenderLongEdge).
     // The final composite upscales to the full drawable; only the HDR/scene/bloom
@@ -304,6 +308,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Halved again after playtest (the 1.5 ceiling still read too strong even at the 0.5 default).
     // Ceiling 1.5 with the 0.5 default gives ~0.75 effective; slider at 100% = 1.5 (the prior default).
     static let kGodRayStrength: Float = 1.5
+    // #167 god-ray march downscale: the shadow march runs at scene/N resolution and
+    // the composite upsamples it depth-aware. 4 = quarter res (16x fewer marched pixels).
+    static let kGodRayDownscale: Float = 4
     // #132 LENS-FLARE GATE KNOBS (CPU side; shader has its own element knobs FLARE_*).
     //   kFlareEdgeFade : how far (in centre-distance, 0=centre ~1.4=corner) the flare keeps
     //                    fading to zero. Larger = the flare reaches further toward the edges.
@@ -470,6 +477,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         bvd.colorAttachments[0].pixelFormat = .rgba16Float
         do { bloomBlurVPipeline = try device.makeRenderPipelineState(descriptor: bvd) }
         catch { fatalError("bloom blurV pipeline failed: \(error)") }
+
+        // ---- #167 God-ray pre-pass (shadow march at half res, ~4x fewer rays) --
+        let grd = MTLRenderPipelineDescriptor()
+        grd.vertexFunction   = lib.makeFunction(name: "fullscreenVert")
+        grd.fragmentFunction = lib.makeFunction(name: "godrayHalfFrag")
+        grd.colorAttachments[0].pixelFormat = .rgba16Float
+        do { godrayPipeline = try device.makeRenderPipelineState(descriptor: grd) }
+        catch { fatalError("godray pipeline failed: \(error)") }
 
         // ---- Composite / tonemap (rgba16Float HDR + bloom → drawable bgra8) ---
         let cpd = MTLRenderPipelineDescriptor()
@@ -773,6 +788,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         bloomBright = make2D(.rgba16Float, HW,  HH, usage: [.renderTarget, .shaderRead])
         bloomBlurA  = make2D(.rgba16Float, HW,  HH, usage: [.renderTarget, .shaderRead])
         bloomBlurB  = make2D(.rgba16Float, HW,  HH, usage: [.renderTarget, .shaderRead])
+        // #167 god rays march at a fraction of the scene res (kGodRayDownscale); the
+        // composite upsamples this depth-aware so shaft edges stay full-res crisp.
+        let gds = Int(Renderer.kGodRayDownscale)
+        godrayTex   = make2D(.rgba16Float, max(1, SW / gds), max(1, SH / gds),
+                             usage: [.renderTarget, .shaderRead])
         currentDrawableSize = size
 
         // ---- MetalFX spatial upscaler setup ---------------------------------
@@ -1476,6 +1496,34 @@ final class Renderer: NSObject, MTKViewDelegate {
             sunColor:       SIMD4<Float>(1.0, 0.6 + 0.35 * dayT, 0.3 + 0.5 * dayT, grStrength))
 
         // =====================================================================
+        // PASS 3b (#167): God-ray pre-pass. The GR_STEPS shadow march runs at
+        // scene/kGodRayDownscale resolution (quarter res = 16x fewer marched
+        // pixels); the composite then upsamples it depth-aware so shaft edges
+        // stay crisp. sunDir.w carries the downscale factor and tells
+        // compositeFrag to take the upsample path. Skipped entirely when the
+        // toggle / night / underground gate zeroes grStrength, so god rays OFF
+        // costs nothing, exactly as before.
+        // =====================================================================
+        if grStrength > 0, let grTex = godrayTex, godrayPipeline != nil {
+            vu.sunDir.w = Renderer.kGodRayDownscale
+            let grRP = MTLRenderPassDescriptor()
+            grRP.colorAttachments[0].texture     = grTex
+            grRP.colorAttachments[0].loadAction  = .dontCare
+            grRP.colorAttachments[0].storeAction = .store
+            if let enc = cmd.makeRenderCommandEncoder(descriptor: grRP) {
+                enc.setRenderPipelineState(godrayPipeline)
+                enc.setDepthStencilState(noDepthState)
+                enc.setCullMode(.none)
+                enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
+                enc.setFragmentTexture(hdrDepth, index: 2)
+                if let occ = shadowVolTex { enc.setFragmentTexture(occ, index: 3) }
+                if let occc = shadowVolCoarseTex { enc.setFragmentTexture(occc, index: 4) }
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+                enc.endEncoding()
+            }
+        }
+
+        // =====================================================================
         // PASS 4a: Composite (ACES + colour grade + vignette)
         //   MetalFX path:  composite → compositeLowRes (bgra8Unorm at sceneSize)
         //   Fallback path: composite → drawable directly (bilinear upscale via sampler)
@@ -1506,6 +1554,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setFragmentTexture(hdrDepth,    index: 2)   // #119 scene depth for the raymarch
                 if let occ = shadowVolTex { enc.setFragmentTexture(occ, index: 3) }  // world occupancy grid (fine)
                 if let occc = shadowVolCoarseTex { enc.setFragmentTexture(occc, index: 4) }  // coarse mip
+                if let grTex = godrayTex { enc.setFragmentTexture(grTex, index: 5) }  // #167 half-res god-ray in-scatter
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -1533,6 +1582,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                     enc.setFragmentTexture(hdrDepth,    index: 2)   // #119 scene depth for the raymarch
                     if let occ = shadowVolTex { enc.setFragmentTexture(occ, index: 3) }  // world occupancy grid (fine)
                     if let occc = shadowVolCoarseTex { enc.setFragmentTexture(occc, index: 4) }  // coarse mip
+                    if let grTex = godrayTex { enc.setFragmentTexture(grTex, index: 5) }  // #167 half-res god-ray in-scatter
                     enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                     enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                     enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -1565,6 +1615,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                     enc.setFragmentTexture(hdrDepth,    index: 2)   // #119 scene depth for the raymarch
                     if let occ = shadowVolTex { enc.setFragmentTexture(occ, index: 3) }  // world occupancy grid (fine)
                     if let occc = shadowVolCoarseTex { enc.setFragmentTexture(occc, index: 4) }  // coarse mip
+                    if let grTex = godrayTex { enc.setFragmentTexture(grTex, index: 5) }  // #167 half-res god-ray in-scatter
                     enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                     enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                     enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)

@@ -84,7 +84,8 @@ struct VolUniforms {
     var voxOrigin:      SIMD4<Float> = .zero   // xyz = shadow grid origin (world block coords), w = march distance
     var voxDims:        SIMD4<Float> = .zero   // xyz = grid dims (voxels), w = soft-shadow flag
     var camPosW:        SIMD4<Float> = .zero   // xyz = camera world pos, w = far coverage radius
-    var sunDir:         SIMD4<Float> = .zero   // xyz = sun dir (points downward), w unused
+    var sunDir:         SIMD4<Float> = .zero   // xyz = sun dir (points downward), w = 1 when the
+                                               // half-res god-ray texture is bound (#167); 0 = inline march
     var sunColor:       SIMD4<Float> = .zero   // rgb = sun colour, w = volumetric strength (0 = off)
 }
 

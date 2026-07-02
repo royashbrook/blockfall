@@ -289,6 +289,10 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     let brightPipeline    = colorPipe("fullscreenVert", "bloomBrightFrag", .rgba16Float)
     let blurHPipeline     = colorPipe("fullscreenVert", "bloomBlurHFrag", .rgba16Float)
     let blurVPipeline     = colorPipe("fullscreenVert", "bloomBlurVFrag", .rgba16Float)
+    // #167 half-res god-ray pre-pass (mirrors the live renderer, so --perftest and
+    // --shot measure/show the real shipping architecture, not the legacy inline march).
+    let godrayPipeline    = colorPipe("fullscreenVert", "godrayHalfFrag", .rgba16Float)
+    if godrayPipeline == nil { print("WARN: god-ray pre-pass pipeline failed; shots fall back to the inline march") }
 
     // World-space voxel shadows: no shadow-map render pipeline in the harness.
 
@@ -365,6 +369,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     let hdrDepth   = makeTex(.depth32Float, W, H, [.renderTarget, .shaderRead])
     let bloomBrt   = makeTex(.rgba16Float,  HW, HH, [.renderTarget, .shaderRead])
     let bloomBlurA = makeTex(.rgba16Float,  HW, HH, [.renderTarget, .shaderRead])
+    let gds = Int(Renderer.kGodRayDownscale)   // #167 god rays march at scene/gds res
+    let godrayTex  = makeTex(.rgba16Float,  max(1, W/gds), max(1, H/gds), [.renderTarget, .shaderRead])
     let output     = makeTex(.bgra8Unorm,   W, H, [.renderTarget], false)
     // #119 second composite target for the same-process god-ray A/B (BF_SHOT_AB=1):
     // composites the SAME hdr/depth/shadow buffers with god rays forced OFF, so the ON
@@ -694,7 +700,37 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 sunDir: SIMD3<Float>(sun.x, sun.y, sun.z), dayT: dayT)
             // #119 one composite into `target` with the given god-ray strength. Reused for
             // the normal shot (ON or OFF) and, in AB mode, a second OFF pass into outputOff.
-            func composite(into target: MTLTexture, godStrength: Float, flareStrength: Float) {
+            func composite(into target: MTLTexture, godStrength: Float, flareStrength: Float,
+                           forceInline: Bool = false) {
+                // God-ray occlusion marches the SAME world occupancy grid the shadows use.
+                var vu = VolUniforms(
+                    invViewProj:    viewProj.inverse,
+                    voxOrigin:      shadowVol?.voxOrigin ?? .zero,
+                    voxDims:        shadowVol?.voxDims ?? .zero,
+                    camPosW:        SIMD4<Float>(camPosW.x, camPosW.y, camPosW.z, 384.0),
+                    sunDir:         SIMD4<Float>(sun.x, sun.y, sun.z, 0),
+                    sunColor:       SIMD4<Float>(1.0, 0.6 + 0.35 * dayT, 0.3 + 0.5 * dayT, godStrength))
+                // #167 half-res god-ray pre-pass (same architecture as the live renderer):
+                // march at half res, then the composite upsamples depth-aware. abs() so the
+                // BF_GR_DEBUG negative sentinel still runs the march. Skipped when off.
+                // BF_GR_FULLRES=1 skips the pre-pass so the composite takes the legacy
+                // inline full-res march: a pixel-aligned old-vs-new god-ray AB in one build.
+                let grFullRes = forceInline
+                    || ProcessInfo.processInfo.environment["BF_GR_FULLRES"] == "1"
+                if !grFullRes, abs(godStrength) > 0.001, let grp = godrayPipeline {
+                    vu.sunDir.w = Renderer.kGodRayDownscale
+                    let grp2 = MTLRenderPassDescriptor()
+                    grp2.colorAttachments[0].texture = godrayTex
+                    grp2.colorAttachments[0].loadAction = .dontCare; grp2.colorAttachments[0].storeAction = .store
+                    if let enc = cmd.makeRenderCommandEncoder(descriptor: grp2) {
+                        enc.setRenderPipelineState(grp); enc.setDepthStencilState(noDepthState); enc.setCullMode(.none)
+                        enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
+                        enc.setFragmentTexture(hdrDepth, index: 2)
+                        if let sv = shadowVol { enc.setFragmentTexture(sv.tex, index: 3); enc.setFragmentTexture(sv.coarse, index: 4) }
+                        enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+                        enc.endEncoding()
+                    }
+                }
                 let crp = MTLRenderPassDescriptor()
                 crp.colorAttachments[0].texture = target
                 crp.colorAttachments[0].loadAction = .dontCare; crp.colorAttachments[0].storeAction = .store
@@ -710,16 +746,9 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 pu.celShade = celShot   // #130 ink outlines + cel grade in --shot when BF_CEL=1
                 pu.lensFlareStr = flareStrength   // #132 lens flare in --shot
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
-                // God-ray occlusion marches the SAME world occupancy grid the shadows use.
-                var vu = VolUniforms(
-                    invViewProj:    viewProj.inverse,
-                    voxOrigin:      shadowVol?.voxOrigin ?? .zero,
-                    voxDims:        shadowVol?.voxDims ?? .zero,
-                    camPosW:        SIMD4<Float>(camPosW.x, camPosW.y, camPosW.z, 384.0),
-                    sunDir:         SIMD4<Float>(sun.x, sun.y, sun.z, 0),
-                    sunColor:       SIMD4<Float>(1.0, 0.6 + 0.35 * dayT, 0.3 + 0.5 * dayT, godStrength))
                 enc.setFragmentTexture(hdrDepth,  index: 2)
                 if let sv = shadowVol { enc.setFragmentTexture(sv.tex, index: 3); enc.setFragmentTexture(sv.coarse, index: 4) }  // world occupancy grid + coarse
+                enc.setFragmentTexture(godrayTex, index: 5)   // #167 half-res god-ray in-scatter
                 enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 enc.endEncoding()
@@ -734,7 +763,15 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             composite(into: output, godStrength: onStrength, flareStrength: onFlare)
             // pixel-aligned OFF baseline: both god rays AND flare off (so the AB diff is
             // attributable and the night byte-identical test stays clean).
-            if abMode { composite(into: outputOff, godStrength: 0, flareStrength: 0) }
+            if abMode {
+                // BF_SHOT_AB2=1: the second target keeps god rays ON but takes the legacy
+                // inline full-res march, a pixel-aligned old-vs-new architecture AB.
+                if ProcessInfo.processInfo.environment["BF_SHOT_AB2"] == "1" {
+                    composite(into: outputOff, godStrength: onStrength, flareStrength: onFlare, forceInline: true)
+                } else {
+                    composite(into: outputOff, godStrength: 0, flareStrength: 0)
+                }
+            }
         }
 
         cmd.commit(); cmd.waitUntilCompleted()

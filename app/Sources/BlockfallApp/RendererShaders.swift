@@ -2306,7 +2306,7 @@ extension Renderer {
     // DENSITY ~2.3x (the in-scatter the eye reads as the shaft body), HG_G sharper
     // (a tighter forward lobe so the glow concentrates into distinct rays toward the
     // sun instead of a broad haze). See the floor / saturation / clamp tuning below.
-    constant int   GR_STEPS   = 80;   // #147: up from 64 for finer sampling (less grain to denoise)
+    constant int   GR_STEPS   = 48;   // #167: was 80 at full res; at quarter res + IGN jitter + quad denoise, 48 holds the look at ~40% less march cost
     constant float GR_MAXDIST = 140.0;
     constant float GR_DENSITY = 0.024;
     constant float GR_HG_G    = 0.82;
@@ -2428,6 +2428,157 @@ extension Renderer {
         return marchSunOcclusion(occ, coarse, gridOrigin, gridDims, worldP, toSun, maxDist);
     }
 
+    // #167 GOD-RAY MARCH CORE. The full shadow march + shaft shaping for one ray,
+    // shared by the half-res pre-pass (godrayHalfFrag, the fast path the live renderer
+    // uses) and the legacy inline path inside compositeFrag (kept for the headless
+    // harness call sites, which signal it with vu.sunDir.w == 0). Returns:
+    //   .x = inscatter (the whole shaft term except sun colour and the strength knob)
+    //   .y = litFrac   (raw lit fraction, for the BF_GR_DEBUG output)
+    //   .z = hitDist   (world-units distance to the depth surface; the depth key the
+    //                   composite's bilateral upsample matches against)
+    // dilateTexel is the uv offset for the 4-tap min-depth dilation: one scene texel
+    // when marching at full res, one HALF-RES texel (two scene texels) at half res so
+    // the conservative near depth covers the coarse pixel's whole 2x2 footprint.
+    static float3 grInscatter(float2 uv, float2 pixPos, float2 dilateTexel,
+                              depth2d<float, access::sample> sceneDepth,
+                              texture3d<uint, access::read> occ,
+                              texture3d<uint, access::read> occCoarse,
+                              constant VolUniforms& vu) {
+        constexpr sampler sD(filter::nearest, address::clamp_to_edge);
+        // Reconstruct this pixel's world position from depth (clip -> world).
+        // FSVOut uv is Metal top-left; NDC y is flipped, z in [0,1] on Metal.
+        float d = sceneDepth.sample(sD, uv);
+        d = min(d, sceneDepth.sample(sD, uv + float2( dilateTexel.x, 0.0)));
+        d = min(d, sceneDepth.sample(sD, uv + float2(-dilateTexel.x, 0.0)));
+        d = min(d, sceneDepth.sample(sD, uv + float2(0.0,  dilateTexel.y)));
+        d = min(d, sceneDepth.sample(sD, uv + float2(0.0, -dilateTexel.y)));
+        float2 ndcXY = float2(uv.x * 2.0 - 1.0, (1.0 - uv.y) * 2.0 - 1.0);
+        float4 clip  = float4(ndcXY, d, 1.0);
+        float4 wp    = vu.invViewProj * clip;
+        float3 worldHit = wp.xyz / wp.w;
+
+        float3 camP    = vu.camPosW.xyz;
+        float3 toHit   = worldHit - camP;
+        float  hitDist = length(toHit);
+        float3 viewDir = (hitDist > 1e-4) ? (toHit / hitDist) : float3(0, 0, 1);
+
+        // March only up to the visible surface (so shafts respect occlusion) and
+        // cap at GR_MAXDIST (keeps every sample inside the far cascade + bounds cost).
+        float marchLen = min(hitDist, GR_MAXDIST);
+        float stepLen  = marchLen / float(GR_STEPS);
+
+        // toSun points from the scene toward the sun (sunDir points downward).
+        float3 toSun = normalize(-vu.sunDir.xyz);
+        float  cosT  = dot(viewDir, toSun);
+        float  phase = hgPhase(cosT, GR_HG_G);
+
+        // #141 BLUE-NOISE JITTER: the old jitter was fract(sin(dot(px,...))), a white-noise
+        // hash whose value jumps randomly between neighbouring pixels, so the residual
+        // banding turned into salt-and-pepper GRAIN in the shafts. Interleaved Gradient
+        // Noise (Jimenez 2014) is a cheap blue-noise-like dither: its values are
+        // well-distributed over any small pixel neighbourhood, so the per-pixel start
+        // offsets are spread evenly and the eye reads the result as a smooth gradient
+        // instead of grain. Same one-line cost, far cleaner shafts.
+        float dither = fract(52.9829189 * fract(dot(pixPos, float2(0.06711056, 0.00583715))));
+
+        float farR       = vu.camPosW.w;
+        float voxMaxDist = vu.voxOrigin.w;
+        // Accumulate the LIT length and the TOTAL marched length separately, so the
+        // raw signal is a lit FRACTION in [0,1] (how much of the air toward the sun
+        // along this ray is sunlit). Normalising this way decouples the strength from
+        // the ray length, so short ground rays and long sky rays are on the same
+        // scale and a single threshold reads consistently.
+        float litLen = 0.0, totLen = 0.0;
+        // #147: keep the start jitter, but make it a small centred offset rather than
+        // a full-step random shift. Full-step jitter removes bands but leaves visible
+        // pixel variance after the steep shaft shaping; a small centred jitter still
+        // breaks lockstep bands while feeding the denoise pass a calmer signal.
+        float t = stepLen * (0.5 + (dither - 0.5) * 0.15);
+        for (int i = 0; i < GR_STEPS; ++i) {
+            float3 sp = camP + viewDir * t;
+            float dc  = length(sp - camP);
+            // Same world occupancy march as the cast shadows (no shadow map).
+            float lit = volShadowLit(occ, occCoarse, vu.voxOrigin.xyz, vu.voxDims.xyz,
+                                     sp, toSun, voxMaxDist);
+            // Fade contribution out toward the coverage edge so no hard boundary
+            // shows where the occupancy grid ends.
+            float coverage = 1.0 - smoothstep(farR * 0.85, farR, dc);
+            litLen += lit * coverage * stepLen;
+            totLen += stepLen;
+            t += stepLen;
+        }
+        float litFrac = (totLen > 1e-4) ? (litLen / totLen) : 0.0;   // 0..1
+
+        // #147 DENOISE THE LIT FRACTION (before the steep shaping). The jittered march
+        // leaves a little high-frequency variance in litFrac; the floor/gamma/contrast curves
+        // below are steep, so that small per-pixel noise gets AMPLIFIED into the visible grain
+        // in the shafts near the sun. Box-average litFrac over the 2x2 fragment quad FIRST so
+        // the shaping operates on a clean signal. quad_shuffle_xor reaches the three other
+        // lanes of this pixel's quad (xor 1 = horizontal, 2 = vertical, 3 = diagonal), so the
+        // mean of all four is the EXACT 2x2 box filter, parity-independent. This removes the
+        // jitter grain while preserving the real beam structure (which varies far more slowly
+        // than one pixel). Cost: three lane shuffles, no extra voxel marches (the dominant cost
+        // stays at GR_STEPS); the grain that survived the march is averaged out for free.
+        float lfq = (litFrac
+                     + quad_shuffle_xor(litFrac, 1u)
+                     + quad_shuffle_xor(litFrac, 2u)
+                     + quad_shuffle_xor(litFrac, 3u)) * 0.25;
+        litFrac = clamp(lfq, 0.0, 1.0);
+
+        // A floor cut that keeps ONLY the shaft cores: it suppresses the broad,
+        // uniform low-level glow (the "fog wash" failure mode and the ground-wash
+        // guard) and remaps the surviving range so beams read as distinct, graphic
+        // rays rather than a soft haze. The window is narrower and higher than #126
+        // (0.28..1.0): air must be mostly sunlit toward the sun before it lights up.
+        // GR_SHAFT_GAMMA > 1 then CRUSHES the partly-lit midtones toward black so the
+        // broad smooth glare dies and the shadow corridors read as crisp dark gaps
+        // between bright beams (graphic, cel-shaded shafts, not a soft halo).
+        float shaftRaw = smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac);
+        float shaft    = pow(shaftRaw, GR_SHAFT_GAMMA);
+        // #132 DISTINCT BEAMS: sharpen the shaft around its mid-value with a contrast
+        // curve so the smooth in-scatter SEGMENTS into separated bright cores and dark
+        // gaps. A logistic-ish contrast about 0.5 keeps it in [0,1] (cannot raise the
+        // mean past the carved beams, so it cannot reintroduce a wash).
+        shaft = clamp((shaft - 0.5) * GR_SHAFT_SHARP + 0.5, 0.0, 1.0);
+        float shaftQ = (shaft
+                        + quad_shuffle_xor(shaft, 1u)
+                        + quad_shuffle_xor(shaft, 2u)
+                        + quad_shuffle_xor(shaft, 3u)) * 0.25;
+        shaft = mix(shaft, clamp(shaftQ, 0.0, 1.0), 0.90);
+        // #132 LOW-SUN BOOST: shafts read as god-rays streaming DOWN at dawn/dusk and stay
+        // subtle at noon. sunDir points downward, so -sunDir.y is the sun elevation
+        // (~1 noon, ~0 horizon). lowSun is ~1 near the horizon, ~0 high up.
+        float sunElev = clamp(-vu.sunDir.y, 0.0, 1.0);
+        float lowSun  = pow(1.0 - sunElev, GR_LOWSUN_POW);
+        float shaftBoost = 1.0 + GR_LOWSUN_BOOST * lowSun;
+        // marchLen factor: long rays (open sky toward the sun) scatter more than the
+        // short rays that hit nearby ground, which keeps the ground from washing.
+        float lenFactor = clamp(marchLen / GR_MAXDIST, 0.0, 1.0);
+        float inscatter = shaft * shaftBoost * phase * lenFactor * GR_DENSITY * marchLen;
+        return float3(inscatter, litFrac, hitDist);
+    }
+
+    // #167 LOW-RES GOD-RAY PRE-PASS. Runs the expensive shadow march at a fraction
+    // of the scene resolution (kGodRayDownscale = 4, so 16x fewer marched pixels)
+    // into a small rgba16Float target; compositeFrag then does a depth-aware
+    // (bilateral) upsample so shaft edges stay crisp against foreground geometry.
+    //   r = inscatter, g = litFrac (BF_GR_DEBUG), b = hit distance (the depth key).
+    fragment float4 godrayHalfFrag(FSVOut in [[stage_in]],
+                                   constant VolUniforms& vu [[buffer(1)]],
+                                   depth2d<float, access::sample> sceneDepth [[texture(2)]],
+                                   texture3d<uint, access::read> occ         [[texture(3)]],
+                                   texture3d<uint, access::read> occCoarse   [[texture(4)]]) {
+        // Dilate the depth over one coarse texel. vu.sunDir.w carries the downscale
+        // factor (2 = half res, 4 = quarter res), so the conservative near depth
+        // covers this coarse pixel's whole NxN scene footprint (no shaft leak over
+        // foreground silhouettes after the upsample).
+        float2 dilate = max(vu.sunDir.w, 1.0)
+                        / float2(sceneDepth.get_width(), sceneDepth.get_height());
+        float3 r = grInscatter(in.uv, in.position.xy, dilate, sceneDepth, occ, occCoarse, vu);
+        // Clamp the stored distance into fp16 range (a sky pixel reconstructs far).
+        return float4(r.x, r.y, min(r.z, 60000.0), 1.0);
+    }
+
     fragment float4 compositeFrag(FSVOut in [[stage_in]],
                                   texture2d<float> hdrTex   [[texture(0)]],
                                   texture2d<float> bloomTex [[texture(1)]],
@@ -2435,7 +2586,8 @@ extension Renderer {
                                   constant VolUniforms&  vu [[buffer(1)]],
                                   depth2d<float, access::sample> sceneDepth [[texture(2)]],
                                   texture3d<uint, access::read> occ         [[texture(3)]],
-                                  texture3d<uint, access::read> occCoarse   [[texture(4)]]) {
+                                  texture3d<uint, access::read> occCoarse   [[texture(4)]],
+                                  texture2d<float> godrayTex                [[texture(5)]]) {
         constexpr sampler s(filter::linear, address::clamp_to_edge);
         constexpr sampler sDepth(filter::nearest, address::clamp_to_edge);
 
@@ -2458,119 +2610,58 @@ extension Renderer {
         bool volDebug = (volStrength < -0.5);
         if (volDebug) volStrength = -volStrength;
         if (volStrength > 0.001) {
-            // Reconstruct this pixel's world position from depth (clip -> world).
-            // FSVOut uv is Metal top-left; NDC y is flipped, z in [0,1] on Metal.
-            float2 depthTexel = 1.0 / float2(sceneDepth.get_width(), sceneDepth.get_height());
-            float d = sceneDepth.sample(sDepth, in.uv);
-            d = min(d, sceneDepth.sample(sDepth, in.uv + float2( depthTexel.x, 0.0)));
-            d = min(d, sceneDepth.sample(sDepth, in.uv + float2(-depthTexel.x, 0.0)));
-            d = min(d, sceneDepth.sample(sDepth, in.uv + float2(0.0,  depthTexel.y)));
-            d = min(d, sceneDepth.sample(sDepth, in.uv + float2(0.0, -depthTexel.y)));
-            float2 ndcXY = float2(in.uv.x * 2.0 - 1.0, (1.0 - in.uv.y) * 2.0 - 1.0);
-            float4 clip  = float4(ndcXY, d, 1.0);
-            float4 wp    = vu.invViewProj * clip;
-            float3 worldHit = wp.xyz / wp.w;
-
-            float3 camP    = vu.camPosW.xyz;
-            float3 toHit   = worldHit - camP;
-            float  hitDist = length(toHit);
-            float3 viewDir = (hitDist > 1e-4) ? (toHit / hitDist) : float3(0, 0, 1);
-
-            // March only up to the visible surface (so shafts respect occlusion) and
-            // cap at GR_MAXDIST (keeps every sample inside the far cascade + bounds cost).
-            float marchLen = min(hitDist, GR_MAXDIST);
-            float stepLen  = marchLen / float(GR_STEPS);
-
-            // toSun points from the scene toward the sun (sunDir points downward).
-            float3 toSun = normalize(-vu.sunDir.xyz);
-            float  cosT  = dot(viewDir, toSun);
-            float  phase = hgPhase(cosT, GR_HG_G);
-
-            // #141 BLUE-NOISE JITTER: the old jitter was fract(sin(dot(px,...))), a white-noise
-            // hash whose value jumps randomly between neighbouring pixels, so the residual
-            // banding turned into salt-and-pepper GRAIN in the shafts. Interleaved Gradient
-            // Noise (Jimenez 2014) is a cheap blue-noise-like dither: its values are
-            // well-distributed over any small pixel neighbourhood, so the per-pixel start
-            // offsets are spread evenly and the eye reads the result as a smooth gradient
-            // instead of grain. Same one-line cost, far cleaner shafts.
-            float2 px = in.position.xy;
-            float dither = fract(52.9829189 * fract(dot(px, float2(0.06711056, 0.00583715))));
-
-            float farR      = vu.camPosW.w;
-            float voxMaxDist = vu.voxOrigin.w;
-            // Accumulate the LIT length and the TOTAL marched length separately, so the
-            // raw signal is a lit FRACTION in [0,1] (how much of the air toward the sun
-            // along this ray is sunlit). Normalising this way decouples the strength from
-            // the ray length, so short ground rays and long sky rays are on the same
-            // scale and a single threshold reads consistently.
-            float litLen = 0.0, totLen = 0.0;
-            // #147: keep the start jitter, but make it a small centred offset rather than
-            // a full-step random shift. Full-step jitter removes bands but leaves visible
-            // pixel variance after the steep shaft shaping; a small centred jitter still
-            // breaks lockstep bands while feeding the denoise pass a calmer signal.
-            float t = stepLen * (0.5 + (dither - 0.5) * 0.15);
-            for (int i = 0; i < GR_STEPS; ++i) {
-                float3 sp = camP + viewDir * t;
-                float dc  = length(sp - camP);
-                // Same world occupancy march as the cast shadows (no shadow map).
-                float lit = volShadowLit(occ, occCoarse, vu.voxOrigin.xyz, vu.voxDims.xyz,
-                                         sp, toSun, voxMaxDist);
-                // Fade contribution out toward the coverage edge so no hard boundary
-                // shows where the occupancy grid ends.
-                float coverage = 1.0 - smoothstep(farR * 0.85, farR, dc);
-                litLen += lit * coverage * stepLen;
-                totLen += stepLen;
-                t += stepLen;
+            float inscatter, litFrac;
+            if (vu.sunDir.w > 0.5) {
+                // #167 FAST PATH: the shafts were already marched at LOW RES into
+                // godrayTex (godrayHalfFrag). Upsample with a depth-aware (bilateral)
+                // 4-tap filter: each of the four nearest half-res samples is weighted
+                // by its bilinear weight TIMES how well its stored hit distance (.b)
+                // matches this full-res pixel's own hit distance, so shaft values from
+                // the wrong side of a silhouette are rejected and edges stay crisp
+                // (no halo bleeding over foreground geometry).
+                float d = sceneDepth.sample(sDepth, in.uv);
+                float2 ndcXY = float2(in.uv.x * 2.0 - 1.0, (1.0 - in.uv.y) * 2.0 - 1.0);
+                float4 wp = vu.invViewProj * float4(ndcXY, d, 1.0);
+                float hitD = min(length(wp.xyz / wp.w - vu.camPosW.xyz), 60000.0);
+                float2 grSize = float2(godrayTex.get_width(), godrayTex.get_height());
+                float2 posG = in.uv * grSize - 0.5;
+                float2 fw   = fract(posG);
+                float2 base = (floor(posG) + 0.5) / grSize;
+                float2 gt   = 1.0 / grSize;
+                float4 s00 = godrayTex.sample(sDepth, base);
+                float4 s10 = godrayTex.sample(sDepth, base + float2(gt.x, 0.0));
+                float4 s01 = godrayTex.sample(sDepth, base + float2(0.0, gt.y));
+                float4 s11 = godrayTex.sample(sDepth, base + gt);
+                float4 bw = float4((1.0 - fw.x) * (1.0 - fw.y), fw.x * (1.0 - fw.y),
+                                   (1.0 - fw.x) * fw.y,         fw.x * fw.y);
+                // RELATIVE distance mismatch, so the tolerance scales with distance
+                // (a 2-block step matters up close, not at the horizon).
+                float4 hz = float4(s00.b, s10.b, s01.b, s11.b);
+                float4 dw = 1.0 / (0.05 + abs(hz - hitD) / max(hitD, 4.0));
+                float4 w  = bw * dw;
+                float ws  = w.x + w.y + w.z + w.w;
+                if (ws < 1e-5) { w = bw; ws = 1.0; }   // no depth match: plain bilinear
+                // The stored in-scatter scales with marchLen^2 (lenFactor * marchLen in
+                // grInscatter). Thin foreground geometry (grass blades, mushroom stems)
+                // is narrower than a coarse texel, so every tap can carry a LONG sky
+                // ray's in-scatter and would wash over the blade. Renormalise each tap
+                // to unit marchLen^2 via its stored hit distance, then rescale by THIS
+                // pixel's own marchLen^2, the same physics the inline path applies.
+                float4 tapLen = min(hz, GR_MAXDIST);
+                float4 tapIns = float4(s00.r, s10.r, s01.r, s11.r)
+                                / max(tapLen * tapLen, float4(1.0));
+                float lenHere = min(hitD, GR_MAXDIST);
+                inscatter = (dot(w, tapIns) / ws) * lenHere * lenHere;
+                litFrac   = dot(w, float4(s00.g, s10.g, s01.g, s11.g)) / ws;
+            } else {
+                // Legacy inline full-res march. Only the headless harness composite
+                // call sites take this path (they do not encode the pre-pass); the
+                // live renderer always sets vu.sunDir.w to the downscale factor.
+                float2 dilate = 1.0 / float2(sceneDepth.get_width(), sceneDepth.get_height());
+                float3 r = grInscatter(in.uv, in.position.xy, dilate,
+                                       sceneDepth, occ, occCoarse, vu);
+                inscatter = r.x; litFrac = r.y;
             }
-            float litFrac = (totLen > 1e-4) ? (litLen / totLen) : 0.0;   // 0..1
-
-            // #147 DENOISE THE LIT FRACTION (before the steep shaping). The jittered march
-            // leaves a little high-frequency variance in litFrac; the floor/gamma/contrast curves
-            // below are steep, so that small per-pixel noise gets AMPLIFIED into the visible grain
-            // in the shafts near the sun. Box-average litFrac over the 2x2 fragment quad FIRST so
-            // the shaping operates on a clean signal. quad_shuffle_xor reaches the three other
-            // lanes of this pixel's quad (xor 1 = horizontal, 2 = vertical, 3 = diagonal), so the
-            // mean of all four is the EXACT 2x2 box filter, parity-independent. This removes the
-            // jitter grain while preserving the real beam structure (which varies far more slowly
-            // than one pixel). Cost: three lane shuffles, no extra voxel marches (the dominant cost
-            // stays at GR_STEPS); the grain that survived the march is averaged out for free.
-            float lfq = (litFrac
-                         + quad_shuffle_xor(litFrac, 1u)
-                         + quad_shuffle_xor(litFrac, 2u)
-                         + quad_shuffle_xor(litFrac, 3u)) * 0.25;
-            litFrac = clamp(lfq, 0.0, 1.0);
-
-            // A floor cut that keeps ONLY the shaft cores: it suppresses the broad,
-            // uniform low-level glow (the "fog wash" failure mode and the ground-wash
-            // guard) and remaps the surviving range so beams read as distinct, graphic
-            // rays rather than a soft haze. The window is narrower and higher than #126
-            // (0.28..1.0): air must be mostly sunlit toward the sun before it lights up.
-            // GR_SHAFT_GAMMA > 1 then CRUSHES the partly-lit midtones toward black so the
-            // broad smooth glare dies and the shadow corridors read as crisp dark gaps
-            // between bright beams (graphic, cel-shaded shafts, not a soft halo).
-            float shaftRaw = smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac);
-            float shaft    = pow(shaftRaw, GR_SHAFT_GAMMA);
-            // #132 DISTINCT BEAMS: sharpen the shaft around its mid-value with a contrast
-            // curve so the smooth in-scatter SEGMENTS into separated bright cores and dark
-            // gaps — the player can point at the sun through trees and see real shafts, not a
-            // broad warm glare. A logistic-ish contrast about 0.5 keeps it in [0,1] (cannot
-            // raise the mean past the carved beams, so it cannot reintroduce a wash).
-            shaft = clamp((shaft - 0.5) * GR_SHAFT_SHARP + 0.5, 0.0, 1.0);
-            float shaftQ = (shaft
-                            + quad_shuffle_xor(shaft, 1u)
-                            + quad_shuffle_xor(shaft, 2u)
-                            + quad_shuffle_xor(shaft, 3u)) * 0.25;
-            shaft = mix(shaft, clamp(shaftQ, 0.0, 1.0), 0.90);
-            // #132 LOW-SUN BOOST: shafts read as god-rays streaming DOWN at dawn/dusk and stay
-            // subtle at noon. sunDir points downward, so -sunDir.y is the sun elevation
-            // (~1 noon, ~0 horizon). lowSun is ~1 near the horizon, ~0 high up.
-            float sunElev = clamp(-vu.sunDir.y, 0.0, 1.0);
-            float lowSun  = pow(1.0 - sunElev, GR_LOWSUN_POW);
-            float shaftBoost = 1.0 + GR_LOWSUN_BOOST * lowSun;
-            // marchLen factor: long rays (open sky toward the sun) scatter more than the
-            // short rays that hit nearby ground, which keeps the ground from washing.
-            float lenFactor = clamp(marchLen / GR_MAXDIST, 0.0, 1.0);
-            float inscatter = shaft * shaftBoost * phase * lenFactor * GR_DENSITY * marchLen;
 
             // Saturate the shaft color toward a warm gold so the beams read as obvious
             // sunlight, not a neutral lift. Push the base sun tint away from its luma so
