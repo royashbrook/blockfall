@@ -21,6 +21,9 @@ impl<'c> World<'c> {
             22 => V3::new(0.78, 0.72, 0.56),
             5 => V3::new(0.27, 0.55, 0.24),
             27 => V3::new(0.40, 0.62, 0.32),
+            // Pine (#62): log 49 fell as a grey default box, needles 48 likewise.
+            49 => V3::new(0.40, 0.25, 0.15),
+            48 => V3::new(0.18, 0.42, 0.24),
             _ => V3::new(0.6, 0.6, 0.6),
         }
     }

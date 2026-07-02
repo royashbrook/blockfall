@@ -1898,3 +1898,37 @@ fn debris_trajectories_are_deterministic() {
     assert!(!a.is_empty(), "run produced debris");
     assert_eq!(a, b, "same seed + same break = bit-identical trajectories");
 }
+
+// Pine trees (#62 ids: log 49, needles 48) must fell like oak/birch: logs become
+// coloured falling blocks (not the grey default) and the canopy clears.
+#[test]
+fn pine_tree_fells_with_canopy() {
+    let mut content = ContentRegistry::new();
+    content.load(CONTENT);
+    let mut w = World::new(None);
+    w.debug_set_sync_streaming(true);
+    w.set_content(&content);
+    w.set_allocator(allocator());
+    w.generate_test_world();
+    // Flat test world: solid up to y=7. Build a pine at (8, 8.., 8).
+    let (bx, bz) = (8, 8);
+    for dy in 0..=3 {
+        w.debug_edit(bx, 8 + dy, bz, 49);
+    }
+    for dx in -1..=1 {
+        for dz in -1..=1 {
+            w.debug_edit(bx + dx, 12, bz + dz, 48);
+        }
+    }
+    w.debug_break_block(bx, 8, bz);
+    let mut needles = 0;
+    for dx in -1..=1 {
+        for dz in -1..=1 {
+            if w.debug_block_at(bx + dx, 12, bz + dz) == 48 {
+                needles += 1;
+            }
+        }
+    }
+    assert_eq!(needles, 0, "felling a pine must clear its needle canopy");
+    assert_eq!(w.debug_block_at(bx, 9, bz), 0, "pine trunk felled");
+}

@@ -83,7 +83,9 @@ impl<'c> World<'c> {
     }
 
     pub(super) fn is_leaf(b: BlockId) -> bool {
-        b == 5 || b == 27
+        // 48 = pine needles (#62); missing here meant felled pines left their
+        // canopy floating and pine needles cast no occupancy shadow.
+        b == 5 || b == 27 || b == 48
     }
 
     pub(super) fn is_prop_block(id: BlockId) -> bool {
