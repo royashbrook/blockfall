@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 21u  /* v21: bf_village_query + bf_village_view (living-villages tier/donation HUD, #95, append-only) */
+#define BF_ABI_VERSION 22u  /* v22: bf_shadow_volume grows an engine-maintained coarse occupancy mip (#163, append-only) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -495,6 +495,13 @@ typedef struct bf_shadow_volume {
     uint32_t _pad;          /* keep 8-byte alignment                           */
     bf_ivec3 dirty_lo[BF_SHADOW_MAX_DIRTY];
     bf_ivec3 dirty_hi[BF_SHADOW_MAX_DIRTY];
+    /* v22 (#163): engine-maintained coarse occupancy mip (1 byte per 4x4x4 fine
+     * cell, same toroidal wrap). The engine updates it incrementally per stamped
+     * column, so the app no longer scans millions of fine voxels per frame to
+     * rebuild it. NULL coarse skips the copy (older callers keep working). */
+    uint8_t* coarse;         /* caller-owned; engine fills coarse_cap bytes     */
+    uint32_t coarse_cap;     /* capacity of `coarse` in bytes                   */
+    uint32_t coarse_dim_x, coarse_dim_y, coarse_dim_z; /* OUT: mip dimensions   */
 } bf_shadow_volume;
 
 /* [MAIN] Fill `vol->voxels` with the resident-world occupancy grid (toroidal),

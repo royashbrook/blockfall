@@ -31,7 +31,7 @@ use core::ffi::{c_char, c_void};
 ///      Purely additive; no existing struct layout changed.
 /// v21: appended bf_village_view + bf_village_query (living-villages tier/donation
 ///      HUD, #95). Purely additive; no existing struct layout changed.
-pub const BF_ABI_VERSION: u32 = 21;
+pub const BF_ABI_VERSION: u32 = 22;
 
 // ---------------------------------------------------------------------------
 // Primitive types
@@ -396,6 +396,13 @@ pub struct bf_shadow_volume {
     /// OUT: up to BF_SHADOW_MAX_DIRTY world-voxel AABBs of changed cells.
     pub dirty_lo: [bf_ivec3; BF_SHADOW_MAX_DIRTY],
     pub dirty_hi: [bf_ivec3; BF_SHADOW_MAX_DIRTY],
+    /// v22 (#163): engine-maintained coarse mip (1 byte per 4x4x4 fine cell,
+    /// same toroidal wrap), updated incrementally per stamped column. Null skips.
+    pub coarse: *mut u8,
+    pub coarse_cap: u32,
+    pub coarse_dim_x: u32,
+    pub coarse_dim_y: u32,
+    pub coarse_dim_z: u32,
 }
 
 /// Mirror of BF_SHADOW_MAX_DIRTY in the C header.
@@ -508,7 +515,7 @@ mod parity {
         assert_eq!(size_of::<bf_gpu_buffer>(), 24, "bf_gpu_buffer");
         assert_eq!(size_of::<bf_gpu_allocator>(), 24, "bf_gpu_allocator");
         assert_eq!(size_of::<bf_event>(), 36, "bf_event");
-        assert_eq!(size_of::<bf_shadow_volume>(), 144, "bf_shadow_volume");
+        assert_eq!(size_of::<bf_shadow_volume>(), 168, "bf_shadow_volume");
         assert_eq!(size_of::<bf_chest_view>(), 88, "bf_chest_view");
         assert_eq!(size_of::<bf_village_view>(), 48, "bf_village_view");
     }
@@ -561,6 +568,10 @@ mod parity {
         assert_eq!(offset_of!(bf_shadow_volume, _pad), 44);
         assert_eq!(offset_of!(bf_shadow_volume, dirty_lo), 48);
         assert_eq!(offset_of!(bf_shadow_volume, dirty_hi), 96);
+        assert_eq!(offset_of!(bf_shadow_volume, coarse), 144);
+        assert_eq!(offset_of!(bf_shadow_volume, coarse_cap), 152);
+        assert_eq!(offset_of!(bf_shadow_volume, coarse_dim_x), 156);
+        assert_eq!(offset_of!(bf_shadow_volume, coarse_dim_z), 164);
     }
 
     #[test]

@@ -263,6 +263,18 @@ impl<'c> World<'c> {
         };
         let kremesh_cap = if bulk { 6 } else { 3 };
         let mesh_inflight_cap = if bulk { 48 } else if catchup { 40 } else { 32 };
+        // Top-k selection instead of a full sort: the dirty set can hold thousands of
+        // chunks during fill and only ~mesh_budget of them are dispatched per tick, so
+        // sorting all of them every frame was measurable main-thread time (profiled).
+        // Keep 4x budget so the skip conditions below (inflight, remesh cap) still find
+        // enough candidates, then order just that head.
+        let keep = (mesh_budget * 4).min(todo.len());
+        if todo.len() > keep {
+            todo.select_nth_unstable_by(keep - 1, |a, b| {
+                score(*a).partial_cmp(&score(*b)).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            todo.truncate(keep);
+        }
         todo.sort_by(|a, b| score(*a).partial_cmp(&score(*b)).unwrap_or(std::cmp::Ordering::Equal));
         let mut done = 0;
         let mut remeshes = 0;

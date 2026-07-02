@@ -7,6 +7,10 @@ use super::*;
 /// and the window scrolls, only the newly-exposed edge slabs are rewritten.
 pub(super) struct ShadowVol {
     pub(super) voxels: Vec<u8>,
+    /// Coarse mip: 1 byte per 4x4x4 fine cell, same toroidal wrap. Maintained
+    /// incrementally per stamped column (#163) so the renderer never rescans
+    /// the fine grid to rebuild it.
+    pub(super) coarse: Vec<u8>,
     pub(super) origin: IVec3,
     pub(super) dim_x: i32,
     pub(super) dim_y: i32,
@@ -25,6 +29,7 @@ impl ShadowVol {
     pub(super) fn new() -> ShadowVol {
         ShadowVol {
             voxels: Vec::new(),
+            coarse: Vec::new(),
             origin: IVec3::default(),
             dim_x: 0,
             dim_y: 0,
@@ -68,6 +73,9 @@ impl ShadowVol {
         self.dirty.push((lo, hi));
     }
 }
+
+/// Fine voxels per coarse cell edge. Must match the renderer's march (CO).
+pub(super) const SHADOW_COARSE: i32 = 4;
 
 impl<'c> World<'c> {
     pub(super) fn casts_shadow(b: BlockId) -> bool {
@@ -133,6 +141,49 @@ impl<'c> World<'c> {
                 }
             }
         }
+        self.shadow_coarse_update_column(gx0, gz0);
+    }
+
+    /// Recompute the coarse mip cells covering one stamped chunk column. The
+    /// column is chunk-aligned and SHADOW_COARSE divides KCHUNK_DIM, so its
+    /// coarse footprint is a clean (KCHUNK_DIM/CO)^2 tile across every mip row;
+    /// cost is exactly the fine voxels of that column, in Rust, once, instead of
+    /// the renderer rescanning box unions of millions of voxels every frame.
+    fn shadow_coarse_update_column(&mut self, gx0: i32, gz0: i32) {
+        let co = SHADOW_COARSE;
+        let dim_x = self.shadow.dim_x;
+        let dim_y = self.shadow.dim_y;
+        let cdx = dim_x / co;
+        let cdy = dim_y / co;
+        let cdz = self.shadow.dim_z / co;
+        if self.shadow.coarse.len() != (cdx * cdy * cdz) as usize {
+            self.shadow.coarse.resize((cdx * cdy * cdz) as usize, 0);
+        }
+        let cgx0 = gx0 / co;
+        let cgz0 = gz0 / co;
+        let fine = &self.shadow.voxels;
+        let coarse = &mut self.shadow.coarse;
+        for cgz in cgz0..cgz0 + KCHUNK_DIM / co {
+            for cgy in 0..cdy {
+                for cgx in cgx0..cgx0 + KCHUNK_DIM / co {
+                    let mut any = 0u8;
+                    'scan: for fz in cgz * co..(cgz + 1) * co {
+                        for fy in cgy * co..(cgy + 1) * co {
+                            let row = (fz as usize) * (dim_y as usize) * (dim_x as usize)
+                                + (fy as usize) * (dim_x as usize)
+                                + (cgx * co) as usize;
+                            for i in 0..co as usize {
+                                if fine[row + i] != 0 {
+                                    any = 1;
+                                    break 'scan;
+                                }
+                            }
+                        }
+                    }
+                    coarse[(cgz * cdy + cgy) as usize * cdx as usize + cgx as usize] = any;
+                }
+            }
+        }
     }
 
     fn ensure_shadow_volume(&mut self) {
@@ -155,6 +206,9 @@ impl<'c> World<'c> {
             let total = (dim_x as usize) * (dim_y as usize) * (dim_z as usize);
             self.shadow.voxels.clear();
             self.shadow.voxels.resize(total, 0u8);
+            let ctotal = total / (SHADOW_COARSE as usize).pow(3);
+            self.shadow.coarse.clear();
+            self.shadow.coarse.resize(ctotal, 0u8);
             self.shadow.dim_x = dim_x;
             self.shadow.dim_y = dim_y;
             self.shadow.dim_z = dim_z;
@@ -303,6 +357,22 @@ impl<'c> World<'c> {
         }
         unsafe {
             core::ptr::copy_nonoverlapping(self.shadow.voxels.as_ptr(), vol.voxels, need);
+        }
+        // v22 (#163): export the engine-maintained coarse mip. Null pointer or a
+        // too-small buffer just skips the copy; dims are always written so the
+        // caller can size the buffer next call.
+        let co = SHADOW_COARSE;
+        vol.coarse_dim_x = (self.shadow.dim_x / co) as u32;
+        vol.coarse_dim_y = (self.shadow.dim_y / co) as u32;
+        vol.coarse_dim_z = (self.shadow.dim_z / co) as u32;
+        if !vol.coarse.is_null() && (vol.coarse_cap as usize) >= self.shadow.coarse.len() {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    self.shadow.coarse.as_ptr(),
+                    vol.coarse,
+                    self.shadow.coarse.len(),
+                );
+            }
         }
         self.shadow.empty_dirty();
         bf_result::BF_OK

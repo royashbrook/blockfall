@@ -73,76 +73,6 @@ func buildCoarseOccupancy(fine: [UInt8], dx: Int, dy: Int, dz: Int, co: Int,
 // Rebuild ONLY the coarse cells overlapping a world-voxel AABB [wlo,whi] (toroidal on x/z),
 // re-ORing each from its co^3 fine block. Far cheaper than a full-grid rebuild while walking
 // (only the scrolled-in chunk columns are touched). Buffers are the full toroidal arrays.
-func buildCoarseRegion(fine: [UInt8], coarse: inout [UInt8],
-                       dx: Int, dy: Int, dz: Int, cdx: Int, cdy: Int, cdz: Int, co: Int,
-                       originY: Int, wlo: SIMD3<Int>, whi: SIMD3<Int>) {
-    func wrap(_ v: Int, _ d: Int) -> Int { let m = v % d; return m < 0 ? m + d : m }
-    // Coarse-cell buffer index spans covered by world voxels [lo,hi] (may cross the seam).
-    func cspans(_ lo: Int, _ hi: Int, _ cdim: Int) -> [(c0: Int, len: Int)] {
-        let firstWorldCell = Int(floor(Double(lo) / Double(co)))
-        let lastWorldCell  = Int(floor(Double(hi) / Double(co)))
-        let n = min(lastWorldCell - firstWorldCell + 1, cdim)
-        let g0 = wrap(firstWorldCell, cdim)
-        if g0 + n <= cdim { return [(g0, n)] }
-        return [(g0, cdim - g0), (0, n - (cdim - g0))]
-    }
-    let cgyLo = (wlo.y - originY) / co
-    let cgyHi = (whi.y - originY) / co
-    let cxs = cspans(wlo.x, whi.x, cdx)
-    let czs = cspans(wlo.z, whi.z, cdz)
-    let cyLo = max(0, cgyLo), cyHi = min(cdy - 1, cgyHi)
-    if cyHi < cyLo { return }
-    // Hot path: this scans co^3 fine voxels per coarse cell, thousands of cells per dirty
-    // region, every frame while chunks stream (the engine bumps the revision per insert).
-    // The previous range-based loops with a `where` clause went through unspecialized
-    // Collection witnesses (IndexingIterator/formIndex/metadata lookups PER FINE VOXEL),
-    // which pinned the main thread during streaming: input froze while the render loop
-    // kept drawing. Plain pointer arithmetic below is the same logic, orders faster.
-    fine.withUnsafeBufferPointer { fbp in
-        guard let f = fbp.baseAddress else { return }
-        coarse.withUnsafeMutableBufferPointer { cbp in
-            guard let c = cbp.baseAddress else { return }
-            for zsp in czs {
-                var cz = zsp.c0
-                let czEnd = zsp.c0 + zsp.len
-                while cz < czEnd {
-                    var cy = cyLo
-                    while cy <= cyHi {
-                        for xsp in cxs {
-                            var cx = xsp.c0
-                            let cxEnd = xsp.c0 + xsp.len
-                            while cx < cxEnd {
-                                var any: UInt8 = 0
-                                let fz0 = cz * co, fy0 = cy * co, fx0 = cx * co
-                                let fzEnd = min(fz0 + co, dz)
-                                let fyEnd = min(fy0 + co, dy)
-                                let fxN = min(co, dx - fx0)
-                                var fz = fz0
-                                scan: while fz < fzEnd {
-                                    var fy = fy0
-                                    while fy < fyEnd {
-                                        let frow = (fz * dy + fy) * dx + fx0
-                                        var i = 0
-                                        while i < fxN {
-                                            if f[frow + i] != 0 { any = 1; break scan }
-                                            i += 1
-                                        }
-                                        fy += 1
-                                    }
-                                    fz += 1
-                                }
-                                c[(cz * cdy + cy) * cdx + cx] = any
-                                cx += 1
-                            }
-                        }
-                        cy += 1
-                    }
-                    cz += 1
-                }
-            }
-        }
-    }
-}
 
 // ----------------------------------------------------------------------------
 // World-space voxel sun shadows: shared occupancy upload for the offscreen test
@@ -237,18 +167,19 @@ func harnessUploadShadowVolume(_ device: MTLDevice, _ e: bf_engine,
     guard let tex = c.tex, let coarse = c.coarse else { return nil }
     if c.fine.count < need { c.fine = [UInt8](repeating: 0, count: need) }
     if c.cbuf.count < cdx * cdy * cdz { c.cbuf = [UInt8](repeating: 0, count: cdx * cdy * cdz) }
-    // Fill the buffer.
+    // Fill both buffers; the engine maintains the coarse mip incrementally (#163),
+    // so the harness no longer rescans the fine grid per frame.
     let ok: Bool = c.fine.withUnsafeMutableBufferPointer { p -> Bool in
         vol.voxels = p.baseAddress; vol.voxel_cap = UInt32(p.count)
-        return bf_world_shadow_volume(e, &vol) == BF_OK
+        return c.cbuf.withUnsafeMutableBufferPointer { cp -> Bool in
+            vol.coarse = cp.baseAddress; vol.coarse_cap = UInt32(cp.count)
+            return bf_world_shadow_volume(e, &vol) == BF_OK
+        }
     }
     if !ok { return nil }
-    // Per dirty box: rebuild that coarse region + upload it (list avoids the L-shaped AABB).
     let oy = Int(vol.origin.y)
     let boxes = Renderer.shadowDirtyBoxes(vol, dx: dx, dy: dy, dz: dz, forceFull: firstUpload)
     for (wlo, whi) in boxes {
-        buildCoarseRegion(fine: c.fine, coarse: &c.cbuf, dx: dx, dy: dy, dz: dz,
-                          cdx: cdx, cdy: cdy, cdz: cdz, co: CO, originY: oy, wlo: wlo, whi: whi)
         harnessUploadToroidalRegion(tex, coarse, fine: c.fine, coarse: c.cbuf,
                                     dx: dx, dy: dy, dz: dz, cdx: cdx, cdy: cdy, cdz: cdz, co: CO,
                                     originY: oy, wlo: wlo, whi: whi)

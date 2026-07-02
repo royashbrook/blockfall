@@ -622,11 +622,23 @@ final class Renderer: NSObject, MTKViewDelegate {
         if dimsKnownSame && vol.revision == shadowVolRevision { return true }
 
         if shadowVolBuf.count < need { shadowVolBuf = [UInt8](repeating: 0, count: need) }
-        // Fill call: the engine copies the toroidal buffer into our persistent storage.
+        // v22 (#163): the engine also hands us its incrementally-maintained coarse mip,
+        // so the old per-frame buildCoarseRegion fine-grid rescan is gone entirely.
+        let CO = Renderer.kShadowCoarse
+        let cdx = (dx + CO - 1) / CO, cdy = (dy + CO - 1) / CO, cdz = (dz + CO - 1) / CO
+        let cneed = cdx * cdy * cdz
+        if shadowVolCoarseBuf.count < cneed {
+            shadowVolCoarseBuf = [UInt8](repeating: 0, count: cneed)
+        }
+        // Fill call: the engine copies the toroidal fine + coarse buffers into our storage.
         let ok: Bool = shadowVolBuf.withUnsafeMutableBufferPointer { p -> Bool in
             vol.voxels = p.baseAddress
             vol.voxel_cap = UInt32(p.count)
-            return bf_world_shadow_volume(e, &vol) == BF_OK
+            return shadowVolCoarseBuf.withUnsafeMutableBufferPointer { cp -> Bool in
+                vol.coarse = cp.baseAddress
+                vol.coarse_cap = UInt32(cp.count)
+                return bf_world_shadow_volume(e, &vol) == BF_OK
+            }
         }
         if !ok { return false }
 
@@ -634,8 +646,6 @@ final class Renderer: NSObject, MTKViewDelegate {
         shadowVolDims   = SIMD3<Float>(Float(dx), Float(dy), Float(dz))
 
         // (Re)create the toroidal 3D textures when the dims change (rare).
-        let CO = Renderer.kShadowCoarse
-        let cdx = (dx + CO - 1) / CO, cdy = (dy + CO - 1) / CO, cdz = (dz + CO - 1) / CO
         if shadowVolTex == nil || shadowVolTexDims != (dx, dy, dz) {
             func make3D(_ w: Int, _ h: Int, _ d: Int) -> MTLTexture? {
                 let td = MTLTextureDescriptor()
@@ -650,9 +660,6 @@ final class Renderer: NSObject, MTKViewDelegate {
             shadowVolRevision = .max   // force a full upload into the new textures
         }
         guard let tex = shadowVolTex, let ctex = shadowVolCoarseTex else { return false }
-        if shadowVolCoarseBuf.count < cdx * cdy * cdz {
-            shadowVolCoarseBuf = [UInt8](repeating: 0, count: cdx * cdy * cdz)
-        }
 
         // Nothing changed since our last upload: keep the textures, skip the GPU work.
         if vol.revision == shadowVolRevision { return true }
@@ -660,14 +667,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Collect the dirty boxes the engine reported (a list, to avoid one giant L-shaped
         // bounding box on a diagonal scroll). On the first upload into fresh textures, force
         // the full window.
-        let oy = Int(vol.origin.y)
         let boxes = Renderer.shadowDirtyBoxes(vol, dx: dx, dy: dy, dz: dz,
                                               forceFull: shadowVolRevision == .max)
         for (wlo, whi) in boxes {
-            // Rebuild the coarse mip for ONLY this box, then upload only this box.
-            buildCoarseRegion(fine: shadowVolBuf, coarse: &shadowVolCoarseBuf,
-                              dx: dx, dy: dy, dz: dz, cdx: cdx, cdy: cdy, cdz: cdz, co: CO,
-                              originY: oy, wlo: wlo, whi: whi)
+            // The engine maintains the coarse mip; we just upload both sub-regions.
             uploadToroidalRegion(tex, ctex, buf: shadowVolBuf, coarseBuf: shadowVolCoarseBuf,
                                  dx: dx, dy: dy, dz: dz, cdx: cdx, cdy: cdy, cdz: cdz, co: CO,
                                  wlo: wlo, whi: whi)
