@@ -50,9 +50,6 @@ impl<'c> World<'c> {
                     rec.ibuf.handle,
                 )
             };
-            if !has_buffers || index_count == 0 {
-                continue;
-            }
             let ctr = V3::new(
                 (cc.x as f32 + 0.5) * KCHUNK_DIM as f32,
                 (cc.y as f32 + 0.5) * KCHUNK_DIM as f32,
@@ -68,6 +65,31 @@ impl<'c> World<'c> {
                 continue;
             }
             if dist > 192.0 && facing < kfar_cull_cos {
+                continue;
+            }
+            // Props BEFORE the empty-mesh skip below. Since #62 leaves and logs are
+            // instanced props, not cube faces, so a canopy-only chunk meshes EMPTY
+            // (no buffers) and used to be skipped entirely: its trees never rendered
+            // while their occupancy shadows did (a field of tree shadows with
+            // invisible, breakable trees). Props do not need mesh buffers.
+            let detail_radius = self.prop_detail_radius_blocks();
+            let scenery_radius = self.prop_scenery_radius_blocks();
+            if dist < scenery_radius {
+                let props = self.meshes[cc].props.clone();
+                if !props.is_empty() {
+                    if dist < detail_radius {
+                        prop_instances.extend_from_slice(&props);
+                    } else {
+                        prop_instances.extend(
+                            props
+                                .iter()
+                                .copied()
+                                .filter(|p| Self::is_tree_block(p.type_ as BlockId)),
+                        );
+                    }
+                }
+            }
+            if !has_buffers || index_count == 0 {
                 continue;
             }
             let lod = if dist > 192.0 { 1 } else { 0 };
@@ -106,23 +128,6 @@ impl<'c> World<'c> {
                 z: cc.z + 1,
             });
             draws.push(d);
-            let detail_radius = self.prop_detail_radius_blocks();
-            let scenery_radius = self.prop_scenery_radius_blocks();
-            if dist < scenery_radius {
-                let props = self.meshes[cc].props.clone();
-                if !props.is_empty() {
-                    if dist < detail_radius {
-                        prop_instances.extend_from_slice(&props);
-                    } else {
-                        prop_instances.extend(
-                            props
-                                .iter()
-                                .copied()
-                                .filter(|p| Self::is_tree_block(p.type_ as BlockId)),
-                        );
-                    }
-                }
-            }
         }
 
         let fwd = self.forward_dir();
