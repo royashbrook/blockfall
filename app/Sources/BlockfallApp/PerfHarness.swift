@@ -347,7 +347,11 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     alloc.user = Unmanaged.passUnretained(registry).toOpaque()
     alloc.alloc = allocTrampoline; alloc.free_ = freeTrampoline
     _ = bf_set_gpu_allocator(e, &alloc)
-    _ = bf_world_new(e, 2026)
+    // BF_SHOT_SEED=<u64> overrides the world seed for --shot / --perftest, so a
+    // verification shot can be aimed at a seed whose spawn shows the feature
+    // under review (e.g. a desert spawn for a dune-relief check). Default 2026.
+    let worldSeed = UInt64(ProcessInfo.processInfo.environment["BF_SHOT_SEED"] ?? "") ?? 2026
+    _ = bf_world_new(e, worldSeed)
 
     // ---- Render targets (full size; shadow map at the live 2048) ----------
     // BF_PERF_RES=<scale> multiplies the render resolution (default 1.0 = 1280x800).

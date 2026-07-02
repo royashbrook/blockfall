@@ -554,10 +554,27 @@ fn creature_collision_and_villages() {
     }
 
     // Natural regrowth. #: with real oceans the origin region for seed 11 is open
-    // water, so grow the regrowth tree on a known dry-land column instead (a tree
-    // cannot keep a crown underwater).
+    // water, so grow the regrowth tree on a dry-land column instead (a tree
+    // cannot keep a crown underwater). #172 reshuffled the biome map, so scan
+    // outward for the nearest dry non-desert column rather than pinning one.
     {
-        let (tx, tz) = (204, 0);
+        let mut spot = None;
+        'grow: for r in (0..=2048i32).step_by(16) {
+            for v in (-r..=r).step_by(16) {
+                for &(sx, sz) in &[(r, v), (-r, v), (v, r), (v, -r)] {
+                    let h = worldgen::worldgen_surface_height(sx, sz, 11);
+                    if h > 10
+                        && !worldgen::worldgen_is_ocean_col(sx, sz, 11)
+                        && worldgen::worldgen_dominant_biome(sx, sz, 11) != worldgen::Biome::Desert as i32
+                        && worldgen::worldgen_dominant_biome(sx, sz, 11) != worldgen::Biome::Beach as i32
+                    {
+                        spot = Some((sx, sz));
+                        break 'grow;
+                    }
+                }
+            }
+        }
+        let (tx, tz) = spot.expect("regrowth: no dry-land column found in scan");
         assert!(w.debug_grow_tree(tx, tz), "regrowth: tree grown on a dry-land column");
         let mut logs = 0;
         let mut leaves = 0;
@@ -1491,14 +1508,26 @@ fn village_world(seed: u64) -> (World<'static>, (i32, i32)) {
     w.set_mode(bf_game_mode::BF_MODE_CREATIVE);
     w.init_world(seed);
     // Find a dry-land column to anchor a synthetic settlement (so the palisade footing
-    // never tries to sit in water). Scan a grid; the column at +4 above sea is dry.
+    // never tries to sit in water). #172 made biomes ~4x the area, so suitable high
+    // ground can sit much farther from the origin than the old short ray scan reached:
+    // walk expanding square rings and take the first qualifying column.
     let mut anchor = (204, 0);
-    'find: for r in (0..400).step_by(16) {
-        for &(sx, sz) in &[(r, 0), (-r, 0), (0, r), (0, -r), (r, r), (-r, -r)] {
-            let h = worldgen::worldgen_surface_height(sx, sz, seed);
-            if h > 36 && !worldgen::worldgen_is_ocean_col(sx, sz, seed) {
-                anchor = (sx, sz);
-                break 'find;
+    'find: for r in (0..=2048i32).step_by(32) {
+        for v in (-r..=r).step_by(32) {
+            for &(sx, sz) in &[(r, v), (-r, v), (v, r), (v, -r)] {
+                let h = worldgen::worldgen_surface_height(sx, sz, seed);
+                if h <= 36 || worldgen::worldgen_is_ocean_col(sx, sz, seed) {
+                    continue;
+                }
+                // The palisade ring needs roughly level footing; a steep
+                // mountainside leaves wall gaps a hostile can walk through.
+                let flat = [(8, 0), (-8, 0), (0, 8), (0, -8)].iter().all(|&(dx, dz)| {
+                    (worldgen::worldgen_surface_height(sx + dx, sz + dz, seed) - h).abs() <= 3
+                });
+                if flat {
+                    anchor = (sx, sz);
+                    break 'find;
+                }
             }
         }
     }

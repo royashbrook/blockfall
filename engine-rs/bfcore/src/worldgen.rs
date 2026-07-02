@@ -547,7 +547,7 @@ fn regional_swell(fwx: f32, fwz: f32, seed: u64) -> f32 {
 //     through the Lipschitz height limiter without making a cliff at the edge.
 //
 // Two octaves at WARP_FREQ bend the borders into irregular fingers; WARP_AMP (in
-// blocks) is well under a biome cell (BIOME_CELL = 132) so borders wave and
+// blocks) is well under a biome cell (BIOME_CELL = 264) so borders wave and
 // interlock without shredding biomes into noise or shrinking them back to tiny
 // patches. Two distinct seeds (x vs z) keep the offset vector from collapsing onto
 // the diagonal.
@@ -567,7 +567,11 @@ fn regional_swell(fwx: f32, fwz: f32, seed: u64) -> f32 {
 // un-warped vs ~0.15 here, lower = more natural) while keeping coasts roughly put.
 // ---------------------------------------------------------------------------
 const WARP_FREQ: f32 = 1.0 / 70.0; // finer than BIOME_CELL so fingers fan in many directions
-const WARP_AMP: f32 = 24.0; // blocks of displacement; < BIOME_CELL so biomes stay large
+// #172: scaled with BIOME_CELL (24 at cell 132). Bigger cells with the old
+// amplitude read as bigger squares; doubling the displacement keeps the border
+// waviness proportional to the cell size, and 48 is still well under
+// BIOME_CELL 264 so the Voronoi 3x3 neighbour window stays valid.
+const WARP_AMP: f32 = 48.0; // blocks of displacement; < BIOME_CELL so biomes stay large
 const WARP_SEED_MIX_X: u64 = 0x57A6E11D03A11A57;
 const WARP_SEED_MIX_Z: u64 = 0x11A57D03E11D57A6;
 
@@ -601,10 +605,12 @@ fn sample_climate(wx: i32, wz: i32, seed: u64) -> (f32, f32) {
     // biome-blend weights that drive terrain height) follow the same wavy
     // boundary as the discrete Voronoi biome. Height and biome stay in agreement.
     let (fwx, fwz) = domain_warp(wx as f32, wz as f32, seed);
-    // #: bigger biomes. The climate field varies ~3x more slowly (was 1/72) so each
-    // biome covers a much larger contiguous area and has its own identity, instead of
-    // small biomes stepping on each other. Pairs with the larger BIOME_CELL below.
-    const BIOME_NOISE_FREQ: f32 = 1.0 / 216.0;
+    // #172: biomes ~4x the area. The climate field varies half as fast again
+    // (1/216 before, 1/72 originally) so each biome covers a much larger
+    // contiguous area and has its own identity. Pairs with the larger
+    // BIOME_CELL below; keep the two in step or the Voronoi cells and the
+    // climate contours drift apart.
+    const BIOME_NOISE_FREQ: f32 = 1.0 / 432.0;
     let temp = climate_spread(fbm2(fwx, fwz, tseed, 3, BIOME_NOISE_FREQ, 2.0, 0.5));
     let moist = climate_spread(fbm2(fwx, fwz, mseed, 3, BIOME_NOISE_FREQ, 2.0, 0.5));
     (temp, moist)
@@ -696,7 +702,7 @@ fn biome_weights(wx: i32, wz: i32, seed: u64) -> [f32; NUM_BIOMES] {
 // ---------------------------------------------------------------------------
 // Voronoi biome map (#6)
 // ---------------------------------------------------------------------------
-const BIOME_CELL: i32 = 132; // #: bigger biomes (was 44); ~3x wider Voronoi regions
+const BIOME_CELL: i32 = 264; // #172: biomes ~4x the area (was 132, originally 44)
 const VORONOI_SEED_MIX: u64 = 0x901A0701B10E5EED;
 
 #[inline]
@@ -704,35 +710,85 @@ fn voronoi_floordiv(a: i32, b: i32) -> i32 {
     a / b - if a % b != 0 && (a ^ b) < 0 { 1 } else { 0 }
 }
 
-struct VoronoiCell {
+// Per-cell Voronoi site data, memoized. The C++ original kept a thread_local
+// VoronoiMemo for exactly this: the site position and climate classification
+// are pure functions of (cell, seed), so caching them changes nothing about
+// the output while removing the dominant repeated cost (9 site climate
+// samples per column query, and 9 more per desert_region_t query). The memo
+// is bounded and thread local (no locks, no cross-thread coupling).
+#[derive(Clone, Copy)]
+struct VoronoiSite {
     sx: f32,
     sz: f32,
-    biome: i32,
+    temp: f32,
+    moist: f32,
+    // classify_climate at the site, WITHOUT the coastal beach reclass (the
+    // reclass queries terrain height; see voronoi_site_biome).
+    raw_biome: i32,
 }
 
-fn voronoi_cell_compute(cx: i32, cz: i32, vseed: u64, seed: u64) -> VoronoiCell {
+fn voronoi_site(cx: i32, cz: i32, seed: u64) -> VoronoiSite {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static MEMO: RefCell<HashMap<(i32, i32, u64), VoronoiSite>> = RefCell::new(HashMap::new());
+    }
+    let key = (cx, cz, seed);
+    if let Some(v) = MEMO.with(|m| m.borrow().get(&key).copied()) {
+        return v;
+    }
+    let vseed = fmix64(seed ^ VORONOI_SEED_MIX);
     let h = hash2(cx, cz, vseed);
     let jx = ((((h >> 0) & 0xFFFF) as f32) / 65535.0 - 0.5) * 0.66;
     let jz = ((((h >> 16) & 0xFFFF) as f32) / 65535.0 - 0.5) * 0.66;
     let sx = (cx as f32 + 0.5 + jx) * (BIOME_CELL as f32);
     let sz = (cz as f32 + 0.5 + jz) * (BIOME_CELL as f32);
     let (temp, moist) = sample_climate((sx + 0.5) as i32, (sz + 0.5) as i32, seed);
-    let mut biome = classify_climate(temp, moist);
-    // #: beaches belong at the coast. A beach site sitting well above sea level (inland
-    // or in the mountains, no water) renders as dry grass, not sand, which reads as a
-    // bug. Reclassify such a site to its next-best climate biome so beaches only appear
-    // near the water.
-    if biome == Biome::Beach as i32
-        && surface_height_raw_at((sx + 0.5) as i32, (sz + 0.5) as i32, seed) > (SEA_LEVEL + 3) as f32
-    {
-        biome = classify_climate_excluding(temp, moist, Biome::Beach as i32);
+    let raw_biome = classify_climate(temp, moist);
+    let v = VoronoiSite { sx, sz, temp, moist, raw_biome };
+    MEMO.with(|m| {
+        let mut mm = m.borrow_mut();
+        if mm.len() >= 4096 {
+            mm.clear();
+        }
+        mm.insert(key, v);
+    });
+    v
+}
+
+// Final biome of a Voronoi cell, with the coastal beach reclass applied.
+// #: beaches belong at the coast. A beach site sitting well above sea level (inland
+// or in the mountains, no water) renders as dry grass, not sand, which reads as a
+// bug. Reclassify such a site to its next-best climate biome so beaches only appear
+// near the water. Memoized like the raw site (the height query is expensive).
+fn voronoi_site_biome(cx: i32, cz: i32, seed: u64) -> i32 {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static MEMO: RefCell<HashMap<(i32, i32, u64), i32>> = RefCell::new(HashMap::new());
     }
-    VoronoiCell { sx, sz, biome }
+    let key = (cx, cz, seed);
+    if let Some(b) = MEMO.with(|m| m.borrow().get(&key).copied()) {
+        return b;
+    }
+    let site = voronoi_site(cx, cz, seed);
+    let mut biome = site.raw_biome;
+    if biome == Biome::Beach as i32
+        && surface_height_raw_at((site.sx + 0.5) as i32, (site.sz + 0.5) as i32, seed) > (SEA_LEVEL + 3) as f32
+    {
+        biome = classify_climate_excluding(site.temp, site.moist, Biome::Beach as i32);
+    }
+    MEMO.with(|m| {
+        let mut mm = m.borrow_mut();
+        if mm.len() >= 4096 {
+            mm.clear();
+        }
+        mm.insert(key, biome);
+    });
+    biome
 }
 
 fn voronoi_biome(wx: i32, wz: i32, seed: u64) -> Biome {
-    let vseed = fmix64(seed ^ VORONOI_SEED_MIX);
-
     // Domain warp the query point before the nearest-site search. The cell sites
     // stay on their fixed lattice, but the point that gets matched to them moves
     // along the wavy warp field, so the Voronoi boundaries come out irregular and
@@ -744,20 +800,23 @@ fn voronoi_biome(wx: i32, wz: i32, seed: u64) -> Biome {
     let cz = voronoi_floordiv(fwz.floor() as i32, BIOME_CELL);
 
     let mut best_d2 = 1e30f32;
-    let mut best_biome = 0i32;
+    let mut best_cell = (cx, cz);
     for dz in -1..=1 {
         for dx in -1..=1 {
-            let vc = voronoi_cell_compute(cx + dx, cz + dz, vseed, seed);
+            let vc = voronoi_site(cx + dx, cz + dz, seed);
             let ex = fwx - vc.sx;
             let ez = fwz - vc.sz;
             let d2 = ex * ex + ez * ez;
             if d2 < best_d2 {
                 best_d2 = d2;
-                best_biome = vc.biome;
+                best_cell = (cx + dx, cz + dz);
             }
         }
     }
-    Biome::from_index(best_biome)
+    // Only the WINNING cell's biome matters, so the (height-querying) beach
+    // reclass runs for one cell, not nine. Identical result to reclassifying
+    // all nine candidates, because the reclass never changes site positions.
+    Biome::from_index(voronoi_site_biome(best_cell.0, best_cell.1, seed))
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +942,63 @@ fn river_carve(fwx: f32, fwz: f32, seed: u64, land_h: f32) -> f32 {
     cut * t
 }
 
+// #171: desert dune band. Deserts read as gentle dune fields, not mountains:
+// where a column is desert the height is compressed toward a band a few blocks
+// above sea level, re-textured by this slow dune noise (about a 6 block
+// crest-to-trough swing at DESERT_DUNE_FREQ, plus the fine ripple noise and
+// height_detail that already exist).
+const DESERT_DUNE_SEED_MIX: u64 = 0xD0E5D0E5D0E5A0D1;
+const DESERT_DUNE_FREQ: f32 = 1.0 / 48.0;
+
+// #171: smooth desert-region field. The desert LOOK (sand surface, cactus,
+// desert decorations) follows the discrete Voronoi region, and the Voronoi
+// site's climate can disagree hard with a column's own climate (the site is
+// up to a cell away). Damping by the climate weights alone therefore leaves
+// sand-covered mountains: columns painted Desert by the Voronoi map whose own
+// climate weight for Desert is zero. This field is a smooth 0..1 indicator of
+// "inside the warped Voronoi desert region": 1 well inside, 0 outside, fading
+// across DESERT_EDGE_BAND blocks straddling the region border, so the dune
+// compression follows exactly the region that renders as desert with no cliff
+// at the edge. It uses the same warped query point and jittered site lattice
+// as voronoi_biome, but classifies sites WITHOUT the coastal beach reclass:
+// that reclass queries terrain height, which would recurse back into this
+// function. (Consequence: the rare Beach site that reclassifies to Desert is
+// not damped. It keeps its beach-flat terrain anyway.)
+const DESERT_EDGE_BAND: f32 = 40.0;
+
+fn desert_region_t(wx: i32, wz: i32, seed: u64) -> f32 {
+    let (fwx, fwz) = domain_warp(wx as f32, wz as f32, seed);
+    let cx = voronoi_floordiv(fwx.floor() as i32, BIOME_CELL);
+    let cz = voronoi_floordiv(fwz.floor() as i32, BIOME_CELL);
+
+    let mut d_desert = f32::MAX; // distance to the nearest desert site
+    let mut d_other = f32::MAX; // distance to the nearest non-desert site
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let vc = voronoi_site(cx + dx, cz + dz, seed);
+            let d = ((fwx - vc.sx) * (fwx - vc.sx) + (fwz - vc.sz) * (fwz - vc.sz)).sqrt();
+            if vc.raw_biome == Biome::Desert as i32 {
+                d_desert = d_desert.min(d);
+            } else {
+                d_other = d_other.min(d);
+            }
+        }
+    }
+    if d_desert == f32::MAX {
+        return 0.0; // no desert site in reach
+    }
+    if d_other == f32::MAX {
+        return 1.0; // deserts all around
+    }
+    // Signed border margin in blocks: positive inside the desert region. The
+    // margin is a continuous function of position (sites enter and leave the
+    // 3x3 window only when they are too far to be nearest), so the smoothstep
+    // over the band yields a smooth, seam-free blend factor.
+    let margin = d_other - d_desert;
+    let t = (margin / DESERT_EDGE_BAND + 0.5).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 fn surface_height_raw(wx: i32, wz: i32, seed: u64, weights: &[f32; NUM_BIOMES]) -> f32 {
     let fwx = wx as f32;
     let fwz = wz as f32;
@@ -945,9 +1061,36 @@ fn surface_height_raw(wx: i32, wz: i32, seed: u64, weights: &[f32; NUM_BIOMES]) 
     let cont = if cont > 0.0 { cont * (1.0 - 0.6 * swamp_w) } else { cont };
     blended_h += cont;
 
+    // #171: deserts are low relief. Two things pile mountain relief into a
+    // desert: the climate weight blend lets neighbouring biome detail (the
+    // mountain amplitude especially), regional swell and continent lift stack
+    // up under a desert-heavy column, and the Voronoi region can paint Desert
+    // over a column whose own climate weights are not desert at all (the
+    // sand-covered-mountain case, see desert_region_t). Take the stronger of
+    // the two desert indicators and compress the height toward a soft dune
+    // band a little above the sea, re-textured by a slow low amplitude dune
+    // noise so the band still undulates a few blocks instead of going flat.
+    // Both indicators fade smoothly across the desert border (climate weights
+    // by construction, the region field across DESERT_EDGE_BAND), so the
+    // terrain shades into the neighbour biome with no cliff, and the whole
+    // damp is scaled by (1 - ocean_t) so a desert region overlapping open
+    // ocean never has its sea floor hoisted up into a sand island. Pure
+    // function of (seed, wx, wz); it lives here in the one shared raw-height
+    // path, so the anchor lattice, structures and decorations all see the
+    // same heights.
+    let desert_w = weights[Biome::Desert as usize];
+    let desert_t = desert_w.max(desert_region_t(wx, wz, seed));
+    if desert_t > 1e-4 {
+        let dune_seed = fmix64(seed ^ DESERT_DUNE_SEED_MIX);
+        let dune = fbm2(fwx, fwz, dune_seed, 2, DESERT_DUNE_FREQ, 2.0, 0.5);
+        // Band: SEA_LEVEL+8 at the dune troughs up to SEA_LEVEL+14 on crests.
+        let dune_target = (SEA_LEVEL as f32) + 8.0 + dune * 6.0;
+        let damp = desert_t * (1.0 - ocean_t);
+        blended_h += (dune_target - blended_h) * damp;
+    }
+
     // Rivers carve into the (already continent-adjusted) land. Skip the carve in
     // open ocean (it is already underwater) and damp it in deserts (dry washes).
-    let desert_w = weights[Biome::Desert as usize];
     if !is_ocean_column(fwx, fwz, seed) {
         blended_h -= river_carve(fwx, fwz, seed, blended_h) * (1.0 - desert_w);
     }

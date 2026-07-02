@@ -147,14 +147,26 @@ mod worldgen_tests {
                     continue;
                 }
 
-                let c = ChunkCoord { x: cx, y: 0, z: cz };
-                let mut chunk = DenseChunk::new(AIR);
-                g.generate(c, &mut chunk);
+                // #171: the dune band sits around sea+8..sea+14, so desert
+                // surfaces regularly cross the y=15/16 chunk boundary. Generate
+                // the two bottom chunks and read the stack, so the sample
+                // covers dune crests as well as troughs.
+                let mut chunk0 = DenseChunk::new(AIR);
+                let mut chunk1 = DenseChunk::new(AIR);
+                g.generate(ChunkCoord { x: cx, y: 0, z: cz }, &mut chunk0);
+                g.generate(ChunkCoord { x: cx, y: 1, z: cz }, &mut chunk1);
+                let get_wy = |lx: i32, wy: i32, lz: i32| -> BlockId {
+                    if wy < K_CHUNK_DIM {
+                        chunk0.get(lx, wy, lz)
+                    } else {
+                        chunk1.get(lx, wy - K_CHUNK_DIM, lz)
+                    }
+                };
 
                 for lz in 0..K_CHUNK_DIM {
                     for lx in 0..K_CHUNK_DIM {
-                        let wx = c.x * K_CHUNK_DIM + lx;
-                        let wz = c.z * K_CHUNK_DIM + lz;
+                        let wx = cx * K_CHUNK_DIM + lx;
+                        let wz = cz * K_CHUNK_DIM + lz;
                         if worldgen_dominant_biome(wx, wz, SEED) != Biome::Desert as i32 {
                             continue;
                         }
@@ -163,22 +175,16 @@ mod worldgen_tests {
                         if h <= SEA_LEVEL {
                             continue;
                         }
-                        let ly_surface = h - c.y * K_CHUNK_DIM;
-                        let ly_above = ly_surface + 1;
-                        if ly_surface < 0
-                            || ly_surface >= K_CHUNK_DIM
-                            || ly_above < 0
-                            || ly_above >= K_CHUNK_DIM
-                        {
+                        if h < 0 || h + 1 >= 2 * K_CHUNK_DIM {
                             continue;
                         }
-                        let surf = chunk.get(lx, ly_surface, lz);
+                        let surf = get_wy(lx, h, lz);
                         if surf != SAND && surf != STONE && surf != GRAVEL {
                             continue;
                         }
 
                         desert_columns += 1;
-                        let b = chunk.get(lx, ly_above, lz);
+                        let b = get_wy(lx, h + 1, lz);
                         assert_ne!(
                             b, TALL_GRASS,
                             "dry desert surface generated tall grass at world ({wx},{},{wz})",
@@ -210,7 +216,11 @@ mod worldgen_tests {
                 }
 
                 chunks_checked += 1;
-                if chunks_checked >= 24 {
+                // #171 note: the dune band (roughly sea+8..sea+14) leaves fewer
+                // in-window surface cells per y=0 chunk than the old desert
+                // terrain did, so scan more chunks to keep the sample large
+                // enough that the density ratio is statistics, not noise.
+                if chunks_checked >= 96 {
                     break 'scan;
                 }
             }
@@ -294,6 +304,146 @@ mod worldgen_tests {
              vertical runs of >= {RUN} rows ({vert_in_run}/{vert_edges}); expected a \
              wavy, eroded border (un-warped is ~0.20)",
             frac_straight
+        );
+    }
+
+    // #171: deserts are low relief dune fields. Wherever the world RENDERS as
+    // desert (the Voronoi region), the surface must sit in a gentle band (the
+    // dune compression in surface_height_raw), not inherit mountain scale
+    // relief from the climate weight blend. Scan a wide area, collect
+    // desert-interior land columns, and require the p95 absolute deviation
+    // from the median height to stay small.
+    #[test]
+    fn desert_relief_is_bounded() {
+        // Seed 78 regression-pins the sand-covered-mountain case: near its
+        // origin the Voronoi map paints Desert over columns whose own climate
+        // weights are pure Mountains, so a climate-weight-only damp left
+        // heights up to ~56 there while everything rendered as sand.
+        for seed in [SEED, 78] {
+            let mut hs: Vec<i32> = Vec::new();
+            for wz in (-2000..=2000).step_by(9) {
+                for wx in (-2000..=2000).step_by(9) {
+                    if worldgen_dominant_biome(wx, wz, seed) != Biome::Desert as i32 {
+                        continue;
+                    }
+                    // Interior of the desert region only: across the border
+                    // band the compression is deliberately partial so the
+                    // terrain blends into the neighbour biome.
+                    if desert_region_t(wx, wz, seed) < 0.75 {
+                        continue;
+                    }
+                    // Land columns only: a desert region overlapping open
+                    // ocean keeps its sea floor by design.
+                    if is_ocean_column(wx as f32, wz as f32, seed) {
+                        continue;
+                    }
+                    hs.push(surface_height(wx, wz, seed));
+                }
+            }
+            assert!(
+                hs.len() > 500,
+                "seed {seed}: sample set only found {} desert-interior land columns; widen the scan",
+                hs.len()
+            );
+            hs.sort_unstable();
+            let median = hs[hs.len() / 2];
+            let mut devs: Vec<i32> = hs.iter().map(|h| (h - median).abs()).collect();
+            devs.sort_unstable();
+            let p95 = devs[devs.len() * 95 / 100];
+            let max = *devs.last().unwrap();
+            println!(
+                "seed {seed}: desert relief: {} columns, median h {}, p95 |dev| {}, max |dev| {}",
+                hs.len(),
+                median,
+                p95,
+                max
+            );
+            assert!(
+                p95 <= 6,
+                "seed {seed}: desert relief too mountainous: p95 |h - median| = {p95} blocks \
+                 (median {median}, {} columns); deserts should be gentle dunes",
+                hs.len()
+            );
+        }
+    }
+
+    // #172: biomes are ~4x the area they were. Sanity-check the scale by flood
+    // filling connected same-biome patches on a coarse grid and measuring the
+    // mean patch area. (Scanline run length is NOT a good metric here: the
+    // domain warp zigzags a scanline back and forth across each wavy border,
+    // so doubling WARP_AMP adds crossings that cancel out the fewer borders.)
+    // Measured at seed 11 on this grid:
+    //   pre-#172  (BIOME_CELL 132, climate freq 1/216, WARP_AMP 24):
+    //     mean patch area  42,947 blocks^2 over 540 patches.
+    //   with #172 (BIOME_CELL 264, climate freq 1/432, WARP_AMP 48):
+    //     mean patch area 143,113 blocks^2 over 162 patches (~3.3x measured;
+    //     the finite scan window truncates the biggest patches, so this
+    //     understates the true area ratio).
+    // The floor sits between the two so shrinking biomes back trips this test.
+    #[test]
+    fn biome_scale_mean_patch_area() {
+        const STEP: i32 = 16;
+        const LO: i32 = -2400;
+        const HI: i32 = 2400;
+        let n = ((HI - LO) / STEP) as usize + 1;
+        let mut grid = vec![0i32; n * n];
+        for iz in 0..n {
+            for ix in 0..n {
+                grid[iz * n + ix] =
+                    worldgen_dominant_biome(LO + ix as i32 * STEP, LO + iz as i32 * STEP, SEED);
+            }
+        }
+        // Flood fill connected components (4-neighbour).
+        let mut comp = vec![-1i32; n * n];
+        let mut sizes: Vec<i64> = Vec::new();
+        for start in 0..n * n {
+            if comp[start] >= 0 {
+                continue;
+            }
+            let id = sizes.len() as i32;
+            let b = grid[start];
+            let mut stack = vec![start];
+            comp[start] = id;
+            let mut size = 0i64;
+            while let Some(i) = stack.pop() {
+                size += 1;
+                let (ix, iz) = (i % n, i / n);
+                let mut push = |j: usize| {
+                    if comp[j] < 0 && grid[j] == b {
+                        comp[j] = id;
+                        stack.push(j);
+                    }
+                };
+                if ix > 0 {
+                    push(i - 1);
+                }
+                if ix + 1 < n {
+                    push(i + 1);
+                }
+                if iz > 0 {
+                    push(i - n);
+                }
+                if iz + 1 < n {
+                    push(i + n);
+                }
+            }
+            sizes.push(size);
+        }
+        // Ignore tiny warp slivers (under 4 cells); they are border texture, not
+        // biomes, and their count is warp-amplitude noise.
+        let patches: Vec<i64> = sizes.into_iter().filter(|&s| s >= 4).collect();
+        let cell_area = (STEP * STEP) as f64;
+        let mean_area =
+            patches.iter().sum::<i64>() as f64 / patches.len() as f64 * cell_area;
+        println!(
+            "mean biome patch area: {:.0} blocks^2 ({} patches)",
+            mean_area,
+            patches.len()
+        );
+        assert!(
+            mean_area > 90_000.0,
+            "biomes too small: mean patch area {mean_area:.0} blocks^2 \
+             (pre-#172 measured ~43k, #172 target ~143k)"
         );
     }
 
@@ -999,6 +1149,11 @@ mod worldgen_tests {
                 if dom == Biome::Desert || dom == Biome::Beach {
                     continue;
                 }
+                // Mirror the generator: a tree inside a structure's clearance
+                // zone is never placed, so it cannot be judged here.
+                if tree_blocked_by_structure(td.root_wx, td.root_wz, seed) {
+                    continue;
+                }
                 let h = surface_height(td.root_wx, td.root_wz, seed);
                 if h <= SEA_LEVEL {
                     continue;
@@ -1337,6 +1492,14 @@ mod worldgen_tests {
                 }
                 let dom = voronoi_biome(td.root_wx, td.root_wz, seed);
                 if dom == Biome::Desert || dom == Biome::Beach {
+                    continue;
+                }
+                // Mirror the generator: a tree inside a structure's clearance
+                // zone is never placed at all. Judging it here would count a
+                // legitimately suppressed tree as a "naked trunk" false
+                // positive (its intended crown has zero surviving leaves
+                // because the whole tree does not exist).
+                if tree_blocked_by_structure(td.root_wx, td.root_wz, seed) {
                     continue;
                 }
                 let h = surface_height(td.root_wx, td.root_wz, seed);
@@ -1692,10 +1855,13 @@ mod worldgen_tests {
         }
 
         let mut doorways_checked = 0;
+        // Sample cells are pinned per seed; the structure type roll depends on
+        // the biome, so a biome-scale change (#172) can reroll a pinned cell.
+        // These cells were re-picked for the #172 constants.
         let samples = [
-            (11u64, -20, -40, STRUCT_CABIN),
-            (11u64, 36, -40, STRUCT_KEEP),
-            (11u64, -25, -40, STRUCT_TALL_TOWER),
+            (11u64, 32, -45, STRUCT_CABIN),
+            (11u64, 11, -44, STRUCT_KEEP),
+            (11u64, 13, -45, STRUCT_TALL_TOWER),
         ];
 
         for &(seed, scx, scz, expected_typ) in &samples {
