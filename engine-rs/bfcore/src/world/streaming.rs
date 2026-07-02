@@ -33,7 +33,16 @@ impl<'c> World<'c> {
                         self.surf_cy_cache.insert(key, surf_cy);
                     }
                 }
-                let lo = player_cy.min(surf_cy) - 1;
+                // Flyover: a player strictly above the surface only needs the surface
+                // chunk and the one above it; the below-surface layer (dig adjacency,
+                // caves) queues once they are at or below surface level, and the near
+                // bubble always carries the full stack for mining. This is what keeps
+                // fly-around from generating visible underground at all.
+                let lo = if player_cy > surf_cy {
+                    surf_cy
+                } else {
+                    player_cy.min(surf_cy) - 1
+                };
                 let hi = surf_cy + 1;
                 for cy in CY_MIN..=CY_MAX {
                     let want = near || (cy >= lo && cy <= hi);
