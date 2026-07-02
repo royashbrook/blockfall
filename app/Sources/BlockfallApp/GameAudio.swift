@@ -58,6 +58,19 @@ final class GameAudio {
 
     /// Start the engine and begin looping background music + ambience.
     func start() {
+        // #161: schedule the kick first so even an engine-start failure below keeps
+        // retrying; the timer self-invalidates once music launches or is disabled.
+        musicKickTimer?.invalidate()
+        musicKickTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            if self.musicLaunched || !self.musicEnabled {
+                t.invalidate()
+                self.musicKickTimer = nil
+                return
+            }
+            if let eng = self.engine, !eng.isRunning { try? eng.start() }
+            if self.engine?.isRunning == true { self.startMusic() }
+        }
         guard let engine else { NSLog("[Blockfall #161] audio start: no engine"); return }
         do {
             if !engine.isRunning { try engine.start() }
@@ -84,6 +97,8 @@ final class GameAudio {
         crossfadeTimer = nil
         swellTimer?.invalidate()
         swellTimer = nil
+        musicKickTimer?.invalidate()
+        musicKickTimer = nil
         engine?.stop()
     }
 
@@ -275,6 +290,12 @@ final class GameAudio {
     private var currentTrackIndex: Int        = 0
     private var trackTimer:     Timer?
     private var crossfadeTimer: Timer?   // running crossfade step timer
+    // #161: level-triggered launch kick. startMusic no-ops until the async buffers are
+    // ready, and the buffer-ready callback no-ops if the engine is not yet running: two
+    // edge-triggered events that can each miss the other, leaving silence until some
+    // unrelated path calls startMusic. This timer retries until music actually launches.
+    private var musicKickTimer: Timer?
+    private var musicLaunched = false
 
     // Pre-rendered track buffers: [trackID][voiceIndex]
     // Tracks 0,1,4,5,8,9  = day;  Tracks 2,3,6,7,10,11 = evening
@@ -495,6 +516,7 @@ final class GameAudio {
         // Buffers are always built (off the main thread) before isReady flips; never
         // synthesize here — that would freeze the main thread for seconds.
         guard !allTrackBuffers.isEmpty else { return }
+        musicLaunched = true   // #161: the kick timer stands down once music truly starts
 
         // Cancel any in-progress crossfade and stop all nodes cleanly.
         crossfadeTimer?.invalidate()
