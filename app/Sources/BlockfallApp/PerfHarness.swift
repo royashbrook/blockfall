@@ -90,23 +90,54 @@ func buildCoarseRegion(fine: [UInt8], coarse: inout [UInt8],
     let cgyHi = (whi.y - originY) / co
     let cxs = cspans(wlo.x, whi.x, cdx)
     let czs = cspans(wlo.z, whi.z, cdz)
-    for zsp in czs {
-        for cz in zsp.c0..<(zsp.c0 + zsp.len) {
-            for cy in max(0, cgyLo)...min(cdy - 1, cgyHi) {
-                for xsp in cxs {
-                    for cx in xsp.c0..<(xsp.c0 + xsp.len) {
-                        var any: UInt8 = 0
-                        let fz0 = cz * co, fy0 = cy * co, fx0 = cx * co
-                        outer: for fz in fz0..<min(fz0 + co, dz) {
-                            for fy in fy0..<min(fy0 + co, dy) {
-                                let frow = (fz * dy + fy) * dx + fx0
-                                for fx in 0..<min(co, dx - fx0) where fine[frow + fx] != 0 {
-                                    any = 1; break outer
+    let cyLo = max(0, cgyLo), cyHi = min(cdy - 1, cgyHi)
+    if cyHi < cyLo { return }
+    // Hot path: this scans co^3 fine voxels per coarse cell, thousands of cells per dirty
+    // region, every frame while chunks stream (the engine bumps the revision per insert).
+    // The previous range-based loops with a `where` clause went through unspecialized
+    // Collection witnesses (IndexingIterator/formIndex/metadata lookups PER FINE VOXEL),
+    // which pinned the main thread during streaming: input froze while the render loop
+    // kept drawing. Plain pointer arithmetic below is the same logic, orders faster.
+    fine.withUnsafeBufferPointer { fbp in
+        guard let f = fbp.baseAddress else { return }
+        coarse.withUnsafeMutableBufferPointer { cbp in
+            guard let c = cbp.baseAddress else { return }
+            for zsp in czs {
+                var cz = zsp.c0
+                let czEnd = zsp.c0 + zsp.len
+                while cz < czEnd {
+                    var cy = cyLo
+                    while cy <= cyHi {
+                        for xsp in cxs {
+                            var cx = xsp.c0
+                            let cxEnd = xsp.c0 + xsp.len
+                            while cx < cxEnd {
+                                var any: UInt8 = 0
+                                let fz0 = cz * co, fy0 = cy * co, fx0 = cx * co
+                                let fzEnd = min(fz0 + co, dz)
+                                let fyEnd = min(fy0 + co, dy)
+                                let fxN = min(co, dx - fx0)
+                                var fz = fz0
+                                scan: while fz < fzEnd {
+                                    var fy = fy0
+                                    while fy < fyEnd {
+                                        let frow = (fz * dy + fy) * dx + fx0
+                                        var i = 0
+                                        while i < fxN {
+                                            if f[frow + i] != 0 { any = 1; break scan }
+                                            i += 1
+                                        }
+                                        fy += 1
+                                    }
+                                    fz += 1
                                 }
+                                c[(cz * cdy + cy) * cdx + cx] = any
+                                cx += 1
                             }
                         }
-                        coarse[(cz * cdy + cy) * cdx + cx] = any
+                        cy += 1
                     }
+                    cz += 1
                 }
             }
         }
