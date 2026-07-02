@@ -673,7 +673,20 @@ fn gameplay_drops_crafting_creatures() {
         i += 1;
     }
     assert_eq!(w.debug_block_at(100, 95, 100), world::AIR, "stone mined away");
-    assert!(w.debug_item_count(cobble) >= 1, "survival mining dropped cobblestone");
+    // #170 the drop now rides on physical debris; walk the player up to the
+    // fragments so the magnet collects them into the inventory.
+    assert!(w.debug_debris_count() > 0, "mining burst the stone into debris");
+    for _ in 0..40 {
+        w.update(&zero, 0.05); // let the burst arc + settle
+    }
+    let (dx, dy, dz) = w.debug_debris_pos(0);
+    w.debug_set_camera(dx, dy + 1.5, dz, 0.0, -1.5707);
+    let mut i = 0;
+    while i < 100 && w.debug_item_count(cobble) < 1 {
+        w.update(&zero, 0.05);
+        i += 1;
+    }
+    assert!(w.debug_item_count(cobble) >= 1, "survival mining dropped cobblestone (collected from debris)");
 
     // crafting consumes inputs, produces output.
     let log = w.debug_item_id("oak_log");
@@ -1736,4 +1749,123 @@ fn village_wall_keeps_hostiles_out() {
         }
     }
     assert!(!breached, "a hostile breached the walled village interior");
+}
+
+// ============================================================================
+// #170 the "blockfall" mechanic: breaking a block bursts it into physical
+// debris that pops, arcs, bounces, settles, and magnets to the player.
+// ============================================================================
+fn debris_world() -> (ContentRegistry, World<'static>) {
+    let mut content = ContentRegistry::new();
+    assert!(content.load(CONTENT), "content load");
+    let content: &'static ContentRegistry = Box::leak(Box::new(content));
+    let mut w = World::new(None);
+    w.debug_set_sync_streaming(true);
+    w.set_content(content);
+    w.set_allocator(allocator());
+    w.generate_test_world();
+    (ContentRegistry::new(), w)
+}
+
+#[test]
+fn debris_burst_on_break() {
+    let (_c, mut w) = debris_world();
+    // Park the player far above so the magnet never interferes here.
+    w.debug_set_camera(8.5, 40.0, 8.5, 0.0, -1.5707);
+    assert_eq!(w.debug_debris_count(), 0, "no debris before the break");
+    w.debug_break_block(8, 7, 8);
+    let n = w.debug_debris_count();
+    assert!((4..=6).contains(&n), "break burst 4..6 fragments (got {n})");
+    for i in 0..n {
+        let (_, vy, _) = w.debug_debris_vel(i);
+        assert!(vy > 2.0, "fragment {i} pops upward (vy = {vy})");
+        let (px, py, pz) = w.debug_debris_pos(i);
+        assert!(
+            (px - 8.5).abs() < 1.0 && (py - 7.5).abs() < 1.0 && (pz - 8.5).abs() < 1.0,
+            "fragment {i} starts at the broken block"
+        );
+    }
+}
+
+#[test]
+fn debris_settles_on_flat_ground() {
+    let (_c, mut w) = debris_world();
+    w.debug_set_camera(8.5, 40.0, 8.5, 0.0, -1.5707);
+    w.debug_break_block(8, 7, 8);
+    let n = w.debug_debris_count();
+    assert!(n > 0, "burst spawned debris");
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    // 6 seconds of fixed ticks: plenty for pop + a couple of bounces + roll.
+    for _ in 0..360 {
+        w.update(&zero, 1.0 / 60.0);
+    }
+    assert_eq!(w.debug_debris_count(), n, "nothing collected (player far away)");
+    assert_eq!(w.debug_debris_settled_count(), n, "all fragments settled");
+    for i in 0..n {
+        let (_, py, _) = w.debug_debris_pos(i);
+        // Ground top is y=8 except inside the mined hole (top y=7).
+        assert!(
+            (6.9..=8.4).contains(&py),
+            "settled fragment {i} rests on the ground (y = {py})"
+        );
+        let (vx, vy, vz) = w.debug_debris_vel(i);
+        assert!(vx == 0.0 && vy == 0.0 && vz == 0.0, "settled fragment {i} is still");
+    }
+}
+
+#[test]
+fn debris_magnet_collects_to_inventory() {
+    let (_c, mut w) = debris_world();
+    let dirt = w.debug_item_id("dirt");
+    assert_ne!(dirt, 0, "content has a dirt item (grass drops dirt)");
+    w.debug_clear_inventory();
+    // Player standing on the flat ground right next to the break.
+    w.debug_set_camera(8.5, 9.7, 8.5, 0.0, -1.5707);
+    w.debug_break_block(9, 7, 9);
+    assert!(w.debug_debris_count() > 0, "burst spawned debris");
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    let mut i = 0;
+    while i < 600 && w.debug_debris_count() > 0 {
+        w.update(&zero, 1.0 / 60.0);
+        i += 1;
+        // A fragment can legitimately scatter past the 2.5-block magnet
+        // radius; every second, step the player over to the nearest
+        // straggler exactly like a kid chasing their loot.
+        if i % 60 == 0 && w.debug_debris_count() > 0 {
+            let (px, py, pz) = w.debug_debris_pos(0);
+            w.debug_set_camera(px, py + 1.6, pz, 0.0, -1.5707);
+        }
+    }
+    assert_eq!(w.debug_debris_count(), 0, "all fragments magneted to the player");
+    assert_eq!(w.debug_item_count(dirt), 1, "one broken grass = one dirt in the inventory");
+}
+
+#[test]
+fn debris_hard_cap_collapses_oldest() {
+    let (_c, mut w) = debris_world();
+    w.debug_set_camera(8.5, 40.0, 8.5, 0.0, -1.5707);
+    // 80 bursts x 4..6 fragments >> 256.
+    for k in 0..80 {
+        w.debug_spawn_debris(8.5, 12.0 + (k % 3) as f32, 8.5, world::STONE);
+    }
+    assert!(w.debug_debris_count() <= 256, "live debris never exceeds the hard cap");
+    assert!(w.debug_debris_count() > 200, "the pool actually filled up");
+}
+
+#[test]
+fn debris_trajectories_are_deterministic() {
+    let run = || -> Vec<(f32, f32, f32)> {
+        let (_c, mut w) = debris_world();
+        w.debug_set_camera(8.5, 40.0, 8.5, 0.0, -1.5707);
+        w.debug_break_block(8, 7, 8);
+        let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+        for _ in 0..90 {
+            w.update(&zero, 1.0 / 60.0);
+        }
+        (0..w.debug_debris_count()).map(|i| w.debug_debris_pos(i)).collect()
+    };
+    let a = run();
+    let b = run();
+    assert!(!a.is_empty(), "run produced debris");
+    assert_eq!(a, b, "same seed + same break = bit-identical trajectories");
 }

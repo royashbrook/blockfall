@@ -3663,6 +3663,35 @@ extension EntityRenderer {
     }
 
     // =========================================================================
+    // KIND 22 — DEBRIS FRAGMENT (#170 the "blockfall" mechanic)
+    //
+    // A small cube chip (entity scale, ~0.2-0.32) from a broken block. Color
+    // comes from the engine via e.color (block colour, same convention as
+    // kind 6). e.yaw is the engine's tumble PHASE: it advances proportionally
+    // to the fragment's horizontal speed and freezes when the fragment
+    // settles, so a rolling chip visibly tumbles and a resting chip is still.
+    // The single phase drives rotation on TWO axes at different ratios plus a
+    // fixed per-fragment tilt derived from the (constant) scale, so each chip
+    // tumbles on its own axis and never looks like a flat Y-spin. sat passes
+    // through for the Dim desaturation. No shadow, no animation state.
+    // =========================================================================
+    func drawKind22(enc: MTLRenderCommandEncoder,
+                    viewProj: simd_float4x4,
+                    e: bf_entity_draw,
+                    pos: SIMD3<Float>) {
+        let blockCol = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+        // Fixed per-fragment tilt seeded from the fragment's constant scale so
+        // chips from one burst rest at varied orientations.
+        let tiltSeed = e.scale * 91.7
+        let model = EntityRenderer.trans(pos)
+            * EntityRenderer.rotY(e.yaw)
+            * EntityRenderer.rotX(e.yaw * 0.63 + tiltSeed)
+            * EntityRenderer.rotZ(tiltSeed * 0.37)
+            * EntityRenderer.scaleM(SIMD3<Float>(repeating: e.scale))
+        drawCube(enc: enc, viewProj: viewProj, model: model, rgb: blockCol, sat: e.sat)
+    }
+
+    // =========================================================================
     // KIND 20 — VILLAGER / NPC PERSON (friendly, cute, kid-game humanoid)
     //
     // Issue #39 (people at structures). A clearly FRIENDLY upright blocky person,

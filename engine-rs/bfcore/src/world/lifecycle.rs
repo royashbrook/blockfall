@@ -50,6 +50,7 @@ impl<'c> World<'c> {
             inv_open: false,
             creatures: Vec::new(),
             falling: Vec::new(),
+            debris: Vec::new(),
             entities: Vec::new(),
             creature_timer: 0.0,
             villager_timer: 0.0,
@@ -367,6 +368,7 @@ impl<'c> World<'c> {
         self.stream_active_r = 2.min(self.stream_r);
         self.recompute_stream_set();
         self.creatures.clear();
+        self.debris.clear();
         self.chests.clear();
         self.creature_timer = 0.0;
         self.all_quests_done = false;

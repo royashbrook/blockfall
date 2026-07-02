@@ -364,6 +364,33 @@ impl<'c> World<'c> {
                 _pad: 0,
             });
         }
+        // #170 debris fragments: kind 22 cube chips. yaw carries the tumble
+        // phase and color the block colour (same convention as kind 6); scale
+        // is the seeded fragment size, so the renderer needs no extra fields.
+        for d in &self.debris {
+            let sat = self.region_sat(Self::to_chunk(IVec3 {
+                x: Self::ifloor(d.pos.x),
+                y: Self::ifloor(d.pos.y),
+                z: Self::ifloor(d.pos.z),
+            }));
+            self.entities.push(bf_entity_draw {
+                position: bf_vec3 {
+                    x: d.pos.x,
+                    y: d.pos.y,
+                    z: d.pos.z,
+                },
+                yaw: d.spin,
+                color: bf_vec3 {
+                    x: d.color.x,
+                    y: d.color.y,
+                    z: d.color.z,
+                },
+                scale: d.scale,
+                kind: 22,
+                sat,
+                _pad: 0,
+            });
+        }
         for a in &self.remote_avatars {
             self.entities.push(*a);
         }

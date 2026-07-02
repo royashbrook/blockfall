@@ -220,18 +220,11 @@ impl<'c> World<'c> {
             if broken == 51 {
                 drop = self.item_id_by_name("oak_log");
             }
-            if drop != 0 {
-                if let Some(inv) = self.inv.as_mut() {
-                    inv.add(ItemStack {
-                        item: drop,
-                        count: 1,
-                        durability: 0xFFFF,
-                    });
-                }
-                self.fx(7, t, 0);
-                let dn = self.item_name(drop);
-                self.notify_quest("collect_item", &dn);
-            }
+            // #170 blockfall: the block bursts into physical debris that falls,
+            // bounces, and magnets to the player. The drop item rides on the
+            // debris and enters the inventory on collection (debris.rs), which
+            // is also where fx(7) + the collect_item quest notify now fire.
+            self.spawn_debris_burst(t, broken, drop);
             self.set_block_internal(t, AIR);
             // Doors are one logical object even though the world stores vertical cells.
             // Clear the whole contiguous run so old odd states cannot leave a lone half.
@@ -275,17 +268,8 @@ impl<'c> World<'c> {
                     .and_then(|c| c.block_by_id(ab))
                     .map(|d| d.drop_item)
                     .unwrap_or(0);
-                if adrop != 0 {
-                    if let Some(inv) = self.inv.as_mut() {
-                        inv.add(ItemStack {
-                            item: adrop,
-                            count: 1,
-                            durability: 0xFFFF,
-                        });
-                    }
-                    let an = self.item_name(adrop);
-                    self.notify_quest("collect_item", &an);
-                }
+                // #170 a popped prop bursts too; its drop rides the debris.
+                self.spawn_debris_burst(above, ab, adrop);
                 self.set_block_internal(above, AIR);
             }
             self.apply_gravity_above(t);

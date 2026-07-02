@@ -249,5 +249,6 @@ impl<'c> World<'c> {
         self.maintain_regrowth(dtf);
         self.update_creatures(dtf);
         self.update_falling(dtf);
+        self.update_debris(dtf);
     }
 }

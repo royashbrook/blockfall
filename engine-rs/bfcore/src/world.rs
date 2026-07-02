@@ -41,6 +41,7 @@ mod crafting;
 mod regions;
 mod time;
 mod falling;
+mod debris;
 mod coords;
 mod blocks;
 mod interaction;
@@ -57,6 +58,7 @@ mod player_update;
 mod lifecycle;
 
 use self::chests::ChestData;
+use self::debris::Debris;
 use self::falling::FallingBlock;
 use self::quests::K_ACHIEVEMENT_COUNT;
 use self::regions::RegionKey;
@@ -417,6 +419,9 @@ pub struct World<'c> {
     // Creatures + quest state.
     creatures: Vec<Creature>,
     falling: Vec<FallingBlock>,
+    // #170 blockfall debris: physical fragments from broken blocks (transient,
+    // never persisted). See world/debris.rs.
+    debris: Vec<Debris>,
     entities: Vec<bf_entity_draw>,
     creature_timer: f32,
     villager_timer: f32,

@@ -385,7 +385,7 @@ final class EntityRenderer {
             var squash = SIMD3<Float>(1, 1, 1)
             curFlash    = .zero
             curFlashAmt = 0
-            if e.kind != 6 {
+            if e.kind != 6 && e.kind != 22 {
                 // CONTINUOUS LIVELINESS: a tiny always-on breathing pulse on the
                 // whole-creature squash so nothing ever looks frozen, even when
                 // stationary and not mid-hit. Very subtle (<1.5%) and phase-
@@ -489,6 +489,10 @@ final class EntityRenderer {
             case 19: drawKind19(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             case 20: drawKind20(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
             case 21: drawKind21(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            // kind 22 — DEBRIS FRAGMENT (#170 blockfall): a small tumbling cube
+            // chip in the broken block's colour. yaw carries the engine-driven
+            // spin phase; scale seeds the size + a fixed per-fragment tilt.
+            case 22: drawKind22(enc: enc, viewProj: viewProj, e: e, pos: pos)
             // kind 100 — REMOTE PLAYER (#13 multiplayer): render the connected
             // peer as an upright PERSON, not an animal. Reuse the villager
             // humanoid (drawKind20); it already tints clothing from e.color so
@@ -516,7 +520,7 @@ final class EntityRenderer {
         shadowInsts.removeAll(keepingCapacity: true)
         for i in 0..<count {
             let e = entities[i]
-            if e.kind == 6 { continue }   // falling blocks: no contact shadow
+            if e.kind == 6 || e.kind == 22 { continue }   // falling blocks + debris: no contact shadow
             let pos = SIMD3<Float>(e.position.x, e.position.y, e.position.z)
             // Footprint radius scales with the creature's draw scale. Most kinds occupy ~0.6 units
             // wide at scale 1; the blob is a touch larger so it reads as a soft contact pool.
