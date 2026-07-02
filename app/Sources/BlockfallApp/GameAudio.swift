@@ -117,6 +117,7 @@ final class GameAudio {
             musicBankNodes.forEach { $0.stop() }
             trackTimer?.invalidate()
             trackTimer = nil
+            introActive = false   // #165: the intro pad stops with the bank nodes
         }
     }
 
@@ -185,7 +186,9 @@ final class GameAudio {
 
         if targetTrackGroup != currentTrackGroup {
             currentTrackGroup = targetTrackGroup
-            guard engine?.isRunning == true && musicEnabled else { return }
+            // #165: before the track buffers are ready (intro pad may be looping),
+            // just record the group; startMusic picks the right first track later.
+            guard engine?.isRunning == true && musicEnabled && isReady else { return }
             // Crossfade to the first track of the new group rather than hard-cutting.
             // Cancel the current rotation timer so it restarts from the new track.
             trackTimer?.invalidate()
@@ -296,6 +299,12 @@ final class GameAudio {
     // unrelated path calls startMusic. This timer retries until music actually launches.
     private var musicKickTimer: Timer?
     private var musicLaunched = false
+    // #165: tiny intro pad, synthesized first on the background queue (hundreds of
+    // ms of work versus seconds for a full track) so music is audible almost
+    // immediately at launch. It loops on a bank until the real track buffers
+    // land, then crossFadeToTrack hands off to track 1.
+    private var introBuffers: [AVAudioPCMBuffer] = []
+    private var introActive = false
 
     // Pre-rendered track buffers: [trackID][voiceIndex]
     // Tracks 0,1,4,5,8,9  = day;  Tracks 2,3,6,7,10,11 = evening
@@ -418,6 +427,18 @@ final class GameAudio {
         // timer waits for a track to be ready before switching to it.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
+            // #165: intro pad first. A handful of sustained notes synthesizes in a
+            // few hundred milliseconds (versus seconds for a full track), so music
+            // is audible almost at app open while everything else still builds.
+            let introT0 = CFAbsoluteTimeGetCurrent()
+            let intro = self.buildIntroPad()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.introBuffers = intro
+                NSLog("[Blockfall #165] intro pad synthesized in %.1f ms",
+                      (CFAbsoluteTimeGetCurrent() - introT0) * 1000)
+                if eng.isRunning && self.musicEnabled && !self.isReady { self.startIntroPad() }
+            }
             // SFX are small and needed for early interactions; build them + the first
             // music track, then go ready so music + sound start fast.
             self.buildAllSfxBuffers()
@@ -511,12 +532,34 @@ final class GameAudio {
     // Rotation: tracks cycle within their group every 90 s via crossFadeToTrack.
 
     private func startMusic() {
-        guard isReady else { NSLog("[Blockfall #161] startMusic: buffers not ready yet"); return }
+        guard isReady else {
+            // #165: full track buffers are still synthesizing; loop the tiny intro
+            // pad instead of sitting in silence until they land.
+            NSLog("[Blockfall #161] startMusic: buffers not ready yet")
+            startIntroPad()
+            return
+        }
         NSLog("[Blockfall #161] music starting, %.2fs after audio init", CFAbsoluteTimeGetCurrent() - initTime)
         // Buffers are always built (off the main thread) before isReady flips; never
         // synthesize here — that would freeze the main thread for seconds.
         guard !allTrackBuffers.isEmpty else { return }
         musicLaunched = true   // #161: the kick timer stands down once music truly starts
+
+        if introActive {
+            // #165: the intro pad is looping on the active bank. Crossfade from it
+            // into the first real track instead of hard-cutting.
+            introActive = false
+            swellTimer?.invalidate()
+            swellTimer = nil
+            trackTimer?.invalidate()
+            trackTimer = nil
+            currentTrackIndex = firstTrackIndex(for: currentTrackGroup)
+            NSLog("[Blockfall #165] crossfading intro pad into track %d, %.2fs after audio init",
+                  currentTrackIndex, CFAbsoluteTimeGetCurrent() - initTime)
+            crossFadeToTrack(currentTrackIndex)
+            scheduleTrackRotation()
+            return
+        }
 
         // Cancel any in-progress crossfade and stop all nodes cleanly.
         crossfadeTimer?.invalidate()
@@ -556,6 +599,63 @@ final class GameAudio {
                 self.musicBankMixers[bank].outputVolume = 1.0
             }
         }
+    }
+
+    // #165: loop the pre-built intro pad on bank 0 so sound is audible right at
+    // launch. The kick timer treats this as music-started (musicLaunched), and the
+    // buffer-ready path in startMusic later crossfades from it into track 1.
+    private func startIntroPad() {
+        guard musicEnabled, !isReady, !introActive, !introBuffers.isEmpty,
+              engine?.isRunning == true else { return }
+        introActive = true
+        musicLaunched = true   // #161: audible music is playing; the kick timer stands down
+
+        crossfadeTimer?.invalidate()
+        crossfadeTimer = nil
+        trackTimer?.invalidate()
+        trackTimer = nil
+        musicBankNodes.forEach { $0.stop() }
+
+        activeBank = 0
+        musicBankMixers[0].outputVolume = 0.0
+        musicBankMixers[1].outputVolume = 0.0
+        for (i, buf) in introBuffers.enumerated() where i < 4 {
+            let node = musicBankNodes[i]
+            node.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+            node.play()
+        }
+        swellInBank(0, dur: 0.8)   // quick gentle swell, audible almost immediately
+        NSLog("[Blockfall #165] intro pad audible, %.2fs after audio init",
+              CFAbsoluteTimeGetCurrent() - initTime)
+    }
+
+    // #165: a soft two-chord sine pad (C major to F major, ~8 s loop) in the same
+    // voice style as the track pads. The tiny note count keeps the synchronous
+    // synthesis cost to a few milliseconds at startup.
+    private func buildIntroPad() -> [AVAudioPCMBuffer] {
+        let C3: Float = 130.813; let F3: Float = 174.614
+        let C4: Float = 261.626; let E4: Float = 329.628; let F4: Float = 349.228
+        let G4: Float = 391.995; let A4: Float = 440.000
+
+        // Each voice holds one chord tone per chord; slight gap breathes at the change.
+        func line(_ first: Float, _ second: Float) -> [MusicalNote] {
+            [.init(hz: first,  dur: 3.9, gap: 0.1),
+             .init(hz: second, dur: 3.9, gap: 0.1)]
+        }
+        let lines: [(notes: [MusicalNote], shape: OscShape, vol: Float)] = [
+            (line(C3, F3), .triangle, 0.16),   // bass roots
+            (line(C4, C4), .sine,     0.14),   // common tone
+            (line(E4, F4), .sine,     0.12),
+            (line(G4, A4), .sine,     0.12),
+        ]
+        var voices: [AVAudioPCMBuffer] = []
+        for l in lines {
+            if let v = buildSectionedVoice(sections: [.init(notes: l.notes, volScale: 1.0)],
+                                           shape: l.shape, baseVol: l.vol) {
+                voices.append(v)
+            }
+        }
+        return voices
     }
 
     // Indices for each group: day → 0,1,4,5,8,9   evening → 2,3,6,7,10,11
