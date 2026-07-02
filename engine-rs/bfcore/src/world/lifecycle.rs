@@ -17,6 +17,7 @@ impl<'c> World<'c> {
             has_alloc: false,
             meshes: HashMap::new(),
             dirty: HashSet::new(),
+            urgent_dirty: HashSet::new(),
             region_sat: HashMap::new(),
             edited: HashSet::new(),
             gen_queue: Vec::new(),

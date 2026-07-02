@@ -176,6 +176,59 @@ impl<'c> World<'c> {
             }
         }
 
+        // Player-edit remeshes first, outside the fresh-first scoring and the remesh
+        // cap below. The main queue deliberately favors fresh meshes so streaming fill
+        // wins, but with continuous streaming that starved edit remeshes: a broken
+        // block stayed visible long after its voxel was air. Edits are sparse, so a
+        // small dedicated budget keeps them instant without hurting fill.
+        if !self.urgent_dirty.is_empty() {
+            let urgent: Vec<ChunkCoord> = self.urgent_dirty.drain().collect();
+            let mut done_urgent = 0;
+            for cc in urgent {
+                if done_urgent >= 6 {
+                    self.urgent_dirty.insert(cc); // remainder next tick
+                    continue;
+                }
+                if !self.store.is_resident(cc) {
+                    self.dirty.remove(&cc);
+                    continue;
+                }
+                if async_mode && self.mesh_inflight.contains(&cc) {
+                    // An older-version job is in flight; keep this urgent so the
+                    // fresh remesh runs next tick instead of rejoining the slow queue.
+                    self.urgent_dirty.insert(cc);
+                    continue;
+                }
+                self.dirty.remove(&cc);
+                done_urgent += 1;
+                let faces = lighting::light_chunk(&mut self.store, cc);
+                self.unlit_far_meshes.remove(&cc);
+                if faces != 0 {
+                    let dirs = [
+                        IVec3 { x: 1, y: 0, z: 0 },
+                        IVec3 { x: -1, y: 0, z: 0 },
+                        IVec3 { x: 0, y: 1, z: 0 },
+                        IVec3 { x: 0, y: -1, z: 0 },
+                        IVec3 { x: 0, y: 0, z: 1 },
+                        IVec3 { x: 0, y: 0, z: -1 },
+                    ];
+                    for f in 0..6 {
+                        if faces & (1 << f) != 0 {
+                            let nc = ChunkCoord { x: cc.x + dirs[f].x, y: cc.y + dirs[f].y, z: cc.z + dirs[f].z };
+                            if self.store.is_resident(nc) {
+                                self.mark_dirty(nc);
+                            }
+                        }
+                    }
+                }
+                if async_mode {
+                    self.submit_mesh_job(cc);
+                } else {
+                    self.remesh_one(cc);
+                }
+            }
+        }
+
         if self.dirty.is_empty() {
             return;
         }

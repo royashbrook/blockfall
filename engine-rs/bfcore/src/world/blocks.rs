@@ -27,6 +27,7 @@ impl<'c> World<'c> {
             b,
         );
         self.mark_dirty(cc);
+        self.urgent_dirty.insert(cc); // player-visible edit: jump the mesh queue
         self.edited.insert(cc);
         // A block changed: re-stamp this chunk's column into the toroidal shadow grid.
         self.shadow.refill_cols.insert((cc.x, cc.z));
@@ -51,6 +52,7 @@ impl<'c> World<'c> {
             });
             if nc != cc && self.store.is_resident(nc) {
                 self.mark_dirty(nc);
+                self.urgent_dirty.insert(nc);
             }
         }
     }

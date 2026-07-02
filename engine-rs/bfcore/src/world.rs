@@ -379,6 +379,11 @@ pub struct World<'c> {
     has_alloc: bool,
     meshes: HashMap<ChunkCoord, MeshRec>,
     dirty: HashSet<ChunkCoord>,
+    // Player-visible edits (block break/place) jump the mesh queue. The main dirty
+    // scoring favors FRESH meshes and caps remeshes per tick so streaming fill wins;
+    // with continuous streaming that starved edit remeshes for so long that a broken
+    // block stayed visible indefinitely. Urgent chunks remesh first, outside the caps.
+    urgent_dirty: HashSet<ChunkCoord>,
     region_sat: HashMap<RegionKey, f32>,
     edited: HashSet<ChunkCoord>,
     gen_queue: Vec<ChunkCoord>,
