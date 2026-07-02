@@ -1555,8 +1555,10 @@ mod worldgen_tests {
         // #: real oceans pushed much of the origin region underwater for some
         // seeds, so trees (which only grow above sea level) are sparse in a tight
         // window. Scan a wider area so the sample still contains plenty of forested
-        // land. The naked-trunk invariant is unchanged.
-        let (naked, total) = scan_naked_trunks(SEED, -22, 22, -22, 22);
+        // land (widened again for #168: the smooth-gradation terrain nudged tree
+        // sites and left 96 tall trees in the old window). The naked-trunk
+        // invariant is unchanged.
+        let (naked, total) = scan_naked_trunks(SEED, -26, 26, -26, 26);
         assert!(total > 100, "scan saw too few tall trees ({total}) to be meaningful");
         assert!(
             naked.is_empty(),

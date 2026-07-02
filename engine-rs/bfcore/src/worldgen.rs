@@ -961,7 +961,21 @@ fn surface_height_raw_at(wx: i32, wz: i32, seed: u64) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
-// Lipschitz-1 height limiter
+// Smooth anchor-lattice surface
+//
+// The raw height field is expensive, so we sample it on a coarse anchor lattice
+// (every SEAM_ANCHOR_STEP blocks) and reconstruct per-column heights from those
+// anchors. The reconstruction must be a pure function of (seed, wx, wz) that any
+// chunk evaluates identically, which holds because the anchors themselves are
+// pure functions of their lattice coordinates and every column reads the same
+// 4x4 anchor neighborhood regardless of which chunk asks.
+//
+// The old reconstruction was a Lipschitz-1 cone envelope midpoint. Its tent
+// geometry plus integer truncation terraced the world into lattice-aligned
+// square plateaus (very visible underwater). We now use bicubic Catmull-Rom,
+// which is C1 continuous across cell boundaries (no creases), and add a small
+// high-frequency detail octave so quantization to whole blocks follows the
+// noise contours instead of locking onto the anchor grid.
 // ---------------------------------------------------------------------------
 const SEAM_ANCHOR_STEP: i32 = 12;
 const SEAM_ANCHOR_RADIUS: i32 = 5;
@@ -971,43 +985,56 @@ fn seam_floordiv(a: i32, b: i32) -> i32 {
     a / b - if a % b != 0 && (a ^ b) < 0 { 1 } else { 0 }
 }
 
-// Core cone evaluation given an anchor-fetch closure.
-fn seam_cone_eval<F: Fn(i32, i32) -> f32>(wx: i32, wz: i32, fetch: F) -> i32 {
-    let acx = seam_floordiv(wx, SEAM_ANCHOR_STEP);
-    let acz = seam_floordiv(wz, SEAM_ANCHOR_STEP);
-
-    let mut upper = 1e30f32;
-    let mut lower = -1e30f32;
-
-    for dz in -SEAM_ANCHOR_RADIUS..=SEAM_ANCHOR_RADIUS {
-        for dx in -SEAM_ANCHOR_RADIUS..=SEAM_ANCHOR_RADIUS {
-            let gx = acx + dx;
-            let gz = acz + dz;
-            let hraw = fetch(gx, gz);
-
-            let ex = (wx - gx * SEAM_ANCHOR_STEP) as f32;
-            let ez = (wz - gz * SEAM_ANCHOR_STEP) as f32;
-            let dist = (ex * ex + ez * ez).sqrt();
-
-            let up = hraw + dist;
-            let lo = hraw - dist;
-            if up < upper {
-                upper = up;
-            }
-            if lo > lower {
-                lower = lo;
-            }
-        }
-    }
-    (0.5 * (upper + lower)).floor() as i32
+// Catmull-Rom spline through p1..p2 with tangents from p0/p3, t in [0,1].
+#[inline]
+fn catmull_rom(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
+    let a = 2.0 * p1;
+    let b = p2 - p0;
+    let c = 2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3;
+    let d = 3.0 * (p1 - p2) + p3 - p0;
+    0.5 * (a + (b + (c + d * t) * t) * t)
 }
 
-// Slow on-demand path: raw anchor height computed directly (the C++ memo is a
-// pure cache, so this matches its result exactly).
+// Smooth bicubic evaluation over the anchor lattice given an anchor-fetch
+// closure. Reads the 4x4 anchors around the cell containing (wx, wz).
+fn seam_smooth_eval<F: Fn(i32, i32) -> f32>(wx: i32, wz: i32, fetch: F) -> f32 {
+    let acx = seam_floordiv(wx, SEAM_ANCHOR_STEP);
+    let acz = seam_floordiv(wz, SEAM_ANCHOR_STEP);
+    let tx = (wx - acx * SEAM_ANCHOR_STEP) as f32 / SEAM_ANCHOR_STEP as f32;
+    let tz = (wz - acz * SEAM_ANCHOR_STEP) as f32 / SEAM_ANCHOR_STEP as f32;
+
+    let mut rows = [0.0f32; 4];
+    for (j, row) in rows.iter_mut().enumerate() {
+        let gz = acz + j as i32 - 1;
+        *row = catmull_rom(
+            fetch(acx - 1, gz),
+            fetch(acx, gz),
+            fetch(acx + 1, gz),
+            fetch(acx + 2, gz),
+            tx,
+        );
+    }
+    catmull_rom(rows[0], rows[1], rows[2], rows[3], tz)
+}
+
+// Fine post-interpolation relief: low amplitude, higher frequency than the
+// anchor lattice, pure function of (seed, wx, wz). Roughly +-1.5 blocks. This
+// breaks the integer-quantization plates without changing the macro shape.
+const HEIGHT_DETAIL_SEED_MIX: u64 = 0x5EAF_00D5_0F7C_0A57;
+
+#[inline]
+fn height_detail(wx: i32, wz: i32, seed: u64) -> f32 {
+    let dseed = fmix64(seed ^ HEIGHT_DETAIL_SEED_MIX);
+    (fbm2(wx as f32, wz as f32, dseed, 2, 1.0 / 13.0, 2.6, 0.55) * 2.0 - 1.0) * 1.5
+}
+
+// Slow on-demand path: raw anchor heights computed directly. Matches the cached
+// path exactly because both read identical anchors and detail noise.
 fn surface_height(wx: i32, wz: i32, seed: u64) -> i32 {
-    seam_cone_eval(wx, wz, |gx, gz| {
+    let base = seam_smooth_eval(wx, wz, |gx, gz| {
         surface_height_raw_at(gx * SEAM_ANCHOR_STEP, gz * SEAM_ANCHOR_STEP, seed)
-    })
+    });
+    (base + height_detail(wx, wz, seed)).floor() as i32
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,6 +1046,7 @@ struct SeamAnchorCache {
     nx: i32,
     nz: i32,
     h: Vec<f32>,
+    seed: u64,
 }
 
 impl SeamAnchorCache {
@@ -1055,11 +1083,16 @@ fn build_anchor_cache(wx_min: i32, wz_min: i32, seed: u64) -> SeamAnchorCache {
             h[(iz * nx + ix) as usize] = surface_height_raw_at((gxlo + ix) * SEAM_ANCHOR_STEP, (gzlo + iz) * SEAM_ANCHOR_STEP, seed);
         }
     }
-    SeamAnchorCache { gx0: gxlo, gz0: gzlo, nx, nz, h }
+    SeamAnchorCache { gx0: gxlo, gz0: gzlo, nx, nz, h, seed }
 }
 
+// Fast path over the prebuilt anchor cache. The cache covers the chunk's cells
+// plus SEAM_ANCHOR_RADIUS, and the bicubic kernel only reaches 2 cells out, so
+// every in-chunk query (and queries up to 3 cells outside) reads true anchors
+// and matches surface_height exactly.
 fn surface_height_cached(wx: i32, wz: i32, cache: &SeamAnchorCache) -> i32 {
-    seam_cone_eval(wx, wz, |gx, gz| cache.at(gx, gz))
+    let base = seam_smooth_eval(wx, wz, |gx, gz| cache.at(gx, gz));
+    (base + height_detail(wx, wz, cache.seed)).floor() as i32
 }
 
 // ---------------------------------------------------------------------------
