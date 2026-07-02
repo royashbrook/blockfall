@@ -4,13 +4,17 @@ impl<'c> World<'c> {
     pub(super) fn recompute_stream_set(&mut self) {
         self.gen_queue.clear();
         let c = self.last_center;
-        let creative = self.mode == bf_game_mode::BF_MODE_CREATIVE;
         let target_r = self.stream_active_r.clamp(2, self.stream_r);
         let near_r = 5.min(target_r);
         let player_cy = Self::floordiv(Self::ifloor(self.pos.y), KCHUNK_DIM);
         for dx in -target_r..=target_r {
             for dz in -target_r..=target_r {
-                let near = creative || (dx.abs() <= near_r && dz.abs() <= near_r);
+                // Surface-first everywhere: far columns stream only the band around the
+                // surface (and down to the player when submerged); the near bubble keeps
+                // the full stack so digging and caves always work. Creative used to force
+                // FULL Y stacks for every column in radius, which burned most of the gen
+                // budget on invisible underground and left visible holes while flying.
+                let near = dx.abs() <= near_r && dz.abs() <= near_r;
                 let mut surf_cy = player_cy;
                 if !near {
                     let key = ((c.x + dx) as i64) << 32 | ((c.z + dz) as u32 as i64);
