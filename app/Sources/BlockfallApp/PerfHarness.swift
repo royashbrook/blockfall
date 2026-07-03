@@ -371,10 +371,12 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         let wallClock = Float(now.truncatingRemainder(dividingBy: 3600.0))
 
         let vt = viewM.columns.3
+        // #183: -(R transpose * t), dotting rotation COLUMNS (the old row form was
+        // -(R * t), hundreds of blocks wrong in the torus near-seam frames).
         let camPosW = SIMD4<Float>(
-            -(viewM.columns.0.x*vt.x + viewM.columns.1.x*vt.y + viewM.columns.2.x*vt.z),
-            -(viewM.columns.0.y*vt.x + viewM.columns.1.y*vt.y + viewM.columns.2.y*vt.z),
-            -(viewM.columns.0.z*vt.x + viewM.columns.1.z*vt.y + viewM.columns.2.z*vt.z), 0)
+            -(viewM.columns.0.x*vt.x + viewM.columns.0.y*vt.y + viewM.columns.0.z*vt.z),
+            -(viewM.columns.1.x*vt.x + viewM.columns.1.y*vt.y + viewM.columns.1.z*vt.z),
+            -(viewM.columns.2.x*vt.x + viewM.columns.2.y*vt.y + viewM.columns.2.z*vt.z), 0)
         let camRight = SIMD3<Float>(viewM.columns.0.x, viewM.columns.1.x, viewM.columns.2.x)
         let camUp    = SIMD3<Float>(viewM.columns.0.y, viewM.columns.1.y, viewM.columns.2.y)
         let camFwd   = SIMD3<Float>(-viewM.columns.0.z, -viewM.columns.1.z, -viewM.columns.2.z)
@@ -1629,7 +1631,10 @@ func runWorldFixedShadowTest(strict: Bool = false) -> Bool {
     alloc.user = Unmanaged.passUnretained(registry).toOpaque()
     alloc.alloc = allocTrampoline; alloc.free_ = freeTrampoline
     _ = bf_set_gpu_allocator(e, &alloc)
-    let seed = UInt64(ProcessInfo.processInfo.environment["WFX_SEED"] ?? "") ?? 2026
+    // #183: seed 99, not 2026. The latitude bands (#181) turned seed 2026's fixed test
+    // region into water/sand with zero verifiable ground points, and the inconclusive-skip
+    // (#145) silently ate the coverage. Seed 99 gives ~1020 ground points with ~98 shadowed.
+    let seed = UInt64(ProcessInfo.processInfo.environment["WFX_SEED"] ?? "") ?? 99
     _ = bf_world_new(e, seed)
 
     let W = 640, H = 480

@@ -1194,10 +1194,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         let tanHalfFov = tan(fovy * 0.5)
 
         let vt = viewM.columns.3
+        // #183: camera of a world-to-view [R | t] is -(R transpose * t), i.e. a dot
+        // with each rotation COLUMN. The old form used rows, i.e. -(R * t), which is
+        // only exact near the coordinate origin; in the near-seam frames the torus
+        // (#179) emits (coords up to ~32768) it was hundreds of blocks off, feeding
+        // bad camera positions to distance fog, water shading, the compass, ambient
+        // life, and the lens-flare gate.
         let camPosW = SIMD4<Float>(
-            -(viewM.columns.0.x * vt.x + viewM.columns.1.x * vt.y + viewM.columns.2.x * vt.z),
-            -(viewM.columns.0.y * vt.x + viewM.columns.1.y * vt.y + viewM.columns.2.y * vt.z),
-            -(viewM.columns.0.z * vt.x + viewM.columns.1.z * vt.y + viewM.columns.2.z * vt.z),
+            -(viewM.columns.0.x * vt.x + viewM.columns.0.y * vt.y + viewM.columns.0.z * vt.z),
+            -(viewM.columns.1.x * vt.x + viewM.columns.1.y * vt.y + viewM.columns.1.z * vt.z),
+            -(viewM.columns.2.x * vt.x + viewM.columns.2.y * vt.y + viewM.columns.2.z * vt.z),
             0)
 
         // #180 horizon curvature: camera pos + enable flag (w=1) for the world-space
