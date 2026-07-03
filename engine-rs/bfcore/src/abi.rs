@@ -35,7 +35,7 @@ use core::ffi::{c_char, c_void};
 /// v23: appended bf_map_marker + bf_map_view + bf_map_query + bf_map_teleport
 ///      (world map + warp totems, #182). Purely additive; no existing struct
 ///      layout changed.
-pub const BF_ABI_VERSION: u32 = 23;
+pub const BF_ABI_VERSION: u32 = 24;
 
 // ---------------------------------------------------------------------------
 // Primitive types
@@ -179,6 +179,8 @@ pub enum bf_action_kind {
     // Append-only: kept last so existing values and bf_action's layout are
     // unchanged and the ABI parity tests stay valid.
     BF_ACT_SET_TIME_MODE = 14,
+    /// v24 (#184): arg_i = 0 off, 1 on. Creative-only hyperspeed flight (100x sprint).
+    BF_ACT_SET_HYPERSPEED = 15,
 }
 
 #[repr(C)]

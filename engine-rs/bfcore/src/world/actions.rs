@@ -157,6 +157,9 @@ impl<'c> World<'c> {
                 };
             }
             BF_ACT_SET_TIME_MODE => self.set_time_mode(a.arg_i),
+            // #184: creative-only testing toggle; ignored in survival so it can
+            // never become a movement cheat there.
+            BF_ACT_SET_HYPERSPEED => self.hyperspeed = a.arg_i != 0,
         }
     }
 }

@@ -85,6 +85,7 @@ impl<'c> World<'c> {
             place: IVec3::default(),
             stream_r: 6,
             stream_active_r: 2,
+            hyperspeed: false,
             surf_cy_cache: HashMap::new(),
             sync_stream: false,
             moving: false,

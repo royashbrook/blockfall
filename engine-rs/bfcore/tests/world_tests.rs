@@ -1899,6 +1899,52 @@ fn debris_trajectories_are_deterministic() {
     assert_eq!(a, b, "same seed + same break = bit-identical trajectories");
 }
 
+// #184 hyperspeed: creative-only 100x flight for circumnavigation testing.
+#[test]
+fn hyperspeed_is_100x_and_creative_only() {
+    let seed = 11u64;
+    let mut w = World::new(Some(TerrainGen::new()));
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_mode(bf_game_mode::BF_MODE_CREATIVE);
+    w.init_world(seed);
+
+    let mut dist = |w: &mut World, hyper: bool| -> f32 {
+        let mut a: bf_action = unsafe { std::mem::zeroed() };
+        a.kind = bf_action_kind::BF_ACT_SET_HYPERSPEED;
+        a.arg_i = if hyper { 1 } else { 0 };
+        w.action(&a);
+        w.debug_set_camera(1000.5, 80.0, 1000.5, std::f32::consts::FRAC_PI_2, 0.0);
+        let mut input: bf_frame_input = unsafe { std::mem::zeroed() };
+        input.move_forward = 1.0;
+        input.sprint = 1;
+        input.fly_ascend = 1; // stay airborne in creative
+        for _ in 0..10 {
+            w.update(&input, 1.0 / 60.0);
+        }
+        let (px, _py, pz, _) = w.get_player();
+        // Nearest-image displacement from the start point on the torus.
+        let dx = (px - 1000.5).abs();
+        let dz = (pz - 1000.5).abs();
+        dx.min(WRAP as f32 - dx).max(dz.min(WRAP as f32 - dz))
+    };
+    let normal = dist(&mut w, false);
+    let hyper = dist(&mut w, true);
+    assert!(
+        hyper > normal * 50.0,
+        "hyperspeed must be ~100x (normal {normal}, hyper {hyper})"
+    );
+
+    // Survival ignores the toggle entirely.
+    w.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    let s_normal = dist(&mut w, false);
+    let s_hyper = dist(&mut w, true);
+    assert!(
+        s_hyper < s_normal * 3.0 + 1.0,
+        "survival must ignore hyperspeed ({s_normal} vs {s_hyper})"
+    );
+}
+
 // Pine trees (#62 ids: log 49, needles 48) must fell like oak/birch: logs become
 // coloured falling blocks (not the grey default) and the canopy clears.
 #[test]

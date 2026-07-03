@@ -114,6 +114,11 @@ final class GameView: MTKView {
 
     // Set the day/night pin directly (used by 'T' and by any settings control that
     // wants to drive it). Sends BF_ACT_SET_TIME_MODE so the engine pins the clock.
+    // #184: creative hyperspeed flight (100x sprint) for circumnavigation testing.
+    func setHyperspeed(_ on: Bool) {
+        queue(BF_ACT_SET_HYPERSPEED, on ? 1 : 0)
+    }
+
     func setTimeMode(_ mode: Int32) {
         timeMode = mode
         queue(BF_ACT_SET_TIME_MODE, mode)

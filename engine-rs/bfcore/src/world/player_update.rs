@@ -112,11 +112,19 @@ impl<'c> World<'c> {
         } else {
             8.5
         };
+        // #184 hyperspeed: creative-only 100x sprint for circumnavigating the torus
+        // (and stress-testing streaming). Applies whether or not sprint is held so
+        // the toggle alone is enough.
+        let hyper = if self.hyperspeed && self.mode == bf_game_mode::BF_MODE_CREATIVE {
+            100.0
+        } else {
+            1.0
+        };
         let speed = (if input.sprint != 0 {
             sprint_spd
         } else {
             base_spd
-        }) * dtf;
+        }) * hyper * dtf;
         let hmove = flat * (input.move_forward * speed) + right * (input.move_strafe * speed);
         if self.mode == bf_game_mode::BF_MODE_CREATIVE {
             self.pos = self.pos + hmove;

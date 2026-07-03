@@ -481,6 +481,8 @@ pub struct World<'c> {
     // Streaming.
     stream_r: i32,
     stream_active_r: i32,
+    // #184: creative hyperspeed flight (100x sprint) for circumnavigation testing.
+    pub(super) hyperspeed: bool,
     surf_cy_cache: HashMap<i64, i32>,
     sync_stream: bool,
     moving: bool,

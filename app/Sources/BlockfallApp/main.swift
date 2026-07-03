@@ -152,6 +152,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mtkView.onToggleQuestLog = { [weak h] in h?.toggleQuestLog() }
         // 'T' day/night pin: show a visible indicator so the player can confirm it.
         mtkView.onTimeModeChanged = { [weak h] m in h?.setTimeMode(m) }
+        // #184: re-apply the persisted hyperspeed toggle to the fresh engine.
+        if UserDefaults.standard.bool(forKey: "hyperspeed") { mtkView.setHyperspeed(true) }
         // #: apply the persisted HUD options (text size + visibility) so they
         // stick between sessions.
         h.hudScale = AppDelegate.loadHUDScale()
@@ -325,6 +327,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             gfxCheckbox("Character Shadows", tag: 7, on: renderer?.gfxCharShadows ?? true),
             // #47 volumetric clouds toggle.
             gfxCheckbox("Volumetric Clouds", tag: 8, on: renderer?.gfxClouds ?? true),
+            // #184: creative-only 100x flight for circumnavigating the planet (and
+            // stress-testing streaming). Engine ignores it in survival.
+            gfxCheckbox("Hyperspeed Flight (100x)", tag: 9,
+                        on: UserDefaults.standard.bool(forKey: "hyperspeed")),
         ])
         fxStack.orientation = .vertical; fxStack.spacing = 8; fxStack.alignment = .leading
 
@@ -633,7 +639,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // #: graphics toggle → live renderer + persisted. Tags match gfxCheckbox order.
     @objc private func gfxToggleChanged(_ sender: NSButton) {
         let on = (sender.state == .on)
-        let keys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows", "gfxCelShade", "gfxLensFlare", "gfxCharShadows", "gfxClouds"]
+        let keys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows", "gfxCelShade", "gfxLensFlare", "gfxCharShadows", "gfxClouds", "hyperspeed"]
         guard sender.tag >= 0 && sender.tag < keys.count else { return }
         UserDefaults.standard.set(on, forKey: keys[sender.tag])
         switch sender.tag {
@@ -646,6 +652,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case 6: renderer?.gfxLensFlare = on   // #132 lens-flare toggle
         case 7: renderer?.gfxCharShadows = on // #116 character (entity) shadows
         case 8: renderer?.gfxClouds = on      // #47 volumetric clouds toggle
+        case 9: gameView?.setHyperspeed(on)   // #184 creative 100x flight
         default: break
         }
     }

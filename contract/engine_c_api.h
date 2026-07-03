@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 23u  /* v23: bf_map_view + bf_map_query + bf_map_teleport (world map + warp totems, #182, append-only) */
+#define BF_ABI_VERSION 24u  /* v24: BF_ACT_SET_HYPERSPEED (creative 100x flight toggle, append-only) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -172,7 +172,8 @@ typedef enum bf_action_kind {
     BF_ACT_MODE_TOGGLE  = 11, /* survival<->creative (creative requires perm) */
     BF_ACT_ATTACK       = 12, /* swing at targeted creature (calm-not-kill)   */
     BF_ACT_GIVE_ITEM    = 13, /* creative only: arg_i = item id to grant      */
-    BF_ACT_SET_TIME_MODE= 14  /* arg_i = 0 auto, 1 always-day, 2 always-night */
+    BF_ACT_SET_TIME_MODE= 14, /* arg_i = 0 auto, 1 always-day, 2 always-night */
+    BF_ACT_SET_HYPERSPEED=15  /* v24: arg_i 0/1, creative-only 100x flight (testing) */
 } bf_action_kind;
 
 typedef struct bf_action {
