@@ -4,8 +4,8 @@ impl<'c> World<'c> {
     pub(super) fn spawn_ring_creature(&mut self, boss: bool, rmin: f32, rmax: f32) -> bool {
         let ang = self.rand01() * 6.2831853;
         let r = rmin + self.rand01() * (rmax - rmin);
-        let cx = self.pos.x + ang.cos() * r;
-        let cz = self.pos.z + ang.sin() * r;
+        let cx = Self::wrap_pos_f(self.pos.x + ang.cos() * r);
+        let cz = Self::wrap_pos_f(self.pos.z + ang.sin() * r);
         let gy = self.floor_below(Self::ifloor(cx), self.pos.y as i32 + 30, Self::ifloor(cz));
         if gy == NO_FLOOR {
             return false;
@@ -109,8 +109,8 @@ impl<'c> World<'c> {
     pub(super) fn spawn_hostile(&mut self, rmin: f32, rmax: f32) -> bool {
         let ang = self.rand01() * 6.2831853;
         let r = rmin + self.rand01() * (rmax - rmin);
-        let cx = self.pos.x + ang.cos() * r;
-        let cz = self.pos.z + ang.sin() * r;
+        let cx = Self::wrap_pos_f(self.pos.x + ang.cos() * r);
+        let cz = Self::wrap_pos_f(self.pos.z + ang.sin() * r);
         let gy = self.floor_below(Self::ifloor(cx), self.pos.y as i32 + 3, Self::ifloor(cz));
         if gy == NO_FLOOR {
             return false;
@@ -206,8 +206,8 @@ impl<'c> World<'c> {
         }
         let ang = self.rand01() * 6.2831853;
         let r = rmin + self.rand01() * (rmax - rmin);
-        let wx = Self::ifloor(self.pos.x + ang.cos() * r);
-        let wz = Self::ifloor(self.pos.z + ang.sin() * r);
+        let wx = Self::wrap_block(Self::ifloor(self.pos.x + ang.cos() * r));
+        let wz = Self::wrap_block(Self::ifloor(self.pos.z + ang.sin() * r));
         let mut wy = NO_FLOOR;
         let mut y = Self::ifloor(self.pos.y) + 4;
         while y > Self::ifloor(self.pos.y) - 20 {
@@ -256,8 +256,8 @@ impl<'c> World<'c> {
         let px = self.pos.x;
         let pz = self.pos.z;
         self.creatures.retain(|c| {
-            let dx = c.pos.x - px;
-            let dz = c.pos.z - pz;
+            let dx = Self::wrap_signed_f(c.pos.x - px);
+            let dz = Self::wrap_signed_f(c.pos.z - pz);
             (dx * dx + dz * dz) <= kdespawn2
         });
         let t = Self::day_time(self.world_clock);

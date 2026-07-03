@@ -147,7 +147,7 @@ impl<'c> World<'c> {
             let (px, py, pz) = {
                 let fb = &mut self.falling[i];
                 fb.vel.y -= 26.0 * dt;
-                fb.pos = fb.pos + fb.vel * dt;
+                fb.pos = Self::wrap_v3_xz(fb.pos + fb.vel * dt);
                 fb.spin += fb.spin_rate * dt;
                 fb.life -= dt;
                 (fb.pos.x, fb.pos.y, fb.pos.z)

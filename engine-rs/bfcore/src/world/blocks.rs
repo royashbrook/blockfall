@@ -3,6 +3,9 @@ use super::*;
 impl<'c> World<'c> {
     // ---- block reads/writes ---------------------------------------------
     pub(super) fn block_at(&self, w: IVec3) -> BlockId {
+        // #179: canonicalize x/z so any physics / AI / raycast query works
+        // seamlessly across the world seam (THE block read choke point).
+        let w = Self::canon_block(w);
         let cc = Self::to_chunk(w);
         match self.store.get(cc) {
             Some(ch) => ch.get(
@@ -19,6 +22,9 @@ impl<'c> World<'c> {
     }
 
     pub(super) fn set_block_remote(&mut self, w: IVec3, b: BlockId, from_remote: bool) {
+        // #179: canonical write position (chest keys, edit replication and the
+        // edited-chunk set all key off this).
+        let w = Self::canon_block(w);
         let cc = Self::to_chunk(w);
         self.store.get_or_create(cc).set(
             Self::mod16(w.x) as usize,
@@ -45,11 +51,12 @@ impl<'c> World<'c> {
             IVec3 { x: 0, y: 0, z: -1 },
         ];
         for d in dirs {
-            let nc = Self::to_chunk(IVec3 {
+            // #179: a neighbour of a seam-edge block lives in the wrapped chunk.
+            let nc = Self::canon_chunk(Self::to_chunk(IVec3 {
                 x: w.x + d.x,
                 y: w.y + d.y,
                 z: w.z + d.z,
-            });
+            }));
             if nc != cc && self.store.is_resident(nc) {
                 self.mark_dirty(nc);
                 self.urgent_dirty.insert(nc);
@@ -129,7 +136,11 @@ impl<'c> World<'c> {
         let z1 = Self::ifloor(self.pos.z + hw);
         let y0 = Self::ifloor(self.pos.y - 1.6);
         let y1 = Self::ifloor(self.pos.y + 0.2);
-        v.x >= x0 && v.x <= x1 && v.y >= y0 && v.y <= y1 && v.z >= z0 && v.z <= z1
+        // #179: express the (canonical) voxel in the player's frame so the box
+        // test works when the player straddles the world seam.
+        let vx = x0 + Self::wrap_signed_block(v.x - x0);
+        let vz = z0 + Self::wrap_signed_block(v.z - z0);
+        vx >= x0 && vx <= x1 && v.y >= y0 && v.y <= y1 && vz >= z0 && vz <= z1
     }
 
     // Standable surface (top of first solid block) scanning DOWN from yTop, or
@@ -162,6 +173,8 @@ impl<'c> World<'c> {
             Some(g) => g,
             None => return NO_FLOOR,
         };
+        let wx = Self::wrap_block(wx);
+        let wz = Self::wrap_block(wz);
         let lx = Self::mod16(wx);
         let lz = Self::mod16(wz);
         for cy in (CY_MIN..=CY_MAX).rev() {

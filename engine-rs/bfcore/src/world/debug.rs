@@ -140,6 +140,17 @@ impl<'c> World<'c> {
             self.creatures[i as usize].friendly = true;
         }
     }
+    // #179 test seam: turn a spawned creature into a plain follower pet
+    // (friendly, not hostile, not scripted) so seam-following tests can use
+    // the real Pet AI without driving the whole befriend interaction flow.
+    pub fn debug_make_pet(&mut self, i: i32) {
+        if i >= 0 && i < self.creatures.len() as i32 {
+            let c = &mut self.creatures[i as usize];
+            c.friendly = true;
+            c.hostile = false;
+            c.wander = 0.0;
+        }
+    }
     // #95 test helper: a hostile that hunts the player (used to prove a village wall keeps
     // monsters out of its protected interior).
     pub fn debug_spawn_hostile_at(&mut self, x: f32, y: f32, z: f32) -> i32 {
@@ -157,8 +168,8 @@ impl<'c> World<'c> {
         let mut c = Creature::default();
         c.model = 20;
         c.npc_id = npc_id;
-        c.home_x = ax;
-        c.home_z = az;
+        c.home_x = Self::wrap_block(ax);
+        c.home_z = Self::wrap_block(az);
         let surf = worldgen::worldgen_surface_height(ax, az, self.seed);
         c.pos = V3::new(ax as f32, surf as f32, az as f32);
         self.creatures.push(c);

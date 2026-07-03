@@ -548,7 +548,13 @@ mod worldgen_tests {
         // Query right at the ruin: the danger-site lookup must return its anchor.
         let site = worldgen_dangerous_site_near(rx, rz, 48, SEED);
         let (ax, _ay, az) = site.expect("dangerous_site_near found no ruin at a known ruin");
-        assert_eq!((ax, az), (rx, rz), "danger marker did not point at the ruin anchor");
+        // #179: the lookup canonicalizes anchors onto the torus, so compare the
+        // wrapped coordinates (the scan above may find a negative-frame cell).
+        assert_eq!(
+            (ax, az),
+            (wrap_world(rx), wrap_world(rz)),
+            "danger marker did not point at the ruin anchor"
+        );
         // And a non-ruin location far from any ruin must report no danger marker when
         // we shrink the radius to zero around an arbitrary empty cell center.
         // (Sanity: querying with radius 0 at the ruin still finds it.)
@@ -1858,10 +1864,11 @@ mod worldgen_tests {
         // Sample cells are pinned per seed; the structure type roll depends on
         // the biome, so a biome-scale change (#172) can reroll a pinned cell.
         // These cells were re-picked for the #172 constants.
+        // Re-picked for the #179 looping-world constants (canonical-frame cells).
         let samples = [
-            (11u64, 32, -45, STRUCT_CABIN),
-            (11u64, 11, -44, STRUCT_KEEP),
-            (11u64, 13, -45, STRUCT_TALL_TOWER),
+            (11u64, 17, 0, STRUCT_CABIN),
+            (11u64, 45, 0, STRUCT_KEEP),
+            (11u64, 61, 0, STRUCT_TALL_TOWER),
         ];
 
         for &(seed, scx, scz, expected_typ) in &samples {
@@ -2299,5 +2306,128 @@ fn bench_gen_cache_share() {
         k, caches, caches.as_secs_f64() * 1000.0 / k as f64
     );
 }
+
+
+    // =======================================================================
+    // #179 looping world: the world is a torus with period WORLD_PERIOD in x/z.
+    // =======================================================================
+
+    // MASTER wrap property: a chunk and its torus twin (shifted by
+    // WORLD_PERIOD_CHUNKS on x and/or z) are byte-identical, including chunks
+    // straddling the seam and chunks on the far side of the map.
+    #[test]
+    fn world_wraps_periodically() {
+        const W: i32 = WORLD_PERIOD_CHUNKS;
+        for seed in [11u64, 42, 1234] {
+            let mut g = TerrainGen::new();
+            g.seed(seed);
+            let coords = [
+                ChunkCoord { x: 0, y: 0, z: 0 },
+                ChunkCoord { x: 0, y: -1, z: 0 },
+                ChunkCoord { x: 0, y: 1, z: 5 },
+                ChunkCoord { x: W - 1, y: 0, z: 0 },      // seam edge (x)
+                ChunkCoord { x: 3, y: 0, z: W - 1 },      // seam edge (z)
+                ChunkCoord { x: W - 1, y: 0, z: W - 1 },  // corner
+                ChunkCoord { x: W / 2, y: 0, z: 7 },      // far side
+                ChunkCoord { x: -1, y: 0, z: 2 },         // negative frame
+                ChunkCoord { x: 100, y: 2, z: -1 },
+            ];
+            for c in coords {
+                let h0 = g.content_hash(c);
+                let hx = g.content_hash(ChunkCoord { x: c.x + W, y: c.y, z: c.z });
+                let hz = g.content_hash(ChunkCoord { x: c.x, y: c.y, z: c.z + W });
+                let hxz = g.content_hash(ChunkCoord { x: c.x + W, y: c.y, z: c.z + W });
+                let hneg = g.content_hash(ChunkCoord { x: c.x - W, y: c.y, z: c.z - W });
+                assert_eq!(h0, hx, "seed {seed} chunk {c:?}: +W on x differs");
+                assert_eq!(h0, hz, "seed {seed} chunk {c:?}: +W on z differs");
+                assert_eq!(h0, hxz, "seed {seed} chunk {c:?}: +W on x+z differs");
+                assert_eq!(h0, hneg, "seed {seed} chunk {c:?}: -W on x+z differs");
+            }
+        }
+    }
+
+    // Column-level periodicity of the pure query helpers: heights, biomes,
+    // ocean/river fields and structure cells agree between a column and its
+    // torus twin, including out-of-range frames (what a seam-adjacent chunk
+    // actually asks for while decorating).
+    #[test]
+    fn wrap_column_queries_periodic() {
+        const W: i32 = WORLD_PERIOD;
+        for seed in [11u64, 7] {
+            for &(wx, wz) in &[(0, 0), (5, W - 3), (W - 1, 17), (W / 2, W / 2), (123, 456)] {
+                for &(dx, dz) in &[(W, 0), (0, W), (-W, -W), (W, W)] {
+                    let (qx, qz) = (wx + dx, wz + dz);
+                    assert_eq!(
+                        surface_height(wx, wz, seed),
+                        surface_height(qx, qz, seed),
+                        "height differs at ({wx},{wz}) vs ({qx},{qz}) seed {seed}"
+                    );
+                    assert_eq!(
+                        voronoi_biome(wx, wz, seed),
+                        voronoi_biome(qx, qz, seed),
+                        "biome differs at ({wx},{wz}) vs ({qx},{qz}) seed {seed}"
+                    );
+                    assert_eq!(
+                        is_ocean_column(wx as f32, wz as f32, seed),
+                        is_ocean_column(qx as f32, qz as f32, seed),
+                        "ocean flag differs at ({wx},{wz}) seed {seed}"
+                    );
+                    assert_eq!(
+                        cave_entrance_depth(wx, wz, seed),
+                        cave_entrance_depth(qx, qz, seed),
+                        "entrance depth differs at ({wx},{wz}) seed {seed}"
+                    );
+                }
+            }
+        }
+    }
+
+    // The height field is CONTINUOUS across the seam: the step between the last
+    // column (x = W-1) and the first (x = 0) is no larger than the roughest step
+    // found in the interior. A lattice that failed to close would show up here
+    // as a cliff along x = 0.
+    #[test]
+    fn wrap_seam_has_no_cliff() {
+        const W: i32 = WORLD_PERIOD;
+        for seed in [11u64, 42] {
+            let mut max_seam = 0i32;
+            let mut max_interior = 0i32;
+            for wz in (0..2048).step_by(13) {
+                let a = surface_height(W - 1, wz, seed);
+                let b = surface_height(0, wz, seed);
+                max_seam = max_seam.max((a - b).abs());
+                // Interior reference steps at a few x positions.
+                for wx in [1000, 5000, 11000] {
+                    let c = surface_height(wx, wz, seed);
+                    let d = surface_height(wx + 1, wz, seed);
+                    max_interior = max_interior.max((c - d).abs());
+                }
+            }
+            assert!(
+                max_seam <= max_interior + 2,
+                "seed {seed}: seam step {max_seam} exceeds interior max step {max_interior} + 2 (cliff at the seam)"
+            );
+        }
+    }
+
+    // Structures and trees are continuous across the seam: the two chunk columns
+    // flanking x = 0 generate identical bytes whether addressed canonically or
+    // from the other side's frame (x = -1 vs x = W_CHUNKS-1), so a build or a
+    // canopy straddling the seam is stamped consistently into both neighbours.
+    #[test]
+    fn wrap_seam_neighbours_consistent() {
+        let mut g = TerrainGen::new();
+        g.seed(11);
+        for cz in [0, 100, 1500] {
+            for cy in -1..=2 {
+                let east = ChunkCoord { x: 0, y: cy, z: cz };
+                let west_canonical = ChunkCoord { x: WORLD_PERIOD_CHUNKS - 1, y: cy, z: cz };
+                let west_frame = ChunkCoord { x: -1, y: cy, z: cz };
+                assert_eq!(g.content_hash(west_canonical), g.content_hash(west_frame));
+                // Determinism of the pair (regen twice, byte-stable).
+                assert_eq!(g.content_hash(east), g.content_hash(east));
+            }
+        }
+    }
 
 }

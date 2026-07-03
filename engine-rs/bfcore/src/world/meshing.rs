@@ -243,7 +243,11 @@ impl<'c> World<'c> {
                 (a.y as f32 + 0.5) * KCHUNK_DIM as f32,
                 (a.z as f32 + 0.5) * KCHUNK_DIM as f32,
             );
-            let to = V3::new(ctr.x - pos.x, ctr.y - pos.y, ctr.z - pos.z);
+            let to = V3::new(
+                Self::wrap_signed_f(ctr.x - pos.x),
+                ctr.y - pos.y,
+                Self::wrap_signed_f(ctr.z - pos.z),
+            );
             let d2 = dot(to, to);
             let facing = dot(to, cam_fwd) / (d2.sqrt() + 0.001);
             let mut s = d2 as f64 * (if facing > 0.2 { 1.0 } else { 4.0 });

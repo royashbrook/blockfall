@@ -15,15 +15,20 @@ impl<'c> World<'c> {
                 // FULL Y stacks for every column in radius, which burned most of the gen
                 // budget on invisible underground and left visible holes while flying.
                 let near = dx.abs() <= near_r && dz.abs() <= near_r;
+                // #179: canonical column so the cache key (and the queued chunk
+                // below) is unique on the torus even when the window straddles
+                // the seam.
+                let col_cx = (c.x + dx).rem_euclid(WRAP_CHUNKS);
+                let col_cz = (c.z + dz).rem_euclid(WRAP_CHUNKS);
                 let mut surf_cy = player_cy;
                 if !near {
-                    let key = ((c.x + dx) as i64) << 32 | ((c.z + dz) as u32 as i64);
+                    let key = (col_cx as i64) << 32 | (col_cz as u32 as i64);
                     if let Some(&v) = self.surf_cy_cache.get(&key) {
                         surf_cy = v;
                     } else {
                         let sy = worldgen::worldgen_surface_height(
-                            (c.x + dx) * KCHUNK_DIM + KCHUNK_DIM / 2,
-                            (c.z + dz) * KCHUNK_DIM + KCHUNK_DIM / 2,
+                            col_cx * KCHUNK_DIM + KCHUNK_DIM / 2,
+                            col_cz * KCHUNK_DIM + KCHUNK_DIM / 2,
                             self.seed,
                         );
                         surf_cy = Self::floordiv(sy, KCHUNK_DIM);
@@ -49,7 +54,7 @@ impl<'c> World<'c> {
                     if !want {
                         continue;
                     }
-                    let cc = ChunkCoord { x: c.x + dx, y: cy, z: c.z + dz };
+                    let cc = ChunkCoord { x: col_cx, y: cy, z: col_cz };
                     if !self.store.is_resident(cc) {
                         self.gen_queue.push(cc);
                     }
@@ -63,8 +68,10 @@ impl<'c> World<'c> {
     fn evict_far(&mut self) {
         let mut drop: Vec<ChunkCoord> = Vec::new();
         for (cc, _) in self.meshes.iter() {
-            if (cc.x - self.last_center.x).abs() > self.stream_r + 1
-                || (cc.z - self.last_center.z).abs() > self.stream_r + 1
+            // #179: nearest-image distance so meshes just across the seam are
+            // "near", not 32K blocks away.
+            if Self::wrap_signed_chunk(cc.x - self.last_center.x).abs() > self.stream_r + 1
+                || Self::wrap_signed_chunk(cc.z - self.last_center.z).abs() > self.stream_r + 1
             {
                 drop.push(*cc);
             }
@@ -113,6 +120,8 @@ impl<'c> World<'c> {
     }
 
     pub(super) fn mark_dirty(&mut self, cc: ChunkCoord) {
+        // #179: dirty / mesh-version keys are canonical, matching store keys.
+        let cc = Self::canon_chunk(cc);
         self.dirty.insert(cc);
         self.mesh_next_version = self.mesh_next_version.wrapping_add(1);
         if self.mesh_next_version == 0 {
@@ -136,6 +145,7 @@ impl<'c> World<'c> {
             ChunkCoord { x: cc.x, y: cc.y, z: cc.z - 1 },
         ];
         for nc in dirs {
+            // mark_dirty canonicalizes; is_resident wraps in the store.
             if self.store.is_resident(nc) {
                 self.mark_dirty(nc);
             }

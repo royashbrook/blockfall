@@ -390,7 +390,10 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
                 let roll = ph & 0xFF;
                 let roll2 = (ph >> 8) & 0xFF;
                 let roll3 = (ph >> 16) & 0xFF;
-                let gpatch = value_noise2(wx as f32 * 0.085, wz as f32 * 0.085, pseed ^ 0x6772ABCD);
+                // #179: 0.085 as an integer lattice period (2785/32768 ~= 0.08499).
+                const GPATCH_PERIOD: i32 = 2785;
+                const GPATCH_FREQ: f32 = GPATCH_PERIOD as f32 / WORLD_PERIOD as f32;
+                let gpatch = value_noise2(wx as f32 * GPATCH_FREQ, wz as f32 * GPATCH_FREQ, pseed ^ 0x6772ABCD, GPATCH_PERIOD);
                 let gt: u64 = if gpatch > 0.58 { 205 } else { 24 };
 
                 let mut plant = AIR;
@@ -719,7 +722,11 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
 
     // 7. ORE VEINS
     {
-        const ORE_CELL_SIZE: i32 = 7;
+        // #179: 7 -> 8 so the ore grid divides WORLD_PERIOD (4096 cells);
+        // thresholds rescaled by 8^3/7^3 (38/20/13/3 -> 57/30/19/4) so
+        // ore-per-volume stays about the same.
+        const ORE_CELL_SIZE: i32 = 8;
+        const ORE_CELL_COUNT: i32 = WORLD_PERIOD / ORE_CELL_SIZE; // 4096
         const ORE_VEIN_REACH: i32 = 4;
 
         const COAL_Y_MAX: i32 = -2;
@@ -727,10 +734,10 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
         const IRON_Y_MAX: i32 = -14;
         const CRYSTAL_Y_MAX: i32 = -24;
 
-        const COAL_THRESH: u64 = 38;
-        const COPPER_THRESH: u64 = 20;
-        const IRON_THRESH: u64 = 13;
-        const CRYSTAL_THRESH: u64 = 3;
+        const COAL_THRESH: u64 = 57;
+        const COPPER_THRESH: u64 = 30;
+        const IRON_THRESH: u64 = 19;
+        const CRYSTAL_THRESH: u64 = 4;
 
         const ORE_SEED_MIX: u64 = 0x0ACED501DF0ADED5;
         let ore_seed = fmix64(seed ^ ORE_SEED_MIX);
@@ -752,7 +759,12 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
 
             for cz_cell in cell_zmin..=cell_zmax {
                 for cx_cell in cell_xmin..=cell_xmax {
-                    let h = hash3(cx_cell, cy_cell, cz_cell, ore_seed);
+                    let h = hash3(
+                        wrap_cell(cx_cell, ORE_CELL_COUNT),
+                        cy_cell,
+                        wrap_cell(cz_cell, ORE_CELL_COUNT),
+                        ore_seed,
+                    );
                     let prob = h & 0xFF;
 
                     let ore_id;
@@ -827,6 +839,14 @@ impl TerrainGen {
     }
 
     pub fn generate<C: Chunk>(&self, c: ChunkCoord, chunk: &mut C) {
+        // #179 looping world: canonicalize the chunk coordinate. A chunk and
+        // its torus twin (x or z shifted by WORLD_PERIOD_CHUNKS) then run the
+        // byte-identical code path, which is the wrap guarantee.
+        let c = ChunkCoord {
+            x: c.x.rem_euclid(WORLD_PERIOD_CHUNKS),
+            y: c.y,
+            z: c.z.rem_euclid(WORLD_PERIOD_CHUNKS),
+        };
         let seed_ = self.seed;
         let wx_min0 = c.x * K_CHUNK_DIM;
         let wz_min0 = c.z * K_CHUNK_DIM;
@@ -1000,7 +1020,7 @@ impl TerrainGen {
                     let cave_surface_ref = h_floor;
                     if b != AIR && b != WATER && wy < cave_surface_ref - CAVE_SURFACE_MARGIN && wy > K_COLUMN_MIN_Y + 4 {
                         let cseed = fmix64(seed_ ^ 0xCA4E5EED1234);
-                        let cave = fbm3(wx as f32, wy as f32, wz as f32, cseed, 3, 1.0 / 16.0);
+                        let cave = fbm3(wx as f32, wy as f32, wz as f32, cseed, 3, CAVE_NOISE_PERIOD);
                         if cave > CAVE_THRESH {
                             b = AIR;
                         }
@@ -1153,7 +1173,9 @@ pub fn worldgen_structure_near(wx: i32, wz: i32, seed: u64) -> (i32, i32, i32, i
         return (STRUCT_NONE, 0, 0, 0);
     }
     let y = struct_surface(sd.anchor_wx, sd.anchor_wz, seed);
-    (sd.typ, sd.anchor_wx, sd.anchor_wz, y)
+    // #179: canonical anchor so callers can key per-settlement state on it
+    // (the same settlement seen from either side of the seam gets one key).
+    (sd.typ, wrap_world(sd.anchor_wx), wrap_world(sd.anchor_wz), y)
 }
 
 /// Danger site lookup for the creature system. Scans structure cells overlapping a
@@ -1182,7 +1204,8 @@ pub fn worldgen_dangerous_site_near(wx: i32, wz: i32, radius: i32, seed: u64) ->
             if d2 <= (radius as i64) * (radius as i64) && d2 < best_d2 {
                 best_d2 = d2;
                 let y = struct_surface(sd.anchor_wx, sd.anchor_wz, seed);
-                best = Some((sd.anchor_wx, y, sd.anchor_wz));
+                // #179: canonical anchor so per-ruin state keys are unique.
+                best = Some((wrap_world(sd.anchor_wx), y, wrap_world(sd.anchor_wz)));
             }
         }
     }

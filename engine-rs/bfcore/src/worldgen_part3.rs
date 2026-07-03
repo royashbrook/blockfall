@@ -6,7 +6,8 @@
 // ---------------------------------------------------------------------------
 // Structure system
 // ---------------------------------------------------------------------------
-const STRUCT_CELL_SIZE: i32 = 64;
+const STRUCT_CELL_SIZE: i32 = 64; // divides WORLD_PERIOD (512 cells across the torus)
+const STRUCT_CELL_COUNT: i32 = WORLD_PERIOD / STRUCT_CELL_SIZE; // 512
 const STRUCT_SEED_MIX: u64 = 0x57AC7EDEDBEF5717;
 const MARKER_BLOCK: BlockId = 34;
 const STRUCT_PROB_THRESH: u64 = 128;
@@ -128,7 +129,9 @@ fn struct_surface(wx: i32, wz: i32, seed: u64) -> i32 {
 
 fn struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
     let sseed = fmix64(seed ^ STRUCT_SEED_MIX);
-    let h = hash2(scx, scz, sseed);
+    // #179: canonical cell hash (periodic grid); anchor geometry stays in the
+    // caller's frame so seam-adjacent placement works on raw coordinates.
+    let h = hash2(wrap_cell(scx, STRUCT_CELL_COUNT), wrap_cell(scz, STRUCT_CELL_COUNT), sseed);
 
     if (h & 0xFF) >= STRUCT_PROB_THRESH {
         return StructDesc { anchor_wx: 0, anchor_wz: 0, typ: STRUCT_NONE, cell_hash: 0, present: false };
@@ -1191,7 +1194,10 @@ fn place_structure<C: Chunk>(sd: &StructDesc, seed: u64, chunk: &mut C, wx_min: 
 // ---------------------------------------------------------------------------
 // Deadwood (#22)
 // ---------------------------------------------------------------------------
-const DEADWOOD_CELL: i32 = 12;
+// #179: 12 -> 16 so the deadwood grid divides WORLD_PERIOD; probability below
+// rescaled 40 -> 71 (x 16^2/12^2) to keep deadwood-per-area unchanged.
+const DEADWOOD_CELL: i32 = 16;
+const DEADWOOD_CELL_COUNT: i32 = WORLD_PERIOD / DEADWOOD_CELL; // 2048
 const DEADWOOD_REACH_XZ: i32 = 5;
 const DEADWOOD_SEED_MIX: u64 = 0xDEAD0F00DDEAD066;
 
@@ -1218,9 +1224,9 @@ fn deadwood_floordiv(a: i32, b: i32) -> i32 {
 
 fn deadwood_for_cell(dcx: i32, dcz: i32, seed: u64) -> DeadwoodDesc {
     let dseed = fmix64(seed ^ DEADWOOD_SEED_MIX);
-    let h = hash2(dcx, dcz, dseed);
+    let h = hash2(wrap_cell(dcx, DEADWOOD_CELL_COUNT), wrap_cell(dcz, DEADWOOD_CELL_COUNT), dseed);
 
-    if (h & 0xFF) >= 40 {
+    if (h & 0xFF) >= 71 {
         return DeadwoodDesc { wx: 0, wz: 0, kind: DEADWOOD_NONE, length: 0, dir: 0, log_id: 0, leaf_nub: false, present: false };
     }
 
@@ -1273,7 +1279,10 @@ fn cave_voxel_is_air(wx: i32, wy: i32, wz: i32, seed: u64) -> bool {
     if wy <= K_COLUMN_MIN_Y + 4 {
         return false;
     }
-    let cave = fbm3(wx as f32, wy as f32, wz as f32, fmix64(seed ^ 0xCA4E5EED1234), 3, 1.0 / 16.0);
+    // #179: canonical coords + integer cave lattice period (2048 = 1/16).
+    let wx = wrap_world(wx);
+    let wz = wrap_world(wz);
+    let cave = fbm3(wx as f32, wy as f32, wz as f32, fmix64(seed ^ 0xCA4E5EED1234), 3, CAVE_NOISE_PERIOD);
     cave > CAVE_THRESH
 }
 
@@ -1285,7 +1294,10 @@ fn cave_voxel_is_solid(wx: i32, wy: i32, wz: i32, seed: u64) -> bool {
     !cave_voxel_is_air(wx, wy, wz, seed)
 }
 
-const CAVE_FEAT_CELL: i32 = 9;
+// #179: 9 -> 8 so the cave-feature grid divides WORLD_PERIOD (4096 cells);
+// per-cell roll rescaled 56 -> 39 (x 8^3/9^3) to keep features-per-volume.
+const CAVE_FEAT_CELL: i32 = 8;
+const CAVE_FEAT_CELL_COUNT: i32 = WORLD_PERIOD / CAVE_FEAT_CELL; // 4096
 const CAVE_FEAT_SEED_MIX: u64 = 0xCA7EFEA70FEA7C00;
 
 const CFEAT_MUSHROOMS: i32 = 1;
@@ -1339,9 +1351,9 @@ fn place_cave_features<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64) {
     for cy in cy0..=cy1 {
         for cz in cz0..=cz1 {
             for cx in cx0..=cx1 {
-                let h = hash3(cx, cy, cz, fseed);
+                let h = hash3(wrap_cell(cx, CAVE_FEAT_CELL_COUNT), cy, wrap_cell(cz, CAVE_FEAT_CELL_COUNT), fseed);
                 let roll = h & 0xFF;
-                if roll >= 56 {
+                if roll >= 39 {
                     continue;
                 }
 

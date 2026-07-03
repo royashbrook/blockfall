@@ -330,8 +330,12 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     // #89 diagnosis: lets the yaw-sweep experiment turn the camera WITHOUT walking
     // forward, so the camera ORIGIN is identical at every yaw and the only variable is
     // the view direction. (The default keeps move_forward=1 so streaming churns.)
+    // #179: accumulated look-yaw so a shot can aim at an ABSOLUTE heading
+    // (BF_SHOT_SETYAW) — the engine spawns procedural worlds at yaw 0.6.
+    var yawAccum: Float = 0
     func renderOneFrame(pitch: Float = 0, yaw: Float = 0.004, forward: Float = 1) {
         frameIdx += 1; registry.currentFrame = frameIdx
+        yawAccum += yaw
         let now = CACurrentMediaTime(); let dt = now - lastDt; lastDt = now
         // Keep the player slowly orbiting so chunks stream continuously (worst case).
         var input = bf_frame_input(); input.move_forward = forward; input.look_yaw_delta = yaw
@@ -759,6 +763,14 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         // to converge, so the camera lands on the SAME ground column at every yaw (otherwise
         // free-fall + per-run streaming timing drift the origin and confound the experiment).
         if noWalk { for _ in 0..<400 { renderOneFrame(yaw: 0, forward: 0) } }
+        // #179: BF_SHOT_SETYAW=<radians> turns to an ABSOLUTE world heading before the
+        // capture (0 = +z, pi/2 = +x), without walking. Used by the world-seam shots to
+        // look east and then west across x = 0 from the same spot.
+        if let setStr = ProcessInfo.processInfo.environment["BF_SHOT_SETYAW"], let target = Float(setStr) {
+            let delta = target - (0.6 + yawAccum)
+            for _ in 0..<30 { renderOneFrame(yaw: delta / 30.0, forward: 0) }
+            for _ in 0..<60 { renderOneFrame(yaw: 0, forward: 0) } // settle streaming at the new heading
+        }
         if let yawStr = ProcessInfo.processInfo.environment["BF_SHOT_YAW"], let yawDeg = Float(yawStr) {
             let total = yawDeg * Float.pi / 180.0
             let frames = 60

@@ -54,13 +54,14 @@ impl<'c> World<'c> {
             let cr = &mut self.creatures[idx];
             cr.hp -= dmg;
             cr.hit_flash = 0.22;
-            let ax = cr.pos.x - px;
-            let az = cr.pos.z - pz;
+            // #179: nearest-image so knockback pushes the right way at the seam.
+            let ax = Self::wrap_signed_f(cr.pos.x - px);
+            let az = Self::wrap_signed_f(cr.pos.z - pz);
             let ad = (ax * ax + az * az).sqrt();
             let kb = if cr.is_boss { 0.25 } else { 1.3 };
             if ad > 0.01 {
-                cr.pos.x += ax / ad * kb;
-                cr.pos.z += az / ad * kb;
+                cr.pos.x = Self::wrap_pos_f(cr.pos.x + ax / ad * kb);
+                cr.pos.z = Self::wrap_pos_f(cr.pos.z + az / ad * kb);
             }
             cr.vy = if cr.is_boss { 0.8 } else { 3.0 };
         }

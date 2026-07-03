@@ -331,7 +331,8 @@ impl<'c> World<'c> {
     }
 
     fn village_state_mut(&mut self, ax: i32, az: i32) -> &mut VillageState {
-        self.villages.entry((ax, az)).or_default()
+        // #179: canonical settlement key on the torus.
+        self.villages.entry((Self::wrap_block(ax), Self::wrap_block(az))).or_default()
     }
 
     pub(super) fn try_village_donation(&mut self, idx: usize) -> bool {
@@ -390,7 +391,7 @@ impl<'c> World<'c> {
                 if !is_stone {
                     return false;
                 }
-                let tier = self.villages.get(&(ax, az)).map(|v| v.tier).unwrap_or(0);
+                let tier = self.villages.get(&(Self::wrap_block(ax), Self::wrap_block(az))).map(|v| v.tier).unwrap_or(0);
                 if tier < 1 {
                     self.toast("Mason: build Finn's wooden wall first, then I can make it stone.");
                     return true;
@@ -434,7 +435,7 @@ impl<'c> World<'c> {
                 if !is_iron {
                     return false;
                 }
-                let tier = self.villages.get(&(ax, az)).map(|v| v.tier).unwrap_or(0);
+                let tier = self.villages.get(&(Self::wrap_block(ax), Self::wrap_block(az))).map(|v| v.tier).unwrap_or(0);
                 if tier < 2 {
                     self.toast("Blacksmith: get Bria to finish the stonework, then bring me iron.");
                     return true;
@@ -482,8 +483,8 @@ impl<'c> World<'c> {
             if vs.tier < 1 {
                 continue;
             }
-            let dx = wx - ax;
-            let dz = wz - az;
+            let dx = Self::wrap_signed_block(wx - ax);
+            let dz = Self::wrap_signed_block(wz - az);
             if dx > -R && dx < R && dz > -R && dz < R {
                 return Some((ax, az));
             }
@@ -500,7 +501,8 @@ impl<'c> World<'c> {
         let mut best: Option<(i32, i32)> = None;
         let mut best_d2 = (radius as i64) * (radius as i64);
         for &(ax, az) in self.villages.keys() {
-            let d2 = ((ax - wx) as i64).pow(2) + ((az - wz) as i64).pow(2);
+            let d2 = (Self::wrap_signed_block(ax - wx) as i64).pow(2)
+                + (Self::wrap_signed_block(az - wz) as i64).pow(2);
             if d2 <= best_d2 {
                 best_d2 = d2;
                 best = Some((ax, az));
@@ -508,13 +510,18 @@ impl<'c> World<'c> {
         }
         let (styp, sax, saz, _sy) = worldgen::worldgen_structure_near(wx, wz, self.seed);
         if styp == 8 || worldgen::worldgen_is_city(styp) {
-            let d2 = ((sax - wx) as i64).pow(2) + ((saz - wz) as i64).pow(2);
+            let d2 = (Self::wrap_signed_block(sax - wx) as i64).pow(2)
+                + (Self::wrap_signed_block(saz - wz) as i64).pow(2);
             if d2 <= best_d2 {
                 best = Some((sax, saz));
             }
         }
         let (ax, az) = best?;
-        let vs = self.villages.get(&(ax, az)).cloned().unwrap_or_default();
+        let vs = self
+            .villages
+            .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
+            .cloned()
+            .unwrap_or_default();
         let (progress_needed, progress) = match vs.tier {
             1 => (16, vs.progress),
             2 => (8, vs.progress),
@@ -537,21 +544,21 @@ impl<'c> World<'c> {
 
     pub fn debug_village_tier(&self, ax: i32, az: i32) -> i32 {
         self.villages
-            .get(&(ax, az))
+            .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
             .map(|v| v.tier as i32)
             .unwrap_or(0)
     }
 
     pub fn debug_village_progress(&self, ax: i32, az: i32) -> i32 {
         self.villages
-            .get(&(ax, az))
+            .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
             .map(|v| v.progress)
             .unwrap_or(0)
     }
 
     pub fn debug_village_wood_cells(&self, ax: i32, az: i32) -> i32 {
         self.villages
-            .get(&(ax, az))
+            .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
             .map(|v| v.wood_cells)
             .unwrap_or(0)
     }
@@ -597,8 +604,8 @@ impl<'c> World<'c> {
                     dx += 64;
                     continue;
                 }
-                let ddx = ax as f32 - self.pos.x;
-                let ddz = az as f32 - self.pos.z;
+                let ddx = Self::wrap_signed_f(ax as f32 - self.pos.x);
+                let ddz = Self::wrap_signed_f(az as f32 - self.pos.z);
                 if ddx * ddx + ddz * ddz > 80.0 * 80.0 {
                     dx += 64;
                     continue;
@@ -613,8 +620,8 @@ impl<'c> World<'c> {
                 }
                 let present = self.creatures.iter().any(|c| {
                     c.model == 20
-                        && (c.pos.x - ax as f32).abs() < 10.0
-                        && (c.pos.z - az as f32).abs() < 10.0
+                        && Self::wrap_signed_f(c.pos.x - ax as f32).abs() < 10.0
+                        && Self::wrap_signed_f(c.pos.z - az as f32).abs() < 10.0
                 });
                 if present {
                     dx += 64;
@@ -683,13 +690,17 @@ impl<'c> World<'c> {
         let mut idx_in_settlement = self
             .creatures
             .iter()
-            .filter(|c| c.model == 20 && c.home_x == ax && c.home_z == az)
+            .filter(|c| {
+                c.model == 20
+                    && c.home_x == Self::wrap_block(ax)
+                    && c.home_z == Self::wrap_block(az)
+            })
             .count() as i32;
         let n = budget.min(1 + if self.rand01() < 0.5 { 1 } else { 0 });
         let mut made = 0;
         for _ in 0..n {
-            let ox = ax as f32 + (self.rand01() * 5.0 - 2.5);
-            let oz = az as f32 + (self.rand01() * 5.0 - 2.5);
+            let ox = Self::wrap_pos_f(ax as f32 + (self.rand01() * 5.0 - 2.5));
+            let oz = Self::wrap_pos_f(az as f32 + (self.rand01() * 5.0 - 2.5));
             let gy = self.floor_below(Self::ifloor(ox), ay + 4, Self::ifloor(oz));
             if gy == NO_FLOOR {
                 continue;
@@ -710,8 +721,8 @@ impl<'c> World<'c> {
             c.model = d.model;
             c.npc_id = Self::villager_npc_for_index(is_city, idx_in_settlement);
             idx_in_settlement += 1;
-            c.home_x = ax;
-            c.home_z = az;
+            c.home_x = Self::wrap_block(ax);
+            c.home_z = Self::wrap_block(az);
             c.name = d.name.clone();
             c.speed = if d.move_speed > 0.0 {
                 d.move_speed * 0.5

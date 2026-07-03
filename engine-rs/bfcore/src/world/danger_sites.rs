@@ -40,8 +40,8 @@ impl<'c> World<'c> {
             if !st.cleared {
                 continue;
             }
-            let far =
-                ((sx - px) as f32).abs() >= AWAY_DIST || ((sz - pz) as f32).abs() >= AWAY_DIST;
+            let far = (Self::wrap_signed_block(sx - px) as f32).abs() >= AWAY_DIST
+                || (Self::wrap_signed_block(sz - pz) as f32).abs() >= AWAY_DIST;
             if !far {
                 continue;
             }
@@ -114,8 +114,8 @@ impl<'c> World<'c> {
     // danger-site pass can tell which ruin a defender belongs to. Returns true on
     // success.
     pub(super) fn spawn_hostile_at(&mut self, ax: i32, ay: i32, az: i32) -> bool {
-        let ox = ax as f32 + (self.rand01() * 6.0 - 3.0);
-        let oz = az as f32 + (self.rand01() * 6.0 - 3.0);
+        let ox = Self::wrap_pos_f(ax as f32 + (self.rand01() * 6.0 - 3.0));
+        let oz = Self::wrap_pos_f(az as f32 + (self.rand01() * 6.0 - 3.0));
         let gy = self.floor_below(Self::ifloor(ox), ay + 5, Self::ifloor(oz));
         if gy == NO_FLOOR {
             return false;

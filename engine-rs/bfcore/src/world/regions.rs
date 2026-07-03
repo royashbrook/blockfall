@@ -8,6 +8,9 @@ pub(super) struct RegionKey {
 
 impl<'c> World<'c> {
     pub(super) fn region_key(cc: ChunkCoord) -> RegionKey {
+        // #179: canonical chunk first so region keys are unique on the torus
+        // (KREGION_CHUNKS divides WRAP_CHUNKS, so regions tile it exactly).
+        let cc = Self::canon_chunk(cc);
         RegionKey { x: Self::floordiv(cc.x, KREGION_CHUNKS), z: Self::floordiv(cc.z, KREGION_CHUNKS) }
     }
 

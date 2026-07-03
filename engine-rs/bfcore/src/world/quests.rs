@@ -198,9 +198,9 @@ impl<'c> World<'c> {
             if c.name != obj.target {
                 continue;
             }
-            let dx = c.pos.x - self.pos.x;
+            let dx = Self::wrap_signed_f(c.pos.x - self.pos.x);
             let dy = c.pos.y - self.pos.y;
-            let dz = c.pos.z - self.pos.z;
+            let dz = Self::wrap_signed_f(c.pos.z - self.pos.z);
             let d2 = dx * dx + dy * dy + dz * dz;
             if d2 < bestd2 {
                 bestd2 = d2;

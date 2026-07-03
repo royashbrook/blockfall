@@ -1932,3 +1932,166 @@ fn pine_tree_fells_with_canopy() {
     assert_eq!(needles, 0, "felling a pine must clear its needle canopy");
     assert_eq!(w.debug_block_at(bx, 9, bz), 0, "pine trunk felled");
 }
+
+// ============================================================================
+// #179 looping world: seam behaviour of the live sim (wrap, physics, AI, render).
+// ============================================================================
+
+const WRAP: i32 = worldgen::WORLD_PERIOD;
+
+// Find a z where both sides of the x seam are dry land (so a walk across the
+// seam stands on solid ground the whole way).
+fn dry_seam_z(seed: u64) -> i32 {
+    const SEA_LEVEL: i32 = 6;
+    for z in 0..4096 {
+        let mut ok = true;
+        for x in [WRAP - 24, WRAP - 8, WRAP - 1, 0, 8, 24] {
+            let h = worldgen::worldgen_surface_height(x, z, seed);
+            if h <= SEA_LEVEL + 1 || h > 40 {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            return z;
+        }
+    }
+    panic!("no dry seam strip found for seed {seed}");
+}
+
+// Block edits address the same voxel from either frame: writing at x = -1
+// reads back at x = WRAP-1, and a write past the seam (x = WRAP) lands at 0.
+#[test]
+fn wrap_block_edits_are_canonical() {
+    let mut w = World::new(Some(TerrainGen::new()));
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.init_world(11);
+    let z = dry_seam_z(11);
+    w.debug_edit(-1, 70, z, world::GLOW);
+    assert_eq!(w.debug_block_at(WRAP - 1, 70, z), world::GLOW);
+    w.debug_edit(WRAP, 71, z, world::BRICK);
+    assert_eq!(w.debug_block_at(0, 71, z), world::BRICK);
+    // And reads canonicalize too.
+    assert_eq!(w.debug_block_at(-1, 70, z), world::GLOW);
+}
+
+// Walk the player east across the world seam in survival: the position wraps
+// into [0, WRAP), the ground stays solid (no fall-through), and the chunk
+// store does not blow up with duplicate columns.
+#[test]
+fn wrap_seam_walk_east() {
+    let seed = 11u64;
+    let z = dry_seam_z(seed);
+    let mut w = World::new(Some(TerrainGen::new()));
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    w.init_world(seed);
+
+    let x0 = WRAP - 20;
+    let h = worldgen::worldgen_surface_height(x0, z, seed);
+    // Face +x: forward = (sin yaw, 0, cos yaw) with pitch 0.
+    w.debug_set_camera(x0 as f32 + 0.5, h as f32 + 3.5, z as f32 + 0.5, std::f32::consts::FRAC_PI_2, 0.0);
+
+    let mut input: bf_frame_input = unsafe { std::mem::zeroed() };
+    input.move_forward = 1.0;
+    input.sprint = 1;
+    let mut crossed = false;
+    let mut min_y = f32::MAX;
+    for _ in 0..600 {
+        w.update(&input, 0.05);
+        let (px, py, _pz, _) = w.get_player();
+        assert!(
+            (0.0..WRAP as f32).contains(&px),
+            "player x {px} escaped the canonical torus range"
+        );
+        min_y = min_y.min(py);
+        if px < 64.0 {
+            crossed = true;
+            break;
+        }
+    }
+    let (px, py, pz, _) = w.get_player();
+    assert!(crossed, "player never crossed the seam (x = {px})");
+    // Grounded on real terrain the whole way: never fell into the void and is
+    // standing near the local surface now.
+    assert!(min_y > 0.0, "player fell through the world near the seam (min y {min_y})");
+    let hs = worldgen::worldgen_surface_height(px as i32, pz as i32, seed);
+    assert!(
+        (py - hs as f32).abs() < 8.0,
+        "player y {py} far from surface {hs} after crossing at ({px},{pz})"
+    );
+    // Store stayed bounded (no duplicate resident columns for the same torus
+    // position; a duplicate would double the count for the walked window).
+    let residents = w.debug_resident_count();
+    assert!(
+        residents < 6000,
+        "resident chunk count {residents} exploded during the seam walk"
+    );
+
+    // Rendered geometry is camera-relative on the torus: every draw's chunk
+    // origin sits at its nearest image (never ~32K blocks away).
+    let mut frame: bf_render_frame = unsafe { std::mem::zeroed() };
+    let mut draws = Vec::new();
+    let mut shadow_draws = Vec::new();
+    let mut props = Vec::new();
+    w.build_frame(&mut frame, &mut draws, &mut shadow_draws, &mut props, 0.0);
+    assert!(!draws.is_empty(), "no draws after the seam walk");
+    for d in &draws {
+        let dx = (d.chunk_origin.x as f32 + 8.0) - px;
+        let dz = (d.chunk_origin.z as f32 + 8.0) - pz;
+        assert!(
+            dx.abs() < 1024.0 && dz.abs() < 1024.0,
+            "draw origin ({}, {}) not nearest-image relative to camera ({px}, {pz})",
+            d.chunk_origin.x,
+            d.chunk_origin.z
+        );
+    }
+}
+
+// A befriended pet on the far side of the seam sees the player 12 blocks away
+// (nearest image), not WRAP-12, and closes the gap across the seam.
+#[test]
+fn wrap_creature_follows_across_seam() {
+    let seed = 11u64;
+    let z = dry_seam_z(seed);
+    let mut w = World::new(Some(TerrainGen::new()));
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    w.init_world(seed);
+
+    let px = 6.5f32;
+    let hp = worldgen::worldgen_surface_height(px as i32, z, seed);
+    w.debug_set_camera(px, hp as f32 + 3.2, z as f32 + 0.5, 0.0, 0.0);
+    // Warm the streaming window around the player (both sides of the seam).
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    for _ in 0..80 {
+        w.update(&zero, 0.05);
+    }
+
+    let cx = (WRAP - 6) as f32 + 0.5; // wrapped distance ~13 blocks, raw ~32756
+    let hc = worldgen::worldgen_surface_height(cx as i32, z, seed);
+    // debug_spawn_creature_at marks the creature Scripted (ignores the player),
+    // so spawn a plain creature via the hostile hook and befriend it: Pet AI.
+    let idx = w.debug_spawn_hostile_at(cx, hc as f32 + 1.0, z as f32 + 0.5);
+    w.debug_make_pet(idx); // real Pet AI: follows the player
+
+
+    let wrapped = |a: f32, b: f32| {
+        let d = (a - b).rem_euclid(WRAP as f32);
+        d.min(WRAP as f32 - d)
+    };
+    let (sx, _sy, sz) = w.debug_creature_pos(idx);
+    let d0 = wrapped(sx, px).hypot(sz - (z as f32 + 0.5));
+    for _ in 0..400 {
+        w.update(&zero, 0.05);
+    }
+    let (ex, _ey, ez) = w.debug_creature_pos(idx);
+    let d1 = wrapped(ex, px).hypot(ez - (z as f32 + 0.5));
+    assert!(
+        d1 < d0 - 4.0,
+        "pet did not close the gap across the seam (start {d0:.1}, end {d1:.1})"
+    );
+}

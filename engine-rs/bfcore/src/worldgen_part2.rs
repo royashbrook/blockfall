@@ -5,7 +5,11 @@
 // ---------------------------------------------------------------------------
 // Decoration constants
 // ---------------------------------------------------------------------------
-const TREE_CELL_SIZE: i32 = 6;
+// #179: 6 -> 4 so the tree cell grid divides WORLD_PERIOD (8192 cells across
+// the torus). Per-cell probabilities below were rescaled by (4/6)^2 so the
+// trees-per-area density in every biome is unchanged.
+const TREE_CELL_SIZE: i32 = 4;
+const TREE_CELL_COUNT: i32 = WORLD_PERIOD / TREE_CELL_SIZE; // 8192
 
 const CANOPY_ROUND: i32 = 0;
 const CANOPY_TALL: i32 = 1;
@@ -21,10 +25,15 @@ const TRUNK_MAX: i32 = 12;
 
 const CANOPY_MAX_REACH_XZ: i32 = 4;
 
-const TREE_PROB_THRESH_DEFAULT: u64 = 12910;
-const TREE_PROB_THRESH_FOREST: u64 = 51773;
-const TREE_PROB_THRESH_SNOWY: u64 = 5530;
-const TREE_PROB_THRESH_SWAMP: u64 = 7373;
+// #179: rescaled from the 6-block cell values (12910 / 51773 / 5530 / 7373)
+// by (4/6)^2 so density per area is preserved with the 4-block cell.
+const TREE_PROB_THRESH_DEFAULT: u64 = 5738;
+const TREE_PROB_THRESH_FOREST: u64 = 23010;
+const TREE_PROB_THRESH_SNOWY: u64 = 2458;
+const TREE_PROB_THRESH_SWAMP: u64 = 3277;
+// Any prob at/above the largest threshold is a no-tree cell in EVERY biome, so
+// we can reject before the (comparatively expensive) voronoi biome lookup.
+const TREE_PROB_THRESH_MAX: u64 = TREE_PROB_THRESH_FOREST;
 
 const TREE_SEED_MIX: u64 = 0xD7C0DECAF00D1234;
 const PLANT_SEED_MIX: u64 = 0xB16B00B5CAFE5EED;
@@ -91,7 +100,16 @@ const BRANCH_DIRS: [[i32; 2]; 8] = [
 
 fn tree_for_cell(cell_cx: i32, cell_cz: i32, seed: u64) -> TreeDesc {
     let tseed = fmix64(seed ^ TREE_SEED_MIX);
-    let h = hash2(cell_cx, cell_cz, tseed);
+    // #179: hash on the canonical cell so the tree grid is periodic; the cell
+    // origin (and therefore root position) stays in the caller's frame.
+    let h = hash2(wrap_cell(cell_cx, TREE_CELL_COUNT), wrap_cell(cell_cz, TREE_CELL_COUNT), tseed);
+
+    let prob = h & 0xFFFF;
+    // Cheap universal reject before the voronoi lookup: no biome's threshold
+    // exceeds TREE_PROB_THRESH_MAX, so this cell is treeless in every biome.
+    if prob >= TREE_PROB_THRESH_MAX {
+        return NO_TREE;
+    }
 
     let cell_origin_x = cell_cx * TREE_CELL_SIZE;
     let cell_origin_z = cell_cz * TREE_CELL_SIZE;
@@ -110,14 +128,15 @@ fn tree_for_cell(cell_cx: i32, cell_cz: i32, seed: u64) -> TreeDesc {
         _ => TREE_PROB_THRESH_DEFAULT,
     };
 
-    let prob = h & 0xFFFF;
     if prob >= thresh {
         return NO_TREE;
     }
 
     let h2 = fmix64(h ^ 0x1234567890ABCDEF);
-    let off_x = 1 + ((h2 >> 0) & 0x5) as i32;
-    let off_z = 1 + ((h2 >> 8) & 0x5) as i32;
+    // #179: offsets confined to the (smaller) cell so a root never leaves its
+    // cell and the placement scan window always covers every reaching canopy.
+    let off_x = ((h2 >> 0) & 0x3) as i32;
+    let off_z = ((h2 >> 8) & 0x3) as i32;
 
     let trunk_h: i32;
     let canopy_shape: i32;
@@ -576,7 +595,9 @@ fn keep_leaf_voxel(leaf_hash: u64, sparse: i32, wlx: i32, wly: i32, wlz: i32, dx
     if rxz <= 1 {
         return true;
     }
-    let vh = hash3(wlx, wly, wlz, leaf_hash);
+    // #179: canonical voxel coords so a canopy straddling the seam keeps the
+    // same leaves viewed from either side.
+    let vh = hash3(wrap_world(wlx), wly, wrap_world(wlz), leaf_hash);
     let r = vh & 0xFF;
     let thr: u64 = if sparse != 0 { 98 } else { 46 };
     r >= thr

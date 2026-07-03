@@ -174,6 +174,14 @@ impl<'c> World<'c> {
             }
         }
 
+        // #179 looping world: canonicalize the player onto the torus AFTER all
+        // movement/collision for this tick (collision reads canonicalize block
+        // coords themselves, so a transiently out-of-range pos is safe). From
+        // here on every consumer (streaming, chunk math, saves) sees x/z in
+        // [0, WORLD_PERIOD).
+        self.pos.x = Self::wrap_pos_f(self.pos.x);
+        self.pos.z = Self::wrap_pos_f(self.pos.z);
+
         // Stream as the player crosses chunk boundaries.
         let pc = Self::to_chunk(IVec3 {
             x: Self::ifloor(self.pos.x),

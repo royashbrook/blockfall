@@ -227,8 +227,14 @@ impl<'c> World<'c> {
             return;
         }
 
-        let old_cx0 = self.shadow.have_cx0;
-        let old_cz0 = self.shadow.have_cz0;
+        // #179: compare windows at their NEAREST IMAGE on the torus. When the
+        // player crosses the world seam the raw origin jumps by ~WRAP_CHUNKS,
+        // but the canonical content of the window barely moves; re-framing the
+        // old origin next to the new one turns that jump into the usual 1-chunk
+        // incremental scroll (the wrap-addressed buffer is frame independent
+        // because its dims divide the world period).
+        let old_cx0 = cx0 - Self::wrap_signed_chunk(cx0 - self.shadow.have_cx0);
+        let old_cz0 = cz0 - Self::wrap_signed_chunk(cz0 - self.shadow.have_cz0);
         let moved = old_cx0 != cx0 || old_cz0 != cz0;
 
         if !moved && self.shadow.refill_cols.is_empty() {
@@ -298,6 +304,11 @@ impl<'c> World<'c> {
         if !self.shadow.refill_cols.is_empty() {
             let cols: Vec<(i32, i32)> = self.shadow.refill_cols.drain().collect();
             for (cx, cz) in cols {
+                // #179: refill keys are canonical chunk coords; map each into
+                // the window's frame (which may be negative or past the seam)
+                // before the bounds test.
+                let cx = cx0 + (cx - cx0).rem_euclid(WRAP_CHUNKS);
+                let cz = cz0 + (cz - cz0).rem_euclid(WRAP_CHUNKS);
                 if cx < cx0 || cx >= cx0 + 2 * rc || cz < cz0 || cz >= cz0 + 2 * rc {
                     continue;
                 }

@@ -27,6 +27,45 @@ pub type BlockId = u16;
 pub const K_CHUNK_DIM: i32 = 16; // bfcore::types::CHUNK_DIM
 pub const K_COLUMN_MIN_Y: i32 = -512; // contract/blockcore_interfaces.hpp kColumnMinY
 
+// ---------------------------------------------------------------------------
+// Looping world (#179, epic #173): the world is a TORUS in x/z with period
+// WORLD_PERIOD blocks. Every pure function of a world column canonicalizes its
+// x/z inputs (or its lattice cell indices) so that f(wx + WORLD_PERIOD) == f(wx)
+// EXACTLY, byte for byte. The period is a power of two so wrapping is a bitmask
+// and every noise/cell lattice can be made to close on itself: all noise base
+// frequencies are expressed as an integer lattice period (cells per world
+// revolution) and every cell size divides WORLD_PERIOD.
+// ---------------------------------------------------------------------------
+pub const WORLD_PERIOD: i32 = 32768; // 2^15 blocks around the torus (x and z)
+pub const WORLD_PERIOD_CHUNKS: i32 = WORLD_PERIOD / K_CHUNK_DIM; // 2048 chunks
+
+/// Canonicalize a world x/z coordinate into [0, WORLD_PERIOD). Bitmask: the
+/// period is a power of two, so this is exact for negatives too.
+#[inline]
+pub const fn wrap_world(v: i32) -> i32 {
+    v & (WORLD_PERIOD - 1)
+}
+
+/// Canonicalize a float world x/z coordinate into [0, WORLD_PERIOD).
+#[inline]
+fn wrap_world_f(v: f32) -> f32 {
+    v.rem_euclid(WORLD_PERIOD as f32)
+}
+
+/// Canonicalize a lattice cell index into [0, count). Used to wrap the HASH
+/// input of every cell system; cell geometry stays in the caller's frame so
+/// placement math near the seam keeps working on raw (out-of-range) coords.
+#[inline]
+fn wrap_cell(c: i32, count: i32) -> i32 {
+    // Fast path: canonical inputs are already in range (the hot generate()
+    // path wraps its chunk up front), so skip the integer division.
+    if c >= 0 && c < count {
+        c
+    } else {
+        c.rem_euclid(count)
+    }
+}
+
 pub use crate::types::ChunkCoord;
 
 /// Minimal chunk sink. A real bfcore PaletteChunk satisfies the same get/set
@@ -127,6 +166,8 @@ const SNOW_LINE: i32 = 32;
 const ROCK_LINE: i32 = 16;
 const CAVE_THRESH: f32 = 0.65;
 const CAVE_SURFACE_MARGIN: i32 = 6;
+// #179: cave fbm3 base lattice period (2048 cells = the old 1/16 frequency).
+const CAVE_NOISE_PERIOD: i32 = 2048;
 
 // ---------------------------------------------------------------------------
 // Hash primitives — Wang/murmur-inspired 64-bit mixes
@@ -183,9 +224,14 @@ fn ifloor(v: f32) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
-// 2D value noise: bilinearly interpolated hash lattice
+// 2D value noise: bilinearly interpolated hash lattice.
+//
+// `period` is the number of lattice cells across one world revolution: the
+// integer lattice index is wrapped mod `period` before hashing, so the noise
+// closes on itself at exactly WORLD_PERIOD blocks. Callers must sample with
+// fx = wx * (period / WORLD_PERIOD) so lattice space and world space agree.
 // ---------------------------------------------------------------------------
-fn value_noise2(fx: f32, fz: f32, seed: u64) -> f32 {
+fn value_noise2(fx: f32, fz: f32, seed: u64, period: i32) -> f32 {
     let x0 = ifloor(fx);
     let z0 = ifloor(fz);
     let x1 = x0 + 1;
@@ -194,18 +240,24 @@ fn value_noise2(fx: f32, fz: f32, seed: u64) -> f32 {
     let tx = smoothstep(fx - x0 as f32);
     let tz = smoothstep(fz - z0 as f32);
 
-    let v00 = h2f(hash2(x0, z0, seed));
-    let v10 = h2f(hash2(x1, z0, seed));
-    let v01 = h2f(hash2(x0, z1, seed));
-    let v11 = h2f(hash2(x1, z1, seed));
+    let x0w = wrap_cell(x0, period);
+    let x1w = wrap_cell(x1, period);
+    let z0w = wrap_cell(z0, period);
+    let z1w = wrap_cell(z1, period);
+
+    let v00 = h2f(hash2(x0w, z0w, seed));
+    let v10 = h2f(hash2(x1w, z0w, seed));
+    let v01 = h2f(hash2(x0w, z1w, seed));
+    let v11 = h2f(hash2(x1w, z1w, seed));
 
     let top = v00 + tx * (v10 - v00);
     let bot = v01 + tx * (v11 - v01);
     top + tz * (bot - top)
 }
 
-// 3D value noise: trilinearly interpolated
-fn value_noise3(fx: f32, fy: f32, fz: f32, seed: u64) -> f32 {
+// 3D value noise: trilinearly interpolated. x/z lattice wraps at `period`
+// (torus axes); y is unbounded and never wraps.
+fn value_noise3(fx: f32, fy: f32, fz: f32, seed: u64, period: i32) -> f32 {
     let x0 = ifloor(fx);
     let x1 = x0 + 1;
     let y0 = ifloor(fy);
@@ -216,6 +268,11 @@ fn value_noise3(fx: f32, fy: f32, fz: f32, seed: u64) -> f32 {
     let tx = smoothstep(fx - x0 as f32);
     let ty = smoothstep(fy - y0 as f32);
     let tz = smoothstep(fz - z0 as f32);
+
+    let x0 = wrap_cell(x0, period);
+    let x1 = wrap_cell(x1, period);
+    let z0 = wrap_cell(z0, period);
+    let z1 = wrap_cell(z1, period);
 
     let c000 = h2f(hash3(x0, y0, z0, seed));
     let c100 = h2f(hash3(x1, y0, z0, seed));
@@ -239,39 +296,47 @@ fn value_noise3(fx: f32, fy: f32, fz: f32, seed: u64) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
-// Fractal Brownian Motion (fBm) — 2D
+// Fractal Brownian Motion (fBm) — 2D.
+//
+// Base frequency is expressed as an integer LATTICE PERIOD (cells per world
+// revolution): freq = base_period / WORLD_PERIOD. Lacunarity is fixed at 2.0
+// so every octave's period stays an integer (period doubles per octave) and
+// the whole fractal closes on the torus exactly.
 // ---------------------------------------------------------------------------
-fn fbm2(wx: f32, wz: f32, seed: u64, octaves: i32, base_freq: f32, lacunarity: f32, persistence: f32) -> f32 {
+fn fbm2(wx: f32, wz: f32, seed: u64, octaves: i32, base_period: i32, persistence: f32) -> f32 {
     let mut val = 0.0f32;
     let mut amp = 1.0f32;
-    let mut freq = base_freq;
+    let mut period = base_period;
+    let mut freq = base_period as f32 / WORLD_PERIOD as f32;
     let mut max_val = 0.0f32;
 
     for o in 0..octaves {
         let oseed = fmix64(seed ^ (o as u64).wrapping_mul(0xABCDEF01234567));
-        val += amp * value_noise2(wx * freq, wz * freq, oseed);
+        val += amp * value_noise2(wx * freq, wz * freq, oseed, period);
         max_val += amp;
         amp *= persistence;
-        freq *= lacunarity;
+        freq *= 2.0;
+        period *= 2;
     }
     val / max_val
 }
 
-// 3D fBm for caves.
-fn fbm3(wx: f32, wy: f32, wz: f32, seed: u64, octaves: i32, base_freq: f32) -> f32 {
+// 3D fBm for caves. Same integer-period convention on the x/z torus axes.
+fn fbm3(wx: f32, wy: f32, wz: f32, seed: u64, octaves: i32, base_period: i32) -> f32 {
     let mut val = 0.0f32;
     let mut amp = 1.0f32;
-    let mut freq = base_freq;
+    let mut period = base_period;
+    let mut freq = base_period as f32 / WORLD_PERIOD as f32;
     let mut max_val = 0.0f32;
-    let lacunarity = 2.0f32;
     let persistence = 0.5f32;
 
     for o in 0..octaves {
         let oseed = fmix64(seed ^ ((o + 7) as u64).wrapping_mul(0xFEDCBA9876543211));
-        val += amp * value_noise3(wx * freq, wy * freq, wz * freq, oseed);
+        val += amp * value_noise3(wx * freq, wy * freq, wz * freq, oseed, period);
         max_val += amp;
         amp *= persistence;
-        freq *= lacunarity;
+        freq *= 2.0;
+        period *= 2;
     }
     val / max_val
 }
@@ -279,9 +344,13 @@ fn fbm3(wx: f32, wy: f32, wz: f32, seed: u64, octaves: i32, base_freq: f32) -> f
 // ---------------------------------------------------------------------------
 // Cave entrance system (#11 / #37)
 // ---------------------------------------------------------------------------
-const ENTRANCE_CELL_SIZE: i32 = 24;
+// #179: 24 -> 32 so the cell grid divides WORLD_PERIOD (1024 cells across the
+// torus). Probability rescaled 115 -> 204 to keep entrances-per-area unchanged
+// (115 * 32^2 / 24^2 ~= 204).
+const ENTRANCE_CELL_SIZE: i32 = 32;
+const ENTRANCE_CELL_COUNT: i32 = WORLD_PERIOD / ENTRANCE_CELL_SIZE; // 1024
 const ENTRANCE_SEED_MIX: u64 = 0xCA4E5EE7E57A4CE5;
-const ENTRANCE_PROB_THRESH: u64 = 115;
+const ENTRANCE_PROB_THRESH: u64 = 204;
 
 const ENTR_POTHOLE: i32 = 0;
 const ENTR_SINKHOLE: i32 = 1;
@@ -320,7 +389,9 @@ fn entrance_floordiv(a: i32, b: i32) -> i32 {
 
 fn entrance_for_cell(ecx: i32, ecz: i32, seed: u64) -> EntranceDesc {
     let eseed = fmix64(seed ^ ENTRANCE_SEED_MIX);
-    let h = hash2(ecx, ecz, eseed);
+    // Hash on the canonical cell so the grid is periodic; geometry (wx/wz below)
+    // stays in the caller's frame so seam-adjacent queries place correctly.
+    let h = hash2(wrap_cell(ecx, ENTRANCE_CELL_COUNT), wrap_cell(ecz, ENTRANCE_CELL_COUNT), eseed);
 
     if (h & 0xFF) >= ENTRANCE_PROB_THRESH {
         return EntranceDesc { wx: 0, wz: 0, shape: 0, floor: 0, radius: 0, half_len: 0, ravine_x: false, present: false };
@@ -394,7 +465,7 @@ fn entrance_depth_in(ed: &EntranceDesc, wx: i32, wz: i32) -> i32 {
             let mut depth = (cap * (half_w - aa)) / half_w;
             let a = if along < 0 { -along } else { along };
             depth -= a / 6;
-            let jh = hash2(wx, wz, 0x9E3779B97F4A7C15);
+            let jh = hash2(wrap_world(wx), wrap_world(wz), 0x9E3779B97F4A7C15);
             depth += (jh % 3) as i32 - 1;
             if depth < 1 {
                 return 0;
@@ -481,7 +552,12 @@ impl Biome {
 struct BiomeParams {
     base_y: f32,
     amp: f32,
-    freq: f32,
+    // #179: base lattice period (cells per world revolution) instead of a raw
+    // frequency, so each biome's detail noise closes on the torus. The
+    // effective frequency is period / WORLD_PERIOD; values were picked as the
+    // nearest integer period to the old frequency (819/32768 ~= 1/40.01 etc),
+    // so the look is unchanged to within a tenth of a percent.
+    period: i32,
     octaves: i32,
     persistence: f32,
 }
@@ -494,13 +570,13 @@ struct BiomeCentre {
 }
 
 const BIOME_PARAMS: [BiomeParams; NUM_BIOMES] = [
-    BiomeParams { base_y: 8.0, amp: 2.0, freq: 1.0 / 128.0, octaves: 2, persistence: 0.40 }, // Plains
-    BiomeParams { base_y: 10.0, amp: 18.0, freq: 1.0 / 40.0, octaves: 4, persistence: 0.55 }, // Forest
-    BiomeParams { base_y: 28.0, amp: 56.0, freq: 1.0 / 40.0, octaves: 5, persistence: 0.62 }, // Mountains
-    BiomeParams { base_y: 7.0, amp: 9.0, freq: 1.0 / 64.0, octaves: 3, persistence: 0.45 }, // Desert
-    BiomeParams { base_y: 8.0, amp: 14.0, freq: 1.0 / 48.0, octaves: 4, persistence: 0.50 }, // Snowy
-    BiomeParams { base_y: 5.0, amp: 1.2, freq: 1.0 / 56.0, octaves: 3, persistence: 0.45 }, // Swamp
-    BiomeParams { base_y: 6.5, amp: 1.0, freq: 1.0 / 96.0, octaves: 2, persistence: 0.40 }, // Beach
+    BiomeParams { base_y: 8.0, amp: 2.0, period: 256, octaves: 2, persistence: 0.40 }, // Plains (1/128)
+    BiomeParams { base_y: 10.0, amp: 18.0, period: 819, octaves: 4, persistence: 0.55 }, // Forest (~1/40)
+    BiomeParams { base_y: 28.0, amp: 56.0, period: 819, octaves: 5, persistence: 0.62 }, // Mountains (~1/40)
+    BiomeParams { base_y: 7.0, amp: 9.0, period: 512, octaves: 3, persistence: 0.45 }, // Desert (1/64)
+    BiomeParams { base_y: 8.0, amp: 14.0, period: 683, octaves: 4, persistence: 0.50 }, // Snowy (~1/48)
+    BiomeParams { base_y: 5.0, amp: 1.2, period: 585, octaves: 3, persistence: 0.45 }, // Swamp (~1/56)
+    BiomeParams { base_y: 6.5, amp: 1.0, period: 341, octaves: 2, persistence: 0.40 }, // Beach (~1/96)
 ];
 
 const BIOME_CENTRES: [BiomeCentre; NUM_BIOMES] = [
@@ -517,12 +593,12 @@ const BIOME_CENTRES: [BiomeCentre; NUM_BIOMES] = [
 // Regional elevation swell
 // ---------------------------------------------------------------------------
 const SWELL_AMP: f32 = 5.0;
-const SWELL_FREQ: f32 = 1.0 / 512.0;
+const SWELL_PERIOD: i32 = 64; // 1/512, unchanged (512 divides WORLD_PERIOD)
 const SWELL_SEED_MIX: u64 = 0x5E11B1057E119A11;
 
 fn regional_swell(fwx: f32, fwz: f32, seed: u64) -> f32 {
     let sseed = fmix64(seed ^ SWELL_SEED_MIX);
-    let n = fbm2(fwx, fwz, sseed, 2, SWELL_FREQ, 2.0, 0.5);
+    let n = fbm2(fwx, fwz, sseed, 2, SWELL_PERIOD, 0.5);
     (n * 2.0 - 1.0) * SWELL_AMP
 }
 
@@ -566,7 +642,7 @@ fn regional_swell(fwx: f32, fwz: f32, seed: u64) -> f32 {
 // many blocks. This amplitude bends the borders well (measured straightness ~0.20
 // un-warped vs ~0.15 here, lower = more natural) while keeping coasts roughly put.
 // ---------------------------------------------------------------------------
-const WARP_FREQ: f32 = 1.0 / 70.0; // finer than BIOME_CELL so fingers fan in many directions
+const WARP_PERIOD: i32 = 468; // ~1/70, finer than BIOME_CELL so fingers fan in many directions
 // #172: scaled with BIOME_CELL (24 at cell 132). Bigger cells with the old
 // amplitude read as bigger squares; doubling the displacement keeps the border
 // waviness proportional to the cell size, and 48 is still well under
@@ -577,13 +653,18 @@ const WARP_SEED_MIX_Z: u64 = 0x11A57D03E11D57A6;
 
 // Deterministic warp offset (in blocks) for a world column. Added to (fwx, fwz)
 // before any biome / climate lookup so the boundaries become wavy and natural.
+// #179: the offset is sampled at the CANONICAL coordinate (so twins across the
+// seam get bit-identical offsets) but applied to the caller-frame coordinate,
+// so downstream geometry (Voronoi distances etc) stays in the caller's frame.
 #[inline]
 fn domain_warp(fwx: f32, fwz: f32, seed: u64) -> (f32, f32) {
     let xseed = fmix64(seed ^ WARP_SEED_MIX_X);
     let zseed = fmix64(seed ^ WARP_SEED_MIX_Z);
+    let cwx = wrap_world_f(fwx);
+    let cwz = wrap_world_f(fwz);
     // fbm2 returns [0,1]; centre to [-1,1] so the offset is symmetric (no net drift).
-    let nx = fbm2(fwx, fwz, xseed, 2, WARP_FREQ, 2.0, 0.5) * 2.0 - 1.0;
-    let nz = fbm2(fwx, fwz, zseed, 2, WARP_FREQ, 2.0, 0.5) * 2.0 - 1.0;
+    let nx = fbm2(cwx, cwz, xseed, 2, WARP_PERIOD, 0.5) * 2.0 - 1.0;
+    let nz = fbm2(cwx, cwz, zseed, 2, WARP_PERIOD, 0.5) * 2.0 - 1.0;
     (fwx + nx * WARP_AMP, fwz + nz * WARP_AMP)
 }
 
@@ -601,6 +682,9 @@ fn climate_spread(v: f32) -> f32 {
 fn sample_climate(wx: i32, wz: i32, seed: u64) -> (f32, f32) {
     let tseed = fmix64(seed ^ 0xB10E5EED00000001);
     let mseed = fmix64(seed ^ 0xB10E5EED00000002);
+    // #179: canonicalize first so twins across the seam are bit-identical.
+    let wx = wrap_world(wx);
+    let wz = wrap_world(wz);
     // Domain warp the sample point so the climate contours (and therefore the
     // biome-blend weights that drive terrain height) follow the same wavy
     // boundary as the discrete Voronoi biome. Height and biome stay in agreement.
@@ -609,10 +693,10 @@ fn sample_climate(wx: i32, wz: i32, seed: u64) -> (f32, f32) {
     // (1/216 before, 1/72 originally) so each biome covers a much larger
     // contiguous area and has its own identity. Pairs with the larger
     // BIOME_CELL below; keep the two in step or the Voronoi cells and the
-    // climate contours drift apart.
-    const BIOME_NOISE_FREQ: f32 = 1.0 / 432.0;
-    let temp = climate_spread(fbm2(fwx, fwz, tseed, 3, BIOME_NOISE_FREQ, 2.0, 0.5));
-    let moist = climate_spread(fbm2(fwx, fwz, mseed, 3, BIOME_NOISE_FREQ, 2.0, 0.5));
+    // climate contours drift apart. #179: period 76 ~= the old 1/432.
+    const BIOME_NOISE_PERIOD: i32 = 76;
+    let temp = climate_spread(fbm2(fwx, fwz, tseed, 3, BIOME_NOISE_PERIOD, 0.5));
+    let moist = climate_spread(fbm2(fwx, fwz, mseed, 3, BIOME_NOISE_PERIOD, 0.5));
     (temp, moist)
 }
 
@@ -702,7 +786,10 @@ fn biome_weights(wx: i32, wz: i32, seed: u64) -> [f32; NUM_BIOMES] {
 // ---------------------------------------------------------------------------
 // Voronoi biome map (#6)
 // ---------------------------------------------------------------------------
-const BIOME_CELL: i32 = 264; // #172: biomes ~4x the area (was 132, originally 44)
+// #172: biomes ~4x the area (was 132, originally 44). #179: 264 -> 256 so the
+// biome cell grid divides WORLD_PERIOD (128 cells across the torus).
+const BIOME_CELL: i32 = 256;
+const BIOME_CELL_COUNT: i32 = WORLD_PERIOD / BIOME_CELL; // 128
 const VORONOI_SEED_MIX: u64 = 0x901A0701B10E5EED;
 
 #[inline]
@@ -733,16 +820,25 @@ fn voronoi_site(cx: i32, cz: i32, seed: u64) -> VoronoiSite {
     thread_local! {
         static MEMO: RefCell<HashMap<(i32, i32, u64), VoronoiSite>> = RefCell::new(HashMap::new());
     }
-    let key = (cx, cz, seed);
+    // #179: the memo and the hash both key on the CANONICAL cell, so a cell and
+    // its torus twin share one entry and identical site data. The stored site
+    // position is in the canonical frame; translate it back into the caller's
+    // frame below so nearest-site distance math keeps working across the seam.
+    // The translation offset is a multiple of WORLD_PERIOD, exact in f32.
+    let cxw = wrap_cell(cx, BIOME_CELL_COUNT);
+    let czw = wrap_cell(cz, BIOME_CELL_COUNT);
+    let key = (cxw, czw, seed);
+    let dx = ((cx - cxw) * BIOME_CELL) as f32;
+    let dz = ((cz - czw) * BIOME_CELL) as f32;
     if let Some(v) = MEMO.with(|m| m.borrow().get(&key).copied()) {
-        return v;
+        return VoronoiSite { sx: v.sx + dx, sz: v.sz + dz, ..v };
     }
     let vseed = fmix64(seed ^ VORONOI_SEED_MIX);
-    let h = hash2(cx, cz, vseed);
+    let h = hash2(cxw, czw, vseed);
     let jx = ((((h >> 0) & 0xFFFF) as f32) / 65535.0 - 0.5) * 0.66;
     let jz = ((((h >> 16) & 0xFFFF) as f32) / 65535.0 - 0.5) * 0.66;
-    let sx = (cx as f32 + 0.5 + jx) * (BIOME_CELL as f32);
-    let sz = (cz as f32 + 0.5 + jz) * (BIOME_CELL as f32);
+    let sx = (cxw as f32 + 0.5 + jx) * (BIOME_CELL as f32);
+    let sz = (czw as f32 + 0.5 + jz) * (BIOME_CELL as f32);
     let (temp, moist) = sample_climate((sx + 0.5) as i32, (sz + 0.5) as i32, seed);
     let raw_biome = classify_climate(temp, moist);
     let v = VoronoiSite { sx, sz, temp, moist, raw_biome };
@@ -753,7 +849,7 @@ fn voronoi_site(cx: i32, cz: i32, seed: u64) -> VoronoiSite {
         }
         mm.insert(key, v);
     });
-    v
+    VoronoiSite { sx: v.sx + dx, sz: v.sz + dz, ..v }
 }
 
 // Final biome of a Voronoi cell, with the coastal beach reclass applied.
@@ -767,11 +863,12 @@ fn voronoi_site_biome(cx: i32, cz: i32, seed: u64) -> i32 {
     thread_local! {
         static MEMO: RefCell<HashMap<(i32, i32, u64), i32>> = RefCell::new(HashMap::new());
     }
-    let key = (cx, cz, seed);
+    // #179: canonical memo key; the biome value is frame-independent.
+    let key = (wrap_cell(cx, BIOME_CELL_COUNT), wrap_cell(cz, BIOME_CELL_COUNT), seed);
     if let Some(b) = MEMO.with(|m| m.borrow().get(&key).copied()) {
         return b;
     }
-    let site = voronoi_site(cx, cz, seed);
+    let site = voronoi_site(key.0, key.1, seed);
     let mut biome = site.raw_biome;
     if biome == Biome::Beach as i32
         && surface_height_raw_at((site.sx + 0.5) as i32, (site.sz + 0.5) as i32, seed) > (SEA_LEVEL + 3) as f32
@@ -795,6 +892,9 @@ fn voronoi_biome(wx: i32, wz: i32, seed: u64) -> Biome {
     // eroded instead of straight. Derive the search cell from the WARPED point so
     // the 3x3 neighbour window stays centred on it (WARP_AMP is well under
     // BIOME_CELL, so the true nearest site is always inside the window).
+    // #179: canonicalize first so twins are bit-identical.
+    let wx = wrap_world(wx);
+    let wz = wrap_world(wz);
     let (fwx, fwz) = domain_warp(wx as f32, wz as f32, seed);
     let cx = voronoi_floordiv(fwx.floor() as i32, BIOME_CELL);
     let cz = voronoi_floordiv(fwz.floor() as i32, BIOME_CELL);
@@ -845,7 +945,9 @@ const BIOME_SEED_OFFSETS: [u64; NUM_BIOMES] = [
 // smooth function of position, so it flows through the Lipschitz limiter cleanly
 // and never makes a seam cliff.
 // ---------------------------------------------------------------------------
-const CONTINENT_FREQ: f32 = 1.0 / 1100.0; // very low freq => big continents/oceans
+// #179: ~1/1100 -> 1/1024 (period 32) so the continent lattice divides the
+// torus. Slightly bigger continents; visual impact is minor at this scale.
+const CONTINENT_PERIOD: i32 = 32;
 const CONTINENT_SEED_MIX: u64 = 0xC0117E17A15C0DE1;
 
 // Shore bias: added to raw [-1,1] so land slightly outweighs ocean. Higher =>
@@ -854,8 +956,12 @@ const CONTINENT_SHORE_BIAS: f32 = 0.10;
 
 fn continentalness(fwx: f32, fwz: f32, seed: u64) -> f32 {
     let cseed = fmix64(seed ^ CONTINENT_SEED_MIX);
+    // #179: canonicalize so all callers (some pass raw seam-adjacent coords)
+    // get bit-identical values for torus twins.
+    let fwx = wrap_world_f(fwx);
+    let fwz = wrap_world_f(fwz);
     // 3 octaves so coastlines wiggle a little instead of being perfect blobs.
-    let c = fbm2(fwx, fwz, cseed, 3, CONTINENT_FREQ, 2.0, 0.5);
+    let c = fbm2(fwx, fwz, cseed, 3, CONTINENT_PERIOD, 0.5);
     (c * 2.0 - 1.0) + CONTINENT_SHORE_BIAS
 }
 
@@ -911,14 +1017,16 @@ fn is_ocean_column(fwx: f32, fwz: f32, seed: u64) -> bool {
 // the ocean instead of dead-ending on a plateau. Inland, a channel that sits in a
 // local low fills as a lake.
 // ---------------------------------------------------------------------------
-const RIVER_FREQ: f32 = 1.0 / 260.0; // long, winding rivers
+const RIVER_PERIOD: i32 = 126; // ~1/260: long, winding rivers
 const RIVER_HALFW: f32 = 0.030; // half-width of the ridge band (river width)
 const RIVER_SEED_MIX: u64 = 0x515E12D32C0DE011;
 
 // 0..1 across the channel (1 at the centre line, 0 at/beyond the bank).
 fn river_channel_t(fwx: f32, fwz: f32, seed: u64) -> f32 {
     let rseed = fmix64(seed ^ RIVER_SEED_MIX);
-    let n = fbm2(fwx, fwz, rseed, 3, RIVER_FREQ, 2.0, 0.5);
+    let fwx = wrap_world_f(fwx);
+    let fwz = wrap_world_f(fwz);
+    let n = fbm2(fwx, fwz, rseed, 3, RIVER_PERIOD, 0.5);
     // Distance from the ridge (mid value 0.5); the river runs where this is small.
     let d = (n - 0.5).abs();
     if d >= RIVER_HALFW {
@@ -948,7 +1056,7 @@ fn river_carve(fwx: f32, fwz: f32, seed: u64, land_h: f32) -> f32 {
 // crest-to-trough swing at DESERT_DUNE_FREQ, plus the fine ripple noise and
 // height_detail that already exist).
 const DESERT_DUNE_SEED_MIX: u64 = 0xD0E5D0E5D0E5A0D1;
-const DESERT_DUNE_FREQ: f32 = 1.0 / 48.0;
+const DESERT_DUNE_PERIOD: i32 = 683; // ~1/48
 
 // #171: smooth desert-region field. The desert LOOK (sand surface, cactus,
 // desert decorations) follows the discrete Voronoi region, and the Voronoi
@@ -967,6 +1075,11 @@ const DESERT_DUNE_FREQ: f32 = 1.0 / 48.0;
 const DESERT_EDGE_BAND: f32 = 40.0;
 
 fn desert_region_t(wx: i32, wz: i32, seed: u64) -> f32 {
+    // #179: canonicalize so twins are bit-identical; the warped-frame site
+    // search below stays consistent because voronoi_site translates sites
+    // into whatever frame the query cell is in.
+    let wx = wrap_world(wx);
+    let wz = wrap_world(wz);
     let (fwx, fwz) = domain_warp(wx as f32, wz as f32, seed);
     let cx = voronoi_floordiv(fwx.floor() as i32, BIOME_CELL);
     let cz = voronoi_floordiv(fwz.floor() as i32, BIOME_CELL);
@@ -1000,6 +1113,10 @@ fn desert_region_t(wx: i32, wz: i32, seed: u64) -> f32 {
 }
 
 fn surface_height_raw(wx: i32, wz: i32, seed: u64, weights: &[f32; NUM_BIOMES]) -> f32 {
+    // #179: canonicalize once here; every noise field below then computes on
+    // identical inputs for torus twins (bit-identical heights).
+    let wx = wrap_world(wx);
+    let wz = wrap_world(wz);
     let fwx = wx as f32;
     let fwz = wz as f32;
 
@@ -1023,11 +1140,14 @@ fn surface_height_raw(wx: i32, wz: i32, seed: u64, weights: &[f32; NUM_BIOMES]) 
         let p = &BIOME_PARAMS[i];
         let bseed = fmix64(seed ^ BIOME_SEED_OFFSETS[i]);
 
-        let mut n = fbm2(fwx, fwz, bseed, p.octaves, p.freq, 2.0, p.persistence);
+        let mut n = fbm2(fwx, fwz, bseed, p.octaves, p.period, p.persistence);
 
         if Biome::from_index(i as i32) == Biome::Desert {
+            // #179: ~1/12 as an integer lattice period so the ripple closes.
+            const RIPPLE_PERIOD: i32 = 2731;
+            const RIPPLE_FREQ: f32 = RIPPLE_PERIOD as f32 / WORLD_PERIOD as f32;
             let ripple_seed = fmix64(seed ^ 0xDEA0D5A0D5A0D5A0);
-            let ripple = value_noise2(fwx * (1.0 / 12.0), fwz * (1.0 / 12.0), ripple_seed);
+            let ripple = value_noise2(fwx * RIPPLE_FREQ, fwz * RIPPLE_FREQ, ripple_seed, RIPPLE_PERIOD);
             n += ripple * 2.0 / (p.amp * 2.0 + 0.001);
             if n > 1.0 {
                 n = 1.0;
@@ -1082,7 +1202,7 @@ fn surface_height_raw(wx: i32, wz: i32, seed: u64, weights: &[f32; NUM_BIOMES]) 
     let desert_t = desert_w.max(desert_region_t(wx, wz, seed));
     if desert_t > 1e-4 {
         let dune_seed = fmix64(seed ^ DESERT_DUNE_SEED_MIX);
-        let dune = fbm2(fwx, fwz, dune_seed, 2, DESERT_DUNE_FREQ, 2.0, 0.5);
+        let dune = fbm2(fwx, fwz, dune_seed, 2, DESERT_DUNE_PERIOD, 0.5);
         // Band: SEA_LEVEL+8 at the dune troughs up to SEA_LEVEL+14 on crests.
         let dune_target = (SEA_LEVEL as f32) + 8.0 + dune * 6.0;
         let damp = desert_t * (1.0 - ocean_t);
@@ -1120,7 +1240,11 @@ fn surface_height_raw_at(wx: i32, wz: i32, seed: u64) -> f32 {
 // high-frequency detail octave so quantization to whole blocks follows the
 // noise contours instead of locking onto the anchor grid.
 // ---------------------------------------------------------------------------
-const SEAM_ANCHOR_STEP: i32 = 12;
+// #179: 12 -> 16 so the anchor lattice divides WORLD_PERIOD (2048 anchors
+// across the torus). A bonus: the bicubic parameter t = (wx mod 16)/16 is now
+// exact in f32, so a column queried from either side of the seam reconstructs
+// the identical height bit for bit.
+const SEAM_ANCHOR_STEP: i32 = 16;
 const SEAM_ANCHOR_RADIUS: i32 = 5;
 
 #[inline]
@@ -1168,7 +1292,12 @@ const HEIGHT_DETAIL_SEED_MIX: u64 = 0x5EAF_00D5_0F7C_0A57;
 #[inline]
 fn height_detail(wx: i32, wz: i32, seed: u64) -> f32 {
     let dseed = fmix64(seed ^ HEIGHT_DETAIL_SEED_MIX);
-    (fbm2(wx as f32, wz as f32, dseed, 2, 1.0 / 13.0, 2.6, 0.55) * 2.0 - 1.0) * 1.5
+    // #179: ~1/13 as period 2521; lacunarity was 2.6 which cannot close on the
+    // torus, so fbm2's fixed 2.0 applies (second octave ~1/6.5 instead of 1/5;
+    // this is the +-1.5 block fine relief, visual impact is negligible).
+    let wx = wrap_world(wx);
+    let wz = wrap_world(wz);
+    (fbm2(wx as f32, wz as f32, dseed, 2, 2521, 0.55) * 2.0 - 1.0) * 1.5
 }
 
 // Slow on-demand path: raw anchor heights computed directly. Matches the cached
@@ -1297,6 +1426,11 @@ fn shared_column_data(wx_min: i32, wz_min: i32, seed: u64) -> std::sync::Arc<Sha
     const CAP: usize = 512;
     static MEMO: OnceLock<Mutex<HashMap<(u64, i32, i32), Arc<SharedColumnData>>>> = OnceLock::new();
     let memo = MEMO.get_or_init(|| Mutex::new(HashMap::new()));
+    // #179: canonical key AND canonical build frame, so torus-twin chunks share
+    // one entry and the cached lattice frames line up with generate()'s own
+    // canonicalized chunk coordinate.
+    let wx_min = wrap_world(wx_min);
+    let wz_min = wrap_world(wz_min);
     let key = (seed, wx_min, wz_min);
     if let Some(hit) = memo.lock().unwrap().get(&key) {
         return hit.clone();

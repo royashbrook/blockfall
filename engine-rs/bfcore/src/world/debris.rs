@@ -215,7 +215,12 @@ impl<'c> World<'c> {
             d.age += dt;
 
             // Magnet + contact collect, once the burst has had time to read.
-            let to = player - d.pos;
+            // #179: nearest-image so fragments across the seam still magnet.
+            let to = V3::new(
+                Self::wrap_signed_f(player.x - d.pos.x),
+                player.y - d.pos.y,
+                Self::wrap_signed_f(player.z - d.pos.z),
+            );
             let dist = dot(to, to).sqrt();
             if d.age >= DEBRIS_ARM_DELAY && dist < DEBRIS_MAGNET_R {
                 if dist < DEBRIS_COLLECT_R {
@@ -311,6 +316,7 @@ impl<'c> World<'c> {
                 }
             }
 
+            d.pos = Self::wrap_v3_xz(d.pos);
             self.debris[i] = d;
             i += 1;
         }

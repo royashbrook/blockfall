@@ -314,8 +314,10 @@ impl<'c> World<'c> {
         for _ in 0..128 {
             if self.block_at(v) != AIR {
                 self.has_target = true;
-                self.target = v;
-                self.place = prev;
+                // #179: canonical voxels so chest keys / edits keyed off the
+                // target are unique when the ray crosses the world seam.
+                self.target = Self::canon_block(v);
+                self.place = Self::canon_block(prev);
                 return;
             }
             prev = v;

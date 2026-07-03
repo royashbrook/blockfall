@@ -31,7 +31,16 @@ impl<'c> World<'c> {
             if c.hit_flash > 0.0 {
                 c.hit_flash -= dt;
             }
-            let to_player = self.pos - c.pos;
+            // #179: nearest-image delta so AI seeks/flees across the world seam.
+            let to_player = V3::new(
+                Self::wrap_signed_f(self.pos.x - c.pos.x),
+                self.pos.y - c.pos.y,
+                Self::wrap_signed_f(self.pos.z - c.pos.z),
+            );
+            // Player position expressed in the creature's frame (may be just
+            // outside [0, WORLD_PERIOD) when the pair straddles the seam).
+            let ppx = c.pos.x + to_player.x;
+            let ppz = c.pos.z + to_player.z;
             if c.aquatic {
                 if c.wander <= 0.0 {
                     c.yaw = self.rand01() * 6.2831853;
@@ -65,6 +74,7 @@ impl<'c> World<'c> {
                 {
                     c.pos.y -= 0.5 * dt * 4.0;
                 }
+                c.pos = Self::wrap_v3_xz(c.pos);
                 self.creatures[i] = c;
                 continue;
             }
@@ -114,7 +124,7 @@ impl<'c> World<'c> {
             c.ai.tick_repath();
             let mut seed = self.rng;
             let dec = cai::decide(
-                &mut c.ai, eff_temper, c.pos.x, c.pos.z, self.pos.x, self.pos.z, xzd, dt, &mut seed,
+                &mut c.ai, eff_temper, c.pos.x, c.pos.z, ppx, ppz, xzd, dt, &mut seed,
             );
             self.rng = seed;
             // Seeking hostiles path around obstacles with throttled, bounded A*.
@@ -136,7 +146,7 @@ impl<'c> World<'c> {
                     desired_heading = h;
                 } else {
                     // Path exhausted but not yet in melee range: steer straight in.
-                    desired_heading = (self.pos.x - c.pos.x).atan2(self.pos.z - c.pos.z);
+                    desired_heading = to_player.x.atan2(to_player.z);
                 }
             } else {
                 c.ai.path.clear();
@@ -255,6 +265,8 @@ impl<'c> World<'c> {
             } else {
                 None
             };
+            // #179: keep the stored position canonical on the torus.
+            c.pos = Self::wrap_v3_xz(c.pos);
             let cell_xz = (Self::ifloor(c.pos.x), Self::ifloor(c.pos.z));
             self.creatures[i] = c;
             // #117 creatures leave prints too: a grounded land creature on fresh snow
@@ -287,8 +299,8 @@ impl<'c> World<'c> {
                     let b = &self.creatures[j];
                     (b.pos.x, b.pos.z, b.pos.y, b.scale)
                 };
-                let dx = bx0 - ax0;
-                let dz = bz0 - az0;
+                let dx = Self::wrap_signed_f(bx0 - ax0);
+                let dz = Self::wrap_signed_f(bz0 - az0);
                 let d2 = dx * dx + dz * dz;
                 let mut min_d = (ascale + bscale) * 0.45;
                 if min_d < 0.7 {
@@ -311,12 +323,12 @@ impl<'c> World<'c> {
                 let bx = bx0 + nx * push;
                 let bz = bz0 + nz * push;
                 if !self.collide_solid(Self::ifloor(ax), Self::ifloor(ay0), Self::ifloor(az)) {
-                    self.creatures[i].pos.x = ax;
-                    self.creatures[i].pos.z = az;
+                    self.creatures[i].pos.x = Self::wrap_pos_f(ax);
+                    self.creatures[i].pos.z = Self::wrap_pos_f(az);
                 }
                 if !self.collide_solid(Self::ifloor(bx), Self::ifloor(by0), Self::ifloor(bz)) {
-                    self.creatures[j].pos.x = bx;
-                    self.creatures[j].pos.z = bz;
+                    self.creatures[j].pos.x = Self::wrap_pos_f(bx);
+                    self.creatures[j].pos.z = Self::wrap_pos_f(bz);
                 }
             }
         }
@@ -335,8 +347,8 @@ impl<'c> World<'c> {
             if hostile && survival {
                 continue;
             }
-            let dx = cx0 - px;
-            let dz = cz0 - pz;
+            let dx = Self::wrap_signed_f(cx0 - px);
+            let dz = Self::wrap_signed_f(cz0 - pz);
             let d2 = dx * dx + dz * dz;
             let min_d = 0.85 + cscale * 0.45;
             if d2 >= min_d * min_d {
@@ -350,8 +362,8 @@ impl<'c> World<'c> {
             let cx = cx0 + nx * push;
             let cz = cz0 + nz * push;
             if !self.collide_solid(Self::ifloor(cx), Self::ifloor(cy0), Self::ifloor(cz)) {
-                self.creatures[i].pos.x = cx;
-                self.creatures[i].pos.z = cz;
+                self.creatures[i].pos.x = Self::wrap_pos_f(cx);
+                self.creatures[i].pos.z = Self::wrap_pos_f(cz);
             }
         }
     }

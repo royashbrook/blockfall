@@ -57,6 +57,8 @@ mod actions;
 mod player_update;
 mod lifecycle;
 
+pub(crate) use self::coords::WRAP_CHUNKS;
+
 use self::chests::ChestData;
 use self::debris::Debris;
 use self::falling::FallingBlock;

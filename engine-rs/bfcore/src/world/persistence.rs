@@ -215,6 +215,10 @@ impl<'c> World<'c> {
                 }
             }
         }
+        // #179: canonicalize loaded positions onto the torus (pre-wrap saves
+        // with coords already in [0, WORLD_PERIOD) are untouched).
+        self.pos.x = Self::wrap_pos_f(self.pos.x);
+        self.pos.z = Self::wrap_pos_f(self.pos.z);
         self.spawn = self.pos;
         if self.health <= 0.0 {
             self.health = 20.0;
@@ -233,7 +237,8 @@ impl<'c> World<'c> {
                     continue;
                 }
                 if let Some(ch) = PaletteChunk::deserialize(&bytes) {
-                    let cc = ch.coord();
+                    // #179: canonical key (old saves may hold negative coords).
+                    let cc = Self::canon_chunk(ch.coord());
                     self.store.insert(ch);
                     self.mark_dirty(cc);
                     self.edited.insert(cc);
@@ -263,7 +268,7 @@ impl<'c> World<'c> {
                             data.slots[i] = ItemStack { item, count, durability };
                         }
                     }
-                    self.chests.insert((x, y, z), data);
+                    self.chests.insert((Self::wrap_block(x), y, Self::wrap_block(z)), data);
                 }
             }
         }
@@ -282,7 +287,10 @@ impl<'c> World<'c> {
                     let tier = cr.u8().unwrap_or(0);
                     let wood_cells = cr.i32().unwrap_or(0);
                     let progress = cr.i32().unwrap_or(0);
-                    self.villages.insert((ax, az), VillageState { tier, wood_cells, progress });
+                    self.villages.insert(
+                        (Self::wrap_block(ax), Self::wrap_block(az)),
+                        VillageState { tier, wood_cells, progress },
+                    );
                 }
             }
         }

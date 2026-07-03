@@ -33,6 +33,17 @@ impl<'c> World<'c> {
         prop_instances.clear();
         let cam_fwd = self.forward_dir();
         let cam_pos = self.pos;
+        // #179 looping world: everything sent to the GPU is positioned at its
+        // NEAREST IMAGE relative to the camera, so a chunk or creature just
+        // across the seam renders adjacent instead of 32K blocks away.
+        let cam_cx = Self::floordiv(Self::ifloor(cam_pos.x), KCHUNK_DIM);
+        let cam_cz = Self::floordiv(Self::ifloor(cam_pos.z), KCHUNK_DIM);
+        let rel_chunk = |cc: &ChunkCoord| -> (i32, i32) {
+            (
+                cam_cx + Self::wrap_signed_chunk(cc.x - cam_cx),
+                cam_cz + Self::wrap_signed_chunk(cc.z - cam_cz),
+            )
+        };
         let kcull_cos = 0.30f32;
         let kfar_cull_cos = 0.55f32;
         let knear_keep = KCHUNK_DIM as f32 * 1.5;
@@ -50,10 +61,11 @@ impl<'c> World<'c> {
                     rec.ibuf.handle,
                 )
             };
+            let (rcx, rcz) = rel_chunk(cc);
             let ctr = V3::new(
-                (cc.x as f32 + 0.5) * KCHUNK_DIM as f32,
+                (rcx as f32 + 0.5) * KCHUNK_DIM as f32,
                 (cc.y as f32 + 0.5) * KCHUNK_DIM as f32,
-                (cc.z as f32 + 0.5) * KCHUNK_DIM as f32,
+                (rcz as f32 + 0.5) * KCHUNK_DIM as f32,
             );
             let to_c = V3::new(ctr.x - cam_pos.x, ctr.y - cam_pos.y, ctr.z - cam_pos.z);
             let dist = dot(to_c, to_c).sqrt();
@@ -102,9 +114,9 @@ impl<'c> World<'c> {
                 index_count,
                 material_id: lod | has_water,
                 chunk_origin: bf_ivec3 {
-                    x: cc.x * KCHUNK_DIM,
+                    x: rcx * KCHUNK_DIM,
                     y: cc.y * KCHUNK_DIM,
-                    z: cc.z * KCHUNK_DIM,
+                    z: rcz * KCHUNK_DIM,
                 },
                 dim_saturation: 0.0,
                 dim_sat_px: 0.0,
@@ -255,10 +267,11 @@ impl<'c> World<'c> {
             if !has_buffers || index_count == 0 {
                 continue;
             }
+            let (rcx, rcz) = rel_chunk(cc);
             let sctr = V3::new(
-                (cc.x as f32 + 0.5) * KCHUNK_DIM as f32,
+                (rcx as f32 + 0.5) * KCHUNK_DIM as f32,
                 (cc.y as f32 + 0.5) * KCHUNK_DIM as f32,
-                (cc.z as f32 + 0.5) * KCHUNK_DIM as f32,
+                (rcz as f32 + 0.5) * KCHUNK_DIM as f32,
             );
             let stoc = V3::new(sctr.x - cam_pos.x, sctr.y - cam_pos.y, sctr.z - cam_pos.z);
             if dot(stoc, stoc) > kshadow_r * kshadow_r {
@@ -272,9 +285,9 @@ impl<'c> World<'c> {
                 index_count,
                 material_id: 0,
                 chunk_origin: bf_ivec3 {
-                    x: cc.x * KCHUNK_DIM,
+                    x: rcx * KCHUNK_DIM,
                     y: cc.y * KCHUNK_DIM,
-                    z: cc.z * KCHUNK_DIM,
+                    z: rcz * KCHUNK_DIM,
                 },
                 dim_saturation: 0.0,
                 dim_sat_px: 0.0,
@@ -324,9 +337,9 @@ impl<'c> World<'c> {
             }));
             self.entities.push(bf_entity_draw {
                 position: bf_vec3 {
-                    x: cr.pos.x,
+                    x: cam_pos.x + Self::wrap_signed_f(cr.pos.x - cam_pos.x),
                     y: cr.pos.y,
-                    z: cr.pos.z,
+                    z: cam_pos.z + Self::wrap_signed_f(cr.pos.z - cam_pos.z),
                 },
                 yaw: cr.yaw,
                 color: bf_vec3 {
@@ -348,9 +361,9 @@ impl<'c> World<'c> {
             }));
             self.entities.push(bf_entity_draw {
                 position: bf_vec3 {
-                    x: fb.pos.x,
+                    x: cam_pos.x + Self::wrap_signed_f(fb.pos.x - cam_pos.x),
                     y: fb.pos.y,
-                    z: fb.pos.z,
+                    z: cam_pos.z + Self::wrap_signed_f(fb.pos.z - cam_pos.z),
                 },
                 yaw: fb.spin,
                 color: bf_vec3 {
@@ -375,9 +388,9 @@ impl<'c> World<'c> {
             }));
             self.entities.push(bf_entity_draw {
                 position: bf_vec3 {
-                    x: d.pos.x,
+                    x: cam_pos.x + Self::wrap_signed_f(d.pos.x - cam_pos.x),
                     y: d.pos.y,
-                    z: d.pos.z,
+                    z: cam_pos.z + Self::wrap_signed_f(d.pos.z - cam_pos.z),
                 },
                 yaw: d.spin,
                 color: bf_vec3 {
@@ -392,7 +405,11 @@ impl<'c> World<'c> {
             });
         }
         for a in &self.remote_avatars {
-            self.entities.push(*a);
+            // #179: co-op peers render at their nearest image too.
+            let mut a = *a;
+            a.position.x = cam_pos.x + Self::wrap_signed_f(a.position.x - cam_pos.x);
+            a.position.z = cam_pos.z + Self::wrap_signed_f(a.position.z - cam_pos.z);
+            self.entities.push(a);
         }
         out.entities = self.entities.as_ptr();
         out.entity_count = self.entities.len() as u32;

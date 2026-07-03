@@ -307,6 +307,9 @@ impl<'c> World<'c> {
                 r += 1;
             }
         }
+        // #179: canonical spawn column (the ring search can land negative).
+        let sx = Self::wrap_block(sx);
+        let sz = Self::wrap_block(sz);
         // Find the surface at the chosen spawn column.
         let scol = Self::to_chunk(IVec3 { x: sx, y: 0, z: sz });
         let slx = Self::mod16(sx);
@@ -349,12 +352,15 @@ impl<'c> World<'c> {
                 y: 0,
                 z: scol.z,
             });
+            // #179: wrap the ring onto the torus region grid so a spawn near
+            // the seam still colours the regions on the other side.
+            let region_count = WRAP_CHUNKS / KREGION_CHUNKS;
             for dz in -2..=2 {
                 for dx in -2..=2 {
                     self.region_sat.insert(
                         RegionKey {
-                            x: sr.x + dx,
-                            z: sr.z + dz,
+                            x: (sr.x + dx).rem_euclid(region_count),
+                            z: (sr.z + dz).rem_euclid(region_count),
                         },
                         1.0,
                     );
