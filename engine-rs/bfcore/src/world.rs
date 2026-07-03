@@ -56,10 +56,13 @@ mod render_frame;
 mod actions;
 mod player_update;
 mod lifecycle;
+mod map;
 
 pub(crate) use self::coords::WRAP_CHUNKS;
 
 use self::chests::ChestData;
+use self::map::TotemMark;
+pub use self::map::{MapMarkerInfo, MAP_CELL, MAP_CELLS, MAP_EXPLORED_BYTES, WARP_TOTEM};
 use self::debris::Debris;
 use self::falling::FallingBlock;
 use self::quests::K_ACHIEVEMENT_COUNT;
@@ -506,6 +509,14 @@ pub struct World<'c> {
     // snapshot is discarded instead of overwriting the newer edit for a frame.
     mesh_versions: HashMap<ChunkCoord, u64>,
     mesh_next_version: u64,
+
+    // #182 world map + warp totems: explored bitmask (one bit per 64x64-block
+    // cell over the torus), placed totem markers, visited settlement anchors,
+    // and the monotonically increasing totem number. Persisted in map.dat.
+    explored: Vec<u8>,
+    totems: Vec<TotemMark>,
+    totem_next: u32,
+    visited_villages: Vec<(i32, i32)>,
 
     // World-space voxel sun-shadow occupancy (ABI v19). A persistent occupancy
     // grid (1 byte/voxel: 1 = casts sun shadow) covering a fixed-size region

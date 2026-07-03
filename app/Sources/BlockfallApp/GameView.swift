@@ -26,6 +26,9 @@ final class GameView: MTKView {
     // #42: quest-log overlay hook (wired to HUDView). Flips the log open/closed.
     // GameView tracks its own questLogOpen so Esc can close it before pausing.
     var onToggleQuestLog: (() -> Void)?
+    // #182 world map: 'M' opens the full-screen map overlay (the overlay itself
+    // handles M/Esc to close, so this only fires to OPEN it).
+    var onOpenMap: (() -> Void)?
 
     // Screenshot request: set by the backslash key (keyCode 42), consumed by the
     // Renderer's draw loop AFTER the frame is presented (so the drawable is valid).
@@ -156,6 +159,12 @@ final class GameView: MTKView {
             NSLog("Blockfall: invert X (left/right) = \(invertX)"); return }
         if e.keyCode == 31 { invertY.toggle()                    // 'O' — invert up/down
             NSLog("Blockfall: invert Y (up/down) = \(invertY)"); return }
+        // 'M' — world map (#182). Only from clean play (no panel open), so
+        // closing the map can safely re-capture the pointer.
+        if e.keyCode == 46 {
+            if !invOpen && !chestOpen && !questLogOpen { onOpenMap?() }
+            return
+        }
         if e.keyCode == 4  { onHost?(); return }                // 'H' — host LAN co-op
         if e.keyCode == 38 { onJoin?(); return }                // 'J' — join a LAN host
         if e.keyCode == 17 { cycleTimeMode(); return }          // 'T' — auto/day/night pin

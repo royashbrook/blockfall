@@ -126,6 +126,23 @@
     }
   },
   {
+    "id": 55,
+    "name": "warp_totem",
+    "display_name": "Warp Totem",
+    "hardness": 10,
+    "required_tier": 0,
+    "preferred_tool": "pickaxe",
+    "light_emit": 13,
+    "light_color": [
+      190,
+      160,
+      255
+    ],
+    "textures": {
+      "all": "warp_totem"
+    }
+  },
+  {
     "id": 52,
     "name": "bed",
     "display_name": "Bed",

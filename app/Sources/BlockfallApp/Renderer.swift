@@ -235,6 +235,68 @@ final class Renderer: NSObject, MTKViewDelegate {
     // ESC from GameView closes the engine's open chest; the next poll clears the panel.
     func closeChest() { if let e = engine { bf_chest_close(e) } }
 
+    // #182 world map: the last camera position/facing (feeds the map centring)
+    // plus the one-shot query + teleport calls. The map UI is fed once on open,
+    // so there is no per-frame engine cost while it is closed OR open.
+    private var lastPlayerX: Float = 0
+    private var lastPlayerZ: Float = 0
+    private var lastPlayerFacing: Float = 0
+
+    struct MapSnapshot {
+        let explored: [UInt8]
+        let period: Int
+        let cellSize: Int
+        let cells: Int
+        let markers: [MapView.Marker]
+        let playerX: Float
+        let playerZ: Float
+        let facing: Float
+    }
+
+    // Query the engine's explored mask + markers (bf_map_query, ABI v23).
+    func mapQuery() -> MapSnapshot? {
+        guard let e = engine else { return nil }
+        var explored = [UInt8](repeating: 0, count: Int(BF_MAP_EXPLORED_BYTES))
+        // bf_map_view is ~2 KiB of fixed arrays; heap-allocate to keep it off the stack.
+        let viewPtr = UnsafeMutablePointer<bf_map_view>.allocate(capacity: 1)
+        defer { viewPtr.deallocate() }
+        viewPtr.pointee = bf_map_view()
+        var ok = false
+        explored.withUnsafeMutableBufferPointer { buf in
+            viewPtr.pointee.explored = buf.baseAddress
+            viewPtr.pointee.explored_cap = UInt32(buf.count)
+            ok = bf_map_query(e, viewPtr) == BF_OK
+        }
+        guard ok else { return nil }
+        let v = viewPtr.pointee
+        var markers: [MapView.Marker] = []
+        withUnsafeBytes(of: v.markers) { raw in
+            let p = raw.bindMemory(to: bf_map_marker.self)
+            for i in 0..<min(Int(v.marker_count), Int(BF_MAP_MAX_MARKERS)) {
+                let m = p[i]
+                let name = withUnsafeBytes(of: m.name) {
+                    String(cString: $0.bindMemory(to: CChar.self).baseAddress!)
+                }
+                markers.append(MapView.Marker(x: m.pos.x, z: m.pos.z,
+                                              kind: m.kind, id: m.id, name: name))
+            }
+        }
+        return MapSnapshot(explored: explored,
+                           period: Int(v.world_period),
+                           cellSize: Int(v.cell_size),
+                           cells: Int(v.cells_per_axis),
+                           markers: markers,
+                           playerX: lastPlayerX, playerZ: lastPlayerZ,
+                           facing: lastPlayerFacing)
+    }
+
+    // Teleport to a marker (bf_map_teleport). The charge-up happens app-side.
+    @discardableResult
+    func mapTeleport(_ id: UInt32) -> Bool {
+        guard let e = engine else { return false }
+        return bf_map_teleport(e, id) != 0
+    }
+
     // ---- #135 first-load readiness signal -----------------------------------
     // The app shows a loading overlay from launch and hides it once the spawn
     // neighbourhood has actually meshed + uploaded and the framerate has settled.
@@ -1080,6 +1142,10 @@ final class Renderer: NSObject, MTKViewDelegate {
                            y: frame.camera.position.y,
                            z: frame.camera.position.z,
                            facing: atan2(frame.camera.forward.x, frame.camera.forward.z))
+        // #182 world map: remember where the player is (map centring on open).
+        lastPlayerX = frame.camera.position.x
+        lastPlayerZ = frame.camera.position.z
+        lastPlayerFacing = atan2(frame.camera.forward.x, frame.camera.forward.z)
 
         // Feed the HUD the time of day for a day/night indicator (HUDView method
         // added by another agent; guarded so it's a no-op until then).

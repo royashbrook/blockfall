@@ -31,7 +31,11 @@ use core::ffi::{c_char, c_void};
 ///      Purely additive; no existing struct layout changed.
 /// v21: appended bf_village_view + bf_village_query (living-villages tier/donation
 ///      HUD, #95). Purely additive; no existing struct layout changed.
-pub const BF_ABI_VERSION: u32 = 22;
+/// v22: bf_shadow_volume grew an engine-maintained coarse occupancy mip (#163).
+/// v23: appended bf_map_marker + bf_map_view + bf_map_query + bf_map_teleport
+///      (world map + warp totems, #182). Purely additive; no existing struct
+///      layout changed.
+pub const BF_ABI_VERSION: u32 = 23;
 
 // ---------------------------------------------------------------------------
 // Primitive types
@@ -450,6 +454,55 @@ pub struct bf_village_view {
 }
 
 // ---------------------------------------------------------------------------
+// 11. WORLD MAP + WARP TOTEMS (#182, ABI v23)
+// ---------------------------------------------------------------------------
+
+/// Mirror of BF_MAP_EXPLORED_BYTES in the C header: 512x512 cells (one per
+/// 64x64-block cell over the 32768-block torus), one bit per cell.
+pub const BF_MAP_EXPLORED_BYTES: usize = 32768;
+/// Mirror of BF_MAP_MAX_MARKERS: 1 home + 32 villages + 16 totems.
+pub const BF_MAP_MAX_MARKERS: usize = 49;
+
+/// Mirror of `bf_map_marker` in the C header. One map marker.
+/// Layout: pos(12) + kind(4) + id(4) + name(24) = 44 bytes, align 4.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct bf_map_marker {
+    pub pos: bf_ivec3,
+    /// 0 = home (world spawn), 1 = visited village, 2 = warp totem.
+    pub kind: u32,
+    /// Stable id for bf_map_teleport.
+    pub id: u32,
+    /// UTF-8, NUL-terminated display name ("Home", "Village 2", "Totem 3").
+    pub name: [u8; 24],
+}
+
+/// Mirror of `bf_map_view` in the C header. Caller-owned explored buffer plus
+/// a fixed-size marker array (no allocation across the boundary).
+/// Layout: explored(8) + explored_cap(8..12) + world_period(12) + cell_size(16)
+/// + cells_per_axis(20) + marker_count(24) + markers(28) = 28 + 49*44 = 2184.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct bf_map_view {
+    /// IN: caller's explored-bit buffer; engine copies BF_MAP_EXPLORED_BYTES
+    /// bytes when non-null and large enough. Bit (cz*512+cx) of the stream
+    /// (byte idx/8, bit idx%8) = cell (cx, cz) explored.
+    pub explored: *mut u8,
+    /// IN: capacity of `explored` in bytes.
+    pub explored_cap: u32,
+    /// OUT: torus period in blocks (32768).
+    pub world_period: u32,
+    /// OUT: explored-cell size in blocks (64).
+    pub cell_size: u32,
+    /// OUT: cells per axis (512).
+    pub cells_per_axis: u32,
+    /// OUT: number of valid entries in `markers`.
+    pub marker_count: u32,
+    /// OUT: home + visited villages + placed totems, in that order.
+    pub markers: [bf_map_marker; BF_MAP_MAX_MARKERS],
+}
+
+// ---------------------------------------------------------------------------
 // 6. EVENT CALLBACKS
 // ---------------------------------------------------------------------------
 
@@ -518,6 +571,25 @@ mod parity {
         assert_eq!(size_of::<bf_shadow_volume>(), 168, "bf_shadow_volume");
         assert_eq!(size_of::<bf_chest_view>(), 88, "bf_chest_view");
         assert_eq!(size_of::<bf_village_view>(), 48, "bf_village_view");
+        assert_eq!(size_of::<bf_map_marker>(), 44, "bf_map_marker");
+        assert_eq!(size_of::<bf_map_view>(), 2184, "bf_map_view");
+    }
+
+    #[test]
+    fn map_view_layout() {
+        assert_eq!(align_of::<bf_map_marker>(), 4, "bf_map_marker align");
+        assert_eq!(offset_of!(bf_map_marker, pos), 0);
+        assert_eq!(offset_of!(bf_map_marker, kind), 12);
+        assert_eq!(offset_of!(bf_map_marker, id), 16);
+        assert_eq!(offset_of!(bf_map_marker, name), 20);
+        assert_eq!(align_of::<bf_map_view>(), 8, "bf_map_view align");
+        assert_eq!(offset_of!(bf_map_view, explored), 0);
+        assert_eq!(offset_of!(bf_map_view, explored_cap), 8);
+        assert_eq!(offset_of!(bf_map_view, world_period), 12);
+        assert_eq!(offset_of!(bf_map_view, cell_size), 16);
+        assert_eq!(offset_of!(bf_map_view, cells_per_axis), 20);
+        assert_eq!(offset_of!(bf_map_view, marker_count), 24);
+        assert_eq!(offset_of!(bf_map_view, markers), 28);
     }
 
     #[test]

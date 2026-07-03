@@ -26,6 +26,16 @@
     "result": { "item": "crystal_lamp", "count": 1 }
   },
   {
+    "id": "warp_totem_recipe",
+    "grid_size": 3,
+    "grid": [
+      null,           "crystal_shard", null,
+      "crystal_shard","glow_dust",     "crystal_shard",
+      null,           "stone_brick",   null
+    ],
+    "result": { "item": "warp_totem", "count": 1 }
+  },
+  {
     "id": "colored_glass_recipe",
     "grid_size": 3,
     "grid": [

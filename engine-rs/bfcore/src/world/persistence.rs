@@ -131,6 +131,10 @@ impl<'c> World<'c> {
                 return false;
             }
         }
+        // #182 world map + warp totems: explored bits + markers (map.dat).
+        if !self.save_map_dat(dir) {
+            return false;
+        }
         true
     }
 
@@ -294,6 +298,14 @@ impl<'c> World<'c> {
                 }
             }
         }
+        // #182 map progress (explored bits + totems + visited villages).
+        // Missing/old saves simply start with an empty map (load_map_dat resets).
+        self.load_map_dat(dir);
+        {
+            let px = Self::ifloor(self.pos.x);
+            let pz = Self::ifloor(self.pos.z);
+            self.mark_explored_around(px, pz);
+        }
         self.ensure_clear_spawn();
         self.last_center = Self::to_chunk(IVec3 {
             x: Self::ifloor(self.pos.x),
@@ -312,16 +324,16 @@ impl<'c> World<'c> {
     }
 }
 
-struct ByteReader<'a> {
+pub(super) struct ByteReader<'a> {
     buf: &'a [u8],
     pos: usize,
 }
 
 impl<'a> ByteReader<'a> {
-    fn new(buf: &'a [u8]) -> Self {
+    pub(super) fn new(buf: &'a [u8]) -> Self {
         ByteReader { buf, pos: 0 }
     }
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+    pub(super) fn take(&mut self, n: usize) -> Option<&'a [u8]> {
         if self.pos + n > self.buf.len() {
             return None;
         }
@@ -329,27 +341,27 @@ impl<'a> ByteReader<'a> {
         self.pos += n;
         Some(s)
     }
-    fn u8(&mut self) -> Option<u8> {
+    pub(super) fn u8(&mut self) -> Option<u8> {
         let b = self.take(1)?;
         Some(b[0])
     }
-    fn u16(&mut self) -> Option<u16> {
+    pub(super) fn u16(&mut self) -> Option<u16> {
         let b = self.take(2)?;
         Some(u16::from_le_bytes([b[0], b[1]]))
     }
-    fn u32(&mut self) -> Option<u32> {
+    pub(super) fn u32(&mut self) -> Option<u32> {
         let b = self.take(4)?;
         Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
-    fn i32(&mut self) -> Option<i32> {
+    pub(super) fn i32(&mut self) -> Option<i32> {
         let b = self.take(4)?;
         Some(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
-    fn u64(&mut self) -> Option<u64> {
+    pub(super) fn u64(&mut self) -> Option<u64> {
         let b = self.take(8)?;
         Some(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
     }
-    fn f32(&mut self) -> Option<f32> {
+    pub(super) fn f32(&mut self) -> Option<f32> {
         let b = self.take(4)?;
         Some(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }

@@ -145,6 +145,12 @@ impl<'c> World<'c> {
         if pb == 0 {
             return;
         }
+        // #182 warp totems are capped so the map marker array stays fixed-size.
+        // Refuse the placement BEFORE consuming the item (kid-friendly toast).
+        if pb == crate::world::WARP_TOTEM && !self.totem_cap_free() {
+            self.toast("You already have 16 totems! Break one to place another.");
+            return;
+        }
         let solid = !(pb == AIR || pb == WATER || (36..=47).contains(&pb));
         if self.mode == bf_game_mode::BF_MODE_SURVIVAL
             && solid
@@ -160,6 +166,10 @@ impl<'c> World<'c> {
         }
         let place = self.place;
         self.set_block_internal(place, pb);
+        // #182 placing a warp totem registers a named map marker.
+        if pb == crate::world::WARP_TOTEM {
+            self.note_totem_placed(place);
+        }
         if pb == 33 {
             let up = IVec3 {
                 x: place.x,
@@ -195,6 +205,11 @@ impl<'c> World<'c> {
         // placed chest at the same spot would re-expose it; acceptable + safe).
         if broken == CHEST {
             self.spill_chest_on_break(t);
+        }
+        // #182 breaking a warp totem unregisters its map marker; the item
+        // refund rides the normal debris drop path below.
+        if broken == crate::world::WARP_TOTEM {
+            self.note_totem_broken(t);
         }
         self.fx(0, t, ((broken as i32) << 4) | Self::sound_class_for(broken));
         let bn = self.block_name(broken);

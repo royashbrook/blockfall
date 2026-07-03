@@ -25,6 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var gameView: GameView?
     var gameContainer: NSView?
     var pauseOverlay: NSView?
+    // #182 world map overlay (M key / pause-menu button). The world pauses
+    // underneath (same setPaused path as the pause menu, #127).
+    var mapOverlay: MapView?
     // #135 loading overlay: covers the 1-2 fps first-load stutter (spawn chunks
     // meshing + uploading) and lifts once the renderer reports the world is ready.
     var loadingOverlay: LoadingView?
@@ -122,6 +125,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mtkView.onHost = { [weak r] in r?.startHost() }
         mtkView.onJoin = { [weak r] in r?.joinLAN() }
         mtkView.onPause = { [weak self] in self?.pauseGame() }
+        // #182 'M' opens the world map (the overlay handles its own close keys).
+        mtkView.onOpenMap = { [weak self] in self?.openMap() }
 
         let h = HUDView(frame: frame)
         h.autoresizingMask = [.width, .height]
@@ -346,7 +351,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         auStack.orientation = .vertical; auStack.spacing = 8; auStack.alignment = .leading
 
         let charBtn = pauseButton("Customize Character", #selector(openCharacterEditor))
-        let stack = NSStackView(views: [title, sliderRow, showHUD, fxTitle, fxStack, rdRow, auTitle, auStack, charBtn, resume, menuBtn])
+        // #182 world map: same journey as pressing M, reachable from the pause menu.
+        let mapBtn = pauseButton("World Map", #selector(openMapFromPause))
+        let stack = NSStackView(views: [title, sliderRow, showHUD, fxTitle, fxStack, rdRow, auTitle, auStack, mapBtn, charBtn, resume, menuBtn])
         stack.orientation = .vertical; stack.spacing = 18; stack.alignment = .centerX
         stack.translatesAutoresizingMaskIntoConstraints = false
         ov.addSubview(stack)
@@ -374,6 +381,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.heightAnchor.constraint(equalToConstant: 52).isActive = true
         return b
     }
+    // ---- world map (#182) ----
+    // Opens the full-screen map overlay: pauses the world (creatures + sun
+    // freeze, #127-consistent), releases the pointer, and feeds the MapView a
+    // one-shot snapshot (explored mask + markers) from the engine. Confirming
+    // a marker runs the MapView's charge-up, then teleports and closes.
+    @objc private func openMapFromPause() {
+        pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
+        openMap()
+    }
+
+    private func openMap() {
+        guard mapOverlay == nil, pauseOverlay == nil, loadingOverlay == nil,
+              charEditorOverlay == nil, !dialogue.isOpen,
+              let container = gameContainer, let r = renderer,
+              let snap = r.mapQuery() else { return }
+        gameView?.setPaused(true)   // freezes the sim + releases the pointer
+        let mv = MapView(frame: container.bounds)
+        mv.autoresizingMask = [.width, .height]
+        mv.explored = snap.explored
+        mv.period = snap.period
+        mv.cellSize = snap.cellSize
+        mv.cells = snap.cells
+        mv.markers = snap.markers
+        mv.playerX = snap.playerX
+        mv.playerZ = snap.playerZ
+        mv.playerFacing = snap.facing
+        mv.onClose = { [weak self] in self?.closeMap() }
+        mv.onChargeStart = { [weak self] in self?.audio.play(.craft) }
+        mv.onTeleport = { [weak self] id in
+            self?.renderer?.mapTeleport(id)   // engine fires the arrival fx
+            self?.closeMap()
+        }
+        container.addSubview(mv)
+        mv.rebuild()
+        mapOverlay = mv
+        window.makeFirstResponder(mv)
+    }
+
+    private func closeMap() {
+        guard let mv = mapOverlay else { return }
+        mv.removeFromSuperview()
+        mapOverlay = nil
+        gameView?.setPaused(false)
+        gameView?.grabMouse()
+        if let gv = gameView { window.makeFirstResponder(gv) }
+    }
+
     @objc private func resumeGame() {
         pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
         gameView?.setPaused(false)
@@ -626,6 +680,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func quitToMenu() {
         pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
+        mapOverlay?.removeFromSuperview(); mapOverlay = nil   // #182
         // #135 drop the loading overlay if we quit mid-load (rare, but the
         // pending fade/grab callbacks must not run against a torn-down game).
         loadingOverlay?.removeFromSuperview(); loadingOverlay = nil
@@ -979,6 +1034,63 @@ if let idx = CommandLine.arguments.firstIndex(of: "--chestshot"), idx + 1 < Comm
     guard let rep = hv.bitmapImageRepForCachingDisplay(in: hv.bounds) else { exit(1) }
     hv.cacheDisplay(in: hv.bounds, to: rep)
     try? rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: CommandLine.arguments[idx + 1]))
+    exit(0)
+}
+
+// #182 --mapshot <path>: render the world-map overlay headlessly to a PNG so the
+// kid-facing map (explored blob + home/village/totem markers + player arrow) can
+// be reviewed without driving the live app. Seeds a synthetic explored region
+// around a pretend player plus a marker of each kind. Mirrors --chestshot.
+if let idx = CommandLine.arguments.firstIndex(of: "--mapshot"), idx + 1 < CommandLine.arguments.count {
+    let W = 1100, H = 860
+    let mv = MapView(frame: NSRect(x: 0, y: 0, width: CGFloat(W), height: CGFloat(H)))
+    let cells = 512, cellSize = 64, period = 32768
+    mv.period = period; mv.cellSize = cellSize; mv.cells = cells
+    // Player mid-world; an irregular explored blob around them plus a thin
+    // "travelled corridor" so the reveal-as-you-walk look is visible.
+    let px = 16384, pz = 16384
+    var explored = [UInt8](repeating: 0, count: cells * cells / 8)
+    func reveal(_ cx: Int, _ cz: Int) {
+        let x = ((cx % cells) + cells) % cells, z = ((cz % cells) + cells) % cells
+        let bit = z * cells + x
+        explored[bit >> 3] |= 1 << (bit & 7)
+    }
+    let pcx = px / cellSize, pcz = pz / cellSize
+    for dz in -20...20 {
+        for dx in -20...20 {
+            let wob = 14.0 + 5.0 * sin(Double(dx) * 0.55) * cos(Double(dz) * 0.4)
+            if Double(dx * dx + dz * dz).squareRoot() < wob { reveal(pcx + dx, pcz + dz) }
+        }
+    }
+    for t in 0..<60 { reveal(pcx + 8 + t / 2, pcz - t / 3) }        // a walked corridor
+    for dz in -4...4 { for dx in -4...4 where dx*dx + dz*dz <= 18 { // a far camp blob
+        reveal(pcx + 38 + dx, pcz - 22 + dz) } }
+    mv.explored = explored
+    mv.playerX = Float(px); mv.playerZ = Float(pz); mv.playerFacing = 0.8
+    mv.markers = [
+        MapView.Marker(x: Int32(px - 300), z: Int32(pz + 200), kind: 0, id: 1, name: "Home"),
+        MapView.Marker(x: Int32(px + 550), z: Int32(pz - 350), kind: 1, id: 100, name: "Village 1"),
+        MapView.Marker(x: Int32(px - 620), z: Int32(pz - 480), kind: 1, id: 101, name: "Village 2"),
+        MapView.Marker(x: Int32(px + 260), z: Int32(pz + 520), kind: 2, id: 200, name: "Totem 1"),
+        MapView.Marker(x: Int32(px + 1500), z: Int32(pz - 1180), kind: 2, id: 201, name: "Totem 2"),
+    ]
+    // Two shots: the default local zoom (<path>) and the whole planet zoomed
+    // out (<path minus .png>_planet.png) so the torus-wide view is reviewable.
+    func mapShot(_ path: String) {
+        mv.rebuild()
+        mv.layoutSubtreeIfNeeded()
+        guard let rep = mv.bitmapImageRepForCachingDisplay(in: mv.bounds) else { exit(1) }
+        mv.cacheDisplay(in: mv.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: path))
+    }
+    let path = CommandLine.arguments[idx + 1]
+    let base = path.replacingOccurrences(of: ".png", with: "")
+    mapShot(path)
+    mv.debugSelectMarker(1)   // Village 1: shows the "Travel to ...?" chip
+    mapShot(base + "_confirm.png")
+    mv.debugSelectMarker(-1)
+    mv.viewSpan = period
+    mapShot(base + "_planet.png")
     exit(0)
 }
 

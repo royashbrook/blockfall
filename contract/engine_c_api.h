@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 22u  /* v22: bf_shadow_volume grows an engine-maintained coarse occupancy mip (#163, append-only) */
+#define BF_ABI_VERSION 23u  /* v23: bf_map_view + bf_map_query + bf_map_teleport (world map + warp totems, #182, append-only) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -595,6 +595,58 @@ typedef struct bf_village_view {
  * no village is near. Returns BF_OK, BF_ERR_BAD_ARG on a null arg, or
  * BF_ERR_NOT_READY before the world exists. Pure read; never mutates the world. */
 BF_API bf_result bf_village_query(bf_engine e, bf_village_view* out);
+
+/* ==========================================================================
+ * 10. WORLD MAP + WARP TOTEMS  (#182, ABI v23, append-only)
+ * --------------------------------------------------------------------------
+ * The world is a 32768^2-block torus; the map covers the WHOLE planet. The
+ * engine keeps a coarse explored bitmask (one bit per 64x64-block cell, so
+ * 512x512 cells = 32 KiB) plus a small fixed set of markers: the world spawn
+ * ("home"), settlements the player has visited (within ~48 blocks of the
+ * anchor), and warp totems the player crafted and placed (block id 55,
+ * auto-named Totem 1, 2, ...; capped at 16; breaking one removes it and
+ * refunds the item through the normal drop path). All of it is player
+ * progress, persisted in map.dat alongside the save.
+ *
+ * The app opens the map (M / pause-menu button), queries this view once,
+ * draws it centred on the player (nearest-image on both axes so the torus
+ * wraps naturally), and on a marker tap runs its own charge-up flourish, then
+ * calls bf_map_teleport. Teleport is instant engine-side: the player lands on
+ * the destination surface (never inside solid; land markers never arrive in
+ * open water) with velocity reset and streaming recentred so the destination
+ * drops in surface-first. */
+#define BF_MAP_EXPLORED_BYTES 32768u /* 512*512 cells, one bit per cell */
+#define BF_MAP_MAX_MARKERS 49        /* 1 home + 32 villages + 16 totems */
+
+typedef struct bf_map_marker {
+    bf_ivec3 pos;      /* world block position (y = surface hint / totem y)   */
+    uint32_t kind;     /* 0 = home, 1 = visited village, 2 = warp totem       */
+    uint32_t id;       /* stable marker id for bf_map_teleport                */
+    char     name[24]; /* UTF-8, NUL-terminated ("Home", "Totem 3", ...)      */
+} bf_map_marker;
+
+typedef struct bf_map_view {
+    /* IN: caller's explored-bit buffer (>= BF_MAP_EXPLORED_BYTES) + capacity.
+     * Bit index cz*512+cx (byte idx/8, bit idx%8) = cell (cx, cz) explored,
+     * where cx = wx/64, cz = wz/64 in canonical [0, 32768) coords. NULL (or a
+     * too-small cap) skips the copy; the dims below are still written. */
+    uint8_t* explored;
+    uint32_t explored_cap;
+    uint32_t world_period;   /* OUT: torus period in blocks (32768)           */
+    uint32_t cell_size;      /* OUT: explored-cell size in blocks (64)        */
+    uint32_t cells_per_axis; /* OUT: cells per axis (512)                     */
+    uint32_t marker_count;   /* OUT: valid entries in markers[]               */
+    bf_map_marker markers[BF_MAP_MAX_MARKERS]; /* home, villages, totems      */
+} bf_map_view;
+
+/* [MAIN] Fill `out` with the explored mask + markers. Returns BF_OK,
+ * BF_ERR_BAD_ARG on a null arg, BF_ERR_NOT_READY pre-world. Pure read. */
+BF_API bf_result bf_map_query(bf_engine e, bf_map_view* out);
+
+/* [MAIN] Teleport the player to marker `marker_id` (from bf_map_view). Lands
+ * on the surface, resets velocity, recentres streaming. Returns 1 on success,
+ * 0 for an unknown id / pre-world. */
+BF_API uint8_t bf_map_teleport(bf_engine e, uint32_t marker_id);
 
 #ifdef __cplusplus
 } /* extern "C" */

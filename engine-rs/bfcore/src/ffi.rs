@@ -952,6 +952,75 @@ pub unsafe extern "C" fn bf_village_query(e: bf_engine, out: *mut bf_village_vie
 }
 
 // ---------------------------------------------------------------------------
+// 10. WORLD MAP + WARP TOTEMS (#182, v23)
+// ---------------------------------------------------------------------------
+
+#[no_mangle]
+pub unsafe extern "C" fn bf_map_query(e: bf_engine, out: *mut bf_map_view) -> bf_result {
+    let e = match engine_ref(e) {
+        Some(e) => e,
+        None => {
+            set_err("null engine");
+            return bf_result::BF_ERR_BAD_ARG;
+        }
+    };
+    if out.is_null() {
+        set_err("null arg");
+        return bf_result::BF_ERR_BAD_ARG;
+    }
+    if !e.world_ready {
+        set_err("world not ready");
+        return bf_result::BF_ERR_NOT_READY;
+    }
+    // SAFETY: caller guarantees `out` is a writable bf_map_view; its
+    // explored/explored_cap describe the caller-owned explored buffer.
+    let view = unsafe { &mut *out };
+    view.world_period = crate::worldgen::WORLD_PERIOD as u32;
+    view.cell_size = crate::world::MAP_CELL as u32;
+    view.cells_per_axis = crate::world::MAP_CELLS as u32;
+    if !view.explored.is_null() && view.explored_cap as usize >= BF_MAP_EXPLORED_BYTES {
+        let bits = e.world.map_explored_bits();
+        // SAFETY: checked non-null + capacity above; engine bits are exactly
+        // BF_MAP_EXPLORED_BYTES long.
+        unsafe {
+            core::ptr::copy_nonoverlapping(bits.as_ptr(), view.explored, BF_MAP_EXPLORED_BYTES)
+        };
+    }
+    let markers = e.world.map_markers();
+    let n = markers.len().min(BF_MAP_MAX_MARKERS);
+    view.marker_count = n as u32;
+    for (i, m) in markers.iter().take(n).enumerate() {
+        let mut name = [0u8; 24];
+        let src = m.name.as_bytes();
+        let len = src.len().min(23);
+        name[..len].copy_from_slice(&src[..len]);
+        view.markers[i] = bf_map_marker {
+            pos: bf_ivec3 { x: m.pos.x, y: m.pos.y, z: m.pos.z },
+            kind: m.kind,
+            id: m.id,
+            name,
+        };
+    }
+    bf_result::BF_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn bf_map_teleport(e: bf_engine, marker_id: u32) -> u8 {
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => return 0,
+    };
+    if !e.world_ready {
+        return 0;
+    }
+    if e.world.map_teleport(marker_id) {
+        1
+    } else {
+        0
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

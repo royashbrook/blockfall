@@ -195,6 +195,13 @@ impl<'c> World<'c> {
             if self.region_sat(pc) < 0.99 {
                 self.notify_quest("reach_location", "dim_barrens");
             }
+            // #182 world map: crossing a chunk boundary reveals the map cells
+            // around the player and checks for a nearby settlement to record
+            // as visited. Both O(1) per crossing (a pure worldgen query).
+            let px = Self::ifloor(self.pos.x);
+            let pz = Self::ifloor(self.pos.z);
+            self.mark_explored_around(px, pz);
+            self.note_village_visits(px, pz);
         }
         self.stream_tick();
         self.maybe_expand_stream_radius();

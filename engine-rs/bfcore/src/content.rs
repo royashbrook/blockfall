@@ -913,14 +913,16 @@ mod tests {
     // block_count went 51 to 52 when the bed block (id 52) was added for villager home interiors,
     // then 52 to 53 when iron_bars (id 53) was added for the village blacksmith iron-gate tier (#95),
     // then 53 to 54 when trodden_snow (id 54) was added for snow footprints (#117); it is the
-    // compressed-snow state a walker leaves in the snow blanket (#118 made snow a thin overlay).
+    // compressed-snow state a walker leaves in the snow blanket (#118 made snow a thin overlay),
+    // then 54 to 55 (items 60 to 61, recipes 34 to 35) when warp_totem (block 55, item 94,
+    // warp_totem_recipe) was added for the world map + warp travel (#182).
     #[test]
     fn loads_with_cpp_parity_counts() {
         let mut reg = ContentRegistry::new();
         assert!(reg.load(CONTENT));
-        assert_eq!(reg.block_count(), 54);
-        assert_eq!(reg.item_count(), 60);
-        assert_eq!(reg.recipe_count(), 34);
+        assert_eq!(reg.block_count(), 55);
+        assert_eq!(reg.item_count(), 61);
+        assert_eq!(reg.recipe_count(), 35);
         let oak = reg.block_by_name("oak_log").expect("oak_log");
         assert_eq!((oak.id, oak.drop_item), (21, 12));
         let dirt_item = reg.item_by_name("dirt").expect("dirt item");

@@ -100,6 +100,10 @@ impl<'c> World<'c> {
             unlit_far_meshes: HashSet::new(),
             mesh_versions: HashMap::new(),
             mesh_next_version: 0,
+            explored: vec![0u8; crate::world::MAP_EXPLORED_BYTES],
+            totems: Vec::new(),
+            totem_next: 0,
+            visited_villages: Vec::new(),
             shadow: ShadowVol::new(),
         }
     }
@@ -377,6 +381,12 @@ impl<'c> World<'c> {
         self.creatures.clear();
         self.debris.clear();
         self.chests.clear();
+        // #182 fresh world: reset map progress and reveal the spawn area.
+        self.explored = vec![0u8; crate::world::MAP_EXPLORED_BYTES];
+        self.totems.clear();
+        self.totem_next = 0;
+        self.visited_villages.clear();
+        self.mark_explored_around(sx, sz);
         self.creature_timer = 0.0;
         self.all_quests_done = false;
         self.quests_completed = 0;
