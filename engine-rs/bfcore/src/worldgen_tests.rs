@@ -65,13 +65,16 @@ mod worldgen_tests {
         }
     }
 
-    // The world is varied (the biome map is not collapsed to one type). Biomes are
-    // large now, so scan a wide area to see the variety.
+    // The world is varied (the biome map is not collapsed to one type). #181:
+    // biomes are latitude-banded now (warm equator at z = 0, cold pole at
+    // z = W/2), so a scan that only looks near the origin sees the warm set.
+    // Sweep a north-south strip from the equator to the pole instead; that
+    // crosses every climate band and must show most of the biome palette.
     #[test]
-    fn biome_variety_near_origin() {
+    fn biome_variety_across_latitudes() {
         let mut seen = [false; NUM_BIOMES];
-        for wz in (-700..=700).step_by(25) {
-            for wx in (-700..=700).step_by(25) {
+        for wz in (0..=WORLD_PERIOD / 2).step_by(256) {
+            for wx in (-700..=700).step_by(50) {
                 let b = worldgen_dominant_biome(wx, wz, SEED);
                 if (b as usize) < NUM_BIOMES {
                     seen[b as usize] = true;
@@ -859,7 +862,11 @@ mod worldgen_tests {
             let mut mountain_checked = 0;
             let mut cities_checked = 0;
             const CITY_CAP: i32 = 2;
-            for scz in -14..=14 {
+            // #181: mountains cluster at colder latitudes now, so scan two
+            // windows: the equatorial spawn region (cities, warm biomes) and a
+            // colder mid-latitude window at z ~ W/4 .. W/2 (mountain slopes).
+            // Struct cells are 64 blocks, so scz 128 is z = 8192 = W/4.
+            for scz in (-14..=14).chain(114..=142) {
                 for scx in -14..=14 {
                     let sd = struct_for_cell(scx, scz, seed);
                     if !sd.present {
@@ -1643,7 +1650,10 @@ mod worldgen_tests {
     fn dense_forest_is_leafy() {
         let span = 6;
         let mut best = (0i32, 0i32, 0usize);
-        for cz0 in (-30..=30).step_by(6) {
+        // #181: the origin is the warm equator now (deserts, sparse trees), so
+        // hunt for the dense wood in the temperate mid-latitude band instead
+        // (chunk z 512 is block z = 8192 = W/4, latitude factor ~0).
+        for cz0 in (482..=542).step_by(6) {
             for cx0 in (-30..=30).step_by(6) {
                 let recs = scan_tree_retention(SEED, cx0, cx0 + span, cz0, cz0 + span);
                 let nf = recs.iter().filter(|r| r.forest).count();
@@ -1726,8 +1736,10 @@ mod worldgen_tests {
         // window. Scan a wider area so the sample still contains plenty of forested
         // land (widened again for #168: the smooth-gradation terrain nudged tree
         // sites and left 96 tall trees in the old window). The naked-trunk
-        // invariant is unchanged.
-        let (naked, total) = scan_naked_trunks(SEED, -26, 26, -26, 26);
+        // invariant is unchanged. #181: recentred on the temperate mid-latitude
+        // band (chunk z 512 = block z 8192 = W/4); the origin window sits on the
+        // warm equator now and its deserts carry too few tall trees.
+        let (naked, total) = scan_naked_trunks(SEED, -26, 26, 486, 538);
         assert!(total > 100, "scan saw too few tall trees ({total}) to be meaningful");
         assert!(
             naked.is_empty(),
@@ -1865,8 +1877,10 @@ mod worldgen_tests {
         // the biome, so a biome-scale change (#172) can reroll a pinned cell.
         // These cells were re-picked for the #172 constants.
         // Re-picked for the #179 looping-world constants (canonical-frame cells).
+        // #181: the latitude bias rerolled the cabin cell (biome-dependent roll);
+        // the keep and tower cells survived unchanged.
         let samples = [
-            (11u64, 17, 0, STRUCT_CABIN),
+            (11u64, 31, 0, STRUCT_CABIN),
             (11u64, 45, 0, STRUCT_KEEP),
             (11u64, 61, 0, STRUCT_TALL_TOWER),
         ];
@@ -2112,6 +2126,101 @@ mod worldgen_tests {
             roots_inside_zone > 0,
             "scan found no candidate tree roots inside any clearance zone (test would be vacuous)"
         );
+    }
+
+    // #181 diagnostic visual (ignored, not part of the gate): renders top-down
+    // biome/height maps as BMP files so the latitude bands can be eyeballed.
+    // The --shot harness spawns at the origin and cannot teleport (see the
+    // dump_structure_diag note below), so the cold band and mid latitudes get
+    // their verification shots straight from the generator. Run with:
+    //   BF_LAT_MAP_DIR=/some/dir cargo test --release dump_latitude_maps -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn dump_latitude_maps() {
+        fn write_bmp(path: &str, w: usize, h: usize, px: &[[u8; 3]]) {
+            let row = (w * 3 + 3) & !3;
+            let data = row * h;
+            let mut f = Vec::with_capacity(54 + data);
+            let sz = 54 + data as u32;
+            f.extend_from_slice(b"BM");
+            f.extend_from_slice(&sz.to_le_bytes());
+            f.extend_from_slice(&[0; 4]);
+            f.extend_from_slice(&54u32.to_le_bytes());
+            f.extend_from_slice(&40u32.to_le_bytes());
+            f.extend_from_slice(&(w as i32).to_le_bytes());
+            f.extend_from_slice(&(h as i32).to_le_bytes());
+            f.extend_from_slice(&1u16.to_le_bytes());
+            f.extend_from_slice(&24u16.to_le_bytes());
+            f.extend_from_slice(&[0; 24]);
+            for y in (0..h).rev() {
+                let mut n = 0;
+                for x in 0..w {
+                    let c = px[y * w + x];
+                    f.extend_from_slice(&[c[2], c[1], c[0]]);
+                    n += 3;
+                }
+                while n % 4 != 0 {
+                    f.push(0);
+                    n += 1;
+                }
+            }
+            std::fs::write(path, f).unwrap();
+        }
+
+        fn colour(b: Biome, h: i32) -> [u8; 3] {
+            if h <= SEA_LEVEL {
+                return if h < SEA_LEVEL - 6 { [16, 46, 110] } else { [40, 90, 170] };
+            }
+            let shade = ((h - SEA_LEVEL) * 4).clamp(0, 80) as i32;
+            let base: [i32; 3] = match b {
+                Biome::Plains => [96, 168, 72],
+                Biome::Forest => [34, 110, 44],
+                Biome::Mountains => [130, 130, 135],
+                Biome::Desert => [222, 202, 130],
+                Biome::Snowy => [240, 244, 250],
+                Biome::Swamp => [70, 105, 70],
+                Biome::Beach => [230, 220, 160],
+            };
+            [
+                (base[0] + shade / 2).clamp(0, 255) as u8,
+                (base[1] + shade / 2).clamp(0, 255) as u8,
+                (base[2] + shade / 2).clamp(0, 255) as u8,
+            ]
+        }
+
+        let dir = std::env::var("BF_LAT_MAP_DIR").unwrap_or_else(|_| ".".into());
+        let seed = 11u64;
+
+        // Three band close-ups: equator (z=0, wraps), mid latitude (z=W/4),
+        // cold band (z=W/2). 1024x1024 blocks at 2 blocks/px.
+        for (name, zc) in [("equator_z0", 0i32), ("midlat_z8192", WORLD_PERIOD / 4), ("cold_z16384", WORLD_PERIOD / 2)] {
+            let n = 512usize;
+            let mut px = vec![[0u8; 3]; n * n];
+            for iy in 0..n {
+                for ix in 0..n {
+                    let wx = (ix as i32 - n as i32 / 2) * 2;
+                    let wz = zc + (iy as i32 - n as i32 / 2) * 2;
+                    let h = surface_height(wx, wz, seed);
+                    px[iy * n + ix] = colour(voronoi_biome(wx, wz, seed), h);
+                }
+            }
+            write_bmp(&format!("{dir}/lat_{name}_seed{seed}.bmp"), n, n, &px);
+        }
+
+        // Whole-torus overview: full W x W at 64 blocks/px (512x512), pole band
+        // horizontal through the middle, equator at top and bottom edges (wrap).
+        let n = 512usize;
+        let step = WORLD_PERIOD / n as i32;
+        let mut px = vec![[0u8; 3]; n * n];
+        for iy in 0..n {
+            for ix in 0..n {
+                let wx = ix as i32 * step;
+                let wz = iy as i32 * step;
+                let h = surface_height(wx, wz, seed);
+                px[iy * n + ix] = colour(voronoi_biome(wx, wz, seed), h);
+            }
+        }
+        write_bmp(&format!("{dir}/lat_world_overview_seed{seed}.bmp"), n, n, &px);
     }
 
     // Diagnostic visual: dump real generated structure cross-sections (torch / wall
@@ -2376,6 +2485,91 @@ fn bench_gen_cache_share() {
                         cave_entrance_depth(wx, wz, seed),
                         cave_entrance_depth(qx, qz, seed),
                         "entrance depth differs at ({wx},{wz}) seed {seed}"
+                    );
+                }
+            }
+        }
+    }
+
+    // #181: latitude climate bands. The torus has a warm equator centred on z = 0
+    // (wrapping across the seam) and a cold band centred on z = WORLD_PERIOD / 2.
+    // Deep in the cold band, land columns are overwhelmingly Snowy or Mountains
+    // (icy world) and Desert never appears; at the equator, snow never falls at
+    // sea level (no Snowy columns at all) while deserts are common. Both bands
+    // are checked on BOTH sides of their centre, so the equator check spans the
+    // z = 0 seam and the cold check spans z = W/2.
+    #[test]
+    fn latitude_bands() {
+        const W: i32 = WORLD_PERIOD;
+        for seed in [11u64, 42, 7] {
+            // Cold band: z within W/16 of the pole at W/2, sampled both sides.
+            let mut cold_land = 0i64;
+            let mut cold_icy = 0i64; // Snowy or Mountains
+            let mut cold_desert = 0i64;
+            for &wz in &[W / 2 - W / 16, W / 2 - 200, W / 2, W / 2 + 200, W / 2 + W / 16] {
+                for wx in (0..W).step_by(97) {
+                    if surface_height(wx, wz, seed) <= SEA_LEVEL {
+                        continue; // ocean columns have no biome look on top
+                    }
+                    cold_land += 1;
+                    match voronoi_biome(wx, wz, seed) {
+                        Biome::Snowy | Biome::Mountains => cold_icy += 1,
+                        Biome::Desert => cold_desert += 1,
+                        _ => {}
+                    }
+                }
+            }
+            assert!(cold_land > 200, "seed {seed}: too few cold-band land samples ({cold_land})");
+            assert_eq!(cold_desert, 0, "seed {seed}: desert painted in the cold band");
+            assert!(
+                cold_icy as f64 >= cold_land as f64 * 0.85,
+                "seed {seed}: cold band not icy enough ({cold_icy}/{cold_land})"
+            );
+
+            // Equator band: z within ~W/32 of 0, wrapping across the seam.
+            let mut eq_land = 0i64;
+            let mut eq_snowy = 0i64;
+            let mut eq_desert = 0i64;
+            for &wz in &[W - W / 32, W - 300, 0, 300, W / 32] {
+                for wx in (0..W).step_by(97) {
+                    // Snow at sea level comes from a Snowy dominant biome (the
+                    // Mountains snow cap needs altitude), so a snow-free equator
+                    // at sea level means: no Snowy columns at all down here.
+                    let b = voronoi_biome(wx, wz, seed);
+                    if b == Biome::Snowy {
+                        eq_snowy += 1;
+                    }
+                    if surface_height(wx, wz, seed) > SEA_LEVEL {
+                        eq_land += 1;
+                        if b == Biome::Desert {
+                            eq_desert += 1;
+                        }
+                    }
+                }
+            }
+            assert!(eq_land > 200, "seed {seed}: too few equator land samples ({eq_land})");
+            assert_eq!(eq_snowy, 0, "seed {seed}: snowy biome at the equator");
+            assert!(
+                eq_desert as f64 >= eq_land as f64 * 0.10,
+                "seed {seed}: equator deserts too rare ({eq_desert}/{eq_land})"
+            );
+        }
+    }
+
+    // #181: the spawn search (world/lifecycle.rs) walks outward from the origin
+    // by at most 768 blocks, and the origin sits on the warm equator (latitude
+    // factor cos(0) = 1; cos is still ~0.99 at z = +-768). So the player can
+    // never wake up on the ice cap. Guard the worldgen side of that contract:
+    // every column the spawn search can reach is non-snowy, across seeds.
+    #[test]
+    fn spawn_reach_is_never_snowy() {
+        for seed in [11u64, 1, 42, 7, 1234] {
+            for wz in (-768..=768).step_by(96) {
+                for wx in (-768..=768).step_by(96) {
+                    assert_ne!(
+                        voronoi_biome(wx, wz, seed),
+                        Biome::Snowy,
+                        "seed {seed}: snowy biome inside the spawn search reach at ({wx},{wz})"
                     );
                 }
             }

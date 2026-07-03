@@ -1997,6 +1997,10 @@ fn wrap_seam_walk_east() {
     let mut input: bf_frame_input = unsafe { std::mem::zeroed() };
     input.move_forward = 1.0;
     input.sprint = 1;
+    // #181: the latitude bands moved the dry seam strip onto gently rising
+    // ground (the near-equator seam is desert dunes now); hold jump so the
+    // walker hops up the one-block steps instead of pinning against them.
+    input.jump = 1;
     let mut crossed = false;
     let mut min_y = f32::MAX;
     for _ in 0..600 {

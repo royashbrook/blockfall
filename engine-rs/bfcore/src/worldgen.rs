@@ -679,6 +679,46 @@ fn climate_spread(v: f32) -> f32 {
     0.5 + s * a * 0.5
 }
 
+// ---------------------------------------------------------------------------
+// Latitude climate (#181, phase 3 of #173)
+//
+// The torus gets a fake latitude: one full trip around the z axis crosses a warm
+// equator band (centred on z = 0, wrapping across the seam) and a cold polar band
+// (centred on z = WORLD_PERIOD / 2). The latitude factor is cos(2*pi*z / W), so
+// it is periodic by construction and closes on the torus exactly like every
+// other climate field. Walking north or south reads as equator, then pole, then
+// around to the equator again.
+//
+// The factor becomes a temperature BIAS added to the sampled climate temperature
+// (after the spread, clamped back to [0,1]). Moisture is untouched, so each band
+// keeps internal variety: the cold band mixes snowy flats and cold mountains,
+// the equator mixes desert, grass and forest. No new biomes; the existing set is
+// re-weighted by where it sits on the planet.
+//
+// Because the bias lives inside sample_climate, every consumer agrees for free
+// (the #171 lesson: the Voronoi site map must not paint a biome over columns
+// whose climate disagrees). Voronoi sites classify from sample_climate at their
+// OWN position, so a site inherits its own latitude's bias: desert sites cannot
+// spawn in the cold band and snowy sites cannot spawn near the equator. The
+// beach reclass and desert_region_t read the same biased site data.
+//
+// LAT_TEMP_AMP = 0.55 was tuned against the biome centres: in the deep cold band
+// the biased temperature tops out near 0.45, which keeps Desert (temp 0.85,
+// radius 0.28) unreachable and hands almost every column to Snowy or Mountains;
+// at the equator the biased temperature bottoms out near 0.55, which keeps Snowy
+// (temp 0.15, radius 0.26) unreachable at any moisture, so snow never falls at
+// sea level there. Mid latitudes (|cos| small) keep today's temperate mix.
+// ---------------------------------------------------------------------------
+const LAT_TEMP_AMP: f32 = 0.55;
+
+// Temperature bias for a canonical world z. Callers pass the WRAPPED coordinate
+// so torus twins compute cos on bit-identical inputs.
+#[inline]
+fn latitude_temp_bias(wz_wrapped: i32) -> f32 {
+    let phase = core::f32::consts::TAU * (wz_wrapped as f32) / (WORLD_PERIOD as f32);
+    LAT_TEMP_AMP * phase.cos()
+}
+
 fn sample_climate(wx: i32, wz: i32, seed: u64) -> (f32, f32) {
     let tseed = fmix64(seed ^ 0xB10E5EED00000001);
     let mseed = fmix64(seed ^ 0xB10E5EED00000002);
@@ -697,6 +737,10 @@ fn sample_climate(wx: i32, wz: i32, seed: u64) -> (f32, f32) {
     const BIOME_NOISE_PERIOD: i32 = 76;
     let temp = climate_spread(fbm2(fwx, fwz, tseed, 3, BIOME_NOISE_PERIOD, 0.5));
     let moist = climate_spread(fbm2(fwx, fwz, mseed, 3, BIOME_NOISE_PERIOD, 0.5));
+    // #181: latitude bias. Computed from the canonical (un-warped) wz so the
+    // latitude bands are exactly periodic and twins stay bit-identical; the
+    // domain warp already supplies plenty of local border waviness.
+    let temp = (temp + latitude_temp_bias(wz)).clamp(0.0, 1.0);
     (temp, moist)
 }
 
