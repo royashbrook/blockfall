@@ -90,13 +90,17 @@ struct VolUniforms {
 }
 
 /// Wind + weather uniforms passed to terrain vertex shaders (both vmain and shadowVmain).
-/// 16 bytes. Keeps foliage sway + rain factor in a dedicated buffer (index 3) so
+/// 32 bytes. Keeps foliage sway + rain factor in a dedicated buffer (index 3) so
 /// Uniforms / WaterUniforms signatures stay unchanged (runPerfTest safe).
 struct WindUniforms {
     var wallClockSecs: Float    //  4 — wall-clock seconds for sway animation
     var rainStrength:  Float    //  4 — 0..1 how hard it's raining (scales sway amp)
     var swayScale:     Float = 0  // #: foliage-sway toggle (0=off, default OFF)
     var pad1:          Float = 0
+    // #180 horizon curvature: xyz = camera world pos, w = enable (0 = flat).
+    // Defaults to .zero so harness gate paths that default-build WindUniforms
+    // keep rendering the flat world their assertions were tuned on.
+    var camPosH:       SIMD4<Float> = .zero
 }
 
 /// One part of a prop model for the GPU model table (#52/#62). 40 bytes; matches MSL
@@ -108,10 +112,11 @@ struct PropCuboidGPU {
     var r: Float,  g: Float,  b: Float    // colour
     var shape: Float = 0                   // 0=box, 1=sphere, 2=cone, 3=cylinder (#62)
 }
-/// Uniforms for the prop pass. 80 bytes; matches MSL PropUniforms.
+/// Uniforms for the prop pass. 96 bytes; matches MSL PropUniforms.
 struct PropUniforms {
     var viewProj: simd_float4x4
     var params:   SIMD4<Float>   // x = day brightness
+    var camPosH:  SIMD4<Float> = .zero   // #180 horizon curvature: xyz = cam pos, w = enable
 }
 
 /// Uniforms for the first-person viewmodel pass (#70). Matches MSL ViewModelUniforms.
@@ -262,6 +267,6 @@ struct AmbientLifeUniforms {
     var camPosW:       SIMD4<Float>  = .zero                   // 16 bytes — world cam pos
     var timeOfDay:     Float         = 0                       // 4 — 0..1 day cycle
     var wallClock:     Float         = 0                       // 4 — animation time
-    var pad0:          Float         = 0
+    var horizonOn:     Float         = 0   // #180 horizon curvature enable (0 = flat)
     var pad1:          Float         = 0
 }

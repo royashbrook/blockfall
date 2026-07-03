@@ -386,6 +386,21 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         // (specular / fades), not the shadow geometry. This is the controlled experiment the
         // input-driven harness otherwise cannot run (it can't hold the player still).
         var windU = WindUniforms(wallClockSecs: wallClock, rainStrength: 0)
+        // #180 horizon curvature: --shot and --perftest run the curved path the live
+        // game ships (BF_HORIZON=0 bakes k=0 for a flat A/B). The dedicated gate
+        // probes (washout / world-fixed / ground-night) build their own uniforms and
+        // stay flat by the .zero default, so their camera-invariance assertions are
+        // untouched by this camera-dependent visual warp.
+        // #180 horizon curvature camera. NOT camPosW: that -(R*t) extraction from the
+        // view matrix is only exact near the coordinate origin; in the toroidal frames
+        // #179 emits near the world seam (|coords| up to 32768) its error grows to
+        // hundreds of blocks, which pushed every d^2 drop to the cap (entities sank,
+        // terrain over-curved). Unproject screen-centre at the near plane instead:
+        // exact for whatever frame the engine built the view matrix in.
+        let hInv = viewProj.inverse
+        let hNear = hInv * SIMD4<Float>(0, 0, 0, 1)
+        let horizonCamH = SIMD4<Float>(hNear.x / hNear.w, hNear.y / hNear.w, hNear.z / hNear.w, 1)
+        windU.camPosH = horizonCamH
         let cmd = queue.makeCommandBuffer()!
 
         // PASS 1 (shadow-map depth) is RETIRED. World-space voxel shadows: pull the engine
@@ -475,7 +490,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 if let ib = propInstBuf {
                     memcpy(ib.contents(), insts, need)
                     let dayBright = 0.30 + 0.70 * Renderer.dayLight(f.camera.time_of_day)
-                    var pu2 = PropUniforms(viewProj: viewProj, params: SIMD4<Float>(dayBright, Float(wallClock), 0, 0))
+                    var pu2 = PropUniforms(viewProj: viewProj, params: SIMD4<Float>(dayBright, Float(wallClock), 0, 0),
+                                           camPosH: horizonCamH)   // #180 horizon curvature
                     enc.setRenderPipelineState(pp); enc.setDepthStencilState(depthState); enc.setCullMode(.none)
                     enc.setVertexBuffer(ib, offset: 0, index: 0)
                     enc.setVertexBytes(&pu2, length: MemoryLayout<PropUniforms>.stride, index: 1)
@@ -566,7 +582,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 }
                 testEnts.withUnsafeBufferPointer { bp in
                     entR.encode(enc, viewProj: viewProj, entities: bp.baseAddress, count: testEnts.count,
-                                shadow: es, occ: shadowVol?.tex, occCoarse: shadowVol?.coarse)
+                                shadow: es, occ: shadowVol?.tex, occCoarse: shadowVol?.coarse,
+                                camPosH: horizonCamH)   // #180 entities bend with the terrain
                 }
                 if ProcessInfo.processInfo.environment["BF_SHOT_ENTDUMP"] == "1" {
                     let mvpTest = viewProj * SIMD4<Float>(baseXZ.x, footY + 0.8, baseXZ.z, 1)

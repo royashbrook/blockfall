@@ -8,6 +8,11 @@ struct EUniforms {
     // #116 model matrix (object -> world) so the fragment can recover its WORLD position and
     // march the world voxel sun shadow the same way the terrain does.
     var model: simd_float4x4 = matrix_identity_float4x4
+    // #180 horizon curvature: camPosH.xyz = camera world pos, .w = enable (0 = flat).
+    // vpYCol = viewProj column 1 so the vertex shader can apply the world-Y drop to
+    // the precomputed mvp result in clip space (see EUniforms in the MSL).
+    var camPosH: SIMD4<Float> = .zero
+    var vpYCol:  SIMD4<Float> = .zero
 }
 
 // #116 character-shadow uniforms: shared by the entity cube fragment (RECEIVE: march toward the
@@ -40,4 +45,5 @@ struct GroundShadowUniforms {
     var sunDirTime: SIMD4<Float>
     var voxOrigin:  SIMD4<Float>
     var voxDims:    SIMD4<Float>
+    var camPosH:    SIMD4<Float> = .zero  // #180 horizon curvature: xyz = cam pos, w = enable
 }

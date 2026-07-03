@@ -3925,7 +3925,9 @@ extension EntityRenderer {
         // position and march the world voxel sun shadow (RECEIVE). mvp = viewProj * model.
         var u = EUniforms(mvp: viewProj * model,
                           color: SIMD4<Float>(outRGB.x, outRGB.y, outRGB.z, outSat),
-                          model: model)
+                          model: model,
+                          camPosH: curCamPosH,          // #180 horizon curvature
+                          vpYCol:  viewProj.columns.1)  // clip-space Y column for the drop
         enc.setVertexBytes(&u, length: MemoryLayout<EUniforms>.stride, index: 1)
         enc.drawIndexedPrimitives(type: .triangle, indexCount: indexCount,
                                   indexType: .uint16, indexBuffer: cubeIB, indexBufferOffset: 0)

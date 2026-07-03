@@ -11,7 +11,12 @@ extension EntityRenderer {
     using namespace metal;
 
     struct CVert     { packed_float3 pos; packed_float3 normal; };
-    struct EUniforms { float4x4 mvp; float4 color; float4x4 model; };
+    // #180 horizon curvature fields:
+    //   camPosH : xyz = camera world pos, w = enable (0 = flat)
+    //   vpYCol  : column 1 of the camera viewProj (the clip-space contribution of
+    //             world-Y), so the world-space drop can be applied to the mvp result
+    //             without shipping the full viewProj: VP*(w + (0,dy,0,0)) = mvp*p + dy*vpYCol.
+    struct EUniforms { float4x4 mvp; float4 color; float4x4 model; float4 camPosH; float4 vpYCol; };
     struct EOut      { float4 position [[position]]; float3 color; float shade; float sat;
                        float3 worldPos; float3 worldNrm; };
 
@@ -22,6 +27,11 @@ extension EntityRenderer {
     // DDA march the terrain fragment uses (Renderer.marchSunOcclusion), duplicated here so an
     // entity gets the identical shade as the ground it stands on. 1.0 = lit, 0.0 = shadowed.
     constant int BFE_COARSE = 4;
+    // #180 render-only horizon curvature (same baked constant as the terrain shaders;
+    // see the long comment in RendererShaders.swift). k = 1 / (2 * R).
+    constant float BFE_HORIZON_K = \(Renderer.horizonKLiteral);
+    constant float BFE_HORIZON_PERIOD = 32768.0;   // engine WORLD_PERIOD (#179)
+    constant float BFE_HORIZON_D2CAP = 600.0 * 600.0;   // matches BF_HORIZON_D2CAP (RendererShaders)
     static float entMarchSun(texture3d<uint, access::read> occ,
                              texture3d<uint, access::read> coarse,
                              float3 gridOrigin, float3 gridDims,
@@ -79,7 +89,14 @@ extension EntityRenderer {
         float shade = clamp(0.55 + 0.30 * n.y + 0.15 * n.x, 0.0, 1.0);
         EOut o;
         float4 wp = u.model * float4(float3(cv.pos), 1.0);
-        o.position = u.mvp * float4(float3(cv.pos), 1.0);
+        // #180 horizon curvature: entities (creatures, falling blocks, debris) must
+        // bend with the terrain or they float at distance. Drop by k * d^2 in world
+        // space, applied in clip space via the viewProj Y column (exact, one fma).
+        // worldPos stays FLAT (the sun-shadow march runs on the flat world).
+        float2 hd = wp.xz - u.camPosH.xz;
+        hd -= BFE_HORIZON_PERIOD * rint(hd / BFE_HORIZON_PERIOD);   // nearest toroidal image
+        float dy = -BFE_HORIZON_K * u.camPosH.w * min(dot(hd, hd), BFE_HORIZON_D2CAP);
+        o.position = u.mvp * float4(float3(cv.pos), 1.0) + dy * u.vpYCol;
         o.color    = u.color.rgb;
         o.shade    = shade;
         o.sat      = u.color.w;   // -1.0 = emissive
@@ -142,7 +159,8 @@ extension EntityRenderer {
     // Cheap: a couple of triangles + a short downward occupancy march per covered pixel.
     // =====================================================================================
     struct GShadowInst { float4 footRadius; float4 meta; };
-    struct GShadowU    { float4x4 viewProj; float4 sunDirTime; float4 voxOrigin; float4 voxDims; };
+    struct GShadowU    { float4x4 viewProj; float4 sunDirTime; float4 voxOrigin; float4 voxDims;
+                         float4 camPosH; };   // #180 horizon curvature: xyz = cam pos, w = enable
     struct GSOut       { float4 position [[position]]; float3 worldPos; float3 center; float radius;
                          float2 sunGround; float dayFactor; };
 
@@ -279,7 +297,13 @@ extension EntityRenderer {
         GSOut o;
         // Sit just above the snapped surface so it never z-fights the ground or gets buried.
         float3 wpos = float3(worldXZ.x, planeY + 0.04, worldXZ.y);
-        o.position  = u.viewProj * float4(wpos, 1.0);
+        // #180 horizon curvature: the contact blob must sink with the terrain it sits
+        // on, or a distant creature's shadow floats above the dropped ground. Rasterize
+        // the dropped position; keep worldPos flat (the SDF + ground march are flat-world).
+        float2 hd = wpos.xz - u.camPosH.xz;
+        hd -= BFE_HORIZON_PERIOD * rint(hd / BFE_HORIZON_PERIOD);   // nearest toroidal image
+        float3 wposDrop = float3(wpos.x, wpos.y - BFE_HORIZON_K * u.camPosH.w * min(dot(hd, hd), BFE_HORIZON_D2CAP), wpos.z);
+        o.position  = u.viewProj * float4(wposDrop, 1.0);
         o.worldPos  = wpos;
         o.center    = float3(foot.x, planeY, foot.z);
         o.radius    = r;

@@ -149,6 +149,25 @@ final class Renderer: NSObject, MTKViewDelegate {
         if let s = ProcessInfo.processInfo.environment["BF_PBR"], let v = Float(s) { return max(0, min(1, v)) }
         return Float(UserDefaults.standard.object(forKey: "gfxPBRStr") as? Double ?? 0.6)
     }()
+    // #180 render-only horizon curvature (phase 2 of the #173 looping-world epic).
+    // The world is a 32768-block torus (#179); to make it READ as a round little
+    // planet, every world-space vertex shader drops geometry by k * d^2 where d is
+    // the horizontal distance to the camera and k = 1 / (2 * R). Purely visual: the
+    // engine, physics, fog distances and the world-space voxel shadow march all stay
+    // on the FLAT world (o.worldPos is the undropped position everywhere), so a fixed
+    // world point's shadow is still camera-invariant. With R = 7000 the drop is
+    // ~2.9 blocks at 200 and ~10.5 blocks at the 384-block render edge, which sinks
+    // the far chunk ring below the horizon line and hides pop-in.
+    // BF_HORIZON=<radius> overrides for shots (0 = flat/off). Baked into the shader
+    // source at library-compile time; per-pass uniforms only carry the camera pos +
+    // an enable flag (w), so default-built uniforms (harness gates) render flat.
+    static let kHorizonRadius: Float = {
+        if let s = ProcessInfo.processInfo.environment["BF_HORIZON"], let v = Float(s) { return max(0, v) }
+        return 7000
+    }()
+    static let horizonK: Float = kHorizonRadius > 0 ? 1.0 / (2.0 * kHorizonRadius) : 0
+    // MSL float literal for baking into the runtime-compiled shader sources.
+    static let horizonKLiteral: String = String(format: "%.9e", Double(horizonK)) + "f"
     // #162 weather control. The engine owns weather (a deterministic function of
     // seed + world_clock) and packs it into frame.camera.weather: integer part =
     // precip mode (0 none, 1 rain, 2 snow), fraction = cloud coverage * 0.98.
@@ -1115,6 +1134,18 @@ final class Renderer: NSObject, MTKViewDelegate {
             -(viewM.columns.0.z * vt.x + viewM.columns.1.z * vt.y + viewM.columns.2.z * vt.z),
             0)
 
+        // #180 horizon curvature: camera pos + enable flag (w=1) for the world-space
+        // vertex shaders. The live game is always on the curved path (BF_HORIZON=0
+        // bakes k=0, so the drop is a no-op when disabled).
+        // NOT camPosW: that -(R*t) view-matrix extraction is only exact near the
+        // coordinate origin; in the toroidal frames #179 emits near the world seam
+        // its error reaches hundreds of blocks, which drove every d^2 drop to the
+        // cap. Unproject screen-centre at the near plane instead: exact for
+        // whatever frame the engine built the view matrix in.
+        let hNear = viewProj.inverse * SIMD4<Float>(0, 0, 0, 1)
+        let horizonCamH = SIMD4<Float>(hNear.x / hNear.w, hNear.y / hNear.w, hNear.z / hNear.w, 1)
+        windU.camPosH = horizonCamH
+
         // ---- #13: Multiplayer compass — find other connected players --------
         // Scan the render frame for remote-player entities (kind == 100) and,
         // for each, work out an on-screen marker point or an off-screen edge
@@ -1256,7 +1287,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                     memcpy(ib.contents(), insts, need)
                     let dayBright = 0.30 + 0.70 * Renderer.dayLight(frame.camera.time_of_day)
                     var pu2 = PropUniforms(viewProj: viewProj,
-                                           params: SIMD4<Float>(dayBright, wallClock, gfxFoliage ? 1 : 0, 0))
+                                           params: SIMD4<Float>(dayBright, wallClock, gfxFoliage ? 1 : 0, 0),
+                                           camPosH: horizonCamH)   // #180 horizon curvature
                     enc.setRenderPipelineState(propPipeline)
                     enc.setDepthStencilState(depthState)
                     enc.setCullMode(.none)   // small opaque cuboids; skip winding concerns
@@ -1281,7 +1313,8 @@ final class Renderer: NSObject, MTKViewDelegate {
                 params:     SIMD4<Float>((gfxCharShadows && shadowOn > 0.5) ? 1 : 0, 0, 0, 0))
             entityRenderer.encode(enc, viewProj: viewProj, entities: frame.entities,
                                   count: Int(frame.entity_count), shadow: es,
-                                  occ: shadowVolTex, occCoarse: shadowVolCoarseTex)
+                                  occ: shadowVolTex, occCoarse: shadowVolCoarseTex,
+                                  camPosH: horizonCamH)   // #180 entities bend with the terrain
             particles.update(Float(dt))
             particles.encode(enc, viewProj: viewProj)
 
@@ -1300,7 +1333,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                     camPosW:    camPosW,
                     timeOfDay:  frame.camera.time_of_day,
                     wallClock:  wallClock,
-                    pad0:       0,
+                    horizonOn:  1,   // #180 birds/fireflies bend with the terrain
                     pad1:       0)
                 enc.setVertexBuffer(ambientLifeBuffer, offset: 0, index: 0)
                 enc.setVertexBytes(&alU, length: MemoryLayout<AmbientLifeUniforms>.stride, index: 1)

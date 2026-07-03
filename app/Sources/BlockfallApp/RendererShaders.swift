@@ -96,13 +96,47 @@ extension Renderer {
 
     // (ShadowVertUniforms retired with the shadow-map render pass.)
 
-    // WindUniforms (16 bytes) — foliage sway + weather.  buffer(3) on vertex AND frag.
+    // WindUniforms (32 bytes): foliage sway + weather.  buffer(3) on vertex AND frag.
     struct WindUniforms {
         float wallClockSecs;
         float rainStrength;   // 0..1
         float swayScale;      // #: foliage-sway toggle (0=off)
         float pad1;
+        float4 camPosH;       // #180 horizon curvature: xyz = cam world pos, w = enable (0 = flat)
     };
+
+    // =========================================================
+    // #180 HORIZON CURVATURE (render-only, phase 2 of the looping-world epic #173)
+    // ---------------------------------------------------------
+    // The world is a 32768-block torus (#179). To make it READ as a round little
+    // planet, every world-space vertex is dropped by k * d^2 (d = horizontal
+    // distance to the camera, k = 1 / (2 * R), R baked from Renderer.kHorizonRadius
+    // / BF_HORIZON at library compile). PURELY VISUAL displacement at rasterization:
+    // fog distances, the world-space voxel sun-shadow march and every out.worldPos
+    // stay on the FLAT world, so world-fixed shadows remain camera-invariant.
+    // camH.w gates per pass (0 = flat); default-built uniforms render flat.
+    // =========================================================
+    constant float BF_HORIZON_K = \(Renderer.horizonKLiteral);
+
+    // World wrap period (engine WORLD_PERIOD, #179): geometry can be emitted at a far
+    // toroidal image (x or z offset by 32768), so the camera delta must be wrapped to
+    // the NEAREST image before the d^2 drop, or a far-image chunk gets an astronomic
+    // drop and its triangles smear across the whole frame.
+    constant float BF_HORIZON_PERIOD = 32768.0;
+    // Cap d^2 at 600 blocks (beyond the 384-block render edge and the 512 far plane).
+    // Resident-but-out-of-range chunks (eviction lag, flyover residue) are invisible
+    // when flat (beyond the far plane); an unbounded d^2 drop would plunge them
+    // thousands of blocks and stretch their triangles THROUGH the view volume as a
+    // full-screen smear. Capping keeps their drop bounded so they stay clipped, while
+    // everything inside the render distance is untouched (384^2 < the cap).
+    constant float BF_HORIZON_D2CAP = 600.0 * 600.0;
+
+    static float3 horizonBend(float3 world, float4 camH) {
+        float2 d = world.xz - camH.xz;
+        d -= BF_HORIZON_PERIOD * rint(d / BF_HORIZON_PERIOD);   // nearest toroidal image
+        world.y -= BF_HORIZON_K * camH.w * min(dot(d, d), BF_HORIZON_D2CAP);
+        return world;
+    }
 
     // Vertex output for terrain pass.
     struct VOut {
@@ -129,7 +163,7 @@ extension Renderer {
         float4   camPosW;    // 16 bytes
         float    timeOfDay;
         float    wallClock;
-        float    pad0;
+        float    horizonOn;  // #180 horizon curvature enable (0 = flat)
         float    pad1;
     };
 
@@ -851,7 +885,9 @@ extension Renderer {
         float shade  = clamp(lightLevel * facing, 0.0, 1.0);
 
         VOut o;
-        o.position = u.viewProj * float4(swayedWorld, 1.0);
+        // #180 horizon curvature: rasterize the DROPPED position, but keep worldPos
+        // (fog, voxel shadow march, water waves) on the flat world.
+        o.position = u.viewProj * float4(horizonBend(swayedWorld, wu.camPosH), 1.0);
 
         float3 base = materialColor(uint(p.material));
         o.color    = mix(base, base * float3(1.15, 1.02, 0.8), clamp(blockC - skyC, 0.0, 1.0));
@@ -3021,7 +3057,10 @@ extension Renderer {
         float2 corner = corners[ci];
 
         float size   = sp.posW.w;   // screen-space half-size in clip units
-        float4 clipCenter = au.viewProj * float4(sp.posW.xyz, 1.0);
+        // #180 horizon curvature: fireflies hug the ground and birds share the same
+        // sky, so both bend with the terrain (a distant firefly must not float).
+        float4 camH = float4(au.camPosW.xyz, au.horizonOn);
+        float4 clipCenter = au.viewProj * float4(horizonBend(sp.posW.xyz, camH), 1.0);
 
         // Billboard: offset in clip space so the quad always faces the camera.
         // We scale the offset by size / clipCenter.w to keep it view-independent.
@@ -3073,7 +3112,7 @@ extension Renderer {
     // vertex shader expands each instance's model from a model table. No per-frame
     // geometry rebuild, so prop count is nearly free (scales to dense grass).
     // =========================================================
-    struct PropUniforms { float4x4 viewProj; float4 params; };  // params.x = day brightness
+    struct PropUniforms { float4x4 viewProj; float4 params; float4 camPosH; };  // params.x = day brightness; camPosH = #180 horizon curvature
     struct PropVOut { float4 position [[position]]; float3 nrm; float3 col; };
     // Matches bf_prop_instance (24 bytes): position(12) + type(4) + seed(4) + sat(4).
     struct PropInstanceGPU { packed_float3 position; uint type; uint seed; float sat; };
@@ -3283,7 +3322,9 @@ extension Renderer {
             lp.x += sway * max(0.0, lp.y - 0.05) * 0.22;   // height-rooted bend
         }
         float3 world = float3(inst.position) + lp;
-        o.position = u.viewProj * float4(world, 1.0);
+        // #180 horizon curvature: props/trees must bend with the terrain or distant
+        // canopies float above the sunken ground.
+        o.position = u.viewProj * float4(horizonBend(world, u.camPosH), 1.0);
         o.nrm = nm;
         // flat colour, drained by region saturation, scaled by day brightness
         float3 base = float3(cu.color);

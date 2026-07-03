@@ -152,6 +152,9 @@ final class EntityRenderer {
     private var curShadow:    EntityShadowUniforms = EntityShadowUniforms()
     private var curOcc:       MTLTexture?
     private var curOccCoarse: MTLTexture?
+    // #180 horizon curvature for THIS encode: xyz = camera world pos, w = enable (0 = flat).
+    // Internal (not private) because drawCube lives in the EntityRendererSpecies extension.
+    var curCamPosH: SIMD4<Float> = .zero
 
     // =========================================================================
     // HIT REACTION — combat feedback ("you just click and poof" → make it land)
@@ -318,11 +321,13 @@ final class EntityRenderer {
                 count:    Int,
                 shadow:   EntityShadowUniforms = EntityShadowUniforms(),
                 occ:      MTLTexture? = nil,
-                occCoarse: MTLTexture? = nil) {
+                occCoarse: MTLTexture? = nil,
+                camPosH:  SIMD4<Float> = .zero) {   // #180 horizon curvature (default flat)
         guard let entities = entities, count > 0 else { return }
         curShadow    = shadow
         curOcc       = occ
         curOccCoarse = occCoarse
+        curCamPosH   = camPosH
         let charShadowOn = (shadow.params.x > 0.5) && occ != nil && occCoarse != nil
 
         // ---- CAST PASS (#116, Part 2): one soft ground blob per entity, drawn FIRST so the
@@ -545,7 +550,8 @@ final class EntityRenderer {
         var gu = GroundShadowUniforms(viewProj: viewProj,
                                       sunDirTime: curShadow.sunDirTime,
                                       voxOrigin:  curShadow.voxOrigin,
-                                      voxDims:    curShadow.voxDims)
+                                      voxDims:    curShadow.voxDims,
+                                      camPosH:    curCamPosH)   // #180 blob sinks with the terrain
         enc.setVertexBytes(&gu, length: MemoryLayout<GroundShadowUniforms>.stride, index: 0)
         enc.setVertexBuffer(ib, offset: 0, index: 1)
         if let o = curOcc { enc.setVertexTexture(o, index: 0) }   // vertex snaps the quad to the surface
