@@ -8,13 +8,18 @@ impl<'c> World<'c> {
         let mut best_t = 6.0f32;
         for (i, c) in self.creatures.iter().enumerate() {
             let cc = c.pos + V3::new(0.0, c.scale * 0.5, 0.0);
-            let rel = cc - o;
+            // #179: nearest-image delta, or a creature one block away across the
+            // seam reads as ~32767 blocks ahead and can never be looked at, hit,
+            // befriended, or talked to (while it can still melee the player, whose
+            // own AI already wraps). off is derived from the wrapped rel too.
+            let mut rel = cc - o;
+            rel.x = Self::wrap_signed_f(rel.x);
+            rel.z = Self::wrap_signed_f(rel.z);
             let t = dot(rel, d);
             if t < 0.0 || t > best_t {
                 continue;
             }
-            let closest = o + d * t;
-            let off = cc - closest;
+            let off = rel - d * t;
             let rad = 0.55 + c.scale * 0.7;
             if dot(off, off) < rad * rad {
                 best_t = t;

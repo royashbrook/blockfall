@@ -2878,20 +2878,23 @@ extension Renderer {
             // bright horizon from getting a dark fringe.
             if (dC < 0.9995) {
                 float lc = celLinearizeDepth(dC);
-                // #134 cheaper edge: a 3-tap forward-difference cross (centre + right + down)
-                // replaces the 4-tap diagonal Roberts (5 depth samples + 5 linearizations →
-                // 3 of each). The centre sample is already needed for the sky-skip and the
-                // normalization, so this adds only two taps. The largest of the two forward
-                // gaps still inks every silhouette boldly; visually indistinguishable from the
-                // 4-tap cross at this thickness, at a noticeably lower per-pixel cost.
+                // #186 CURVATURE (second-difference) edge test. A silhouette is where the
+                // depth GRADIENT jumps, not merely where depth is steep. |lL + lR - 2*lc| is
+                // ~0 on ANY linearly-varying surface (flat ground, the same ground viewed
+                // edge-on, and the gently curved horizon-bent terrain #180) and spikes only at
+                // a true depth crease or step. The old first-difference (|lc - lR|) fired on
+                // grazing ground, inking whole far regions black, AND drew a hard line at every
+                // chunk boundary, where the greedy quads approximate the planet curve with a
+                // per-chunk slope kink. Five taps (centre + L/R/U/D); normalise by centre depth
+                // so a one-block ledge inks the same near and far.
+                float lL = celLinearizeDepth(sceneDepth.sample(s, in.uv - float2(texel.x, 0.0)));
                 float lR = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2(texel.x, 0.0)));
+                float lU = celLinearizeDepth(sceneDepth.sample(s, in.uv - float2(0.0, texel.y)));
                 float lD = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2(0.0, texel.y)));
-                // Largest neighbour gap, normalised by centre distance so the sensitivity is
-                // scale-free (a one-block ledge inks the same near and far).
-                float g = max(abs(lc - lR), abs(lc - lD)) / max(lc, 1.0);
+                float curv = (abs(lL + lR - 2.0 * lc) + abs(lU + lD - 2.0 * lc)) / max(lc, 1.0);
                 // Smoothstep gate around CEL_DEPTH_SENS so the line antialiases instead of a
                 // hard 1-px jaggy. Above ~2x the threshold it is a full-strength edge.
-                float edge = smoothstep(CEL_DEPTH_SENS, CEL_DEPTH_SENS * 2.2, g);
+                float edge = smoothstep(CEL_DEPTH_SENS, CEL_DEPTH_SENS * 2.2, curv);
                 // Fade the ink in the far haze so the distant render edge does not get a
                 // busy net of lines (keeps the vista readable, matches the terrain fog).
                 float farFade = 1.0 - smoothstep(CEL_FAR * 0.6, CEL_FAR * 0.92, lc);

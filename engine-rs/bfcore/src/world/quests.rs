@@ -213,7 +213,15 @@ impl<'c> World<'c> {
         };
         out.active = 1;
         out.is_boss = if obj.trigger == "calm_boss" { 1 } else { 0 };
-        out.position = bf_vec3 { x: best.pos.x, y: best.pos.y, z: best.pos.z };
+        // #179: emit the target at its nearest image so the HUD compass (which
+        // does worldPos - camPos raw) points the short way and reads the true
+        // ~distance, not ~32000m the wrong way across the seam. out.distance is
+        // already nearest-image (bestd2 used wrap_signed_f above).
+        out.position = bf_vec3 {
+            x: self.pos.x + Self::wrap_signed_f(best.pos.x - self.pos.x),
+            y: best.pos.y,
+            z: self.pos.z + Self::wrap_signed_f(best.pos.z - self.pos.z),
+        };
         out.distance = bestd2.sqrt();
         let mut lbl = String::new();
         let mut up = true;

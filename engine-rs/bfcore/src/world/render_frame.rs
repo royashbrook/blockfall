@@ -89,14 +89,30 @@ impl<'c> World<'c> {
             if dist < scenery_radius {
                 let props = self.meshes[cc].props.clone();
                 if !props.is_empty() {
+                    // #179: props carry ABSOLUTE world positions and the prop shader
+                    // does world = position + local, so they must be shifted by the
+                    // SAME nearest-image chunk offset the terrain mesh uses above.
+                    // Without this a chunk across the seam draws its terrain adjacent
+                    // (via chunk_origin) but every tree/grass/flower 32768 blocks away,
+                    // so the whole forest pops out of existence while its occupancy
+                    // shadows stay, the exact invisible-breakable-trees failure props
+                    // were built to avoid.
+                    let dx_off = ((rcx - cc.x) * KCHUNK_DIM) as f32;
+                    let dz_off = ((rcz - cc.z) * KCHUNK_DIM) as f32;
+                    let shift = |mut p: bf_prop_instance| {
+                        p.position.x += dx_off;
+                        p.position.z += dz_off;
+                        p
+                    };
                     if dist < detail_radius {
-                        prop_instances.extend_from_slice(&props);
+                        prop_instances.extend(props.iter().copied().map(shift));
                     } else {
                         prop_instances.extend(
                             props
                                 .iter()
                                 .copied()
-                                .filter(|p| Self::is_tree_block(p.type_ as BlockId)),
+                                .filter(|p| Self::is_tree_block(p.type_ as BlockId))
+                                .map(shift),
                         );
                     }
                 }

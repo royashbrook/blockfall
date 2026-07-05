@@ -31,7 +31,13 @@ impl<'c> World<'c> {
     fn roll_chest_loot(&self, w: IVec3) -> [ItemStack; CHEST_SLOTS] {
         let mut out = [ItemStack::default(); CHEST_SLOTS];
         let is_ruin = worldgen::worldgen_dangerous_site_near(w.x, w.z, 8, self.seed)
-            .map(|(ax, _ay, az)| (ax - w.x).abs() <= 6 && (az - w.z).abs() <= 6)
+            // #179: nearest-image so a ruin whose footprint straddles the seam is
+            // still recognized (raw ax - w.x would be ~32764 and the chest would
+            // roll common village loot instead of ruin loot).
+            .map(|(ax, _ay, az)| {
+                Self::wrap_signed_block(ax - w.x).abs() <= 6
+                    && Self::wrap_signed_block(az - w.z).abs() <= 6
+            })
             .unwrap_or(false);
         let table: &[(&str, u16, u16)] = if is_ruin {
             &[
