@@ -385,13 +385,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let charBtn = pauseButton("Customize Character", #selector(openCharacterEditor))
         // #182 world map: same journey as pressing M, reachable from the pause menu.
         let mapBtn = pauseButton("World Map", #selector(openMapFromPause))
-        let stack = NSStackView(views: [title, sliderRow, showHUD, fxTitle, fxStack, rdRow, auTitle, auStack, mapBtn, charBtn, resume, menuBtn])
-        stack.orientation = .vertical; stack.spacing = 18; stack.alignment = .centerX
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        ov.addSubview(stack)
+        // #205: three fixed regions so the primary actions can NEVER be clipped
+        // off-screen at any window height: a pinned title at the top, the options
+        // in a SCROLL VIEW in the middle (scroll when they overflow), and a pinned
+        // action bar (Keep Playing / Save & Go to Menu) at the bottom.
+        let optionsStack = NSStackView(views: [sliderRow, showHUD, fxTitle, fxStack, rdRow, auTitle, auStack, mapBtn, charBtn])
+        optionsStack.orientation = .vertical; optionsStack.spacing = 18; optionsStack.alignment = .centerX
+        optionsStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true
+        let doc = NSView()
+        doc.translatesAutoresizingMaskIntoConstraints = false
+        doc.addSubview(optionsStack)
+        scroll.documentView = doc
+
+        let actionBar = NSStackView(views: [resume, menuBtn])
+        actionBar.orientation = .horizontal; actionBar.spacing = 16; actionBar.alignment = .centerY
+        actionBar.translatesAutoresizingMaskIntoConstraints = false
+
+        ov.addSubview(title)
+        ov.addSubview(scroll)
+        ov.addSubview(actionBar)
+        // Preferred width (yields to the 0.92*ov cap on narrow windows).
+        let scrollW = scroll.widthAnchor.constraint(equalToConstant: 460)
+        scrollW.priority = .defaultHigh
+        scrollW.isActive = true
         NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: ov.centerYAnchor),
+            title.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
+            title.topAnchor.constraint(equalTo: ov.topAnchor, constant: 30),
+
+            actionBar.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
+            actionBar.bottomAnchor.constraint(equalTo: ov.bottomAnchor, constant: -28),
+
+            scroll.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 18),
+            scroll.bottomAnchor.constraint(equalTo: actionBar.topAnchor, constant: -18),
+            scroll.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
+            scroll.widthAnchor.constraint(lessThanOrEqualTo: ov.widthAnchor, multiplier: 0.92),
+
+            // Vertical-only scroll: document width tracks the viewport (no h-scroll),
+            // height fits the options so it scrolls exactly when it overflows.
+            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            optionsStack.topAnchor.constraint(equalTo: doc.topAnchor),
+            optionsStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
+            optionsStack.centerXAnchor.constraint(equalTo: doc.centerXAnchor),
         ])
         container.addSubview(ov)
         pauseOverlay = ov
