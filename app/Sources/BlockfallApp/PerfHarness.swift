@@ -1653,6 +1653,24 @@ func runWorldFixedShadowTest(strict: Bool = false) -> Bool {
     // resident (draw_count healthy for several consecutive frames) before sampling. Async streaming
     // timing varies across process runs, so a fixed frame budget occasionally sampled an
     // under-streamed world and reported 0 ground points (a false RED). (#145)
+    // #197: turn to a CANONICAL heading before the walk so the sampled region does
+    // not move when the gameplay spawn facing changes (spawn now faces north). Probe
+    // the spawn yaw, then steer to the historical 0.6 heading that gives this seed
+    // its shadowed test region (~1020 points, ~98 shadowed).
+    do {
+        registry.currentFrame = 5000
+        var probe = bf_frame_input()
+        _ = bf_frame_begin(e, &probe, 1.0/60.0)
+        var pf = bf_render_frame(); _ = bf_frame_acquire_render(e, &pf)
+        let spawnYaw = atan2(pf.camera.forward.x, pf.camera.forward.z)
+        bf_frame_end(e); registry.collect()
+        registry.currentFrame = 5001
+        var turn = bf_frame_input()
+        turn.look_yaw_delta = 0.6 - spawnYaw
+        _ = bf_frame_begin(e, &turn, 1.0/60.0)
+        var tf = bf_render_frame(); _ = bf_frame_acquire_render(e, &tf)
+        bf_frame_end(e); registry.collect()
+    }
     var streamHealthy = 0
     var sf = 0
     let maxStreamFrames = 500

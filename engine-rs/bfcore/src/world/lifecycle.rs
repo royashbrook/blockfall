@@ -348,7 +348,9 @@ impl<'c> World<'c> {
         // Eye 3.2 above the surface so the feet clear the top block.
         self.pos = V3::new(sx as f32 + 0.5, surface as f32 + 3.2, sz as f32 + 0.5);
         self.spawn = self.pos;
-        self.yaw = 0.6;
+        // #197: face NORTH on spawn (yaw pi => forward is -z; north is -z / map up),
+        // so a fresh spawn reads "N" on the compass instead of the old 0.6 (SE).
+        self.yaw = std::f32::consts::PI;
         self.pitch = -0.25;
         // Spawn homeland starts colourful out to a generous radius.
         {

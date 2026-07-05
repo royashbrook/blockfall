@@ -399,11 +399,16 @@ func runWashoutTest() -> Bool {
         var input = bf_frame_input()
         _ = bf_frame_begin(e, &input, f < 48 ? 1.0/60.0 : 2.0)
         var fr = bf_render_frame(); _ = bf_frame_acquire_render(e, &fr)
+        // #183/#197: camera of a world-to-view [R | t] is -(R transpose * t), a dot
+        // with each rotation COLUMN. The old row form was yaw-dependent, so the
+        // spawn-facing change (#197) moved this (wrongly extracted) camEye onto
+        // different terrain and tripped the washout guard. This makes camEye the
+        // true player position, independent of facing.
         let vm = Renderer.mat(fr.camera.view); let vt = vm.columns.3
         camEye = SIMD3<Float>(
-            -(vm.columns.0.x*vt.x + vm.columns.1.x*vt.y + vm.columns.2.x*vt.z),
-            -(vm.columns.0.y*vt.x + vm.columns.1.y*vt.y + vm.columns.2.y*vt.z),
-            -(vm.columns.0.z*vt.x + vm.columns.1.z*vt.y + vm.columns.2.z*vt.z))
+            -(vm.columns.0.x*vt.x + vm.columns.0.y*vt.y + vm.columns.0.z*vt.z),
+            -(vm.columns.1.x*vt.x + vm.columns.1.y*vt.y + vm.columns.1.z*vt.z),
+            -(vm.columns.2.x*vt.x + vm.columns.2.y*vt.y + vm.columns.2.z*vt.z))
         bf_frame_end(e); registry.collect()
     }
 
