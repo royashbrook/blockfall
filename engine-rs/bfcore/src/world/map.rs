@@ -66,19 +66,6 @@ impl<'c> World<'c> {
         (idx / 8, 1u8 << (idx % 8))
     }
 
-    /// Mark the player's map cell and its 8 neighbours explored. O(1); called
-    /// when the player crosses a chunk boundary (and on spawn/load/teleport).
-    pub(super) fn mark_explored_around(&mut self, wx: i32, wz: i32) {
-        let ccx = Self::wrap_block(wx) / MAP_CELL;
-        let ccz = Self::wrap_block(wz) / MAP_CELL;
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                let (byte, bit) = Self::explored_bit(ccx + dx, ccz + dz);
-                self.explored[byte] |= bit;
-            }
-        }
-    }
-
     /// Reveal a filled DISC of explored cells centred on a world point (#189).
     /// Used at spawn so HOME sits in the middle of a symmetric round clearing
     /// instead of at the edge of the trail the player walks after landing.
@@ -95,6 +82,15 @@ impl<'c> World<'c> {
                 self.explored[byte] |= bit;
             }
         }
+    }
+
+    /// Reveal the whole render-distance disc as the player moves (#191), so the
+    /// map fills in at the scale the player can actually SEE, not a fixed 3x3
+    /// patch. stream_r is in chunks; convert to map cells (round up so the visible
+    /// edge is covered). Cheap: called once per chunk crossing, not per frame.
+    pub(super) fn reveal_render_radius(&mut self, wx: i32, wz: i32) {
+        let r_cells = ((self.stream_r * KCHUNK_DIM + MAP_CELL - 1) / MAP_CELL).max(1);
+        self.reveal_circle(wx, wz, r_cells);
     }
 
     pub fn debug_explored_at(&self, wx: i32, wz: i32) -> bool {
@@ -290,7 +286,7 @@ impl<'c> World<'c> {
         self.first_stream = true;
         self.stream_active_r = 2.min(self.stream_r);
         self.recompute_stream_set();
-        self.mark_explored_around(tx, tz);
+        self.reveal_render_radius(tx, tz);   // #191 reveal the arrival area at view scale
         // Arrival sparkle + sound (same fx code the respawn poof uses).
         let pv = self.player_voxel();
         self.fx(6, pv, 0);

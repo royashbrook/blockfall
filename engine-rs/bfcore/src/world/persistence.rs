@@ -304,7 +304,7 @@ impl<'c> World<'c> {
         {
             let px = Self::ifloor(self.pos.x);
             let pz = Self::ifloor(self.pos.z);
-            self.mark_explored_around(px, pz);
+            self.reveal_render_radius(px, pz);   // #191 reveal at render-distance scale on load
         }
         self.ensure_clear_spawn();
         self.last_center = Self::to_chunk(IVec3 {

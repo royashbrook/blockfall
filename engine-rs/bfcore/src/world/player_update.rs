@@ -208,7 +208,10 @@ impl<'c> World<'c> {
             // as visited. Both O(1) per crossing (a pure worldgen query).
             let px = Self::ifloor(self.pos.x);
             let pz = Self::ifloor(self.pos.z);
-            self.mark_explored_around(px, pz);
+            // #191: reveal the full render-distance disc so the map keeps up with
+            // how far the player can see (a fixed 3x3 patch barely filled in from
+            // altitude even with a big render distance).
+            self.reveal_render_radius(px, pz);
             self.note_village_visits(px, pz);
         }
         self.stream_tick();
