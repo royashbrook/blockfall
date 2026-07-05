@@ -399,8 +399,14 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Ceiling 1.5 with the 0.5 default gives ~0.75 effective; slider at 100% = 1.5 (the prior default).
     static let kGodRayStrength: Float = 1.5
     // #167 god-ray march downscale: the shadow march runs at scene/N resolution and
-    // the composite upsamples it depth-aware. 4 = quarter res (16x fewer marched pixels).
-    static let kGodRayDownscale: Float = 4
+    // the composite upsamples it depth-aware. 2 = half res (4x fewer marched pixels).
+    // #188: was 4 (quarter res). At quarter res the coarse march grid showed as
+    // visible BLOCKS ("cubing") along busy distant silhouettes (a cactus/hill
+    // horizon) once a flat bright overcast rain sky stopped a clear sky gradient
+    // from hiding it. Half res shrinks the grid 4x (per-axis 2x) so the blocks
+    // vanish, and the depth-aware upsample smooths the rest. Still 4x cheaper than
+    // the full-res march #119 replaced.
+    static let kGodRayDownscale: Float = 2
     // #132 LENS-FLARE GATE KNOBS (CPU side; shader has its own element knobs FLARE_*).
     //   kFlareEdgeFade : how far (in centre-distance, 0=centre ~1.4=corner) the flare keeps
     //                    fading to zero. Larger = the flare reaches further toward the edges.
