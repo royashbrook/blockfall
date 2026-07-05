@@ -387,7 +387,9 @@ impl<'c> World<'c> {
         self.totems.clear();
         self.totem_next = 0;
         self.visited_villages.clear();
-        self.mark_explored_around(sx, sz);
+        // #189: reveal a round clearing centred on spawn so HOME reads dead-centre
+        // of the non-grey circle, not at the edge of the trail walked after landing.
+        self.reveal_circle(sx, sz, crate::world::HOME_CLEARING_CELLS);
         self.creature_timer = 0.0;
         self.all_quests_done = false;
         self.quests_completed = 0;

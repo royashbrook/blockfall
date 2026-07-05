@@ -62,7 +62,9 @@ pub(crate) use self::coords::WRAP_CHUNKS;
 
 use self::chests::ChestData;
 use self::map::TotemMark;
-pub use self::map::{MapMarkerInfo, MAP_CELL, MAP_CELLS, MAP_EXPLORED_BYTES, WARP_TOTEM};
+pub use self::map::{
+    MapMarkerInfo, HOME_CLEARING_CELLS, MAP_CELL, MAP_CELLS, MAP_EXPLORED_BYTES, WARP_TOTEM,
+};
 use self::debris::Debris;
 use self::falling::FallingBlock;
 use self::quests::K_ACHIEVEMENT_COUNT;

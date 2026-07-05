@@ -24,6 +24,39 @@ fn make_world(content: &ContentRegistry, seed: u64) -> World<'_> {
 }
 
 #[test]
+fn spawn_reveals_a_centred_home_clearing() {
+    // #189: home must sit in the MIDDLE of a round explored clearing, not at the
+    // edge of a walked trail. After a fresh spawn the explored mask is a disc
+    // centred on the player: symmetric in +/-x and +/-z, filled through most of
+    // the radius, and dark beyond it.
+    let mut content = ContentRegistry::new();
+    content.load(CONTENT);
+    let w = make_world(&content, 11);
+    let (px, _py, pz, _) = w.get_player();
+    let (cx, cz) = (px as i32, pz as i32);
+    let cell = world::MAP_CELL;
+    let r = world::HOME_CLEARING_CELLS;
+
+    assert!(w.debug_explored_at(cx, cz), "home cell is explored");
+    // Symmetric well inside the radius (a few cells in each cardinal direction).
+    for k in 1..r - 1 {
+        let d = k * cell + cell / 2;
+        for (dx, dz) in [(d, 0), (-d, 0), (0, d), (0, -d)] {
+            assert!(
+                w.debug_explored_at(cx + dx, cz + dz),
+                "cell {k} out from home should be inside the clearing"
+            );
+        }
+    }
+    // Well beyond the radius is still grey (the clearing is bounded, not the map).
+    let far = (r + 4) * cell;
+    assert!(
+        !w.debug_explored_at(cx + far, cz) && !w.debug_explored_at(cx, cz + far),
+        "cells past the clearing radius stay unexplored"
+    );
+}
+
+#[test]
 fn totem_place_registers_break_unregisters() {
     let mut content = ContentRegistry::new();
     content.load(CONTENT);
@@ -76,9 +109,10 @@ fn explored_bits_set_as_player_moves() {
     let before = w.debug_explored_count();
     assert!(before > 0);
 
-    // Walk the player far east: cells along the way get revealed as chunk
-    // boundaries are crossed. Move in creative fly (no falling) for a clean run.
-    let far_x = px + 300.0;
+    // Walk the player east PAST the #189 spawn clearing (8 cells = 512 blocks):
+    // cells out here get revealed as chunk boundaries are crossed. Move in
+    // creative fly (no falling) for a clean run.
+    let far_x = px + 900.0;
     w.debug_set_camera(far_x, 80.0, pz, 0.0, 0.0);
     w.update(&zero_input(), 0.05);
     assert!(

@@ -1088,10 +1088,13 @@ if let idx = CommandLine.arguments.firstIndex(of: "--mapshot"), idx + 1 < Comman
         explored[bit >> 3] |= 1 << (bit & 7)
     }
     let pcx = px / cellSize, pcz = pz / cellSize
-    for dz in -20...20 {
-        for dx in -20...20 {
-            let wob = 14.0 + 5.0 * sin(Double(dx) * 0.55) * cos(Double(dz) * 0.4)
-            if Double(dx * dx + dz * dz).squareRoot() < wob { reveal(pcx + dx, pcz + dz) }
+    // #189: fresh spawn reveals a ROUND clearing centred on home (8-cell radius),
+    // matching the engine. Plus a walked corridor + far camp so the reveal-as-you
+    // -walk look is still visible in the preview.
+    let clearing = 8
+    for dz in -clearing...clearing {
+        for dx in -clearing...clearing where dx * dx + dz * dz <= clearing * clearing {
+            reveal(pcx + dx, pcz + dz)
         }
     }
     for t in 0..<60 { reveal(pcx + 8 + t / 2, pcz - t / 3) }        // a walked corridor
@@ -1100,7 +1103,8 @@ if let idx = CommandLine.arguments.firstIndex(of: "--mapshot"), idx + 1 < Comman
     mv.explored = explored
     mv.playerX = Float(px); mv.playerZ = Float(pz); mv.playerFacing = 0.8
     mv.markers = [
-        MapView.Marker(x: Int32(px - 300), z: Int32(pz + 200), kind: 0, id: 1, name: "Home"),
+        // Home sits at spawn, dead-centre of the clearing (#189).
+        MapView.Marker(x: Int32(px), z: Int32(pz), kind: 0, id: 1, name: "Home"),
         MapView.Marker(x: Int32(px + 550), z: Int32(pz - 350), kind: 1, id: 100,
                        name: TownNames.name(x: Int32(px + 550), z: Int32(pz - 350))),
         MapView.Marker(x: Int32(px - 620), z: Int32(pz - 480), kind: 1, id: 101,

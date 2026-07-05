@@ -26,6 +26,9 @@ pub const WARP_TOTEM: BlockId = 55;
 pub const MAP_CELL: i32 = 64;
 pub const MAP_CELLS: i32 = worldgen::WORLD_PERIOD / MAP_CELL; // 512
 pub const MAP_EXPLORED_BYTES: usize = (MAP_CELLS as usize * MAP_CELLS as usize) / 8; // 32768
+/// #189: radius (in map cells) of the round clearing revealed around HOME at
+/// spawn, so home sits centred in the explored circle. 8 cells = 512 blocks.
+pub const HOME_CLEARING_CELLS: i32 = 8;
 
 /// Marker caps (fixed-size ABI arrays; no allocation across the boundary).
 pub const MAP_MAX_TOTEMS: usize = 16;
@@ -70,6 +73,24 @@ impl<'c> World<'c> {
         let ccz = Self::wrap_block(wz) / MAP_CELL;
         for dz in -1..=1 {
             for dx in -1..=1 {
+                let (byte, bit) = Self::explored_bit(ccx + dx, ccz + dz);
+                self.explored[byte] |= bit;
+            }
+        }
+    }
+
+    /// Reveal a filled DISC of explored cells centred on a world point (#189).
+    /// Used at spawn so HOME sits in the middle of a symmetric round clearing
+    /// instead of at the edge of the trail the player walks after landing.
+    pub(super) fn reveal_circle(&mut self, wx: i32, wz: i32, radius_cells: i32) {
+        let ccx = Self::wrap_block(wx) / MAP_CELL;
+        let ccz = Self::wrap_block(wz) / MAP_CELL;
+        let r2 = radius_cells * radius_cells;
+        for dz in -radius_cells..=radius_cells {
+            for dx in -radius_cells..=radius_cells {
+                if dx * dx + dz * dz > r2 {
+                    continue;
+                }
                 let (byte, bit) = Self::explored_bit(ccx + dx, ccz + dz);
                 self.explored[byte] |= bit;
             }
