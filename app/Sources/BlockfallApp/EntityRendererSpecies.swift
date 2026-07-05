@@ -3775,6 +3775,13 @@ extension EntityRenderer {
         let swaySpeed: Float = 1.1
         let armSway   = sin(phase * swaySpeed + hash * 2.0) * 0.16   // soft arm swing
         let leanAngle = sin(phase * swaySpeed * 0.5 + hash) * 0.025  // tiny body lean
+        // #212 WALK CYCLE. Gate leg/arm swing on the measured ground speed so a moving
+        // villager actually STRIDES (no more sliding) and a standing one plants its
+        // feet and falls back to the gentle idle sway.
+        let walkAmt = min(1.0, curGaitSpeed / 1.3)
+        let stride  = sin(phase) * 0.55 * walkAmt            // leg swing (radians)
+        let armAngL = armSway * (1 - walkAmt) + (-stride * 1.1) * walkAmt
+        let armAngR = -armSway * (1 - walkAmt) + (stride * 1.1) * walkAmt
 
         let breatheY   = breatheYOffset(breathPhase, scale: s)
         let eyeBlinkSY = blinkScale(blinkPhase)
@@ -3809,22 +3816,25 @@ extension EntityRenderer {
 
         // ---- LEGS + FEET ----
         let hipY = -tH * 0.5
-        func legM(_ hip: SIMD3<Float>) -> simd_float4x4 {
+        // #212: legs (and feet) pivot at the hip by the walk swing.
+        func legM(_ hip: SIMD3<Float>, _ ang: Float) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * bodyLean * EntityRenderer.trans(hip)
+                * EntityRenderer.rotX(ang)
                 * EntityRenderer.trans(SIMD3(0, -legH * 0.5, 0))
                 * EntityRenderer.scaleM(SIMD3(legW, legH, legD))
         }
-        func footM(_ hip: SIMD3<Float>) -> simd_float4x4 {
+        func footM(_ hip: SIMD3<Float>, _ ang: Float) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * bodyLean * EntityRenderer.trans(hip)
+                * EntityRenderer.rotX(ang)
                 * EntityRenderer.trans(SIMD3(0, -legH - footH * 0.5, footD * 0.12))
                 * EntityRenderer.scaleM(SIMD3(footW, footH, footD))
         }
         let hipL = SIMD3<Float>(-tW * 0.24, hipY, 0)
         let hipR = SIMD3<Float>( tW * 0.24, hipY, 0)
-        drawCube(enc: enc, viewProj: viewProj, model: legM(hipL),  rgb: pantsCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: legM(hipR),  rgb: pantsCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: footM(hipL), rgb: shoeCol,  sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: footM(hipR), rgb: shoeCol,  sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: legM(hipL,  stride), rgb: pantsCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: legM(hipR, -stride), rgb: pantsCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: footM(hipL,  stride), rgb: shoeCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: footM(hipR, -stride), rgb: shoeCol, sat: sat)
 
         // ---- TORSO (tunic) ----
         drawCube(enc: enc, viewProj: viewProj,
@@ -3857,10 +3867,10 @@ extension EntityRenderer {
                 * EntityRenderer.scaleM(SIMD3(handW, handH, handD))
         }
         // Sleeves match the tunic, hands are skin.
-        drawCube(enc: enc, viewProj: viewProj, model: armM(shoulderXL,  armSway), rgb: tunicCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: armM(shoulderXR, -armSway), rgb: tunicCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: handM(shoulderXL,  armSway), rgb: skinCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: handM(shoulderXR, -armSway), rgb: skinCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: armM(shoulderXL, armAngL), rgb: tunicCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: armM(shoulderXR, armAngR), rgb: tunicCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: handM(shoulderXL, armAngL), rgb: skinCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: handM(shoulderXR, armAngR), rgb: skinCol, sat: sat)
 
         // ---- NECK + HEAD ----
         let neckY = tH * 0.50 + nkH * 0.5

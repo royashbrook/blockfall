@@ -900,7 +900,10 @@ func runCritterGallery(savePath: String) -> Bool {
         var e = bf_entity_draw()
         let rowI = i / perRow, colI = i % perRow
         e.position = bf_vec3(x: Float(colI) * spacing, y: 0, z: Float(rowI) * 2.6)
-        e.yaw = 0.7; e.scale = 1.35; e.kind = k; e.sat = 1.0
+        e.yaw = 0.7; e.kind = k; e.sat = 1.0
+        // #212: in villager mode, vary height per figure to preview the engine's
+        // 0.80..1.16 spread (scaled up for the gallery camera).
+        e.scale = villagerMode ? (1.05 + Float((i * 3 + 1) % 5) * 0.16) : 1.35
         let c = villagerMode ? villagerCols[i % villagerCols.count] : cols[i % cols.count]
         e.color = bf_vec3(x: c.x, y: c.y, z: c.z)
         ents.append(e)

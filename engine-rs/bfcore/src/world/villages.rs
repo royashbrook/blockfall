@@ -750,7 +750,9 @@ impl<'c> World<'c> {
             vh ^= vh >> 27;
             vh = vh.wrapping_mul(0x94D049BB133111EB);
             vh ^= vh >> 31;
-            c.scale = 0.88 + ((vh >> 8) & 0xFF) as f32 / 255.0 * 0.20;
+            // #212: wider height spread (0.80..1.16) so short and tall villagers read
+            // clearly, not just a hair different.
+            c.scale = 0.80 + ((vh >> 8) & 0xFF) as f32 / 255.0 * 0.36;
             c.color = self.villager_clothing_color(ax, az, vh);
             c.wander = 1.0 + self.rand01() * 2.0;
             self.creatures.push(c);

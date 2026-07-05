@@ -212,6 +212,9 @@ final class EntityRenderer {
     // threading a new parameter through every drawKindN signature.
     var curFlash: SIMD3<Float> = .zero   // additive color toward white/red
     var curFlashAmt: Float = 0           // 0..1 strength (for emissive parts)
+    // #212: smoothed ground speed of the entity being drawn, so a drawKind can gate
+    // a walk cycle (legs swing while moving, plant while idle). Set per entity below.
+    var curGaitSpeed: Float = 0
 
     /// Quantize (pos, kind) into a stable-ish key so a creature maps to the same
     /// history bucket across frames despite small movement. 0.5-unit cells.
@@ -408,6 +411,7 @@ final class EntityRenderer {
             // with no history this frame: fall back to the ambient phase so a freshly
             // seen creature still animates.
             var phase = ambient
+            curGaitSpeed = 0   // #212 default: no walk cycle until we measure motion
 
             // --- HIT REACTION: derive a hurt signal & build the per-entity
             // reaction (flash + squash). Falling blocks (kind 6) are exempt.
@@ -455,6 +459,7 @@ final class EntityRenderer {
                     // Use the gait phase (plus the per-entity hash offset so a crowd
                     // doesn't step in sync) for the walk cycle this frame.
                     phase = h.gait + phaseHash * 3.14159
+                    curGaitSpeed = h.gaitSpeed   // #212 expose speed for the walk cycle
 
                     if h.hitAt >= 0, t - h.hitAt < hitDuration {
                         let p = (t - h.hitAt) / hitDuration
