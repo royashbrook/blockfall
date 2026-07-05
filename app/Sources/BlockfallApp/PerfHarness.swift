@@ -876,7 +876,18 @@ func runCritterGallery(savePath: String) -> Bool {
     let output   = tex(.bgra8Unorm, [.renderTarget], true)
 
     // One entity per creature kind (skip 6 = falling block). Varied toy colours.
-    let kinds: [UInt32] = [0,1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,100]
+    // #201 BF_VILLAGERS=1: instead render a row of villagers (kind 20) with the biome
+    // tinted, per-individual clothing colours the engine now assigns, to review the
+    // skin/hair/clothing variety (desert tan, snow pale-blue, forest green, swamp teal).
+    let villagerMode = ProcessInfo.processInfo.environment["BF_VILLAGERS"] == "1"
+    let villagerCols: [SIMD3<Float>] = [
+        SIMD3(0.82,0.68,0.42), SIMD3(0.88,0.74,0.50),   // desert tan / ochre
+        SIMD3(0.70,0.80,0.92), SIMD3(0.84,0.89,0.96),   // snow pale blue / white
+        SIMD3(0.34,0.55,0.30), SIMD3(0.46,0.60,0.28),   // forest greens
+        SIMD3(0.34,0.52,0.44), SIMD3(0.44,0.56,0.36),   // swamp teal / olive
+    ]
+    let kinds: [UInt32] = villagerMode ? Array(repeating: 20, count: villagerCols.count)
+                                       : [0,1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,100]
     let cols: [SIMD3<Float>] = [
         SIMD3(0.85,0.80,0.74), SIMD3(0.78,0.45,0.28), SIMD3(0.55,0.58,0.62), SIMD3(0.30,0.55,0.35),
         SIMD3(0.90,0.86,0.40), SIMD3(0.40,0.40,0.48), SIMD3(0.72,0.36,0.30), SIMD3(0.95,0.95,0.97)
@@ -890,7 +901,8 @@ func runCritterGallery(savePath: String) -> Bool {
         let rowI = i / perRow, colI = i % perRow
         e.position = bf_vec3(x: Float(colI) * spacing, y: 0, z: Float(rowI) * 2.6)
         e.yaw = 0.7; e.scale = 1.35; e.kind = k; e.sat = 1.0
-        let c = cols[i % cols.count]; e.color = bf_vec3(x: c.x, y: c.y, z: c.z)
+        let c = villagerMode ? villagerCols[i % villagerCols.count] : cols[i % cols.count]
+        e.color = bf_vec3(x: c.x, y: c.y, z: c.z)
         ents.append(e)
     }
     let cx = Float(perRow - 1) * spacing * 0.5

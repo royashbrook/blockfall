@@ -1162,6 +1162,12 @@ pub fn worldgen_is_city(typ: i32) -> bool {
     typ == STRUCT_CITY
 }
 
+/// #201: dominant biome index at a world column (0 Plains, 1 Forest, 2 Mountains,
+/// 3 Desert, 4 Snowy, 5 Swamp, 6 Beach), for biome-culture villager looks.
+pub fn worldgen_biome_at(wx: i32, wz: i32, seed: u64) -> u8 {
+    voronoi_biome(wx, wz, seed) as u8
+}
+
 /// Returns (type, anchor_x, anchor_z, anchor_y). type==0 (STRUCT_NONE) leaves the
 /// other fields unspecified (caller should ignore them), matching the C++ contract
 /// where the out-params are untouched.

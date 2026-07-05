@@ -719,6 +719,7 @@ impl<'c> World<'c> {
             c.pos = V3::new(ox, gy as f32, oz);
             c.yaw = self.rand01() * 6.2831853;
             c.model = d.model;
+            let vidx = idx_in_settlement;
             c.npc_id = Self::villager_npc_for_index(is_city, idx_in_settlement);
             idx_in_settlement += 1;
             c.home_x = Self::wrap_block(ax);
@@ -734,12 +735,54 @@ impl<'c> World<'c> {
             } else {
                 20
             };
-            c.scale = 0.95;
-            c.color = Self::color_for("passive", d.id);
+            // #201: stable per-villager seed (home + settlement index + world seed)
+            // so a villager's look never changes as it wanders. It drives a little
+            // height variety and a biome-tinted, per-individual clothing color, so a
+            // crowd reads as individuals and the village's culture (desert robes, snow
+            // parkas, forest greens) shows. The renderer derives skin/hair from this
+            // same colour, so those vary per villager too.
+            let mut vh = (Self::wrap_block(ax) as u32 as u64).wrapping_mul(0x9E3779B97F4A7C15)
+                ^ (Self::wrap_block(az) as u32 as u64).wrapping_mul(0xC2B2AE3D27D4EB4F)
+                ^ (vidx as u64).wrapping_mul(0x165667B19E3779F9)
+                ^ self.seed;
+            vh ^= vh >> 30;
+            vh = vh.wrapping_mul(0xBF58476D1CE4E5B9);
+            vh ^= vh >> 27;
+            vh = vh.wrapping_mul(0x94D049BB133111EB);
+            vh ^= vh >> 31;
+            c.scale = 0.88 + ((vh >> 8) & 0xFF) as f32 / 255.0 * 0.20;
+            c.color = self.villager_clothing_color(ax, az, vh);
             c.wander = 1.0 + self.rand01() * 2.0;
             self.creatures.push(c);
             made += 1;
         }
         made
+    }
+
+    // #201: per-villager clothing colour, flavoured by the home biome (culture) and
+    // varied per individual by the stable villager hash vh. Kid-friendly palettes.
+    fn villager_clothing_color(&self, ax: i32, az: i32, vh: u64) -> V3 {
+        let biome = worldgen::worldgen_biome_at(ax, az, self.seed);
+        // (hue centre, hue spread, value, paleness-toward-white) per biome.
+        let (hc, hspread, val, pale): (f32, f32, f32, f32) = match biome {
+            3 | 6 => (0.09, 0.06, 0.85, 0.25), // desert / beach: warm tan, ochre robes
+            4 => (0.58, 0.08, 0.95, 0.55),     // snowy: pale blue / white parkas
+            1 | 0 => (0.30, 0.14, 0.70, 0.12), // forest / plains: greens
+            5 => (0.42, 0.08, 0.60, 0.15),     // swamp: muted teal / olive
+            2 => (0.07, 0.05, 0.60, 0.30),     // mountains: grey-brown wool
+            _ => (0.10, 0.16, 0.78, 0.15),
+        };
+        let r0 = (vh & 0xFFFF) as f32 / 65535.0;
+        let r1 = ((vh >> 16) & 0xFFFF) as f32 / 65535.0;
+        let h = (hc + (r0 - 0.5) * hspread).rem_euclid(1.0);
+        let v = (val + (r1 - 0.5) * 0.28).clamp(0.32, 1.0);
+        let base = Self::hue_rgb(h);
+        // Mix the lit hue toward white by `pale` (snow parkas read pale, deserts warm).
+        let lit = V3::new(base.x * v, base.y * v, base.z * v);
+        V3::new(
+            lit.x + (v - lit.x) * pale,
+            lit.y + (v - lit.y) * pale,
+            lit.z + (v - lit.z) * pale,
+        )
     }
 }

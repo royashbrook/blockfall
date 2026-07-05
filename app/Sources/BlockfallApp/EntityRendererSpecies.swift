@@ -3733,8 +3733,23 @@ extension EntityRenderer {
         let tint = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
 
         // ---- PALETTE ----
-        // Warm friendly skin — fixed so the villager always reads as a person.
-        let skinCol  = SIMD3<Float>(0.93, 0.76, 0.62)
+        // #201: a stable per-villager seed hashed from the (per-individual, biome
+        // tinted) clothing colour the engine assigned, so skin tone and hair vary
+        // per villager and never change as the villager wanders.
+        var vs: UInt32 = 2166136261
+        for comp in [e.color.x, e.color.y, e.color.z] {
+            vs = (vs ^ comp.bitPattern) &* 16777619
+        }
+        vs ^= vs >> 15; vs = vs &* 2654435761; vs ^= vs >> 13
+        let skinPalette: [SIMD3<Float>] = [
+            SIMD3(0.98, 0.86, 0.74), SIMD3(0.93, 0.76, 0.62), SIMD3(0.85, 0.66, 0.50),
+            SIMD3(0.68, 0.49, 0.36), SIMD3(0.52, 0.37, 0.28), SIMD3(0.42, 0.30, 0.24),
+        ]
+        let hairPalette: [SIMD3<Float>] = [
+            SIMD3(0.32, 0.20, 0.10), SIMD3(0.12, 0.10, 0.09), SIMD3(0.86, 0.72, 0.42),
+            SIMD3(0.55, 0.28, 0.14), SIMD3(0.74, 0.74, 0.76), SIMD3(0.20, 0.14, 0.10),
+        ]
+        let skinCol  = skinPalette[Int(vs % UInt32(skinPalette.count))]
         // Clothing comes from the entity tint so villager/elder/trader differ.
         // Keep it bright and cheerful (lift toward a vivid mid-tone).
         let tunicCol = SIMD3<Float>(min(1, tint.x * 0.60 + 0.22),
@@ -3747,7 +3762,7 @@ extension EntityRenderer {
         let beltCol  = SIMD3<Float>(0.40, 0.28, 0.16)   // brown belt
         let pantsCol = SIMD3<Float>(0.34, 0.27, 0.20)   // muted brown trousers
         let shoeCol  = SIMD3<Float>(0.22, 0.16, 0.12)   // dark shoes
-        let hairCol  = SIMD3<Float>(0.32, 0.20, 0.10)   // brown hair
+        let hairCol  = hairPalette[Int((vs >> 9) % UInt32(hairPalette.count))]   // #201 per-villager
         let eyeCol   = SIMD3<Float>(0.10, 0.08, 0.10)   // soft dark eyes
         let mouthCol = SIMD3<Float>(0.62, 0.30, 0.28)   // gentle warm smile
         let cheekCol = SIMD3<Float>(0.96, 0.62, 0.56)   // rosy cheeks
