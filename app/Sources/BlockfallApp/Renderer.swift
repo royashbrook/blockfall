@@ -1580,16 +1580,6 @@ final class Renderer: NSObject, MTKViewDelegate {
             // #136 fold in the intensity slider (0..1) so the rays scale from off to the
             // kGodRayStrength ceiling; defaults to 0.5 = half the old full-strength look.
             grStrength = dayT * (1 - frame.camera.underground) * Renderer.kGodRayStrength * gfxGodRayStr
-            // #188: fade god rays out as the sky clouds over. An overcast or rainy
-            // sky is diffuse and physically has no sharp sunbeams, and that flat
-            // bright backdrop is exactly what made the god-ray march's aliased
-            // shafts (from dense thin vegetation on the horizon: swamp grass, desert
-            // cacti) read as hard vertical blocks/bands. Clear and partly-cloudy
-            // skies keep their rays untouched; rain/snow always count as overcast.
-            let overcast = max(cloudCover, precipPacked != 0 ? 0.95 : 0)
-            let e = max(0, min(1, (overcast - 0.35) / 0.5))
-            let clearSky = 1 - e * e * (3 - 2 * e)   // smoothstep(0.35, 0.85, overcast)
-            grStrength *= clearSky
         }
         // #132 LENS FLARE gate. Project the sun to screen + derive the look-at-sun strength
         // on the CPU; fold in the toggle and underground (no flare in a cave). The shader does

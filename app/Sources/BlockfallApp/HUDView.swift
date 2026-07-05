@@ -750,10 +750,10 @@ final class HUDView: NSView {
         let ghAttrs = hintAttrsFor(fs(12))
         let guideHint = "❓ Stuck? Press G for the Guide"
         let questHint = "📜 Press L for the Quest Log"
-        let ghSz = (guideHint as NSString).size(withAttributes: ghAttrs)
+        // #194: bottom-LEFT so they never sit under the corner minimap (#187).
         let qhSz = (questHint as NSString).size(withAttributes: ghAttrs)
-        (questHint as NSString).draw(at: NSPoint(x: b.maxX - qhSz.width - 14, y: 14), withAttributes: ghAttrs)
-        (guideHint as NSString).draw(at: NSPoint(x: b.maxX - ghSz.width - 14, y: 14 + qhSz.height + 4), withAttributes: ghAttrs)
+        (questHint as NSString).draw(at: NSPoint(x: 14, y: 14), withAttributes: ghAttrs)
+        (guideHint as NSString).draw(at: NSPoint(x: 14, y: 14 + qhSz.height + 4), withAttributes: ghAttrs)
 
         // --- #13: Multiplayer compass (only when other players are connected) ---
         drawPeerCompass(in: b)
