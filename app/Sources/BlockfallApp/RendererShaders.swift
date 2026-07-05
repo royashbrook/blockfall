@@ -2509,14 +2509,20 @@ extension Renderer {
         float  cosT  = dot(viewDir, toSun);
         float  phase = hgPhase(cosT, GR_HG_G);
 
-        // #141 BLUE-NOISE JITTER: the old jitter was fract(sin(dot(px,...))), a white-noise
-        // hash whose value jumps randomly between neighbouring pixels, so the residual
-        // banding turned into salt-and-pepper GRAIN in the shafts. Interleaved Gradient
-        // Noise (Jimenez 2014) is a cheap blue-noise-like dither: its values are
-        // well-distributed over any small pixel neighbourhood, so the per-pixel start
-        // offsets are spread evenly and the eye reads the result as a smooth gradient
-        // instead of grain. Same one-line cost, far cleaner shafts.
-        float dither = fract(52.9829189 * fract(dot(pixPos, float2(0.06711056, 0.00583715))));
+        // #188 STRATIFIED QUAD JITTER. The old scheme was one small (+/-7.5% step)
+        // IGN offset per pixel; the 2x2 quad denoise below then averaged four
+        // nearly-equal phases back to a constant, so the march re-quantized into
+        // concentric rings around the sun (litFrac steps of 1/GR_STEPS) which the
+        // steep shaft shaping amplified into the visible banded "cubing". Instead,
+        // give each LANE of the 2x2 quad a different quarter of the step
+        // ((lane + IGN)/4), with the IGN base computed per QUAD so the four lanes
+        // stratify one full step exactly. The quad averages below then integrate a
+        // 4x stratified estimate of the march (effectively 4*GR_STEPS phases), so
+        // both the rings and the per-pixel grain are gone at the same march cost.
+        float2 quadPos = floor(pixPos * 0.5);
+        float ignQ = fract(52.9829189 * fract(dot(quadPos, float2(0.06711056, 0.00583715))));
+        float lane = float((int(pixPos.x) & 1) | ((int(pixPos.y) & 1) << 1));
+        float dither = (lane + ignQ) * 0.25;
 
         float farR       = vu.camPosW.w;
         float voxMaxDist = vu.voxOrigin.w;
@@ -2526,11 +2532,10 @@ extension Renderer {
         // the ray length, so short ground rays and long sky rays are on the same
         // scale and a single threshold reads consistently.
         float litLen = 0.0, totLen = 0.0;
-        // #147: keep the start jitter, but make it a small centred offset rather than
-        // a full-step random shift. Full-step jitter removes bands but leaves visible
-        // pixel variance after the steep shaft shaping; a small centred jitter still
-        // breaks lockstep bands while feeding the denoise pass a calmer signal.
-        float t = stepLen * (0.5 + (dither - 0.5) * 0.15);
+        // #188: full-step stratified start (see the quad jitter above). The per-pixel
+        // variance the full shift used to leave behind is integrated away by the quad
+        // averages below, because the four lanes now cover the step uniformly.
+        float t = stepLen * dither;
         for (int i = 0; i < GR_STEPS; ++i) {
             float3 sp = camP + viewDir * t;
             float dc  = length(sp - camP);
@@ -2609,11 +2614,34 @@ extension Renderer {
         // factor (2 = half res, 4 = quarter res), so the conservative near depth
         // covers this coarse pixel's whole NxN scene footprint (no shaft leak over
         // foreground silhouettes after the upsample).
-        float2 dilate = max(vu.sunDir.w, 1.0)
+        // #188: 2x the downscale, so the conservative near depth covers the whole
+        // 2x2 QUAD footprint (the composite reconstructs from one texel per quad
+        // now, and the quad denoise mixes all four lanes' marches, so every lane
+        // must march against the quad's nearest depth or sky in-scatter leaks
+        // over silhouettes as a bright halo).
+        float2 dilate = 2.0 * max(vu.sunDir.w, 1.0)
                         / float2(sceneDepth.get_width(), sceneDepth.get_height());
         float3 r = grInscatter(in.uv, in.position.xy, dilate, sceneDepth, occ, occCoarse, vu);
+        // #188: store UNIT in-scatter (per marchLen^2), normalised by THIS lane's own
+        // march length BEFORE the quad average. A quad straddling a silhouette mixes
+        // short foreground marches with long sky marches; averaging raw in-scatter
+        // and renormalising later by one shared quad length overshoots by up to
+        // (maxLen/minLen)^2, which sparkled white along canopy edges. Unit in-scatter
+        // is length-independent, so the quad mean stays consistent and the composite
+        // just rescales by its own pixel's marchLen^2.
+        float lenL = min(r.z, GR_MAXDIST);
+        float u = r.x / max(lenL * lenL, 1.0);
+        float uq = (u
+                    + quad_shuffle_xor(u, 1u)
+                    + quad_shuffle_xor(u, 2u)
+                    + quad_shuffle_xor(u, 3u)) * 0.25;
+        // #188: the composite now reconstructs from ONE texel per 2x2 quad, so the
+        // depth key must be quad-uniform too: take the quad MIN so the key stays the
+        // conservative near depth over the quad's whole scene footprint.
+        float hd = min(min(r.z, quad_shuffle_xor(r.z, 1u)),
+                       min(quad_shuffle_xor(r.z, 2u), quad_shuffle_xor(r.z, 3u)));
         // Clamp the stored distance into fp16 range (a sky pixel reconstructs far).
-        return float4(r.x, r.y, min(r.z, 60000.0), 1.0);
+        return float4(uq, r.y, min(hd, 60000.0), 1.0);
     }
 
     fragment float4 compositeFrag(FSVOut in [[stage_in]],
@@ -2660,11 +2688,21 @@ extension Renderer {
                 float2 ndcXY = float2(in.uv.x * 2.0 - 1.0, (1.0 - in.uv.y) * 2.0 - 1.0);
                 float4 wp = vu.invViewProj * float4(ndcXY, d, 1.0);
                 float hitD = min(length(wp.xyz / wp.w - vu.camPosW.xyz), 60000.0);
+                // #188 QUAD-CENTRED RECONSTRUCTION. The pre-pass quad denoise makes
+                // every 2x2 texel quad of godrayTex carry ONE value, so interpolating
+                // between adjacent TEXELS produced flat 2-texel plateaus with kinks at
+                // quad boundaries: on screen, a regular grid of blocks in the smooth
+                // glow around the sun (the "cubing"). Interpolate between QUADS
+                // instead (one representative texel per quad): the reconstruction is
+                // then a single smooth bilinear ramp across the whole gradient.
                 float2 grSize = float2(godrayTex.get_width(), godrayTex.get_height());
-                float2 posG = in.uv * grSize - 0.5;
+                float2 grQuads = grSize * 0.5;
+                float2 posG = in.uv * grQuads - 0.5;
                 float2 fw   = fract(posG);
-                float2 base = (floor(posG) + 0.5) / grSize;
-                float2 gt   = 1.0 / grSize;
+                float2 q0   = floor(posG);
+                // Lane (0,0) texel of each quad (all four lanes hold the same value).
+                float2 base = (q0 * 2.0 + 0.5) / grSize;
+                float2 gt   = 2.0 / grSize;
                 float4 s00 = godrayTex.sample(sDepth, base);
                 float4 s10 = godrayTex.sample(sDepth, base + float2(gt.x, 0.0));
                 float4 s01 = godrayTex.sample(sDepth, base + float2(0.0, gt.y));
@@ -2678,15 +2716,12 @@ extension Renderer {
                 float4 w  = bw * dw;
                 float ws  = w.x + w.y + w.z + w.w;
                 if (ws < 1e-5) { w = bw; ws = 1.0; }   // no depth match: plain bilinear
-                // The stored in-scatter scales with marchLen^2 (lenFactor * marchLen in
-                // grInscatter). Thin foreground geometry (grass blades, mushroom stems)
-                // is narrower than a coarse texel, so every tap can carry a LONG sky
-                // ray's in-scatter and would wash over the blade. Renormalise each tap
-                // to unit marchLen^2 via its stored hit distance, then rescale by THIS
+                // #188: the pre-pass stores UNIT in-scatter (already normalised by each
+                // lane's own marchLen^2 before the quad average), so thin foreground
+                // geometry (grass blades, mushroom stems) narrower than a coarse texel
+                // never inherits a long sky ray's raw in-scatter. Just rescale by THIS
                 // pixel's own marchLen^2, the same physics the inline path applies.
-                float4 tapLen = min(hz, GR_MAXDIST);
-                float4 tapIns = float4(s00.r, s10.r, s01.r, s11.r)
-                                / max(tapLen * tapLen, float4(1.0));
+                float4 tapIns = float4(s00.r, s10.r, s01.r, s11.r);
                 float lenHere = min(hitD, GR_MAXDIST);
                 inscatter = (dot(w, tapIns) / ws) * lenHere * lenHere;
                 litFrac   = dot(w, float4(s00.g, s10.g, s01.g, s11.g)) / ws;

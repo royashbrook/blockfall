@@ -342,6 +342,20 @@ final class EntityRenderer {
             encodeGroundShadows(enc, viewProj: viewProj, entities: entities, count: count)
         }
 
+        // #192 CAMERA-RELATIVE PART MATRICES. Entity world coords live on the #179
+        // torus (up to ~32768), where a float32 ulp is ~0.002-0.004 blocks, the same
+        // size as the parts' designed interpenetration (eyes, cheeks, hair overlap
+        // their base cube by 0.005-0.02 blocks). Building each part's model matrix
+        // in absolute coords therefore quantised every part's depth differently, and
+        // the idle animation (breathe/blink/squash) re-rolled that rounding every
+        // frame, so overlapping faces crossed in depth and flashed. Subtract the
+        // camera position ONCE (per frame) from both the viewProj and every part
+        // translation: all per-part math then happens at magnitude ~render distance,
+        // where the ulp (~1e-5) is far below the part offsets. camPosH is .zero on
+        // harness paths that do not pass it, which keeps them bit-identical.
+        let camRel = SIMD3<Float>(camPosH.x, camPosH.y, camPosH.z)
+        let vpRel = viewProj * EntityRenderer.trans(camRel)
+
         enc.setRenderPipelineState(pipeline)
         // Restore opaque write-enabled depth: the ground-shadow pass above leaves a no-write state
         // bound, which would let face parts show through the head from behind (#116 regression).
@@ -371,8 +385,13 @@ final class EntityRenderer {
         for i in 0..<count {
             let e = entities[i]
             let pos = SIMD3<Float>(e.position.x, e.position.y, e.position.z)
-            // #192: one horizon-drop reference for the whole creature.
-            curEntityOriginXZ = SIMD2<Float>(pos.x, pos.z)
+            // #192: camera-relative position for all part matrices (see vpRel above).
+            // Gait history / phase hashing below stay on the ABSOLUTE position so the
+            // animation phase does not drift as the camera moves.
+            let posRel = pos - camRel
+            // #192: one horizon-drop reference for the whole creature (camera-relative,
+            // matching the relative part matrices; the shader uses it directly).
+            curEntityOriginXZ = SIMD2<Float>(posRel.x, posRel.z)
             // Per-entity spatial hash — scatters all animation phases so
             // dozens of creatures never step in sync.
             let phaseHash = sin(pos.x * 1.3 + pos.z * 2.7)
@@ -477,38 +496,38 @@ final class EntityRenderer {
             }
 
             switch e.kind {
-            case 0:  drawKind0(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 1:  drawKind1(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 2:  drawKind2(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 3:  drawKind3(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 4:  drawKind4(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 5:  drawKind5(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 6:  drawKind6(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase)
-            case 7:  drawKind7(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 8:  drawKind8(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 9:  drawKind9(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 10: drawKind10(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 11: drawKind11(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 12: drawKind12(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 13: drawKind13(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 14: drawKind14(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 15: drawKind15(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 16: drawKind16(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 17: drawKind17(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 18: drawKind18(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 19: drawKind19(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 20: drawKind20(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            case 21: drawKind21(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 0:  drawKind0(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 1:  drawKind1(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 2:  drawKind2(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 3:  drawKind3(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 4:  drawKind4(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 5:  drawKind5(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 6:  drawKind6(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase)
+            case 7:  drawKind7(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 8:  drawKind8(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 9:  drawKind9(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 10: drawKind10(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 11: drawKind11(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 12: drawKind12(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 13: drawKind13(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 14: drawKind14(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 15: drawKind15(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 16: drawKind16(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 17: drawKind17(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 18: drawKind18(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 19: drawKind19(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 20: drawKind20(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 21: drawKind21(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             // kind 22 — DEBRIS FRAGMENT (#170 blockfall): a small tumbling cube
             // chip in the broken block's colour. yaw carries the engine-driven
             // spin phase; scale seeds the size + a fixed per-fragment tilt.
-            case 22: drawKind22(enc: enc, viewProj: viewProj, e: e, pos: pos)
+            case 22: drawKind22(enc: enc, viewProj: vpRel, e: e, pos: posRel)
             // kind 100 — REMOTE PLAYER (#13 multiplayer): render the connected
             // peer as an upright PERSON, not an animal. Reuse the villager
             // humanoid (drawKind20); it already tints clothing from e.color so
             // each peer's per-peer color makes them distinguishable.
-            case 100: drawKind20(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
-            default: drawKind0(enc: enc, viewProj: viewProj, e: e, pos: pos, phase: phase, hash: phaseHash, squash: squash)
+            case 100: drawKind20(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            default: drawKind0(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             }
             // Clear so kind 6 (and the next iter before it sets) never inherit.
             curFlash    = .zero

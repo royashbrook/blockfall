@@ -45,8 +45,16 @@ impl<'c> World<'c> {
             )
         };
         let kcull_cos = 0.30f32;
-        let kfar_cull_cos = 0.55f32;
+        let kfar_cull_cos = 0.45f32;
         let knear_keep = KCHUNK_DIM as f32 * 1.5;
+        // #196: a chunk is a VOLUME, not a point. Culling on the CENTER angle alone
+        // dropped chunks whose near corner was still on-screen, so rotating the view
+        // made geometry pop in/out at the screen edges. Cull against the chunk's
+        // bounding sphere instead: keep when dot(to_c, fwd) >= cos * dist - R, which
+        // is the center test relaxed by the sphere radius (conservative first-order
+        // sphere-vs-cone). R = half the chunk diagonal, plus a small slack for the
+        // linearisation error of the relaxed test at near range.
+        let kchunk_r = KCHUNK_DIM as f32 * 0.8660254 + 3.0;
         // Iterate meshes in a stable-enough order (HashMap order is fine; the C++
         // also iterates an unordered_map). Collect coords first to avoid borrow
         // conflicts with region_sat reads.
@@ -72,11 +80,15 @@ impl<'c> World<'c> {
             if dist < 176.0 && self.unlit_far_meshes.contains(cc) {
                 self.mark_dirty(*cc);
             }
-            let facing = dot(to_c, cam_fwd) / dist;
-            if dist > knear_keep && facing < kcull_cos {
+            // #196: sphere-relaxed view cone tests (see kchunk_r above). The far
+            // threshold also widened (0.55 -> 0.45): with the app's real aspect the
+            // screen half-diagonal reaches ~55-60 degrees, so the old 56.6-degree
+            // far cone clipped chunks that were still on-screen at the corners.
+            let along = dot(to_c, cam_fwd);
+            if dist > knear_keep && along < kcull_cos * dist - kchunk_r {
                 continue;
             }
-            if dist > 192.0 && facing < kfar_cull_cos {
+            if dist > 192.0 && along < kfar_cull_cos * dist - kchunk_r {
                 continue;
             }
             // Props BEFORE the empty-mesh skip below. Since #62 leaves and logs are

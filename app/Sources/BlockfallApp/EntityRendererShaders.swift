@@ -88,7 +88,12 @@ extension EntityRenderer {
         // Directional shading: top bright, sides medium, bottom dim.
         float shade = clamp(0.55 + 0.30 * n.y + 0.15 * n.x, 0.0, 1.0);
         EOut o;
-        float4 wp = u.model * float4(float3(cv.pos), 1.0);   // world pos (o.worldPos, shadow march)
+        // #192: the model matrix is CAMERA-RELATIVE now (the CPU subtracts the camera
+        // position from every part translation so fp32 rounding at torus-scale coords
+        // cannot z-fight overlapping parts). Recover the absolute world position for
+        // the sun-shadow march by adding the camera position back; camPosH.xyz is
+        // zero on harness paths that still pass absolute matrices.
+        float4 wp = u.model * float4(float3(cv.pos), 1.0);
         // #180 horizon curvature: entities (creatures, falling blocks, debris) must
         // bend with the terrain or they float at distance. Drop by k * d^2 in world
         // space, applied in clip space via the viewProj Y column (exact, one fma).
@@ -96,15 +101,15 @@ extension EntityRenderer {
         // #192: use the CREATURE ORIGIN (uniform for all its parts), not the per
         // vertex world position, so the drop is one uniform translation and never
         // warps the parts' relative depth (that warp made overlapping cube faces
-        // z-fight and flash as the creature animated).
-        float2 hd = u.originXZ.xy - u.camPosH.xz;
+        // z-fight and flash as the creature animated). originXZ is camera-relative.
+        float2 hd = u.originXZ.xy;
         hd -= BFE_HORIZON_PERIOD * rint(hd / BFE_HORIZON_PERIOD);   // nearest toroidal image
         float dy = -BFE_HORIZON_K * u.camPosH.w * min(dot(hd, hd), BFE_HORIZON_D2CAP);
         o.position = u.mvp * float4(float3(cv.pos), 1.0) + dy * u.vpYCol;
         o.color    = u.color.rgb;
         o.shade    = shade;
         o.sat      = u.color.w;   // -1.0 = emissive
-        o.worldPos = wp.xyz;
+        o.worldPos = wp.xyz + u.camPosH.xyz;
         // World-space face normal (model has no non-uniform shear that would need the inverse
         // transpose for our purposes (rotation + uniform-ish squash), good enough for a back-face
         // sun gate). Used only to early-out faces that point away from the sun.
