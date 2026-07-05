@@ -127,6 +127,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         return Float(UserDefaults.standard.object(forKey: "gfxGodRayStr") as? Double ?? 0.5)
     }()
     var gfxBloomStr      = Float(UserDefaults.standard.object(forKey: "gfxBloomStr")      as? Double ?? 0.5)
+    // #205: bloom on/off toggle (default on) so it matches the other effect rows.
+    var gfxBloom         = (UserDefaults.standard.object(forKey: "gfxBloom") as? Bool ?? true)
     var gfxCelOutlineStr = Float(UserDefaults.standard.object(forKey: "gfxCelOutlineStr") as? Double ?? 1.0)
     // #47 volumetric clouds: real raymarched, bold/toy-styled cumulus over the sky dome,
     // day/night gated. Defaults ON. The pause-menu checkbox is owned by the UI layer
@@ -1596,7 +1598,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         // #136 bloom intensity slider (0..1). Maps the default 0.5 to the prior fixed
         // look (0.08 add) and 1.0 to double it: bloomAdd = 0.16 * gfxBloomStr.
-        var pu = PostUniforms(bloomStrength: 0.16 * gfxBloomStr, vignetteStr: 0.22, satBoost: 1.18,
+        var pu = PostUniforms(bloomStrength: gfxBloom ? 0.16 * gfxBloomStr : 0, vignetteStr: 0.22, satBoost: 1.18,
                               rainStrength: precipPacked, wallClockSecs: wallClock,
                               godrayStrength: 0, sunScreenX: sunUVx, sunScreenY: sunUVy,
                               sunColorR: 1.0, sunColorG: 0.6 + 0.35 * dayT, sunColorB: 0.3 + 0.5 * dayT,

@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // companion slider live. Rebuilt each time the pause overlay opens.
     private weak var godRaySlider: NSSlider?
     private weak var celOutlineSlider: NSSlider?
+    private weak var bloomSlider: NSSlider?   // #205 greyed when Bloom is toggled off
 
     // ---- HUD option persistence (#: text size + visibility) ----
     // UserDefaults keys. Loaded at startup (startGame) and written on change.
@@ -329,13 +330,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                            enabled: renderer?.gfxCelShade ?? true)
         celOutlineSlider = celSlider
 
-        // Bloom is always on (no toggle); a plain labelled intensity slider.
-        let bloomLabel = NSTextField(labelWithString: "Bloom")
-        bloomLabel.font = .systemFont(ofSize: 24); bloomLabel.textColor = .white
-        let bloomSlider = gfxIntensitySlider(value: Double(renderer?.gfxBloomStr ?? 0.5),
-                                             sel: #selector(bloomStrChanged(_:)), enabled: true)
-        let bloomRow = NSStackView(views: [bloomLabel, bloomSlider])
-        bloomRow.orientation = .horizontal; bloomRow.spacing = 12; bloomRow.alignment = .centerY
+        // #205: Bloom now has a checkbox like the other effects (was label-only).
+        let bloomCb = gfxCheckbox("Bloom", tag: 11, on: renderer?.gfxBloom ?? true)
+        let bloomSl = gfxIntensitySlider(value: Double(renderer?.gfxBloomStr ?? 0.5),
+                                         sel: #selector(bloomStrChanged(_:)),
+                                         enabled: renderer?.gfxBloom ?? true)
+        bloomSlider = bloomSl
+        let bloomRow = gfxRow(bloomCb, bloomSl)
 
         let fxStack = NSStackView(views: [
             gfxCheckbox("Waving Foliage",    tag: 0, on: renderer?.gfxFoliage ?? false),
@@ -422,31 +423,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         actionBar.translatesAutoresizingMaskIntoConstraints = false
         topActions.widthAnchor.constraint(equalTo: bottomActions.widthAnchor).isActive = true
 
-        ov.addSubview(title)
-        ov.addSubview(scroll)
-        ov.addSubview(actionBar)
-        // Preferred width (yields to the 0.92*ov cap on narrow windows).
-        let scrollW = scroll.widthAnchor.constraint(equalToConstant: 760)
-        scrollW.priority = .defaultHigh
-        scrollW.isActive = true
+        // #205: the whole menu floats CENTERED (title + options + actions as one
+        // group), not bottom-anchored. The options scroll only if the group would
+        // exceed the screen, so nothing clips at any window size.
+        let menuGroup = NSStackView(views: [title, scroll, actionBar])
+        menuGroup.orientation = .vertical; menuGroup.spacing = 18; menuGroup.alignment = .centerX
+        menuGroup.translatesAutoresizingMaskIntoConstraints = false
+        ov.addSubview(menuGroup)
+
+        // Preferred width (yields to the 0.94*ov cap on narrow windows).
+        let scrollW = scroll.widthAnchor.constraint(equalToConstant: 860)
+        scrollW.priority = .defaultHigh; scrollW.isActive = true
+        // Height fits the content, but stays capped so the whole centered group
+        // always fits on screen (room left for the title + the two action rows).
+        let scrollH = scroll.heightAnchor.constraint(equalTo: doc.heightAnchor)
+        scrollH.priority = .defaultHigh; scrollH.isActive = true
         NSLayoutConstraint.activate([
-            title.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
-            title.topAnchor.constraint(equalTo: ov.topAnchor, constant: 30),
+            menuGroup.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
+            menuGroup.centerYAnchor.constraint(equalTo: ov.centerYAnchor),
+            menuGroup.topAnchor.constraint(greaterThanOrEqualTo: ov.topAnchor, constant: 20),
+            menuGroup.bottomAnchor.constraint(lessThanOrEqualTo: ov.bottomAnchor, constant: -20),
 
-            actionBar.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
-            actionBar.bottomAnchor.constraint(equalTo: ov.bottomAnchor, constant: -28),
+            scroll.widthAnchor.constraint(lessThanOrEqualTo: ov.widthAnchor, multiplier: 0.94),
+            scroll.heightAnchor.constraint(lessThanOrEqualTo: ov.heightAnchor, constant: -250),
 
-            scroll.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 18),
-            scroll.bottomAnchor.constraint(equalTo: actionBar.topAnchor, constant: -18),
-            scroll.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
-            scroll.widthAnchor.constraint(lessThanOrEqualTo: ov.widthAnchor, multiplier: 0.92),
-
-            // Vertical-only scroll: document width tracks the viewport (no h-scroll),
-            // height fits the options so it scrolls exactly when it overflows.
+            // Vertical-only scroll; options get a left/right margin so the
+            // checkboxes on the left column are never clipped at the edge.
             doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            optionsStack.topAnchor.constraint(equalTo: doc.topAnchor),
-            optionsStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
-            optionsStack.centerXAnchor.constraint(equalTo: doc.centerXAnchor),
+            optionsStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 6),
+            optionsStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -6),
+            optionsStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 30),
+            optionsStack.trailingAnchor.constraint(lessThanOrEqualTo: doc.trailingAnchor, constant: -24),
         ])
         container.addSubview(ov)
         pauseOverlay = ov
@@ -724,7 +731,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // #: graphics toggle → live renderer + persisted. Tags match gfxCheckbox order.
     @objc private func gfxToggleChanged(_ sender: NSButton) {
         let on = (sender.state == .on)
-        let keys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows", "gfxCelShade", "gfxLensFlare", "gfxCharShadows", "gfxClouds", "hyperspeed", "minimap"]
+        let keys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows", "gfxCelShade", "gfxLensFlare", "gfxCharShadows", "gfxClouds", "hyperspeed", "minimap", "gfxBloom"]
         guard sender.tag >= 0 && sender.tag < keys.count else { return }
         UserDefaults.standard.set(on, forKey: keys[sender.tag])
         switch sender.tag {
@@ -739,6 +746,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case 8: renderer?.gfxClouds = on      // #47 volumetric clouds toggle
         case 9: gameView?.setHyperspeed(on)   // #184 creative 100x flight
         case 10: minimapOverlay?.isHidden = !on   // #187 corner minimap
+        case 11: renderer?.gfxBloom = on; bloomSlider?.isEnabled = on   // #205 bloom toggle
         default: break
         }
     }
