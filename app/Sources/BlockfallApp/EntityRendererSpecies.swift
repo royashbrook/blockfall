@@ -3927,7 +3927,8 @@ extension EntityRenderer {
                           color: SIMD4<Float>(outRGB.x, outRGB.y, outRGB.z, outSat),
                           model: model,
                           camPosH: curCamPosH,          // #180 horizon curvature
-                          vpYCol:  viewProj.columns.1)  // clip-space Y column for the drop
+                          vpYCol:  viewProj.columns.1,  // clip-space Y column for the drop
+                          originXZ: SIMD4<Float>(curEntityOriginXZ.x, curEntityOriginXZ.y, 0, 0))  // #192
         enc.setVertexBytes(&u, length: MemoryLayout<EUniforms>.stride, index: 1)
         enc.drawIndexedPrimitives(type: .triangle, indexCount: indexCount,
                                   indexType: .uint16, indexBuffer: cubeIB, indexBufferOffset: 0)

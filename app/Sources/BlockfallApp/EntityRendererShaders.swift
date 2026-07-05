@@ -16,7 +16,7 @@ extension EntityRenderer {
     //   vpYCol  : column 1 of the camera viewProj (the clip-space contribution of
     //             world-Y), so the world-space drop can be applied to the mvp result
     //             without shipping the full viewProj: VP*(w + (0,dy,0,0)) = mvp*p + dy*vpYCol.
-    struct EUniforms { float4x4 mvp; float4 color; float4x4 model; float4 camPosH; float4 vpYCol; };
+    struct EUniforms { float4x4 mvp; float4 color; float4x4 model; float4 camPosH; float4 vpYCol; float4 originXZ; };
     struct EOut      { float4 position [[position]]; float3 color; float shade; float sat;
                        float3 worldPos; float3 worldNrm; };
 
@@ -88,12 +88,16 @@ extension EntityRenderer {
         // Directional shading: top bright, sides medium, bottom dim.
         float shade = clamp(0.55 + 0.30 * n.y + 0.15 * n.x, 0.0, 1.0);
         EOut o;
-        float4 wp = u.model * float4(float3(cv.pos), 1.0);
+        float4 wp = u.model * float4(float3(cv.pos), 1.0);   // world pos (o.worldPos, shadow march)
         // #180 horizon curvature: entities (creatures, falling blocks, debris) must
         // bend with the terrain or they float at distance. Drop by k * d^2 in world
         // space, applied in clip space via the viewProj Y column (exact, one fma).
         // worldPos stays FLAT (the sun-shadow march runs on the flat world).
-        float2 hd = wp.xz - u.camPosH.xz;
+        // #192: use the CREATURE ORIGIN (uniform for all its parts), not the per
+        // vertex world position, so the drop is one uniform translation and never
+        // warps the parts' relative depth (that warp made overlapping cube faces
+        // z-fight and flash as the creature animated).
+        float2 hd = u.originXZ.xy - u.camPosH.xz;
         hd -= BFE_HORIZON_PERIOD * rint(hd / BFE_HORIZON_PERIOD);   // nearest toroidal image
         float dy = -BFE_HORIZON_K * u.camPosH.w * min(dot(hd, hd), BFE_HORIZON_D2CAP);
         o.position = u.mvp * float4(float3(cv.pos), 1.0) + dy * u.vpYCol;

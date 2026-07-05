@@ -399,14 +399,12 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Ceiling 1.5 with the 0.5 default gives ~0.75 effective; slider at 100% = 1.5 (the prior default).
     static let kGodRayStrength: Float = 1.5
     // #167 god-ray march downscale: the shadow march runs at scene/N resolution and
-    // the composite upsamples it depth-aware. 2 = half res (4x fewer marched pixels).
-    // #188: was 4 (quarter res). At quarter res the coarse march grid showed as
-    // visible BLOCKS ("cubing") along busy distant silhouettes (a cactus/hill
-    // horizon) once a flat bright overcast rain sky stopped a clear sky gradient
-    // from hiding it. Half res shrinks the grid 4x (per-axis 2x) so the blocks
-    // vanish, and the depth-aware upsample smooths the rest. Still 4x cheaper than
-    // the full-res march #119 replaced.
-    static let kGodRayDownscale: Float = 2
+    // the composite upsamples it depth-aware. 4 = quarter res (16x fewer marched
+    // pixels). #188: the overcast "cubing" was NOT a resolution problem (half res
+    // did not fix it), it was aliased crepuscular shafts over a flat cloudy sky;
+    // the real fix fades god rays out in cloudy weather (see grStrength), so this
+    // stays at the cheap quarter res.
+    static let kGodRayDownscale: Float = 4
     // #132 LENS-FLARE GATE KNOBS (CPU side; shader has its own element knobs FLARE_*).
     //   kFlareEdgeFade : how far (in centre-distance, 0=centre ~1.4=corner) the flare keeps
     //                    fading to zero. Larger = the flare reaches further toward the edges.
@@ -1582,6 +1580,16 @@ final class Renderer: NSObject, MTKViewDelegate {
             // #136 fold in the intensity slider (0..1) so the rays scale from off to the
             // kGodRayStrength ceiling; defaults to 0.5 = half the old full-strength look.
             grStrength = dayT * (1 - frame.camera.underground) * Renderer.kGodRayStrength * gfxGodRayStr
+            // #188: fade god rays out as the sky clouds over. An overcast or rainy
+            // sky is diffuse and physically has no sharp sunbeams, and that flat
+            // bright backdrop is exactly what made the god-ray march's aliased
+            // shafts (from dense thin vegetation on the horizon: swamp grass, desert
+            // cacti) read as hard vertical blocks/bands. Clear and partly-cloudy
+            // skies keep their rays untouched; rain/snow always count as overcast.
+            let overcast = max(cloudCover, precipPacked != 0 ? 0.95 : 0)
+            let e = max(0, min(1, (overcast - 0.35) / 0.5))
+            let clearSky = 1 - e * e * (3 - 2 * e)   // smoothstep(0.35, 0.85, overcast)
+            grStrength *= clearSky
         }
         // #132 LENS FLARE gate. Project the sun to screen + derive the look-at-sun strength
         // on the CPU; fold in the toggle and underground (no flare in a cave). The shader does

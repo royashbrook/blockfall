@@ -155,6 +155,9 @@ final class EntityRenderer {
     // #180 horizon curvature for THIS encode: xyz = camera world pos, w = enable (0 = flat).
     // Internal (not private) because drawCube lives in the EntityRendererSpecies extension.
     var curCamPosH: SIMD4<Float> = .zero
+    // #192: current creature's world origin (x,z), set once per creature so every
+    // part shares one horizon drop (no intra-creature depth warp / face flashing).
+    var curEntityOriginXZ: SIMD2<Float> = .zero
 
     // =========================================================================
     // HIT REACTION — combat feedback ("you just click and poof" → make it land)
@@ -368,6 +371,8 @@ final class EntityRenderer {
         for i in 0..<count {
             let e = entities[i]
             let pos = SIMD3<Float>(e.position.x, e.position.y, e.position.z)
+            // #192: one horizon-drop reference for the whole creature.
+            curEntityOriginXZ = SIMD2<Float>(pos.x, pos.z)
             // Per-entity spatial hash — scatters all animation phases so
             // dozens of creatures never step in sync.
             let phaseHash = sin(pos.x * 1.3 + pos.z * 2.7)

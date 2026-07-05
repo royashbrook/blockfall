@@ -13,6 +13,11 @@ struct EUniforms {
     // the precomputed mvp result in clip space (see EUniforms in the MSL).
     var camPosH: SIMD4<Float> = .zero
     var vpYCol:  SIMD4<Float> = .zero
+    // #192: the CREATURE's world origin (xy = x,z). The horizon drop is computed
+    // from THIS, one value for every part of a creature, so the bend translates the
+    // whole creature uniformly instead of warping its parts' relative depths (which
+    // made overlapping cube faces z-fight/flash as the creature idle-animated).
+    var originXZ: SIMD4<Float> = .zero
 }
 
 // #116 character-shadow uniforms: shared by the entity cube fragment (RECEIVE: march toward the

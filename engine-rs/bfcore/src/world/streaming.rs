@@ -15,13 +15,12 @@ impl<'c> World<'c> {
                 // FULL Y stacks for every column in radius, which burned most of the gen
                 // budget on invisible underground and left visible holes while flying.
                 let near = dx.abs() <= near_r && dz.abs() <= near_r;
-                // #191: ROUND load region. Keep the near bubble (digging needs the
-                // full local stack), but cull the far corners so the loaded and
-                // visible terrain is a radius out from the player, not a square box
-                // (the square edge was obvious flying high and looking down).
-                if !near && dx * dx + dz * dz > target_r * target_r {
-                    continue;
-                }
+                // #191: a SQUARE load box, filled radiating outward (the gen_queue
+                // sorts nearest-first below). An earlier round cull was reverted:
+                // culling the corners de-rendered already-loaded chunks as the
+                // player moved, so the round boundary thrashed in/out and left an
+                // empty ring when moving fast. Keeping everything already loaded
+                // (and accepting the square) is what the player actually wants.
                 // #179: canonical column so the cache key (and the queued chunk
                 // below) is unique on the torus even when the window straddles
                 // the seam.
@@ -76,13 +75,13 @@ impl<'c> World<'c> {
         let mut drop: Vec<ChunkCoord> = Vec::new();
         for (cc, _) in self.meshes.iter() {
             // #179: nearest-image distance so meshes just across the seam are
-            // "near", not 32K blocks away. #191: evict on a ROUND radius so the
-            // loaded disc stays circular (corners inside the old square box are
-            // dropped), matching the round load region above.
-            let ddx = Self::wrap_signed_chunk(cc.x - self.last_center.x);
-            let ddz = Self::wrap_signed_chunk(cc.z - self.last_center.z);
-            let rr = self.stream_r + 1;
-            if ddx * ddx + ddz * ddz > rr * rr {
+            // "near", not 32K blocks away. #191: SQUARE eviction (reverted the
+            // round radius) so a chunk already loaded is never dropped until it is
+            // truly outside the render box; the round version thrashed boundary
+            // chunks and left an empty ring when moving fast.
+            if Self::wrap_signed_chunk(cc.x - self.last_center.x).abs() > self.stream_r + 1
+                || Self::wrap_signed_chunk(cc.z - self.last_center.z).abs() > self.stream_r + 1
+            {
                 drop.push(*cc);
             }
         }

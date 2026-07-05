@@ -29,7 +29,9 @@ final class MinimapView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.zPosition = 50
+        // #191: no raised zPosition — it must sit UNDER the loading overlay so it
+        // does not peek through the load screen. The app reveals it (isHidden) once
+        // loading lifts.
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
 

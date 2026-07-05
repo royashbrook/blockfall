@@ -176,7 +176,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                            width: mmSize, height: mmSize))
         mm.autoresizingMask = [.minXMargin, .maxYMargin]
         mm.renderer = r
-        mm.isHidden = !(UserDefaults.standard.object(forKey: "minimap") as? Bool ?? true)
+        // #191: stay hidden until the loading overlay lifts (hideLoadingOverlay),
+        // so the minimap does not appear over the load screen.
+        mm.isHidden = true
         container.addSubview(mm)
         mm.start()
         minimapOverlay = mm
@@ -233,6 +235,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer?.onLoadProgress = nil
         let elapsed = CACurrentMediaTime() - loadStartTime
         NSLog("[Blockfall #135] hiding loading overlay after %.2fs", elapsed)
+        // #191: reveal the minimap now that the world is up (if the toggle is on),
+        // so it comes in with the rest of the HUD, not over the load screen.
+        if UserDefaults.standard.object(forKey: "minimap") as? Bool ?? true {
+            minimapOverlay?.isHidden = false
+        }
         // Only capture the mouse if we are still in-game and not paused (the player
         // could have hit Esc during load). The fade is a short, kid-friendly reveal.
         NSAnimationContext.runAnimationGroup({ ctx in

@@ -84,12 +84,13 @@ impl<'c> World<'c> {
         }
     }
 
-    /// Reveal the whole render-distance disc as the player moves (#191), so the
-    /// map fills in at the scale the player can actually SEE, not a fixed 3x3
-    /// patch. stream_r is in chunks; convert to map cells (round up so the visible
-    /// edge is covered). Cheap: called once per chunk crossing, not per frame.
+    /// Reveal a generous CONSTANT disc around the player as they move (#191), so
+    /// the map fills in at the scale the player can see, not a fixed 3x3 patch.
+    /// #191 follow-up: the reveal is 2x the render distance (revealing the map is
+    /// pure bookkeeping with no fps cost, and the player wanted a bigger, constant
+    /// radius). stream_r is in chunks; convert to map cells, rounding up.
     pub(super) fn reveal_render_radius(&mut self, wx: i32, wz: i32) {
-        let r_cells = ((self.stream_r * KCHUNK_DIM + MAP_CELL - 1) / MAP_CELL).max(1);
+        let r_cells = ((2 * self.stream_r * KCHUNK_DIM + MAP_CELL - 1) / MAP_CELL).max(1);
         self.reveal_circle(wx, wz, r_cells);
     }
 
