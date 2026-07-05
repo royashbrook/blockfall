@@ -282,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Both write through to the live HUDView immediately and persist to
         // UserDefaults so they stick between sessions.
         let textLabel = NSTextField(labelWithString: "Text Size")
-        textLabel.font = .boldSystemFont(ofSize: 16); textLabel.textColor = .white
+        textLabel.font = .boldSystemFont(ofSize: 28); textLabel.textColor = .white
 
         let slider = NSSlider(value: Double(hud?.hudScale ?? AppDelegate.loadHUDScale()),
                               minValue: 1.0, maxValue: 2.0,
@@ -292,7 +292,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hudScaleSlider = slider
 
         let valueLabel = NSTextField(labelWithString: "")
-        valueLabel.font = .systemFont(ofSize: 14); valueLabel.textColor = .white
+        valueLabel.font = .systemFont(ofSize: 24); valueLabel.textColor = .white
         valueLabel.alignment = .center
         hudScaleValueLabel = valueLabel
 
@@ -304,7 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showHUD.state = (hud?.hudVisible ?? AppDelegate.loadHUDVisible()) ? .on : .off
         showHUD.contentTintColor = .white
         showHUD.attributedTitle = NSAttributedString(string: "Show HUD", attributes: [
-            .font: NSFont.boldSystemFont(ofSize: 16), .foregroundColor: NSColor.white,
+            .font: NSFont.boldSystemFont(ofSize: 28), .foregroundColor: NSColor.white,
         ])
 
         updateHUDScaleLabel()   // fill the live value label now that it exists
@@ -314,7 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // slider beside the checkbox; Bloom (always on) gets its own labelled slider row. The
         // slider greys out when the effect is toggled off. Lens Flare stays a plain toggle.
         let fxTitle = NSTextField(labelWithString: "Effects")
-        fxTitle.font = .boldSystemFont(ofSize: 16); fxTitle.textColor = .white
+        fxTitle.font = .boldSystemFont(ofSize: 30); fxTitle.textColor = .white
 
         // God Rays + Cel Shading: checkbox with an intensity slider beside it.
         let godRayCb = gfxCheckbox("God Rays", tag: 2, on: renderer?.gfxGodRays ?? false)
@@ -331,7 +331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Bloom is always on (no toggle); a plain labelled intensity slider.
         let bloomLabel = NSTextField(labelWithString: "Bloom")
-        bloomLabel.font = .systemFont(ofSize: 14); bloomLabel.textColor = .white
+        bloomLabel.font = .systemFont(ofSize: 24); bloomLabel.textColor = .white
         let bloomSlider = gfxIntensitySlider(value: Double(renderer?.gfxBloomStr ?? 0.5),
                                              sel: #selector(bloomStrChanged(_:)), enabled: true)
         let bloomRow = NSStackView(views: [bloomLabel, bloomSlider])
@@ -362,7 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // #85 Render-distance slider (chunks 8..28), live + persisted.
         let rdLabel = NSTextField(labelWithString: "Render Distance")
-        rdLabel.font = .systemFont(ofSize: 14); rdLabel.textColor = .white
+        rdLabel.font = .systemFont(ofSize: 24); rdLabel.textColor = .white
         let rdVal = UserDefaults.standard.object(forKey: "gfxRenderDist") as? Int ?? 24
         let rdSlider = NSSlider(value: Double(rdVal), minValue: 8, maxValue: 40,
                                 target: self, action: #selector(renderDistChanged(_:)))
@@ -373,7 +373,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // ---- Audio toggles (#3: music + ambience on/off, live + persisted) ----
         let auTitle = NSTextField(labelWithString: "Audio")
-        auTitle.font = .boldSystemFont(ofSize: 16); auTitle.textColor = .white
+        auTitle.font = .boldSystemFont(ofSize: 30); auTitle.textColor = .white
         let auStack = NSStackView(views: [
             volumeSliderRow("Music Volume", key: "audMusicVol", sel: #selector(musicVolChanged(_:))),
             volumeSliderRow("Sound Volume", key: "audSoundVol", sel: #selector(soundVolChanged(_:))),
@@ -389,8 +389,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // off-screen at any window height: a pinned title at the top, the options
         // in a SCROLL VIEW in the middle (scroll when they overflow), and a pinned
         // action bar (Keep Playing / Save & Go to Menu) at the bottom.
-        let optionsStack = NSStackView(views: [sliderRow, showHUD, fxTitle, fxStack, rdRow, auTitle, auStack, mapBtn, charBtn])
-        optionsStack.orientation = .vertical; optionsStack.spacing = 18; optionsStack.alignment = .centerX
+        // #205: TWO columns so the (now larger-text) options are about half as
+        // tall. Left = the Effects list (the bulk); right = Text Size, Show HUD,
+        // Render Distance, and Audio.
+        let leftCol = NSStackView(views: [fxTitle, fxStack])
+        leftCol.orientation = .vertical; leftCol.spacing = 14; leftCol.alignment = .leading
+        let rightCol = NSStackView(views: [sliderRow, showHUD, rdRow, auTitle, auStack])
+        rightCol.orientation = .vertical; rightCol.spacing = 16; rightCol.alignment = .leading
+        let optionsStack = NSStackView(views: [leftCol, rightCol])
+        optionsStack.orientation = .horizontal; optionsStack.spacing = 48; optionsStack.alignment = .top
         optionsStack.translatesAutoresizingMaskIntoConstraints = false
 
         let scroll = NSScrollView()
@@ -404,15 +411,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         doc.addSubview(optionsStack)
         scroll.documentView = doc
 
-        let actionBar = NSStackView(views: [resume, menuBtn])
-        actionBar.orientation = .horizontal; actionBar.spacing = 16; actionBar.alignment = .centerY
+        // #205: two rows of actions, pinned at the bottom. Top: World Map +
+        // Customize Character. Bottom: Keep Playing + Save & Go to Menu.
+        let topActions = NSStackView(views: [mapBtn, charBtn])
+        topActions.orientation = .horizontal; topActions.spacing = 16; topActions.distribution = .fillEqually
+        let bottomActions = NSStackView(views: [resume, menuBtn])
+        bottomActions.orientation = .horizontal; bottomActions.spacing = 16; bottomActions.distribution = .fillEqually
+        let actionBar = NSStackView(views: [topActions, bottomActions])
+        actionBar.orientation = .vertical; actionBar.spacing = 12; actionBar.alignment = .centerX
         actionBar.translatesAutoresizingMaskIntoConstraints = false
+        topActions.widthAnchor.constraint(equalTo: bottomActions.widthAnchor).isActive = true
 
         ov.addSubview(title)
         ov.addSubview(scroll)
         ov.addSubview(actionBar)
         // Preferred width (yields to the 0.92*ov cap on narrow windows).
-        let scrollW = scroll.widthAnchor.constraint(equalToConstant: 460)
+        let scrollW = scroll.widthAnchor.constraint(equalToConstant: 760)
         scrollW.priority = .defaultHigh
         scrollW.isActive = true
         NSLayoutConstraint.activate([
@@ -446,7 +460,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.layer?.cornerRadius = 12
         b.contentTintColor = .white
         b.attributedTitle = NSAttributedString(string: t, attributes: [
-            .font: NSFont.boldSystemFont(ofSize: 20),
+            .font: NSFont.boldSystemFont(ofSize: 30),
             .foregroundColor: NSColor.white,
         ])
         b.translatesAutoresizingMaskIntoConstraints = false
@@ -655,7 +669,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // #: a labeled 0..1 volume slider row (independent music vs sounds).
     private func volumeSliderRow(_ title: String, key: String, sel: Selector) -> NSStackView {
         let lbl = NSTextField(labelWithString: title)
-        lbl.font = .systemFont(ofSize: 14); lbl.textColor = .white
+        lbl.font = .systemFont(ofSize: 24); lbl.textColor = .white
         let v = UserDefaults.standard.object(forKey: key) as? Double ?? 1.0
         let s = NSSlider(value: v, minValue: 0.0, maxValue: 1.0, target: self, action: sel)
         s.translatesAutoresizingMaskIntoConstraints = false
@@ -683,7 +697,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.state = on ? .on : .off
         b.contentTintColor = .white
         b.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.white,
+            .font: NSFont.systemFont(ofSize: 26), .foregroundColor: NSColor.white,
         ])
         return b
     }
@@ -703,7 +717,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.state = on ? .on : .off
         b.contentTintColor = .white
         b.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.white,
+            .font: NSFont.systemFont(ofSize: 26), .foregroundColor: NSColor.white,
         ])
         return b
     }
