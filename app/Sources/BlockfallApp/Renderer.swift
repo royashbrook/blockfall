@@ -242,6 +242,12 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var lastPlayerZ: Float = 0
     private var lastPlayerFacing: Float = 0
 
+    // #187 minimap: cheap read-only player state, polled by the HUD minimap each
+    // tick (the heavy explored-mask copy in mapQuery is not needed for it).
+    var playerWorldX: Float { lastPlayerX }
+    var playerWorldZ: Float { lastPlayerZ }
+    var playerWorldFacing: Float { lastPlayerFacing }
+
     struct MapSnapshot {
         let explored: [UInt8]
         let period: Int
@@ -274,9 +280,12 @@ final class Renderer: NSObject, MTKViewDelegate {
             let p = raw.bindMemory(to: bf_map_marker.self)
             for i in 0..<min(Int(v.marker_count), Int(BF_MAP_MAX_MARKERS)) {
                 let m = p[i]
-                let name = withUnsafeBytes(of: m.name) {
+                let engineName = withUnsafeBytes(of: m.name) {
                     String(cString: $0.bindMemory(to: CChar.self).baseAddress!)
                 }
+                // #187: villages get a fun kid name derived from their coords
+                // (stable across sessions); home and totems keep the engine label.
+                let name = m.kind == 1 ? TownNames.name(x: m.pos.x, z: m.pos.z) : engineName
                 markers.append(MapView.Marker(x: m.pos.x, z: m.pos.z,
                                               kind: m.kind, id: m.id, name: name))
             }

@@ -28,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // #182 world map overlay (M key / pause-menu button). The world pauses
     // underneath (same setPaused path as the pause menu, #127).
     var mapOverlay: MapView?
+    // #187 always-on corner minimap (toggle in the pause menu, hidden while the
+    // big map is open).
+    var minimapOverlay: MinimapView?
     // #135 loading overlay: covers the 1-2 fps first-load stutter (spawn chunks
     // meshing + uploading) and lifts once the renderer reports the world is ready.
     var loadingOverlay: LoadingView?
@@ -164,6 +167,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mtkView.autoresizingMask = [.width, .height]
         container.addSubview(mtkView)
         container.addSubview(h)
+
+        // #187 minimap: pinned BOTTOM-right (top-right is the status box, top-left
+        // the coords readout, bottom-centre the hotbar). Display-only. Default on.
+        let mmSize: CGFloat = 176, mmMargin: CGFloat = 16
+        let mm = MinimapView(frame: NSRect(x: frame.width - mmSize - mmMargin,
+                                           y: mmMargin,
+                                           width: mmSize, height: mmSize))
+        mm.autoresizingMask = [.minXMargin, .maxYMargin]
+        mm.renderer = r
+        mm.isHidden = !(UserDefaults.standard.object(forKey: "minimap") as? Bool ?? true)
+        container.addSubview(mm)
+        mm.start()
+        minimapOverlay = mm
 
         // #135 loading screen: cover the first-load stutter from launch. The MTKView
         // keeps rendering (and meshing) underneath; this opaque overlay sits on top of
@@ -331,6 +347,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // stress-testing streaming). Engine ignores it in survival.
             gfxCheckbox("Hyperspeed Flight (100x)", tag: 9,
                         on: UserDefaults.standard.bool(forKey: "hyperspeed")),
+            // #187 corner minimap toggle (default on).
+            gfxCheckbox("Minimap", tag: 10,
+                        on: UserDefaults.standard.object(forKey: "minimap") as? Bool ?? true),
         ])
         fxStack.orientation = .vertical; fxStack.spacing = 8; fxStack.alignment = .leading
 
@@ -403,6 +422,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let container = gameContainer, let r = renderer,
               let snap = r.mapQuery() else { return }
         gameView?.setPaused(true)   // freezes the sim + releases the pointer
+        minimapOverlay?.isHidden = true   // #187 the big map supersedes the minimap
         let mv = MapView(frame: container.bounds)
         mv.autoresizingMask = [.width, .height]
         mv.explored = snap.explored
@@ -429,6 +449,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let mv = mapOverlay else { return }
         mv.removeFromSuperview()
         mapOverlay = nil
+        if UserDefaults.standard.object(forKey: "minimap") as? Bool ?? true {
+            minimapOverlay?.isHidden = false   // #187 restore if enabled
+        }
         gameView?.setPaused(false)
         gameView?.grabMouse()
         if let gv = gameView { window.makeFirstResponder(gv) }
@@ -639,7 +662,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // #: graphics toggle → live renderer + persisted. Tags match gfxCheckbox order.
     @objc private func gfxToggleChanged(_ sender: NSButton) {
         let on = (sender.state == .on)
-        let keys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows", "gfxCelShade", "gfxLensFlare", "gfxCharShadows", "gfxClouds", "hyperspeed"]
+        let keys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows", "gfxCelShade", "gfxLensFlare", "gfxCharShadows", "gfxClouds", "hyperspeed", "minimap"]
         guard sender.tag >= 0 && sender.tag < keys.count else { return }
         UserDefaults.standard.set(on, forKey: keys[sender.tag])
         switch sender.tag {
@@ -653,6 +676,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case 7: renderer?.gfxCharShadows = on // #116 character (entity) shadows
         case 8: renderer?.gfxClouds = on      // #47 volumetric clouds toggle
         case 9: gameView?.setHyperspeed(on)   // #184 creative 100x flight
+        case 10: minimapOverlay?.isHidden = !on   // #187 corner minimap
         default: break
         }
     }
@@ -688,6 +712,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quitToMenu() {
         pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
         mapOverlay?.removeFromSuperview(); mapOverlay = nil   // #182
+        minimapOverlay?.stop(); minimapOverlay?.removeFromSuperview(); minimapOverlay = nil  // #187
         // #135 drop the loading overlay if we quit mid-load (rare, but the
         // pending fade/grab callbacks must not run against a torn-down game).
         loadingOverlay?.removeFromSuperview(); loadingOverlay = nil
@@ -1076,8 +1101,10 @@ if let idx = CommandLine.arguments.firstIndex(of: "--mapshot"), idx + 1 < Comman
     mv.playerX = Float(px); mv.playerZ = Float(pz); mv.playerFacing = 0.8
     mv.markers = [
         MapView.Marker(x: Int32(px - 300), z: Int32(pz + 200), kind: 0, id: 1, name: "Home"),
-        MapView.Marker(x: Int32(px + 550), z: Int32(pz - 350), kind: 1, id: 100, name: "Village 1"),
-        MapView.Marker(x: Int32(px - 620), z: Int32(pz - 480), kind: 1, id: 101, name: "Village 2"),
+        MapView.Marker(x: Int32(px + 550), z: Int32(pz - 350), kind: 1, id: 100,
+                       name: TownNames.name(x: Int32(px + 550), z: Int32(pz - 350))),
+        MapView.Marker(x: Int32(px - 620), z: Int32(pz - 480), kind: 1, id: 101,
+                       name: TownNames.name(x: Int32(px - 620), z: Int32(pz - 480))),
         MapView.Marker(x: Int32(px + 260), z: Int32(pz + 520), kind: 2, id: 200, name: "Totem 1"),
         MapView.Marker(x: Int32(px + 1500), z: Int32(pz - 1180), kind: 2, id: 201, name: "Totem 2"),
     ]
@@ -1098,6 +1125,21 @@ if let idx = CommandLine.arguments.firstIndex(of: "--mapshot"), idx + 1 < Comman
     mv.debugSelectMarker(-1)
     mv.viewSpan = period
     mapShot(base + "_planet.png")
+    // #187 also render the corner minimap with the same sample data (over a green
+    // backdrop so the translucent disc reads) for review without the live app.
+    let mm = MinimapView(frame: NSRect(x: 0, y: 0, width: 176, height: 176))
+    mm.debugPreview(markers: mv.markers, playerX: Float(px), playerZ: Float(pz),
+                    facing: 0.8, period: period)
+    let bg = NSView(frame: NSRect(x: 0, y: 0, width: 208, height: 208))
+    bg.wantsLayer = true
+    bg.layer?.backgroundColor = NSColor(calibratedRed: 0.45, green: 0.62, blue: 0.36, alpha: 1).cgColor
+    mm.setFrameOrigin(NSPoint(x: 16, y: 16))
+    bg.addSubview(mm)
+    if let rep = bg.bitmapImageRepForCachingDisplay(in: bg.bounds) {
+        bg.cacheDisplay(in: bg.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])!
+            .write(to: URL(fileURLWithPath: base + "_minimap.png"))
+    }
     exit(0)
 }
 

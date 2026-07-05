@@ -199,6 +199,10 @@ final class MapView: NSView {
         // The player: a bold arrow at the map centre, rotated to the facing.
         drawPlayerArrow(at: CGPoint(x: r.midX, y: r.midY), ctx: ctx)
 
+        // Compass rose (top-left, inside the frame): fixed N/E/S/W with a red
+        // needle showing which way the player is looking.
+        drawCompass(in: r, ctx: ctx)
+
         // Confirmation chip / charge ring on top.
         if let ci = chargeMarker, chargeStart > 0 {
             drawChargeRing(for: markers[ci], ctx: ctx)
@@ -310,6 +314,43 @@ final class MapView: NSView {
         NSColor.black.withAlphaComponent(0.75).setStroke()
         path.lineWidth = 1.5
         path.stroke()
+    }
+
+    private func drawCompass(in r: NSRect, ctx: CGContext) {
+        let rad: CGFloat = 34
+        let c = CGPoint(x: r.minX + rad + 14, y: r.maxY - rad - 14)
+        // Disc.
+        NSColor(calibratedRed: 0.14, green: 0.11, blue: 0.07, alpha: 0.92).setFill()
+        NSBezierPath(ovalIn: NSRect(x: c.x - rad, y: c.y - rad, width: rad * 2, height: rad * 2)).fill()
+        NSColor(calibratedRed: 0.86, green: 0.74, blue: 0.5, alpha: 1).setStroke()
+        let ring = NSBezierPath(ovalIn: NSRect(x: c.x - rad, y: c.y - rad, width: rad * 2, height: rad * 2))
+        ring.lineWidth = 2.5
+        ring.stroke()
+        // N/E/S/W letters (north up).
+        for (ang, s) in [(CGFloat.pi / 2, "N"), (0, "E"), (-CGFloat.pi / 2, "S"), (CGFloat.pi, "W")] {
+            let lp = NSPoint(x: c.x + cos(ang) * (rad - 11), y: c.y + sin(ang) * (rad - 11) - 6)
+            drawCenteredText(s, at: lp, size: 12, weight: .heavy,
+                             color: s == "N" ? NSColor(calibratedRed: 0.98, green: 0.5, blue: 0.45, alpha: 1) : .white)
+        }
+        // Needle in the facing direction (map is north = -z up).
+        ctx.saveGState()
+        ctx.translateBy(x: c.x, y: c.y)
+        ctx.rotate(by: CGFloat(playerFacing) + .pi)
+        let needle = NSBezierPath()
+        needle.move(to: NSPoint(x: 0, y: rad - 12))
+        needle.line(to: NSPoint(x: 5, y: 0))
+        needle.line(to: NSPoint(x: -5, y: 0))
+        needle.close()
+        NSColor(calibratedRed: 0.95, green: 0.35, blue: 0.32, alpha: 1).setFill()
+        needle.fill()
+        let tail = NSBezierPath()
+        tail.move(to: NSPoint(x: 0, y: -(rad - 12)))
+        tail.line(to: NSPoint(x: 5, y: 0))
+        tail.line(to: NSPoint(x: -5, y: 0))
+        tail.close()
+        NSColor(calibratedWhite: 0.92, alpha: 1).setFill()
+        tail.fill()
+        ctx.restoreGState()
     }
 
     private func drawPlayerArrow(at p: CGPoint, ctx: CGContext) {
