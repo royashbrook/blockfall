@@ -28,7 +28,11 @@ const CANOPY_MAX_REACH_XZ: i32 = 4;
 // #179: rescaled from the 6-block cell values (12910 / 51773 / 5530 / 7373)
 // by (4/6)^2 so density per area is preserved with the 4-block cell.
 const TREE_PROB_THRESH_DEFAULT: u64 = 5738;
-const TREE_PROB_THRESH_FOREST: u64 = 23010;
+// #198: forest reads as scattered trees at ~35% cell density. Bump to ~64% of the
+// 4-block cells so canopies (reach 4) heavily overlap and it reads as dense woods
+// you move THROUGH. Other biomes keep their own (lower) thresholds; only the
+// universal early-reject bound (TREE_PROB_THRESH_MAX) rises with this.
+const TREE_PROB_THRESH_FOREST: u64 = 42000;
 const TREE_PROB_THRESH_SNOWY: u64 = 2458;
 const TREE_PROB_THRESH_SWAMP: u64 = 3277;
 // Any prob at/above the largest threshold is a no-tree cell in EVERY biome, so
