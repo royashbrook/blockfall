@@ -410,7 +410,16 @@ impl<'c> World<'c> {
         let ibytes_len = r.ibytes.len() as u32;
         let vb = self.gpu_alloc(vbytes_len);
         let ib = self.gpu_alloc(ibytes_len);
-        if vb.contents.is_null() || ib.contents.is_null() {
+        // #217: reject a null OR undersized buffer. copy_nonoverlapping below trusts
+        // the returned allocation, so a caller allocator that hands back fewer bytes
+        // than requested would corrupt memory. Free any real buffer we then drop.
+        if vb.contents.is_null() || ib.contents.is_null() || vb.bytes < vbytes_len || ib.bytes < ibytes_len {
+            if !vb.contents.is_null() {
+                self.gpu_free(vb.handle);
+            }
+            if !ib.contents.is_null() {
+                self.gpu_free(ib.handle);
+            }
             let rec = self.meshes.get_mut(&r.cc).unwrap();
             rec.index_count = 0;
             return;
