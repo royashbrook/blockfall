@@ -162,6 +162,8 @@ impl<'c> World<'c> {
             let v = r.f32();
             if let (Some(x), Some(z), Some(v)) = (x, z, v) {
                 self.region_sat.insert(RegionKey { x, z }, v);
+            } else {
+                break; // #216: truncated/garbage region count must not spin to EOF
             }
         }
         let mut quest_loaded = false;
@@ -192,7 +194,8 @@ impl<'c> World<'c> {
                     let aqd = p.u8().unwrap_or(0);
                     let opn = p.u32().unwrap_or(0);
                     self.start_quest(aq as usize);
-                    for i in 0..opn {
+                    // #216: cap by the array size so a garbage count cannot spin.
+                    for i in 0..opn.min(self.obj_progress.len() as u32) {
                         let v = p.u32().unwrap_or(0);
                         if (i as usize) < self.obj_progress.len() {
                             self.obj_progress[i as usize] = v;
@@ -201,7 +204,7 @@ impl<'c> World<'c> {
                     self.quests_completed = qc as i32;
                     self.all_quests_done = aqd != 0;
                     let an = p.u32().unwrap_or(0);
-                    for i in 0..an {
+                    for i in 0..an.min(K_ACHIEVEMENT_COUNT as u32) {   // #216 cap
                         let dn = p.u8().unwrap_or(0);
                         let pr = p.i32().unwrap_or(0);
                         if (i as usize) < K_ACHIEVEMENT_COUNT {
@@ -254,7 +257,7 @@ impl<'c> World<'c> {
             let mut cr = ByteReader::new(&b);
             if cr.take(4) == Some(b"BFCH") {
                 let n = cr.u32().unwrap_or(0);
-                let slots = cr.u32().unwrap_or(CHEST_SLOTS as u32) as usize;
+                let slots = (cr.u32().unwrap_or(CHEST_SLOTS as u32) as usize).min(CHEST_SLOTS); // #216 cap
                 for _ in 0..n {
                     let x = cr.i32();
                     let y = cr.i32();
