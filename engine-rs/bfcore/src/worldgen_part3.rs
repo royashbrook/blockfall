@@ -75,7 +75,7 @@ fn struct_footprint_reach(typ: i32) -> i32 {
         x if x == STRUCT_TEMPLE => 3,
         x if x == STRUCT_CAIRN => 1,
         x if x == STRUCT_WELL => 1,
-        x if x == STRUCT_VILLAGE => 9,     // huts on a +/-6 ring + hut radius 3
+        x if x == STRUCT_VILLAGE => 16,    // #213: huts spread onto a wider ring (~11/13) + hut radius 3
         x if x == STRUCT_SHRINE => 3,
         x if x == STRUCT_TALL_TOWER => 2,
         x if x == STRUCT_KEEP => 4,        // curtain wall + turrets at +/-4
@@ -823,7 +823,9 @@ fn place_village<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, w
         }
     }
 
-    let huts = [[-6, -4], [6, 4], [0, 6], [-6, 4], [6, -4]];
+    // #213: wider ring so buildings sit 5-10 blocks apart (huts are radius 3), not
+    // crammed together. Centres ~12-15 apart give roomy gaps between huts.
+    let huts = [[-11, -7], [11, 7], [0, 13], [-11, 7], [11, -7]];
     let n_huts = if (h >> 10) & 1 != 0 { 5 } else { 4 };
     for i in 0..n_huts {
         let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x2545F4914F6CDD1D).wrapping_add(71)));
