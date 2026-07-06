@@ -3779,7 +3779,7 @@ extension EntityRenderer {
         // villager actually STRIDES (no more sliding) and a standing one plants its
         // feet and falls back to the gentle idle sway.
         let walkAmt = min(1.0, curGaitSpeed / 1.3)
-        let stride  = sin(phase) * 0.55 * walkAmt            // leg swing (radians)
+        let stride  = sin(phase) * 0.90 * walkAmt            // #212 longer strides
         let armAngL = armSway * (1 - walkAmt) + (-stride * 1.1) * walkAmt
         let armAngR = -armSway * (1 - walkAmt) + (stride * 1.1) * walkAmt
 
@@ -3788,12 +3788,15 @@ extension EntityRenderer {
         let bodyLean   = EntityRenderer.rotZ(leanAngle)
 
         // ---- PROPORTIONS (cute, slightly stocky person) ----
-        let legW = s * 0.18; let legH = s * 0.34; let legD = s * 0.18
+        // #212: a per-villager vertical stretch (from the stable seed) on legs + torso,
+        // so builds vary from short-and-stocky to tall-and-lanky, not just uniform scale.
+        let vstretch = 0.82 + Float((vs >> 18) % 100) / 100.0 * 0.52   // 0.82..1.34
+        let legW = s * 0.18; let legH = s * 0.34 * vstretch; let legD = s * 0.18
         let footW = s * 0.20; let footH = s * 0.09; let footD = s * 0.26
         let legTotalH = legH + footH
 
         // Torso: boxy tunic, a touch wider than the lurker for a softer look.
-        let tW = s * 0.50;  let tH = s * 0.46;  let tD = s * 0.30
+        let tW = s * 0.50;  let tH = s * 0.46 * vstretch;  let tD = s * 0.30
         // Neck: short connector.
         let nkW = s * 0.16; let nkH = s * 0.08; let nkD = s * 0.16
         // Head: big and round (cute — bigger relative to body than the monster).

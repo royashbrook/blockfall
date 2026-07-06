@@ -725,10 +725,12 @@ impl<'c> World<'c> {
             c.home_x = Self::wrap_block(ax);
             c.home_z = Self::wrap_block(az);
             c.name = d.name.clone();
+            // #212: villagers moved at half speed and read as slow-motion. Full def
+            // speed (and a brisker fallback) so their walk looks like walking.
             c.speed = if d.move_speed > 0.0 {
-                d.move_speed * 0.5
+                d.move_speed
             } else {
-                0.8
+                1.5
             };
             c.hp = if d.max_health > 0 {
                 d.max_health as i32
