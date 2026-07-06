@@ -86,6 +86,10 @@ pub struct CreatureAi {
     /// Goal the current path was built toward, so we can tell when the goal moved
     /// far enough to justify a fresh path.
     pub goal: (i32, i32),
+    /// #213: ticks left committed to a just-chosen turn-away heading after being
+    /// blocked, so a creature grinding a wall does not re-roll (and spin/vibrate)
+    /// every single tick. Decremented in tick_repath.
+    pub blocked_cd: i32,
 }
 
 impl Default for CreatureAi {
@@ -99,6 +103,7 @@ impl Default for CreatureAi {
             path: Vec::new(),
             path_idx: 0,
             goal: (i32::MIN, i32::MIN),
+            blocked_cd: 0,
         }
     }
 }
@@ -571,15 +576,27 @@ impl CreatureAi {
         self.path.clear();
         self.path_idx = 0;
         self.repath_cd = 0;
+        // #213: while still committed to a recent turn-away, do NOT re-roll the
+        // heading every tick (that spun the body and made a wall-grinding creature
+        // vibrate). Just keep easing toward the already-chosen heading.
+        if self.blocked_cd > 0 {
+            self.speed *= 0.5; // bleed momentum so it stops shoving into the wall
+            return;
+        }
         // Rotate the stored wander heading; turn_toward then eases the body around.
         let h = self.goal_heading() + turn;
         self.heading_target_set(h);
+        self.blocked_cd = 16; // ~0.8s: commit to the turn before re-rolling
+        self.speed *= 0.2; // drop the momentum that drove it into the wall
     }
 
     /// Advance the repath cooldown one tick (call once per creature per update).
     pub fn tick_repath(&mut self) {
         if self.repath_cd > 0 {
             self.repath_cd -= 1;
+        }
+        if self.blocked_cd > 0 {
+            self.blocked_cd -= 1;
         }
     }
 
