@@ -156,15 +156,12 @@ impl<'c> World<'c> {
     /// within ~48 blocks of it. Called on chunk crossings (cheap, throttled by
     /// movement itself); a pure worldgen query, no chunk residency needed.
     pub(super) fn note_village_visits(&mut self, wx: i32, wz: i32) {
-        let (styp, ax, az, _ay) = worldgen::worldgen_structure_near(wx, wz, self.seed);
-        if styp != 8 && !worldgen::worldgen_is_city(styp) {
-            return;
-        }
-        let dx = Self::wrap_signed_block(ax - wx) as i64;
-        let dz = Self::wrap_signed_block(az - wz) as i64;
-        if dx * dx + dz * dz > 48 * 48 {
-            return;
-        }
+        // #214: scan neighbouring structure cells (not just the player's own cell) so
+        // a settlement near a cell boundary is still discovered within ~48 blocks.
+        let (_styp, ax, az) = match worldgen::worldgen_settlement_near(wx, wz, 48, self.seed) {
+            Some(s) => s,
+            None => return,
+        };
         let key = (Self::wrap_block(ax), Self::wrap_block(az));
         if self.visited_villages.contains(&key) || self.visited_villages.len() >= MAP_MAX_VILLAGES {
             return;
@@ -224,24 +221,24 @@ impl<'c> World<'c> {
     /// Teleport to a marker by its id (see the MARKER_ID_* scheme). Returns
     /// false for an unknown id. Lands on the surface, never inside solid.
     pub fn map_teleport(&mut self, marker_id: u32) -> bool {
-        let (tx, tz, is_totem) = if marker_id == MARKER_ID_HOME {
-            (Self::ifloor(self.spawn.x), Self::ifloor(self.spawn.z), false)
+        let (tx, tz) = if marker_id == MARKER_ID_HOME {
+            (Self::ifloor(self.spawn.x), Self::ifloor(self.spawn.z))
         } else if marker_id >= MARKER_ID_TOTEM_BASE {
             let i = (marker_id - MARKER_ID_TOTEM_BASE) as usize;
             match self.totems.get(i) {
-                Some(t) => (t.pos.x, t.pos.z, true),
+                Some(t) => (t.pos.x, t.pos.z),
                 None => return false,
             }
         } else if marker_id >= MARKER_ID_VILLAGE_BASE {
             let i = (marker_id - MARKER_ID_VILLAGE_BASE) as usize;
             match self.visited_villages.get(i) {
-                Some(&(ax, az)) => (ax, az, false),
+                Some(&(ax, az)) => (ax, az),
                 None => return false,
             }
         } else {
             return false;
         };
-        self.teleport_to_column(tx, tz, is_totem);
+        self.teleport_to_column(tx, tz);
         true
     }
 
@@ -249,10 +246,13 @@ impl<'c> World<'c> {
     /// nearby (a totem stands on land already, so it skips the search), stand
     /// on the generated surface, resolve any solid overlap upward, and
     /// recentre streaming so the destination drops in surface-first.
-    fn teleport_to_column(&mut self, wx: i32, wz: i32, on_land_already: bool) {
+    fn teleport_to_column(&mut self, wx: i32, wz: i32) {
         const SEA_LEVEL: i32 = 6;
         let (mut tx, mut tz) = (Self::wrap_block(wx), Self::wrap_block(wz));
-        if !on_land_already && worldgen::worldgen_surface_height(tx, tz, self.seed) < SEA_LEVEL + 1 {
+        // #215: always check for water (cheap; a no-op for on-land home/village
+        // anchors). A warp totem placed over a water column used to skip this and
+        // land the player inside the water.
+        if worldgen::worldgen_surface_height(tx, tz, self.seed) < SEA_LEVEL + 1 {
             // Cheap pure-worldgen spiral for the nearest dry column (never lands
             // the player in open water). Bounded: 4-block steps out to 64 blocks.
             'search: for r in 1i32..=16 {

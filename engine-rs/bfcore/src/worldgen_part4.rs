@@ -1168,6 +1168,37 @@ pub fn worldgen_biome_at(wx: i32, wz: i32, seed: u64) -> u8 {
     voronoi_biome(wx, wz, seed) as u8
 }
 
+/// #214: nearest VILLAGE or CITY anchor within `radius` blocks of (wx,wz), scanning
+/// the neighbouring structure cells. worldgen_structure_near only checks the caller's
+/// own 64-block cell, so a settlement just across a cell boundary was invisible to map
+/// discovery. Returns (type, anchor_x, anchor_z) canonical, or None. Distances use the
+/// caller's local frame (the scanned cells are the neighbourhood of wx/wz), so no
+/// seam wrap is needed here.
+pub fn worldgen_settlement_near(wx: i32, wz: i32, radius: i32, seed: u64) -> Option<(i32, i32, i32)> {
+    let scx_min = struct_floordiv(wx - radius, STRUCT_CELL_SIZE);
+    let scx_max = struct_floordiv(wx + radius, STRUCT_CELL_SIZE);
+    let scz_min = struct_floordiv(wz - radius, STRUCT_CELL_SIZE);
+    let scz_max = struct_floordiv(wz + radius, STRUCT_CELL_SIZE);
+    let mut best: Option<(i32, i32, i32)> = None;
+    let mut best_d2 = i64::MAX;
+    for scz in scz_min..=scz_max {
+        for scx in scx_min..=scx_max {
+            let sd = struct_for_cell(scx, scz, seed);
+            if !sd.present || (sd.typ != STRUCT_VILLAGE && sd.typ != STRUCT_CITY) {
+                continue;
+            }
+            let ddx = (sd.anchor_wx - wx) as i64;
+            let ddz = (sd.anchor_wz - wz) as i64;
+            let d2 = ddx * ddx + ddz * ddz;
+            if d2 <= (radius as i64) * (radius as i64) && d2 < best_d2 {
+                best_d2 = d2;
+                best = Some((sd.typ, wrap_world(sd.anchor_wx), wrap_world(sd.anchor_wz)));
+            }
+        }
+    }
+    best
+}
+
 /// Returns (type, anchor_x, anchor_z, anchor_y). type==0 (STRUCT_NONE) leaves the
 /// other fields unspecified (caller should ignore them), matching the C++ contract
 /// where the out-params are untouched.
