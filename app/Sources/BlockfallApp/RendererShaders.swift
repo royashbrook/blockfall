@@ -2431,7 +2431,13 @@ extension Renderer {
     //                        so the palette reads graphic and bold (tasteful, not neon).
     constant float CEL_OUTLINE_PX   = 1.3;
     constant float CEL_OUTLINE_DARK = 0.82;
-    constant float CEL_DEPTH_SENS   = 0.022;
+    // #186 follow-up: raised 0.022 -> 0.075. The #180 horizon bend makes the terrain a
+    // piecewise-linear surface, so every greedy-quad boundary is a tiny slope CREASE the
+    // curvature edge test would ink as a faint grid of dots/lines on otherwise flat
+    // ground. A real silhouette is a depth STEP with a far larger curvature response, so
+    // a higher threshold drops the bend creases while still inking blocks, grass, and
+    // trees.
+    constant float CEL_DEPTH_SENS   = 0.075;
     constant float CEL_NEAR         = 0.20;
     constant float CEL_FAR          = 420.0;
     constant float CEL_SAT          = 1.16;
