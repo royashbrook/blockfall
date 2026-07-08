@@ -45,7 +45,10 @@ impl WorkerPool {
             let rx = Arc::clone(&rx);
             workers.push(thread::spawn(move || worker_main(rx)));
         }
-        WorkerPool { tx: Some(tx), workers }
+        WorkerPool {
+            tx: Some(tx),
+            workers,
+        }
     }
 
     /// Enqueue a job. If the pool is shutting down (sender gone) the job is
@@ -99,7 +102,9 @@ fn worker_main(rx: Arc<Mutex<Receiver<Job>>>) {
 /// intent (P-cores minus the render thread, plus the E-cores) without the QoS
 /// split, which std threads do not expose portably.
 pub fn recommended_workers() -> usize {
-    let total = thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let total = thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
     // total-1 keeps a core free for the frame/render thread; clamp to [2, 8].
     total.saturating_sub(1).clamp(2, 8)
 }

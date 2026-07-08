@@ -649,6 +649,11 @@ BF_API bf_result bf_map_query(bf_engine e, bf_map_view* out);
  * 0 for an unknown id / pre-world. */
 BF_API uint8_t bf_map_teleport(bf_engine e, uint32_t marker_id);
 
+/* [MAIN][DEBUG] Move the camera/player for deterministic screenshots/perf.
+ * The next frame recentres streaming normally. No-op before a world is ready. */
+BF_API void bf_debug_set_camera(bf_engine e, float px, float py, float pz,
+                                float yaw, float pitch);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

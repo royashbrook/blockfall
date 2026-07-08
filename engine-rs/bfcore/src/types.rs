@@ -39,7 +39,11 @@ pub struct ItemStack {
 
 impl Default for ItemStack {
     fn default() -> Self {
-        Self { item: 0, count: 0, durability: 0xFFFF }
+        Self {
+            item: 0,
+            count: 0,
+            durability: 0xFFFF,
+        }
     }
 }
 

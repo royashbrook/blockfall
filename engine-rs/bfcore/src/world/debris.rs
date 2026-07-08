@@ -25,7 +25,7 @@ const DEBRIS_FRICTION: f32 = 0.8; // tangential velocity kept per bounce
 const DEBRIS_RADIUS: f32 = 0.12; // collision half-extent of a fragment
 const DEBRIS_BOUNCE_MIN: f32 = 1.2; // below this impact speed, stop bouncing
 const DEBRIS_SETTLE_SPEED: f32 = 0.35; // grounded + slower than this = settled
-// Collection.
+                                       // Collection.
 const DEBRIS_ARM_DELAY: f32 = 0.5; // burst reads before the magnet kicks in
 const DEBRIS_MAGNET_R: f32 = 2.5; // blocks from player centre
 const DEBRIS_COLLECT_R: f32 = 0.9; // contact: item enters the inventory
@@ -75,39 +75,39 @@ impl<'c> World<'c> {
     /// grass fragment looks like grass; falls back to neutral grey.
     fn debris_color(b: BlockId) -> V3 {
         match b {
-            1 => V3::new(0.34, 0.72, 0.26),  // grass
-            2 => V3::new(0.52, 0.35, 0.20),  // dirt
-            3 => V3::new(0.50, 0.51, 0.56),  // stone
-            4 => V3::new(0.74, 0.53, 0.28),  // oak planks
-            5 => V3::new(0.26, 0.58, 0.22),  // oak leaves
-            6 => V3::new(0.88, 0.76, 0.44),  // sand
-            7 => V3::new(1.00, 0.92, 0.42),  // glow block
-            8 => V3::new(0.56, 0.57, 0.62),  // stone brick
-            10 => V3::new(0.42, 0.43, 0.46), // cobblestone
-            11 => V3::new(0.52, 0.50, 0.47), // gravel
+            1 => V3::new(0.34, 0.72, 0.26),       // grass
+            2 => V3::new(0.52, 0.35, 0.20),       // dirt
+            3 => V3::new(0.50, 0.51, 0.56),       // stone
+            4 => V3::new(0.74, 0.53, 0.28),       // oak planks
+            5 => V3::new(0.26, 0.58, 0.22),       // oak leaves
+            6 => V3::new(0.88, 0.76, 0.44),       // sand
+            7 => V3::new(1.00, 0.92, 0.42),       // glow block
+            8 => V3::new(0.56, 0.57, 0.62),       // stone brick
+            10 => V3::new(0.42, 0.43, 0.46),      // cobblestone
+            11 => V3::new(0.52, 0.50, 0.47),      // gravel
             12 | 54 => V3::new(0.90, 0.93, 0.98), // snow
-            13 => V3::new(0.66, 0.84, 1.00), // ice
-            14 => V3::new(0.58, 0.66, 0.74), // clay
-            15 => V3::new(0.26, 0.23, 0.34), // dim stone
-            16 => V3::new(0.30, 0.21, 0.16), // dim dirt
-            17 => V3::new(0.32, 0.33, 0.37), // coal ore
-            18 => V3::new(0.78, 0.46, 0.26), // copper ore
-            19 => V3::new(0.62, 0.60, 0.55), // iron ore
-            20 => V3::new(0.55, 0.40, 0.82), // crystal ore
-            21 => V3::new(0.47, 0.31, 0.16), // oak log
-            22 => V3::new(0.83, 0.80, 0.68), // birch log
-            23 => V3::new(0.84, 0.74, 0.52), // birch planks
-            24 => V3::new(0.78, 0.36, 0.26), // clay brick
-            25 => V3::new(0.74, 0.92, 1.00), // glass
-            26 => V3::new(0.24, 0.82, 0.74), // coloured glass
-            27 => V3::new(0.52, 0.78, 0.30), // birch leaves
-            28 => V3::new(0.95, 0.93, 0.88), // wool
-            29 => V3::new(0.40, 0.54, 0.34), // mossy stone
-            30 => V3::new(0.62, 0.42, 0.20), // crafting table
-            31 => V3::new(0.78, 0.58, 0.26), // chest
+            13 => V3::new(0.66, 0.84, 1.00),      // ice
+            14 => V3::new(0.58, 0.66, 0.74),      // clay
+            15 => V3::new(0.26, 0.23, 0.34),      // dim stone
+            16 => V3::new(0.30, 0.21, 0.16),      // dim dirt
+            17 => V3::new(0.32, 0.33, 0.37),      // coal ore
+            18 => V3::new(0.78, 0.46, 0.26),      // copper ore
+            19 => V3::new(0.62, 0.60, 0.55),      // iron ore
+            20 => V3::new(0.55, 0.40, 0.82),      // crystal ore
+            21 => V3::new(0.47, 0.31, 0.16),      // oak log
+            22 => V3::new(0.83, 0.80, 0.68),      // birch log
+            23 => V3::new(0.84, 0.74, 0.52),      // birch planks
+            24 => V3::new(0.78, 0.36, 0.26),      // clay brick
+            25 => V3::new(0.74, 0.92, 1.00),      // glass
+            26 => V3::new(0.24, 0.82, 0.74),      // coloured glass
+            27 => V3::new(0.52, 0.78, 0.30),      // birch leaves
+            28 => V3::new(0.95, 0.93, 0.88),      // wool
+            29 => V3::new(0.40, 0.54, 0.34),      // mossy stone
+            30 => V3::new(0.62, 0.42, 0.20),      // crafting table
+            31 => V3::new(0.78, 0.58, 0.26),      // chest
             33 | 50 => V3::new(0.66, 0.46, 0.24), // door
-            48 => V3::new(0.18, 0.42, 0.24), // pine needles
-            49 => V3::new(0.40, 0.25, 0.15), // pine log
+            48 => V3::new(0.18, 0.42, 0.24),      // pine needles
+            49 => V3::new(0.40, 0.25, 0.15),      // pine log
             _ => V3::new(0.60, 0.60, 0.60),
         }
     }
@@ -164,7 +164,11 @@ impl<'c> World<'c> {
         let item = self.debris[best].item;
         if item != 0 {
             if let Some(inv) = self.inv.as_mut() {
-                inv.add(ItemStack { item, count: 1, durability: 0xFFFF });
+                inv.add(ItemStack {
+                    item,
+                    count: 1,
+                    durability: 0xFFFF,
+                });
             }
         }
         self.debris.swap_remove(best);
@@ -176,7 +180,11 @@ impl<'c> World<'c> {
         let item = self.debris[i].item;
         if item != 0 {
             let added = match self.inv.as_mut() {
-                Some(inv) => inv.add(ItemStack { item, count: 1, durability: 0xFFFF }),
+                Some(inv) => inv.add(ItemStack {
+                    item,
+                    count: 1,
+                    durability: 0xFFFF,
+                }),
                 None => true,
             };
             if !added {
@@ -257,14 +265,22 @@ impl<'c> World<'c> {
                 // bounces with restitution + tangential friction, and below
                 // the bounce threshold the fragment rolls (keeps tangential
                 // velocity, bleeding it off) until slow enough to settle.
-                let sx = if d.vel.x >= 0.0 { DEBRIS_RADIUS } else { -DEBRIS_RADIUS };
+                let sx = if d.vel.x >= 0.0 {
+                    DEBRIS_RADIUS
+                } else {
+                    -DEBRIS_RADIUS
+                };
                 let nx = d.pos.x + d.vel.x * dt;
                 if self.debris_solid(nx + sx, d.pos.y, d.pos.z) {
                     d.vel.x = -d.vel.x * DEBRIS_RESTITUTION;
                 } else {
                     d.pos.x = nx;
                 }
-                let sz = if d.vel.z >= 0.0 { DEBRIS_RADIUS } else { -DEBRIS_RADIUS };
+                let sz = if d.vel.z >= 0.0 {
+                    DEBRIS_RADIUS
+                } else {
+                    -DEBRIS_RADIUS
+                };
                 let nz = d.pos.z + d.vel.z * dt;
                 if self.debris_solid(d.pos.x, d.pos.y, nz + sz) {
                     d.vel.z = -d.vel.z * DEBRIS_RESTITUTION;
@@ -272,7 +288,11 @@ impl<'c> World<'c> {
                     d.pos.z = nz;
                 }
                 let ny = d.pos.y + d.vel.y * dt;
-                let sy = if d.vel.y >= 0.0 { DEBRIS_RADIUS } else { -DEBRIS_RADIUS };
+                let sy = if d.vel.y >= 0.0 {
+                    DEBRIS_RADIUS
+                } else {
+                    -DEBRIS_RADIUS
+                };
                 if self.debris_solid(d.pos.x, ny + sy, d.pos.z) {
                     if d.vel.y < 0.0 {
                         d.grounded = true;

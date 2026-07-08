@@ -83,7 +83,7 @@ impl<'c> World<'c> {
             has_target: false,
             target: IVec3::default(),
             place: IVec3::default(),
-            stream_r: 6,
+            stream_r: render_units_to_chunk_radius(6),
             stream_active_r: 2,
             hyperspeed: false,
             surf_cy_cache: HashMap::new(),
@@ -118,7 +118,7 @@ impl<'c> World<'c> {
         self.mode = m;
     }
     pub fn set_render_distance(&mut self, chunks: i32) {
-        self.stream_r = chunks.clamp(4, 40);
+        self.stream_r = render_units_to_chunk_radius(chunks);
         self.stream_active_r = self.stream_active_r.clamp(2, self.stream_r);
     }
     pub fn apply_render_distance(&mut self, chunks: i32) {

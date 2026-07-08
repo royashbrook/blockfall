@@ -11,7 +11,8 @@ extension Renderer {
     // =========================================================
 
     // PackedVertex: same layout as the C++ BFVertex.
-    //   pos    : 18-bit packed voxel coord (6+6+6), bits [0..17]
+    //   pos    : low 6 bits of voxel coord (x/y/z), plus 4-bit sub-cell fractions.
+    //   reserved bits 0/1/2 carry coordinate bit 6 for wide chunk edge vertices.
     //   normuv : bits [0..2]=face normal (0-5),  bits [3..5]=AO (0..3), bits [6+]=UV hints
     //   material, sky, block, reserved as before.
     struct PackedVertex {
@@ -861,9 +862,12 @@ extension Renderer {
                       constant Uniforms& u [[buffer(1)]],
                       constant WindUniforms& wu [[buffer(3)]]) {
         PackedVertex p = verts[vid];
-        float x = float(p.pos & 0x3f)         + float((p.pos >> 18) & 0xf) / 16.0;
-        float y = float((p.pos >> 6) & 0x3f)  + float((p.pos >> 22) & 0xf) / 16.0;
-        float z = float((p.pos >> 12) & 0x3f) + float((p.pos >> 26) & 0xf) / 16.0;
+        uint xBits = (p.pos & 0x3f) | ((p.reserved & 1u) << 6);
+        uint yBits = ((p.pos >> 6) & 0x3f) | (((p.reserved >> 1) & 1u) << 6);
+        uint zBits = ((p.pos >> 12) & 0x3f) | (((p.reserved >> 2) & 1u) << 6);
+        float x = float(xBits) + float((p.pos >> 18) & 0xf) / 16.0;
+        float y = float(yBits) + float((p.pos >> 22) & 0xf) / 16.0;
+        float z = float(zBits) + float((p.pos >> 26) & 0xf) / 16.0;
         float3 world = u.chunkOrigin.xyz + float3(x, y, z);
         uint n = p.normuv & 7u;
 
@@ -3157,7 +3161,7 @@ extension Renderer {
     // vertex shader expands each instance's model from a model table. No per-frame
     // geometry rebuild, so prop count is nearly free (scales to dense grass).
     // =========================================================
-    struct PropUniforms { float4x4 viewProj; float4 params; float4 camPosH; };  // params.x = day brightness; camPosH = #180 horizon curvature
+    struct PropUniforms { float4x4 viewProj; float4 params; float4 camPosH; };  // params.x day, y time, z foliage, w verts/part; camPosH = #180 horizon curvature
     struct PropVOut { float4 position [[position]]; float3 nrm; float3 col; };
     // Matches bf_prop_instance (24 bytes): position(12) + type(4) + seed(4) + sat(4).
     struct PropInstanceGPU { packed_float3 position; uint type; uint seed; float sat; };
@@ -3180,14 +3184,12 @@ extension Renderer {
     constant uint kPropMaxCuboids = 5u;   // model table stride per type; MUST equal makePropModelTable slots (5).
                                           // 6d4aeaf grew the CPU table to 5 slots without this constant, so every
                                           // prop row past 0 read shifted cuboids (pink grass, lily-pad trees).
-    constant uint kVertsPerShape  = 144u; // max verts per part (an 8x3 sphere)
-
     // #62: build a unit primitive (extent [-0.5,0.5]) from a local vertex id, as a
-    // surface of revolution with 8 slices. shape: 1=sphere, 2=cone, 3=cylinder. Writes
+    // surface of revolution with 6 slices. shape: 1=sphere, 2=cone, 3=cylinder. Writes
     // the outward normal. Verts past the shape's own count are returned degenerate.
     static float3 propRevVert(uint lv, uint shape, thread float3& nrm) {
-        const uint S = 8u;
-        uint T = (shape == 1u) ? 3u : 1u;             // sphere: 3 stacks; cone/cyl: 1 side band
+        const uint S = 6u;
+        uint T = (shape == 1u) ? 2u : 1u;             // sphere: 2 stacks; cone/cyl: 1 side band
         uint sideV = S * T * 6u;                       // verts used by the side quads
         if (lv < sideV) {
             uint quad = lv / 6u;
@@ -3258,7 +3260,8 @@ extension Renderer {
                 : (inst.type == 48u) ? 16 : (inst.type == 49u) ? 17   // #62 pine needles(16), pine trunk(17)
                 : -1;
         bool isTrunk = (row == 14 || row == 15 || row == 17);
-        uint cuboidIdx = vid / kVertsPerShape;
+        uint vertsPerShape = max(1u, uint(u.params.w + 0.5));
+        uint cuboidIdx = vid / vertsPerShape;
         if (row < 0 || cuboidIdx >= kPropMaxCuboids) { o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o; }
         PropCuboid cu = models[uint(row) * kPropMaxCuboids + cuboidIdx];
         float3 half_ = float3(cu.half_);
@@ -3268,7 +3271,7 @@ extension Renderer {
         // revolution (sphere/cone/cylinder).
         uint shape = uint(cu.shape + 0.5);
         float3 cpos, cnrm;
-        uint lv = vid % kVertsPerShape;
+        uint lv = vid % vertsPerShape;
         if (shape == 0u) {
             if (lv >= 36u) { o.position = float4(0); o.nrm = float3(0); o.col = float3(0); return o; }
             uint face = lv / 6u, corner = kTriIdx[lv % 6u];

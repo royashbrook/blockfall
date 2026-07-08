@@ -24,7 +24,7 @@
 // ---------------------------------------------------------------------------
 pub type BlockId = u16;
 
-pub const K_CHUNK_DIM: i32 = 16; // bfcore::types::CHUNK_DIM
+pub const K_CHUNK_DIM: i32 = crate::types::CHUNK_DIM as i32;
 pub const K_COLUMN_MIN_Y: i32 = -512; // contract/blockcore_interfaces.hpp kColumnMinY
 
 // ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ pub const K_COLUMN_MIN_Y: i32 = -512; // contract/blockcore_interfaces.hpp kColu
 // revolution) and every cell size divides WORLD_PERIOD.
 // ---------------------------------------------------------------------------
 pub const WORLD_PERIOD: i32 = 32768; // 2^15 blocks around the torus (x and z)
-pub const WORLD_PERIOD_CHUNKS: i32 = WORLD_PERIOD / K_CHUNK_DIM; // 2048 chunks
+pub const WORLD_PERIOD_CHUNKS: i32 = WORLD_PERIOD / K_CHUNK_DIM;
 
 /// Canonicalize a world x/z coordinate into [0, WORLD_PERIOD). Bitmask: the
 /// period is a power of two, so this is exact for negatives too.
@@ -87,7 +87,9 @@ pub struct DenseChunk {
 impl DenseChunk {
     pub fn new(fill: BlockId) -> Self {
         let n = (K_CHUNK_DIM * K_CHUNK_DIM * K_CHUNK_DIM) as usize;
-        DenseChunk { blocks: vec![fill; n] }
+        DenseChunk {
+            blocks: vec![fill; n],
+        }
     }
     #[inline]
     fn idx(lx: i32, ly: i32, lz: i32) -> usize {
@@ -391,10 +393,23 @@ fn entrance_for_cell(ecx: i32, ecz: i32, seed: u64) -> EntranceDesc {
     let eseed = fmix64(seed ^ ENTRANCE_SEED_MIX);
     // Hash on the canonical cell so the grid is periodic; geometry (wx/wz below)
     // stays in the caller's frame so seam-adjacent queries place correctly.
-    let h = hash2(wrap_cell(ecx, ENTRANCE_CELL_COUNT), wrap_cell(ecz, ENTRANCE_CELL_COUNT), eseed);
+    let h = hash2(
+        wrap_cell(ecx, ENTRANCE_CELL_COUNT),
+        wrap_cell(ecz, ENTRANCE_CELL_COUNT),
+        eseed,
+    );
 
     if (h & 0xFF) >= ENTRANCE_PROB_THRESH {
-        return EntranceDesc { wx: 0, wz: 0, shape: 0, floor: 0, radius: 0, half_len: 0, ravine_x: false, present: false };
+        return EntranceDesc {
+            wx: 0,
+            wz: 0,
+            shape: 0,
+            floor: 0,
+            radius: 0,
+            half_len: 0,
+            ravine_x: false,
+            present: false,
+        };
     }
 
     let h2 = fmix64(h ^ 0xE57A4CE5CA4EF00D);
@@ -415,9 +430,12 @@ fn entrance_for_cell(ecx: i32, ecz: i32, seed: u64) -> EntranceDesc {
         ENTR_POTHOLE
     };
 
-    let floor = ENTRANCE_FLOOR_MIN + ((h2 >> 40) % ((ENTRANCE_FLOOR_MAX - ENTRANCE_FLOOR_MIN + 1) as u64)) as i32;
-    let radius = SINKHOLE_R_MIN + ((h2 >> 44) % ((SINKHOLE_R_MAX - SINKHOLE_R_MIN + 1) as u64)) as i32;
-    let half_len = (RAVINE_LEN_MIN + ((h2 >> 48) % ((RAVINE_LEN_MAX - RAVINE_LEN_MIN + 1) as u64)) as i32) / 2;
+    let floor = ENTRANCE_FLOOR_MIN
+        + ((h2 >> 40) % ((ENTRANCE_FLOOR_MAX - ENTRANCE_FLOOR_MIN + 1) as u64)) as i32;
+    let radius =
+        SINKHOLE_R_MIN + ((h2 >> 44) % ((SINKHOLE_R_MAX - SINKHOLE_R_MIN + 1) as u64)) as i32;
+    let half_len =
+        (RAVINE_LEN_MIN + ((h2 >> 48) % ((RAVINE_LEN_MAX - RAVINE_LEN_MIN + 1) as u64)) as i32) / 2;
     let ravine_x = ((h2 >> 52) & 1) != 0;
 
     EntranceDesc {
@@ -570,23 +588,100 @@ struct BiomeCentre {
 }
 
 const BIOME_PARAMS: [BiomeParams; NUM_BIOMES] = [
-    BiomeParams { base_y: 8.0, amp: 2.0, period: 256, octaves: 2, persistence: 0.40 }, // Plains (1/128)
-    BiomeParams { base_y: 10.0, amp: 18.0, period: 819, octaves: 4, persistence: 0.55 }, // Forest (~1/40)
-    BiomeParams { base_y: 28.0, amp: 56.0, period: 819, octaves: 5, persistence: 0.62 }, // Mountains (~1/40)
-    BiomeParams { base_y: 7.0, amp: 9.0, period: 512, octaves: 3, persistence: 0.45 }, // Desert (1/64)
-    BiomeParams { base_y: 8.0, amp: 14.0, period: 683, octaves: 4, persistence: 0.50 }, // Snowy (~1/48)
-    BiomeParams { base_y: 5.0, amp: 1.2, period: 585, octaves: 3, persistence: 0.45 }, // Swamp (~1/56)
-    BiomeParams { base_y: 6.5, amp: 1.0, period: 341, octaves: 2, persistence: 0.40 }, // Beach (~1/96)
+    BiomeParams {
+        base_y: 8.0,
+        amp: 2.0,
+        period: 256,
+        octaves: 2,
+        persistence: 0.40,
+    }, // Plains (1/128)
+    BiomeParams {
+        base_y: 10.0,
+        amp: 18.0,
+        period: 819,
+        octaves: 4,
+        persistence: 0.55,
+    }, // Forest (~1/40)
+    BiomeParams {
+        base_y: 28.0,
+        amp: 56.0,
+        period: 819,
+        octaves: 5,
+        persistence: 0.62,
+    }, // Mountains (~1/40)
+    BiomeParams {
+        base_y: 7.0,
+        amp: 9.0,
+        period: 512,
+        octaves: 3,
+        persistence: 0.45,
+    }, // Desert (1/64)
+    BiomeParams {
+        base_y: 8.0,
+        amp: 14.0,
+        period: 683,
+        octaves: 4,
+        persistence: 0.50,
+    }, // Snowy (~1/48)
+    BiomeParams {
+        base_y: 5.0,
+        amp: 1.2,
+        period: 585,
+        octaves: 3,
+        persistence: 0.45,
+    }, // Swamp (~1/56)
+    BiomeParams {
+        base_y: 6.5,
+        amp: 1.0,
+        period: 341,
+        octaves: 2,
+        persistence: 0.40,
+    }, // Beach (~1/96)
 ];
 
 const BIOME_CENTRES: [BiomeCentre; NUM_BIOMES] = [
-    BiomeCentre { temp: 0.50, moist: 0.50, radius_t: 0.24, radius_m: 0.24 }, // Plains
-    BiomeCentre { temp: 0.58, moist: 0.78, radius_t: 0.20, radius_m: 0.18 }, // Forest
-    BiomeCentre { temp: 0.20, moist: 0.35, radius_t: 0.27, radius_m: 0.32 }, // Mountains
-    BiomeCentre { temp: 0.85, moist: 0.18, radius_t: 0.28, radius_m: 0.28 }, // Desert
-    BiomeCentre { temp: 0.15, moist: 0.55, radius_t: 0.26, radius_m: 0.34 }, // Snowy
-    BiomeCentre { temp: 0.45, moist: 0.92, radius_t: 0.34, radius_m: 0.26 }, // Swamp
-    BiomeCentre { temp: 0.78, moist: 0.55, radius_t: 0.16, radius_m: 0.20 }, // Beach
+    BiomeCentre {
+        temp: 0.50,
+        moist: 0.50,
+        radius_t: 0.24,
+        radius_m: 0.24,
+    }, // Plains
+    BiomeCentre {
+        temp: 0.58,
+        moist: 0.78,
+        radius_t: 0.20,
+        radius_m: 0.18,
+    }, // Forest
+    BiomeCentre {
+        temp: 0.20,
+        moist: 0.35,
+        radius_t: 0.27,
+        radius_m: 0.32,
+    }, // Mountains
+    BiomeCentre {
+        temp: 0.85,
+        moist: 0.18,
+        radius_t: 0.28,
+        radius_m: 0.28,
+    }, // Desert
+    BiomeCentre {
+        temp: 0.15,
+        moist: 0.55,
+        radius_t: 0.26,
+        radius_m: 0.34,
+    }, // Snowy
+    BiomeCentre {
+        temp: 0.45,
+        moist: 0.92,
+        radius_t: 0.34,
+        radius_m: 0.26,
+    }, // Swamp
+    BiomeCentre {
+        temp: 0.78,
+        moist: 0.55,
+        radius_t: 0.16,
+        radius_m: 0.20,
+    }, // Beach
 ];
 
 // ---------------------------------------------------------------------------
@@ -643,10 +738,10 @@ fn regional_swell(fwx: f32, fwz: f32, seed: u64) -> f32 {
 // un-warped vs ~0.15 here, lower = more natural) while keeping coasts roughly put.
 // ---------------------------------------------------------------------------
 const WARP_PERIOD: i32 = 468; // ~1/70, finer than BIOME_CELL so fingers fan in many directions
-// #172: scaled with BIOME_CELL (24 at cell 132). Bigger cells with the old
-// amplitude read as bigger squares; doubling the displacement keeps the border
-// waviness proportional to the cell size, and 48 is still well under
-// BIOME_CELL 264 so the Voronoi 3x3 neighbour window stays valid.
+                              // #172: scaled with BIOME_CELL (24 at cell 132). Bigger cells with the old
+                              // amplitude read as bigger squares; doubling the displacement keeps the border
+                              // waviness proportional to the cell size, and 48 is still well under
+                              // BIOME_CELL 264 so the Voronoi 3x3 neighbour window stays valid.
 const WARP_AMP: f32 = 48.0; // blocks of displacement; < BIOME_CELL so biomes stay large
 const WARP_SEED_MIX_X: u64 = 0x57A6E11D03A11A57;
 const WARP_SEED_MIX_Z: u64 = 0x11A57D03E11D57A6;
@@ -875,7 +970,11 @@ fn voronoi_site(cx: i32, cz: i32, seed: u64) -> VoronoiSite {
     let dx = ((cx - cxw) * BIOME_CELL) as f32;
     let dz = ((cz - czw) * BIOME_CELL) as f32;
     if let Some(v) = MEMO.with(|m| m.borrow().get(&key).copied()) {
-        return VoronoiSite { sx: v.sx + dx, sz: v.sz + dz, ..v };
+        return VoronoiSite {
+            sx: v.sx + dx,
+            sz: v.sz + dz,
+            ..v
+        };
     }
     let vseed = fmix64(seed ^ VORONOI_SEED_MIX);
     let h = hash2(cxw, czw, vseed);
@@ -885,7 +984,13 @@ fn voronoi_site(cx: i32, cz: i32, seed: u64) -> VoronoiSite {
     let sz = (czw as f32 + 0.5 + jz) * (BIOME_CELL as f32);
     let (temp, moist) = sample_climate((sx + 0.5) as i32, (sz + 0.5) as i32, seed);
     let raw_biome = classify_climate(temp, moist);
-    let v = VoronoiSite { sx, sz, temp, moist, raw_biome };
+    let v = VoronoiSite {
+        sx,
+        sz,
+        temp,
+        moist,
+        raw_biome,
+    };
     MEMO.with(|m| {
         let mut mm = m.borrow_mut();
         if mm.len() >= 4096 {
@@ -893,7 +998,11 @@ fn voronoi_site(cx: i32, cz: i32, seed: u64) -> VoronoiSite {
         }
         mm.insert(key, v);
     });
-    VoronoiSite { sx: v.sx + dx, sz: v.sz + dz, ..v }
+    VoronoiSite {
+        sx: v.sx + dx,
+        sz: v.sz + dz,
+        ..v
+    }
 }
 
 // Final biome of a Voronoi cell, with the coastal beach reclass applied.
@@ -908,14 +1017,19 @@ fn voronoi_site_biome(cx: i32, cz: i32, seed: u64) -> i32 {
         static MEMO: RefCell<HashMap<(i32, i32, u64), i32>> = RefCell::new(HashMap::new());
     }
     // #179: canonical memo key; the biome value is frame-independent.
-    let key = (wrap_cell(cx, BIOME_CELL_COUNT), wrap_cell(cz, BIOME_CELL_COUNT), seed);
+    let key = (
+        wrap_cell(cx, BIOME_CELL_COUNT),
+        wrap_cell(cz, BIOME_CELL_COUNT),
+        seed,
+    );
     if let Some(b) = MEMO.with(|m| m.borrow().get(&key).copied()) {
         return b;
     }
     let site = voronoi_site(key.0, key.1, seed);
     let mut biome = site.raw_biome;
     if biome == Biome::Beach as i32
-        && surface_height_raw_at((site.sx + 0.5) as i32, (site.sz + 0.5) as i32, seed) > (SEA_LEVEL + 3) as f32
+        && surface_height_raw_at((site.sx + 0.5) as i32, (site.sz + 0.5) as i32, seed)
+            > (SEA_LEVEL + 3) as f32
     {
         biome = classify_climate_excluding(site.temp, site.moist, Biome::Beach as i32);
     }
@@ -1022,8 +1136,8 @@ const LAND_LIFT: f32 = 7.0; // max blocks lifted on solid land
 // without a seam-violating step.
 const OCEAN_SHORE_C: f32 = -0.04; // start fading detail just past the shoreline
 const OCEAN_FLOOR_C: f32 = -0.45; // fully faded (smooth deep basin) out here
-// How much detail noise survives in the deepest ocean (a little floor texture so
-// the sea bed is not a perfect plane).
+                                  // How much detail noise survives in the deepest ocean (a little floor texture so
+                                  // the sea bed is not a perfect plane).
 const OCEAN_DETAIL_FLOOR: f32 = 0.12;
 
 fn continent_offset(fwx: f32, fwz: f32, seed: u64) -> f32 {
@@ -1191,7 +1305,12 @@ fn surface_height_raw(wx: i32, wz: i32, seed: u64, weights: &[f32; NUM_BIOMES]) 
             const RIPPLE_PERIOD: i32 = 2731;
             const RIPPLE_FREQ: f32 = RIPPLE_PERIOD as f32 / WORLD_PERIOD as f32;
             let ripple_seed = fmix64(seed ^ 0xDEA0D5A0D5A0D5A0);
-            let ripple = value_noise2(fwx * RIPPLE_FREQ, fwz * RIPPLE_FREQ, ripple_seed, RIPPLE_PERIOD);
+            let ripple = value_noise2(
+                fwx * RIPPLE_FREQ,
+                fwz * RIPPLE_FREQ,
+                ripple_seed,
+                RIPPLE_PERIOD,
+            );
             n += ripple * 2.0 / (p.amp * 2.0 + 0.001);
             if n > 1.0 {
                 n = 1.0;
@@ -1199,7 +1318,11 @@ fn surface_height_raw(wx: i32, wz: i32, seed: u64, weights: &[f32; NUM_BIOMES]) 
         }
 
         let biome_is = Biome::from_index(i as i32);
-        let biome_swell = if biome_is != Biome::Plains && biome_is != Biome::Swamp { swell } else { 0.0 };
+        let biome_swell = if biome_is != Biome::Plains && biome_is != Biome::Swamp {
+            swell
+        } else {
+            0.0
+        };
         base_blend += weights[i] * p.base_y;
         detail_blend += weights[i] * ((n * 2.0 - 1.0) * p.amp + biome_swell);
     }
@@ -1222,7 +1345,11 @@ fn surface_height_raw(wx: i32, wz: i32, seed: u64, weights: &[f32; NUM_BIOMES]) 
     // not be hoisted up onto continents), so we damp the lift for them.
     let swamp_w = weights[Biome::Swamp as usize];
     let cont = continent_offset(fwx, fwz, seed);
-    let cont = if cont > 0.0 { cont * (1.0 - 0.6 * swamp_w) } else { cont };
+    let cont = if cont > 0.0 {
+        cont * (1.0 - 0.6 * swamp_w)
+    } else {
+        cont
+    };
     blended_h += cont;
 
     // #171: deserts are low relief. Two things pile mountain relief into a
@@ -1396,10 +1523,21 @@ fn build_anchor_cache(wx_min: i32, wz_min: i32, seed: u64) -> SeamAnchorCache {
     let mut h = vec![0.0f32; (nx * nz) as usize];
     for iz in 0..nz {
         for ix in 0..nx {
-            h[(iz * nx + ix) as usize] = surface_height_raw_at((gxlo + ix) * SEAM_ANCHOR_STEP, (gzlo + iz) * SEAM_ANCHOR_STEP, seed);
+            h[(iz * nx + ix) as usize] = surface_height_raw_at(
+                (gxlo + ix) * SEAM_ANCHOR_STEP,
+                (gzlo + iz) * SEAM_ANCHOR_STEP,
+                seed,
+            );
         }
     }
-    SeamAnchorCache { gx0: gxlo, gz0: gzlo, nx, nz, h, seed }
+    SeamAnchorCache {
+        gx0: gxlo,
+        gz0: gzlo,
+        nx,
+        nz,
+        h,
+        seed,
+    }
 }
 
 // Fast path over the prebuilt anchor cache. The cache covers the chunk's cells
@@ -1415,9 +1553,9 @@ fn surface_height_cached(wx: i32, wz: i32, cache: &SeamAnchorCache) -> i32 {
 // Per-chunk column cache
 // ---------------------------------------------------------------------------
 struct ChunkColumnCache {
-    h: [i32; (K_CHUNK_DIM * K_CHUNK_DIM) as usize],
-    dom: [Biome; (K_CHUNK_DIM * K_CHUNK_DIM) as usize],
-    weights: [[f32; NUM_BIOMES]; (K_CHUNK_DIM * K_CHUNK_DIM) as usize],
+    h: Vec<i32>,
+    dom: Vec<Biome>,
+    weights: Vec<[f32; NUM_BIOMES]>,
 }
 
 impl ChunkColumnCache {
@@ -1427,11 +1565,16 @@ impl ChunkColumnCache {
     }
 }
 
-fn build_column_cache(wx_min: i32, wz_min: i32, seed: u64, anchor_cache: &SeamAnchorCache) -> ChunkColumnCache {
+fn build_column_cache(
+    wx_min: i32,
+    wz_min: i32,
+    seed: u64,
+    anchor_cache: &SeamAnchorCache,
+) -> ChunkColumnCache {
     let mut out = ChunkColumnCache {
-        h: [0; (K_CHUNK_DIM * K_CHUNK_DIM) as usize],
-        dom: [Biome::Plains; (K_CHUNK_DIM * K_CHUNK_DIM) as usize],
-        weights: [[0.0; NUM_BIOMES]; (K_CHUNK_DIM * K_CHUNK_DIM) as usize],
+        h: vec![0; (K_CHUNK_DIM * K_CHUNK_DIM) as usize],
+        dom: vec![Biome::Plains; (K_CHUNK_DIM * K_CHUNK_DIM) as usize],
+        weights: vec![[0.0; NUM_BIOMES]; (K_CHUNK_DIM * K_CHUNK_DIM) as usize],
     };
     for lz in 0..K_CHUNK_DIM {
         for lx in 0..K_CHUNK_DIM {

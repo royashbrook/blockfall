@@ -194,25 +194,26 @@ fn coop_join_replicate_converge() {
     };
 
     // Deliver inbox payloads into their sessions.
-    let deliver_inbox = |hs: &mut NetSession,
-                         cs1: &mut NetSession,
-                         cs2: &mut NetSession,
-                         host: &mut World,
-                         c1: &mut World,
-                         c2: &mut World,
-                         inbox: &Rc<RefCell<Vec<(usize, u16, NetChannel, Vec<u8>)>>>| {
-        let drained: Vec<(usize, u16, NetChannel, Vec<u8>)> =
-            std::mem::take(&mut *inbox.borrow_mut());
-        for (sess, peer, ch, d) in drained {
-            match sess {
-                0 => hs.on_payload(peer, ch, &d, host),
-                1 => cs1.on_payload(peer, ch, &d, c1),
-                2 => hs.on_payload(peer, ch, &d, host),
-                3 => cs2.on_payload(peer, ch, &d, c2),
-                _ => {}
+    let deliver_inbox =
+        |hs: &mut NetSession,
+         cs1: &mut NetSession,
+         cs2: &mut NetSession,
+         host: &mut World,
+         c1: &mut World,
+         c2: &mut World,
+         inbox: &Rc<RefCell<Vec<(usize, u16, NetChannel, Vec<u8>)>>>| {
+            let drained: Vec<(usize, u16, NetChannel, Vec<u8>)> =
+                std::mem::take(&mut *inbox.borrow_mut());
+            for (sess, peer, ch, d) in drained {
+                match sess {
+                    0 => hs.on_payload(peer, ch, &d, host),
+                    1 => cs1.on_payload(peer, ch, &d, c1),
+                    2 => hs.on_payload(peer, ch, &d, host),
+                    3 => cs2.on_payload(peer, ch, &d, c2),
+                    _ => {}
+                }
             }
-        }
-    };
+        };
 
     let mut clk = 0.0;
     // One pump round mirrors the C++ pump: endpoint updates, then session
@@ -254,12 +255,19 @@ fn coop_join_replicate_converge() {
     pump(
         40, &mut eps, &mut hs, &mut cs1, &mut cs2, &mut host, &mut c1, &mut c2,
     );
-    assert!(cs1.joined() && cs2.joined(), "both clients joined and got the seed");
+    assert!(
+        cs1.joined() && cs2.joined(),
+        "both clients joined and got the seed"
+    );
     assert_eq!(c1.world_seed(), 777, "client 1 gens the host's world");
     assert_eq!(c2.world_seed(), 777, "client 2 gens the host's world");
 
     // ---- a client edit reaches everyone ----
-    let p = IVec3 { x: 50, y: 60, z: 50 }; // air above terrain in all worlds
+    let p = IVec3 {
+        x: 50,
+        y: 60,
+        z: 50,
+    }; // air above terrain in all worlds
     c1.debug_edit(p.x, p.y, p.z, glow);
     pump(
         40, &mut eps, &mut hs, &mut cs1, &mut cs2, &mut host, &mut c1, &mut c2,
@@ -276,7 +284,11 @@ fn coop_join_replicate_converge() {
     );
 
     // ---- two clients edit the SAME block: must converge ----
-    let q = IVec3 { x: 52, y: 60, z: 50 };
+    let q = IVec3 {
+        x: 52,
+        y: 60,
+        z: 50,
+    };
     c1.debug_edit(q.x, q.y, q.z, glow);
     c2.debug_edit(q.x, q.y, q.z, stone);
     pump(

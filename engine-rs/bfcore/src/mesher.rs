@@ -36,12 +36,7 @@
 
 // ---- inlined value types (swap for bfcore::types) --------------------------
 
-pub type BlockId = u16;
-
-pub const CHUNK_DIM: usize = 16; // mirrors kChunkDim
-pub const CHUNK_VOL: usize = CHUNK_DIM * CHUNK_DIM * CHUNK_DIM; // kChunkVol = 4096
-
-pub use crate::types::ChunkCoord;
+pub use crate::types::{BlockId, ChunkCoord, CHUNK_DIM, CHUNK_VOL};
 
 // ---- result type (mirrors MeshResult in blockcore_interfaces.hpp) -----------
 
@@ -75,13 +70,13 @@ pub trait ChunkStore {
 // ============================================================================
 // BFVertex packing - frozen layout from contract/formats.md section 4 (16 bytes).
 //
-//   offset 0  u32 pos_packed   : x[0:6] y[6:12] z[12:18]  (0..16 incl. seam)
+//   offset 0  u32 pos_packed   : x[0:6] y[6:12] z[12:18]  (low 6 coord bits)
 //                                fx[18:22] fy[22:26] fz[26:30]  (sub-cell /16)
 //   offset 4  u32 normal_uv    : normal[0:3] ao[3:5] u[5:13] v[13:21]
 //   offset 8  u16 material_id
 //   offset 10 u8  sky_light    (0..15)
 //   offset 11 u8  block_light  (0..15)
-//   offset 12 u32 _reserved
+//   offset 12 u32 _reserved    : x/y/z coord bit 6 in bits 0/1/2 for wide chunks
 // ============================================================================
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -134,6 +129,11 @@ fn bf_pack_pos(x: u32, y: u32, z: u32, fx: u32, fy: u32, fz: u32) -> u32 {
 }
 
 #[inline]
+fn bf_pack_pos_hi(x: u32, y: u32, z: u32) -> u32 {
+    ((x >> 6) & 1) | (((y >> 6) & 1) << 1) | (((z >> 6) & 1) << 2)
+}
+
+#[inline]
 fn bf_pack_normal_uv(normal: u32, ao: u32, u: u32, v: u32) -> u32 {
     (normal & 0x7) | ((ao & 0x3) << 3) | ((u & 0xFF) << 5) | ((v & 0xFF) << 13)
 }
@@ -157,7 +157,7 @@ fn bf_make_vertex(
         material_id: material,
         sky_light: sky,
         block_light: block,
-        reserved: 0,
+        reserved: bf_pack_pos_hi(x, y, z),
     }
 }
 
@@ -199,12 +199,54 @@ struct FaceDir {
 // `reverse` is true when cross(u_axis, v_axis) points OPPOSITE the outward
 // normal (axis*sign). Correct reverse set: {-X, +Y, -Z}.
 static K_FACE_DIRS: [FaceDir; 6] = [
-    FaceDir { axis: 0, sign: 1, u_axis: 1, v_axis: 2, normal: BF_NX_POS, reverse: false }, // +X
-    FaceDir { axis: 0, sign: -1, u_axis: 1, v_axis: 2, normal: BF_NX_NEG, reverse: true }, // -X
-    FaceDir { axis: 1, sign: 1, u_axis: 0, v_axis: 2, normal: BF_NY_POS, reverse: true }, // +Y
-    FaceDir { axis: 1, sign: -1, u_axis: 0, v_axis: 2, normal: BF_NY_NEG, reverse: false }, // -Y
-    FaceDir { axis: 2, sign: 1, u_axis: 0, v_axis: 1, normal: BF_NZ_POS, reverse: false }, // +Z
-    FaceDir { axis: 2, sign: -1, u_axis: 0, v_axis: 1, normal: BF_NZ_NEG, reverse: true }, // -Z
+    FaceDir {
+        axis: 0,
+        sign: 1,
+        u_axis: 1,
+        v_axis: 2,
+        normal: BF_NX_POS,
+        reverse: false,
+    }, // +X
+    FaceDir {
+        axis: 0,
+        sign: -1,
+        u_axis: 1,
+        v_axis: 2,
+        normal: BF_NX_NEG,
+        reverse: true,
+    }, // -X
+    FaceDir {
+        axis: 1,
+        sign: 1,
+        u_axis: 0,
+        v_axis: 2,
+        normal: BF_NY_POS,
+        reverse: true,
+    }, // +Y
+    FaceDir {
+        axis: 1,
+        sign: -1,
+        u_axis: 0,
+        v_axis: 2,
+        normal: BF_NY_NEG,
+        reverse: false,
+    }, // -Y
+    FaceDir {
+        axis: 2,
+        sign: 1,
+        u_axis: 0,
+        v_axis: 1,
+        normal: BF_NZ_POS,
+        reverse: false,
+    }, // +Z
+    FaceDir {
+        axis: 2,
+        sign: -1,
+        u_axis: 0,
+        v_axis: 1,
+        normal: BF_NZ_NEG,
+        reverse: true,
+    }, // -Z
 ];
 
 // ---- coordinate helpers -----------------------------------------------------
@@ -261,6 +303,7 @@ fn neighbour_block<S: ChunkStore>(
         nc.x += 1;
         nx -= KCHUNK_DIM;
     }
+    let crossed_below = ny < 0;
     if ny < 0 {
         nc.y -= 1;
         ny += KCHUNK_DIM;
@@ -277,6 +320,7 @@ fn neighbour_block<S: ChunkStore>(
     }
 
     match store.get(nc) {
+        None if crossed_below => MISSING_BELOW_OCCLUDER,
         None => 0, // not resident -> treat as air
         Some(nb) => nb.get(nx as usize, ny as usize, nz as usize),
     }
@@ -471,6 +515,7 @@ fn is_glass(id: BlockId) -> bool {
 // swings to the side. Drawn by emit_door, never cube-meshed.
 const DOOR_CLOSED: BlockId = 33;
 const DOOR_OPEN: BlockId = 50;
+const MISSING_BELOW_OCCLUDER: BlockId = 1;
 #[inline]
 fn is_door(id: BlockId) -> bool {
     id == DOOR_CLOSED || id == DOOR_OPEN
@@ -530,6 +575,7 @@ fn sample_block<S: ChunkStore>(
         nc.x += 1;
         nx -= KCHUNK_DIM;
     }
+    let crossed_below = ny < 0;
     if ny < 0 {
         nc.y -= 1;
         ny += KCHUNK_DIM;
@@ -545,6 +591,7 @@ fn sample_block<S: ChunkStore>(
         nz -= KCHUNK_DIM;
     }
     match store.get(nc) {
+        None if crossed_below => MISSING_BELOW_OCCLUDER,
         None => 0,
         Some(nb) => nb.get(nx as usize, ny as usize, nz as usize),
     }
@@ -587,7 +634,9 @@ fn sample_block_known<S: ChunkStore>(
         nc.z += 1;
         nz -= KCHUNK_DIM;
     }
-    store.get(nc).map(|nb| nb.get(nx as usize, ny as usize, nz as usize))
+    store
+        .get(nc)
+        .map(|nb| nb.get(nx as usize, ny as usize, nz as usize))
 }
 
 fn door_mesh_rotated<S: ChunkStore>(
@@ -600,13 +649,16 @@ fn door_mesh_rotated<S: ChunkStore>(
 ) -> bool {
     let mut low_y = y;
     let mut guard = 0;
-    while guard < KCHUNK_DIM * 4 && is_door(sample_block(current_chunk, cc, store, x, low_y - 1, z)) {
+    while guard < KCHUNK_DIM * 4 && is_door(sample_block(current_chunk, cc, store, x, low_y - 1, z))
+    {
         low_y -= 1;
         guard += 1;
     }
     let mut high_y = y;
     guard = 0;
-    while guard < KCHUNK_DIM * 4 && is_door(sample_block(current_chunk, cc, store, x, high_y + 1, z)) {
+    while guard < KCHUNK_DIM * 4
+        && is_door(sample_block(current_chunk, cc, store, x, high_y + 1, z))
+    {
         high_y += 1;
         guard += 1;
     }
@@ -640,7 +692,8 @@ fn door_mesh_run_state<S: ChunkStore>(
 ) -> BlockId {
     let mut low_y = y;
     let mut guard = 0;
-    while guard < KCHUNK_DIM * 4 && is_door(sample_block(current_chunk, cc, store, x, low_y - 1, z)) {
+    while guard < KCHUNK_DIM * 4 && is_door(sample_block(current_chunk, cc, store, x, low_y - 1, z))
+    {
         low_y -= 1;
         guard += 1;
     }
@@ -723,10 +776,18 @@ fn compute_face_ao<S: ChunkStore>(
     bz: i32,
 ) -> AOCorners {
     AOCorners {
-        a0: compute_ao(chunk, cc, store, bx, by, bz, fd.axis, fd.sign, fd.u_axis, fd.v_axis, -1, -1),
-        a1: compute_ao(chunk, cc, store, bx, by, bz, fd.axis, fd.sign, fd.u_axis, fd.v_axis, 1, -1),
-        a2: compute_ao(chunk, cc, store, bx, by, bz, fd.axis, fd.sign, fd.u_axis, fd.v_axis, 1, 1),
-        a3: compute_ao(chunk, cc, store, bx, by, bz, fd.axis, fd.sign, fd.u_axis, fd.v_axis, -1, 1),
+        a0: compute_ao(
+            chunk, cc, store, bx, by, bz, fd.axis, fd.sign, fd.u_axis, fd.v_axis, -1, -1,
+        ),
+        a1: compute_ao(
+            chunk, cc, store, bx, by, bz, fd.axis, fd.sign, fd.u_axis, fd.v_axis, 1, -1,
+        ),
+        a2: compute_ao(
+            chunk, cc, store, bx, by, bz, fd.axis, fd.sign, fd.u_axis, fd.v_axis, 1, 1,
+        ),
+        a3: compute_ao(
+            chunk, cc, store, bx, by, bz, fd.axis, fd.sign, fd.u_axis, fd.v_axis, -1, 1,
+        ),
     }
 }
 
@@ -907,7 +968,7 @@ fn emit_torch(bx: i32, by: i32, bz: i32, sky: u8, blk: u8, buf: &mut MeshBuffers
             material_id: mat,
             sky_light: sky,
             block_light: blk,
-            reserved: 0,
+            reserved: bf_pack_pos_hi(x, y, z),
         }
     };
 
@@ -1012,10 +1073,18 @@ fn emit_cross_plant(
     let z1 = (bz + 1) as u32;
 
     let emit_both_faces = |buf: &mut MeshBuffers,
-                           px0: u32, py0: u32, pz0: u32,
-                           px1: u32, py1: u32, pz1: u32,
-                           px2: u32, py2: u32, pz2: u32,
-                           px3: u32, py3: u32, pz3: u32| {
+                           px0: u32,
+                           py0: u32,
+                           pz0: u32,
+                           px1: u32,
+                           py1: u32,
+                           pz1: u32,
+                           px2: u32,
+                           py2: u32,
+                           pz2: u32,
+                           px3: u32,
+                           py3: u32,
+                           pz3: u32| {
         let v0 = bf_make_vertex(px0, py0, pz0, NORM, AO, 0, 0, mat, sky, blk);
         let v1 = bf_make_vertex(px1, py1, pz1, NORM, AO, 1, 0, mat, sky, blk);
         let v2 = bf_make_vertex(px2, py2, pz2, NORM, AO, 1, 1, mat, sky, blk);
@@ -1079,61 +1148,57 @@ fn emit_door(
 
     // Fracs run 0..16 across the cell; split into integer block step + 4-bit frac.
     let vert = |fx: u32, fy: u32, fz: u32, normal: u32, u: u32, v: u32| -> BFVertex {
+        let px = x + (fx >> 4);
+        let py = y + (fy >> 4);
+        let pz = z + (fz >> 4);
         BFVertex {
-            pos_packed: bf_pack_pos(
-                x + (fx >> 4),
-                y + (fy >> 4),
-                z + (fz >> 4),
-                fx & 0xF,
-                fy & 0xF,
-                fz & 0xF,
-            ),
+            pos_packed: bf_pack_pos(px, py, pz, fx & 0xF, fy & 0xF, fz & 0xF),
             normal_uv: bf_pack_normal_uv(normal, AO, u, v),
             material_id: mat,
             sky_light: sky,
             block_light: blk,
-            reserved: 0,
+            reserved: bf_pack_pos_hi(px, py, pz),
         }
     };
-    let bx_box = |buf: &mut MeshBuffers,
-                  xlo: u32, xhi: u32, ylo: u32, yhi: u32, zlo: u32, zhi: u32| {
-        buf.quad(
-            &vert(xhi, ylo, zlo, BF_NX_POS, 0, 0),
-            &vert(xhi, yhi, zlo, BF_NX_POS, 0, 1),
-            &vert(xhi, yhi, zhi, BF_NX_POS, 1, 1),
-            &vert(xhi, ylo, zhi, BF_NX_POS, 1, 0),
-        );
-        buf.quad(
-            &vert(xlo, ylo, zhi, BF_NX_NEG, 0, 0),
-            &vert(xlo, yhi, zhi, BF_NX_NEG, 0, 1),
-            &vert(xlo, yhi, zlo, BF_NX_NEG, 1, 1),
-            &vert(xlo, ylo, zlo, BF_NX_NEG, 1, 0),
-        );
-        buf.quad(
-            &vert(xhi, ylo, zhi, BF_NZ_POS, 0, 0),
-            &vert(xhi, yhi, zhi, BF_NZ_POS, 0, 1),
-            &vert(xlo, yhi, zhi, BF_NZ_POS, 1, 1),
-            &vert(xlo, ylo, zhi, BF_NZ_POS, 1, 0),
-        );
-        buf.quad(
-            &vert(xlo, ylo, zlo, BF_NZ_NEG, 0, 0),
-            &vert(xlo, yhi, zlo, BF_NZ_NEG, 0, 1),
-            &vert(xhi, yhi, zlo, BF_NZ_NEG, 1, 1),
-            &vert(xhi, ylo, zlo, BF_NZ_NEG, 1, 0),
-        );
-        buf.quad(
-            &vert(xhi, yhi, zlo, BF_NY_POS, 0, 0),
-            &vert(xlo, yhi, zlo, BF_NY_POS, 1, 0),
-            &vert(xlo, yhi, zhi, BF_NY_POS, 1, 1),
-            &vert(xhi, yhi, zhi, BF_NY_POS, 0, 1),
-        );
-        buf.quad(
-            &vert(xlo, ylo, zlo, BF_NY_NEG, 0, 0),
-            &vert(xhi, ylo, zlo, BF_NY_NEG, 1, 0),
-            &vert(xhi, ylo, zhi, BF_NY_NEG, 1, 1),
-            &vert(xlo, ylo, zhi, BF_NY_NEG, 0, 1),
-        );
-    };
+    let bx_box =
+        |buf: &mut MeshBuffers, xlo: u32, xhi: u32, ylo: u32, yhi: u32, zlo: u32, zhi: u32| {
+            buf.quad(
+                &vert(xhi, ylo, zlo, BF_NX_POS, 0, 0),
+                &vert(xhi, yhi, zlo, BF_NX_POS, 0, 1),
+                &vert(xhi, yhi, zhi, BF_NX_POS, 1, 1),
+                &vert(xhi, ylo, zhi, BF_NX_POS, 1, 0),
+            );
+            buf.quad(
+                &vert(xlo, ylo, zhi, BF_NX_NEG, 0, 0),
+                &vert(xlo, yhi, zhi, BF_NX_NEG, 0, 1),
+                &vert(xlo, yhi, zlo, BF_NX_NEG, 1, 1),
+                &vert(xlo, ylo, zlo, BF_NX_NEG, 1, 0),
+            );
+            buf.quad(
+                &vert(xhi, ylo, zhi, BF_NZ_POS, 0, 0),
+                &vert(xhi, yhi, zhi, BF_NZ_POS, 0, 1),
+                &vert(xlo, yhi, zhi, BF_NZ_POS, 1, 1),
+                &vert(xlo, ylo, zhi, BF_NZ_POS, 1, 0),
+            );
+            buf.quad(
+                &vert(xlo, ylo, zlo, BF_NZ_NEG, 0, 0),
+                &vert(xlo, yhi, zlo, BF_NZ_NEG, 0, 1),
+                &vert(xhi, yhi, zlo, BF_NZ_NEG, 1, 1),
+                &vert(xhi, ylo, zlo, BF_NZ_NEG, 1, 0),
+            );
+            buf.quad(
+                &vert(xhi, yhi, zlo, BF_NY_POS, 0, 0),
+                &vert(xlo, yhi, zlo, BF_NY_POS, 1, 0),
+                &vert(xlo, yhi, zhi, BF_NY_POS, 1, 1),
+                &vert(xhi, yhi, zhi, BF_NY_POS, 0, 1),
+            );
+            buf.quad(
+                &vert(xlo, ylo, zlo, BF_NY_NEG, 0, 0),
+                &vert(xhi, ylo, zlo, BF_NY_NEG, 1, 0),
+                &vert(xhi, ylo, zhi, BF_NY_NEG, 1, 1),
+                &vert(xlo, ylo, zhi, BF_NY_NEG, 0, 1),
+            );
+        };
     const T: u32 = 3; // panel thickness 3/16
     if id == DOOR_OPEN {
         if rotated {
@@ -1198,20 +1263,16 @@ fn emit_snow_layer(
 
     // Fracs run 0..16 across the cell; split into integer block step + 4-bit frac.
     let vert = |fx: u32, fy: u32, fz: u32, normal: u32, u: u32, v: u32| -> BFVertex {
+        let px = x + (fx >> 4);
+        let py = y + (fy >> 4);
+        let pz = z + (fz >> 4);
         BFVertex {
-            pos_packed: bf_pack_pos(
-                x + (fx >> 4),
-                y + (fy >> 4),
-                z + (fz >> 4),
-                fx & 0xF,
-                fy & 0xF,
-                fz & 0xF,
-            ),
+            pos_packed: bf_pack_pos(px, py, pz, fx & 0xF, fy & 0xF, fz & 0xF),
             normal_uv: bf_pack_normal_uv(normal, AO, u, v),
             material_id: mat,
             sky_light: sky,
             block_light: blk,
-            reserved: 0,
+            reserved: bf_pack_pos_hi(px, py, pz),
         }
     };
 
@@ -1425,25 +1486,38 @@ impl GreedyMesher {
     // plus the packed vertex bytes and index bytes (the C++ writes these into
     // caller-provided spans; here we own them and the caller reads .0/.1/.2).
     //
-    // `simplified` is accepted for signature parity (M2 LOD), currently ignored.
     pub fn mesh<S: ChunkStore>(
         &self,
         c: ChunkCoord,
         store: &S,
-        simplified: bool,
+        _simplified: bool,
     ) -> (MeshResult, Vec<u8>, Vec<u8>) {
-        let _ = simplified; // TODO(M2): LOD meshing
-
         let chunk = store.get(c);
 
         // Null chunk or uniform-air chunk -> empty.
         let chunk = match chunk {
-            None => return (MeshResult { vertex_bytes: 0, index_bytes: 0, index_count: 0, empty: true }, Vec::new(), Vec::new()),
+            None => {
+                return (
+                    MeshResult {
+                        vertex_bytes: 0,
+                        index_bytes: 0,
+                        index_count: 0,
+                        empty: true,
+                    },
+                    Vec::new(),
+                    Vec::new(),
+                )
+            }
             Some(ch) => ch,
         };
         if chunk.is_uniform() && chunk.get(0, 0, 0) == 0 {
             return (
-                MeshResult { vertex_bytes: 0, index_bytes: 0, index_count: 0, empty: true },
+                MeshResult {
+                    vertex_bytes: 0,
+                    index_bytes: 0,
+                    index_count: 0,
+                    empty: true,
+                },
                 Vec::new(),
                 Vec::new(),
             );
@@ -1452,8 +1526,15 @@ impl GreedyMesher {
         let mut buf = MeshBuffers::new(K_MAX_VERTEX_BYTES as usize, K_MAX_INDEX_BYTES as usize);
 
         // Mask arrays reused across slices and directions.
-        let mut mask = [[MaskCell { id: 0, sky: 15, blk: 0, ao_packed: 0 }; CHUNK_DIM]; CHUNK_DIM];
-        let mut ao_corners = [[AOCorners::default(); CHUNK_DIM]; CHUNK_DIM];
+        let mask_default = MaskCell {
+            id: 0,
+            sky: 15,
+            blk: 0,
+            ao_packed: 0,
+        };
+        let mut mask = vec![mask_default; CHUNK_DIM * CHUNK_DIM];
+        let mut ao_corners = vec![AOCorners::default(); CHUNK_DIM * CHUNK_DIM];
+        let mask_idx = |u: i32, v: i32| -> usize { u as usize * CHUNK_DIM + v as usize };
 
         let chunk_opt: Option<&S::Chunk> = Some(chunk);
 
@@ -1465,7 +1546,8 @@ impl GreedyMesher {
                         let (x, y, z) = axes_to_xyz(fd, d, u, v);
 
                         let here = chunk_get(chunk_opt, x, y, z);
-                        mask[u as usize][v as usize] = MaskCell { id: 0, sky: 15, blk: 0, ao_packed: 0 };
+                        let mi = mask_idx(u, v);
+                        mask[mi] = mask_default;
                         if here == 0 {
                             continue;
                         }
@@ -1477,13 +1559,14 @@ impl GreedyMesher {
                         if is_opaque(here) {
                             emit = !is_opaque(nb); // air, water, or glass neighbour
                         } else if here == 9 || is_waterlogged(here) {
-                            emit = fd.normal == BF_NY_POS && match neighbour_block_known(chunk_opt, c, store, fd, x, y, z) {
-                                Some(known) => known == 0,
-                                // Top water faces are allowed against an unknown +Y chunk: all-air chunks
-                                // above the sea are intentionally skipped by streaming, so requiring a
-                                // resident air chunk can erase chunk-aligned strips of ocean surface.
-                                None => true,
-                            };
+                            emit = fd.normal == BF_NY_POS
+                                && match neighbour_block_known(chunk_opt, c, store, fd, x, y, z) {
+                                    Some(known) => known == 0,
+                                    // Top water faces are allowed against an unknown +Y chunk: all-air chunks
+                                    // above the sea are intentionally skipped by streaming, so requiring a
+                                    // resident air chunk can erase chunk-aligned strips of ocean surface.
+                                    None => true,
+                                };
                         } else if is_glass(here) {
                             emit = nb == 0 || nb == 9; // glass against air/water, cull glass-glass
                         } else {
@@ -1494,10 +1577,10 @@ impl GreedyMesher {
                             let (sky, blk) = neighbour_light(chunk, c, store, fd, x, y, z);
 
                             let ao = compute_face_ao(chunk_opt, c, store, fd, x, y, z);
-                            ao_corners[u as usize][v as usize] = ao;
+                            ao_corners[mi] = ao;
 
                             let mat_id = if is_waterlogged(here) { 9 } else { here };
-                            mask[u as usize][v as usize] = MaskCell {
+                            mask[mi] = MaskCell {
                                 id: mat_id,
                                 sky,
                                 blk,
@@ -1508,18 +1591,19 @@ impl GreedyMesher {
                 }
 
                 // Greedy merge the mask.
-                let mut merged = [[false; CHUNK_DIM]; CHUNK_DIM];
+                let mut merged = vec![false; CHUNK_DIM * CHUNK_DIM];
 
                 for u in 0..KCHUNK_DIM {
                     for v in 0..KCHUNK_DIM {
-                        let cell = mask[u as usize][v as usize];
-                        if cell.id == 0 || merged[u as usize][v as usize] {
+                        let cell = mask[mask_idx(u, v)];
+                        if cell.id == 0 || merged[mask_idx(u, v)] {
                             continue;
                         }
 
                         // Same key and not yet merged.
-                        let same = |uu: i32, vv: i32, merged: &[[bool; CHUNK_DIM]; CHUNK_DIM]| {
-                            mask[uu as usize][vv as usize] == cell && !merged[uu as usize][vv as usize]
+                        let same = |uu: i32, vv: i32, merged: &[bool]| {
+                            let mi = mask_idx(uu, vv);
+                            mask[mi] == cell && !merged[mi]
                         };
 
                         // Max width w in +u.
@@ -1546,11 +1630,11 @@ impl GreedyMesher {
                         // Mark merged.
                         for ku in 0..w {
                             for kv in 0..h {
-                                merged[(u + ku) as usize][(v + kv) as usize] = true;
+                                merged[mask_idx(u + ku, v + kv)] = true;
                             }
                         }
 
-                        let ao = ao_corners[u as usize][v as usize];
+                        let ao = ao_corners[mask_idx(u, v)];
 
                         let base = buf.vtx_count;
                         let ok = emit_quad(
@@ -1644,7 +1728,12 @@ fn finalize(buf: MeshBuffers, complete: bool) -> (MeshResult, Vec<u8>, Vec<u8>) 
     let index_count = index_bytes / INDEX_SIZE as u32;
     let empty = if complete { index_count == 0 } else { false };
     (
-        MeshResult { vertex_bytes, index_bytes, index_count, empty },
+        MeshResult {
+            vertex_bytes,
+            index_bytes,
+            index_count,
+            empty,
+        },
         buf.vtx,
         buf.idx,
     )
@@ -1660,21 +1749,21 @@ mod tests {
     use std::collections::HashMap;
 
     // ---- minimal test chunk / store ----------------------------------------
-    // A flat 16^3 array chunk with optional light. Mirrors the surface the mesher
+    // A flat dense chunk with optional light. Mirrors the surface the mesher
     // needs from bfcore's PaletteChunk (get / sky_light / block_light / is_uniform).
     struct TestChunk {
-        blocks: [BlockId; CHUNK_VOL],
-        sky: [u8; CHUNK_VOL],
-        block: [u8; CHUNK_VOL],
+        blocks: Vec<BlockId>,
+        sky: Vec<u8>,
+        block: Vec<u8>,
         lit: bool,
     }
 
     impl TestChunk {
         fn new() -> Self {
             TestChunk {
-                blocks: [0; CHUNK_VOL],
-                sky: [0; CHUNK_VOL],
-                block: [0; CHUNK_VOL],
+                blocks: vec![0; CHUNK_VOL],
+                sky: vec![0; CHUNK_VOL],
+                block: vec![0; CHUNK_VOL],
                 lit: false,
             }
         }
@@ -1721,7 +1810,9 @@ mod tests {
     }
     impl TestStore {
         fn new() -> Self {
-            TestStore { chunks: HashMap::new() }
+            TestStore {
+                chunks: HashMap::new(),
+            }
         }
     }
     impl ChunkStore for TestStore {
@@ -1838,18 +1929,34 @@ mod tests {
         // Snow material (12) vertices all live in the snow cell's bottom few sixteenths:
         // the slab spans y=9.0 (cell floor, on top of grass) up to a fractional top well
         // under y=10.0 (the cell ceiling). A full cube would reach y=10.0.
-        let snow_ys: Vec<f32> = vm.iter().filter(|&&(_, m)| m == 12).map(|&(y, _)| y).collect();
+        let snow_ys: Vec<f32> = vm
+            .iter()
+            .filter(|&&(_, m)| m == 12)
+            .map(|&(y, _)| y)
+            .collect();
         assert!(!snow_ys.is_empty(), "snow slab must emit geometry");
         let snow_top = snow_ys.iter().cloned().fold(f32::MIN, f32::max);
         let snow_bot = snow_ys.iter().cloned().fold(f32::MAX, f32::min);
-        assert!((snow_bot - 9.0).abs() < 1e-3, "snow slab sits on top of the grass (y=9)");
-        assert!(snow_top < 9.5, "snow slab top {snow_top} must be a thin lip, not a full cube (y<9.5)");
+        assert!(
+            (snow_bot - 9.0).abs() < 1e-3,
+            "snow slab sits on top of the grass (y=9)"
+        );
+        assert!(
+            snow_top < 9.5,
+            "snow slab top {snow_top} must be a thin lip, not a full cube (y<9.5)"
+        );
         assert!(snow_top > 9.0, "snow slab must have some thickness");
 
         // The grass still has its own top face at y=9.0 (cell ceiling of the grass cell),
         // present because snow does not occlude. So the block reads through under the snow.
-        let grass_top_faces = vm.iter().filter(|&&(y, m)| m == 1 && (y - 9.0).abs() < 1e-3).count();
-        assert!(grass_top_faces >= 4, "grass keeps its top face under the non-opaque snow");
+        let grass_top_faces = vm
+            .iter()
+            .filter(|&&(y, m)| m == 1 && (y - 9.0).abs() < 1e-3)
+            .count();
+        assert!(
+            grass_top_faces >= 4,
+            "grass keeps its top face under the non-opaque snow"
+        );
     }
 
     // #144: trodden snow (54) is no longer a flat slab; it is a pressed bowl with a
@@ -2017,7 +2124,10 @@ mod tests {
             .filter(|&&(_, m)| m == 9)
             .map(|&(n, _)| n)
             .collect();
-        assert!(!water_faces.is_empty(), "water must still render its top surface");
+        assert!(
+            !water_faces.is_empty(),
+            "water must still render its top surface"
+        );
         assert!(
             water_faces.iter().all(|&n| n == BF_NY_POS),
             "water must not emit side/bottom faces that can become blue chunk-line walls: {water_faces:?}"
@@ -2061,7 +2171,10 @@ mod tests {
         let cur = store.get(ChunkCoord::default());
         let bottom = door_mesh_rotated(cur, ChunkCoord::default(), &store, 8, 4, 8);
         let top = door_mesh_rotated(cur, ChunkCoord::default(), &store, 8, 5, 8);
-        assert_eq!(bottom, top, "both halves of one door must render on the same axis");
+        assert_eq!(
+            bottom, top,
+            "both halves of one door must render on the same axis"
+        );
     }
 
     #[test]
@@ -2076,7 +2189,10 @@ mod tests {
         let bottom = door_mesh_run_state(cur, ChunkCoord::default(), &store, 8, 4, 8);
         let top = door_mesh_run_state(cur, ChunkCoord::default(), &store, 8, 5, 8);
         assert_eq!(bottom, DOOR_CLOSED, "bottom half owns the canonical state");
-        assert_eq!(top, DOOR_CLOSED, "top half renders with the bottom half's state");
+        assert_eq!(
+            top, DOOR_CLOSED,
+            "top half renders with the bottom half's state"
+        );
     }
 
     #[test]
@@ -2114,7 +2230,7 @@ mod tests {
         let mut ch = TestChunk::new();
         ch.set(8, 8, 8, 1); // stone
         ch.set(9, 8, 8, 48); // pine leaves
-        // Light: leaf cell dark, the air just past it fully sky-lit.
+                             // Light: leaf cell dark, the air just past it fully sky-lit.
         ch.set_light(9, 8, 8, 0, 0); // leaf cell: no light (would paint black)
         ch.set_light(10, 8, 8, 15, 0); // lit air beyond the foliage
         store.chunks.insert(ChunkCoord::default(), ch);
@@ -2152,7 +2268,9 @@ mod tests {
     #[test]
     fn cpp_parity() {
         let mut store = TestStore::new();
-        store.chunks.insert(ChunkCoord::default(), build_test_chunk());
+        store
+            .chunks
+            .insert(ChunkCoord::default(), build_test_chunk());
         let m = GreedyMesher::new();
         let (res, vtx, idx) = m.mesh(ChunkCoord::default(), &store, false);
 

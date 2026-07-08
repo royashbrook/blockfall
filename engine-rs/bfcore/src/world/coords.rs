@@ -23,7 +23,11 @@ impl<'c> World<'c> {
     /// Canonical block position (x/z wrapped, y untouched).
     #[inline]
     pub(super) fn canon_block(w: IVec3) -> IVec3 {
-        IVec3 { x: Self::wrap_block(w.x), y: w.y, z: Self::wrap_block(w.z) }
+        IVec3 {
+            x: Self::wrap_block(w.x),
+            y: w.y,
+            z: Self::wrap_block(w.z),
+        }
     }
 
     /// Canonical chunk coordinate (x/z wrapped mod WRAP_CHUNKS, y untouched).
@@ -46,7 +50,11 @@ impl<'c> World<'c> {
     #[inline]
     pub(super) fn wrap_signed_chunk(d: i32) -> i32 {
         let m = d.rem_euclid(WRAP_CHUNKS);
-        if m >= WRAP_CHUNKS / 2 { m - WRAP_CHUNKS } else { m }
+        if m >= WRAP_CHUNKS / 2 {
+            m - WRAP_CHUNKS
+        } else {
+            m
+        }
     }
 
     /// Nearest-image signed float delta in [-period/2, period/2).

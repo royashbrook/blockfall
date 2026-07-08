@@ -2,20 +2,37 @@ use super::*;
 
 #[test]
 fn visual_detail_radii_scale_with_render_distance() {
+    let detail_radius = |chunks: i32| (chunks as f32 * KCHUNK_DIM as f32).clamp(120.0, 192.0);
+    let leaf_radius = |chunks: i32| (chunks as f32 * KCHUNK_DIM as f32).clamp(120.0, 256.0);
+    let scenery_radius = |chunks: i32| (chunks as f32 * KCHUNK_DIM as f32).clamp(120.0, 384.0);
+    let shadow_radius = |chunks: i32| {
+        let stream_blocks = chunks * KCHUNK_DIM;
+        let shadow_blocks = if stream_blocks >= 16 * RENDER_DISTANCE_UNIT_BLOCKS {
+            16 * RENDER_DISTANCE_UNIT_BLOCKS
+        } else {
+            8 * RENDER_DISTANCE_UNIT_BLOCKS
+        };
+        block_radius_to_chunk_radius(shadow_blocks)
+    };
     let mut w = World::new(None);
-    assert_eq!(w.shadow_radius_chunks(), 8);
-    assert_eq!(w.prop_detail_radius_blocks(), 120.0);
-    assert_eq!(w.prop_scenery_radius_blocks(), 120.0);
+    assert_eq!(w.shadow_radius_chunks(), shadow_radius(w.stream_r));
+    assert_eq!(w.prop_detail_radius_blocks(), detail_radius(w.stream_r));
+    assert_eq!(w.prop_leaf_radius_blocks(), leaf_radius(w.stream_r));
+    assert_eq!(w.prop_scenery_radius_blocks(), scenery_radius(w.stream_r));
 
     w.set_render_distance(24);
-    assert_eq!(w.shadow_radius_chunks(), 16);
-    assert_eq!(w.prop_detail_radius_blocks(), 384.0);
-    assert_eq!(w.prop_scenery_radius_blocks(), 384.0);
+    assert_eq!(w.stream_r, render_units_to_chunk_radius(24));
+    assert_eq!(w.shadow_radius_chunks(), shadow_radius(w.stream_r));
+    assert_eq!(w.prop_detail_radius_blocks(), detail_radius(w.stream_r));
+    assert_eq!(w.prop_leaf_radius_blocks(), leaf_radius(w.stream_r));
+    assert_eq!(w.prop_scenery_radius_blocks(), scenery_radius(w.stream_r));
 
     w.set_render_distance(40);
-    assert_eq!(w.shadow_radius_chunks(), 16);
-    assert_eq!(w.prop_detail_radius_blocks(), 384.0);
-    assert_eq!(w.prop_scenery_radius_blocks(), 640.0);
+    assert_eq!(w.stream_r, render_units_to_chunk_radius(40));
+    assert_eq!(w.shadow_radius_chunks(), shadow_radius(w.stream_r));
+    assert_eq!(w.prop_detail_radius_blocks(), detail_radius(w.stream_r));
+    assert_eq!(w.prop_leaf_radius_blocks(), leaf_radius(w.stream_r));
+    assert_eq!(w.prop_scenery_radius_blocks(), scenery_radius(w.stream_r));
 }
 
 fn set_mode(w: &mut World, mode: i32) {

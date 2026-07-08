@@ -4,7 +4,11 @@ impl<'c> World<'c> {
     pub(super) fn gpu_alloc(&self, bytes: u32) -> bf_gpu_buffer {
         match self.alloc.alloc {
             Some(f) => f(self.alloc.user, bytes),
-            None => bf_gpu_buffer { handle: 0, contents: std::ptr::null_mut(), bytes: 0 },
+            None => bf_gpu_buffer {
+                handle: 0,
+                contents: std::ptr::null_mut(),
+                bytes: 0,
+            },
         }
     }
 
@@ -35,7 +39,13 @@ impl<'c> World<'c> {
                     }
                     if tree && (id == 5 || id == 27 || id == 48) {
                         let see_through = |ax: i32, ay: i32, az: i32| -> bool {
-                            if ax < 0 || ay < 0 || az < 0 || ax >= KCHUNK_DIM || ay >= KCHUNK_DIM || az >= KCHUNK_DIM {
+                            if ax < 0
+                                || ay < 0
+                                || az < 0
+                                || ax >= KCHUNK_DIM
+                                || ay >= KCHUNK_DIM
+                                || az >= KCHUNK_DIM
+                            {
                                 return true;
                             }
                             let n = ch.get(ax as usize, ay as usize, az as usize);
@@ -56,15 +66,27 @@ impl<'c> World<'c> {
                         ^ (bz + lz).wrapping_mul(83492791)) as u32;
                     if id == 21 || id == 22 || id == 49 {
                         let is_logf = |dx: i32, dy: i32, dz: i32| -> bool {
-                            let b = self.block_at(IVec3 { x: bx + lx + dx, y: by + ly + dy, z: bz + lz + dz });
+                            let b = self.block_at(IVec3 {
+                                x: bx + lx + dx,
+                                y: by + ly + dy,
+                                z: bz + lz + dz,
+                            });
                             b == 21 || b == 22 || b == 49
                         };
                         let above = is_logf(0, 1, 0);
                         let below = is_logf(0, -1, 0);
-                        let xax = is_logf(1, 1, 0) || is_logf(-1, 1, 0) || is_logf(1, -1, 0)
-                            || is_logf(-1, -1, 0) || is_logf(1, 0, 0) || is_logf(-1, 0, 0);
-                        let zax = is_logf(0, 1, 1) || is_logf(0, 1, -1) || is_logf(0, -1, 1)
-                            || is_logf(0, -1, -1) || is_logf(0, 0, 1) || is_logf(0, 0, -1);
+                        let xax = is_logf(1, 1, 0)
+                            || is_logf(-1, 1, 0)
+                            || is_logf(1, -1, 0)
+                            || is_logf(-1, -1, 0)
+                            || is_logf(1, 0, 0)
+                            || is_logf(-1, 0, 0);
+                        let zax = is_logf(0, 1, 1)
+                            || is_logf(0, 1, -1)
+                            || is_logf(0, -1, 1)
+                            || is_logf(0, -1, -1)
+                            || is_logf(0, 0, 1)
+                            || is_logf(0, 0, -1);
                         if !above && !below && !xax && !zax {
                             h &= 0x001FFFFF;
                         } else if !above && !below {
@@ -98,11 +120,18 @@ impl<'c> World<'c> {
                                     sdir = 3;
                                 }
                             }
-                            h = ((level as u32) << 24) | (slant << 23) | (sdir << 21) | (h & 0x001FFFFF);
+                            h = ((level as u32) << 24)
+                                | (slant << 23)
+                                | (sdir << 21)
+                                | (h & 0x001FFFFF);
                         }
                     } else if id == 38 || id == 42 {
                         let same = |dx: i32, dz: i32| -> bool {
-                            self.block_at(IVec3 { x: bx + lx + dx, y: by + ly, z: bz + lz + dz }) == id
+                            self.block_at(IVec3 {
+                                x: bx + lx + dx,
+                                y: by + ly,
+                                z: bz + lz + dz,
+                            }) == id
                         };
                         let mut dens: u32 = 0;
                         for dz2 in -1..=1 {
@@ -115,7 +144,11 @@ impl<'c> World<'c> {
                         h = (h & 0x0FFFFFFF) | (dens << 28);
                     }
                     props.push(bf_prop_instance {
-                        position: bf_vec3 { x: (bx + lx) as f32, y: (by + ly) as f32, z: (bz + lz) as f32 },
+                        position: bf_vec3 {
+                            x: (bx + lx) as f32,
+                            y: (by + ly) as f32,
+                            z: (bz + lz) as f32,
+                        },
                         type_: id as u32,
                         seed: h,
                         sat,
@@ -155,7 +188,13 @@ impl<'c> World<'c> {
         let catchup = self.catchup_fill();
 
         if async_mode {
-            let upload_budget = if bulk { 8 } else if catchup { 6 } else { 4 };
+            let upload_budget = if bulk {
+                8
+            } else if catchup {
+                6
+            } else {
+                4
+            };
             let upload_drain = upload_budget * 4;
             if let Some(rx) = self.mesh_rx.as_ref() {
                 while self.pending_mesh_results.len() < upload_drain {
@@ -165,11 +204,14 @@ impl<'c> World<'c> {
                     }
                 }
             }
-            self.pending_mesh_results
-                .sort_by(|a, b| Self::dist2(b.cc, self.last_center).cmp(&Self::dist2(a.cc, self.last_center)));
+            self.pending_mesh_results.sort_by(|a, b| {
+                Self::dist2(b.cc, self.last_center).cmp(&Self::dist2(a.cc, self.last_center))
+            });
             let mut uploaded = 0;
             while uploaded < upload_budget {
-                let Some(r) = self.pending_mesh_results.pop() else { break };
+                let Some(r) = self.pending_mesh_results.pop() else {
+                    break;
+                };
                 self.mesh_inflight.remove(&r.cc);
                 self.upload_mesh_result(r);
                 uploaded += 1;
@@ -214,7 +256,11 @@ impl<'c> World<'c> {
                     ];
                     for f in 0..6 {
                         if faces & (1 << f) != 0 {
-                            let nc = ChunkCoord { x: cc.x + dirs[f].x, y: cc.y + dirs[f].y, z: cc.z + dirs[f].z };
+                            let nc = ChunkCoord {
+                                x: cc.x + dirs[f].x,
+                                y: cc.y + dirs[f].y,
+                                z: cc.z + dirs[f].z,
+                            };
                             if self.store.is_resident(nc) {
                                 self.mark_dirty(nc);
                             }
@@ -266,7 +312,13 @@ impl<'c> World<'c> {
             8
         };
         let kremesh_cap = if bulk { 6 } else { 3 };
-        let mesh_inflight_cap = if bulk { 48 } else if catchup { 40 } else { 32 };
+        let mesh_inflight_cap = if bulk {
+            48
+        } else if catchup {
+            40
+        } else {
+            32
+        };
         // Top-k selection instead of a full sort: the dirty set can hold thousands of
         // chunks during fill and only ~mesh_budget of them are dispatched per tick, so
         // sorting all of them every frame was measurable main-thread time (profiled).
@@ -275,11 +327,17 @@ impl<'c> World<'c> {
         let keep = (mesh_budget * 4).min(todo.len());
         if todo.len() > keep {
             todo.select_nth_unstable_by(keep - 1, |a, b| {
-                score(*a).partial_cmp(&score(*b)).unwrap_or(std::cmp::Ordering::Equal)
+                score(*a)
+                    .partial_cmp(&score(*b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
             todo.truncate(keep);
         }
-        todo.sort_by(|a, b| score(*a).partial_cmp(&score(*b)).unwrap_or(std::cmp::Ordering::Equal));
+        todo.sort_by(|a, b| {
+            score(*a)
+                .partial_cmp(&score(*b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let mut done = 0;
         let mut remeshes = 0;
         let order: Vec<ChunkCoord> = todo;
@@ -287,7 +345,10 @@ impl<'c> World<'c> {
             if done >= mesh_budget {
                 break;
             }
-            if async_mode && (self.mesh_inflight.contains(&cc) || self.mesh_inflight.len() >= mesh_inflight_cap) {
+            if async_mode
+                && (self.mesh_inflight.contains(&cc)
+                    || self.mesh_inflight.len() >= mesh_inflight_cap)
+            {
                 continue;
             }
             let fresh = !self.meshes.contains_key(&cc);
@@ -322,7 +383,11 @@ impl<'c> World<'c> {
                 ];
                 for f in 0..6 {
                     if faces & (1 << f) != 0 {
-                        let nc = ChunkCoord { x: cc.x + dirs[f].x, y: cc.y + dirs[f].y, z: cc.z + dirs[f].z };
+                        let nc = ChunkCoord {
+                            x: cc.x + dirs[f].x,
+                            y: cc.y + dirs[f].y,
+                            z: cc.z + dirs[f].z,
+                        };
                         if self.store.is_resident(nc) {
                             self.mark_dirty(nc);
                         }
@@ -346,12 +411,36 @@ impl<'c> World<'c> {
         };
         add(&mut chunks, cc);
         let dirs = [
-            ChunkCoord { x: cc.x + 1, y: cc.y, z: cc.z },
-            ChunkCoord { x: cc.x - 1, y: cc.y, z: cc.z },
-            ChunkCoord { x: cc.x, y: cc.y + 1, z: cc.z },
-            ChunkCoord { x: cc.x, y: cc.y - 1, z: cc.z },
-            ChunkCoord { x: cc.x, y: cc.y, z: cc.z + 1 },
-            ChunkCoord { x: cc.x, y: cc.y, z: cc.z - 1 },
+            ChunkCoord {
+                x: cc.x + 1,
+                y: cc.y,
+                z: cc.z,
+            },
+            ChunkCoord {
+                x: cc.x - 1,
+                y: cc.y,
+                z: cc.z,
+            },
+            ChunkCoord {
+                x: cc.x,
+                y: cc.y + 1,
+                z: cc.z,
+            },
+            ChunkCoord {
+                x: cc.x,
+                y: cc.y - 1,
+                z: cc.z,
+            },
+            ChunkCoord {
+                x: cc.x,
+                y: cc.y,
+                z: cc.z + 1,
+            },
+            ChunkCoord {
+                x: cc.x,
+                y: cc.y,
+                z: cc.z - 1,
+            },
         ];
         for d in dirs {
             add(&mut chunks, d);
@@ -413,7 +502,11 @@ impl<'c> World<'c> {
         // #217: reject a null OR undersized buffer. copy_nonoverlapping below trusts
         // the returned allocation, so a caller allocator that hands back fewer bytes
         // than requested would corrupt memory. Free any real buffer we then drop.
-        if vb.contents.is_null() || ib.contents.is_null() || vb.bytes < vbytes_len || ib.bytes < ibytes_len {
+        if vb.contents.is_null()
+            || ib.contents.is_null()
+            || vb.bytes < vbytes_len
+            || ib.bytes < ibytes_len
+        {
             if !vb.contents.is_null() {
                 self.gpu_free(vb.handle);
             }
@@ -425,8 +518,16 @@ impl<'c> World<'c> {
             return;
         }
         unsafe {
-            std::ptr::copy_nonoverlapping(r.vbytes.as_ptr(), vb.contents as *mut u8, vbytes_len as usize);
-            std::ptr::copy_nonoverlapping(r.ibytes.as_ptr(), ib.contents as *mut u8, ibytes_len as usize);
+            std::ptr::copy_nonoverlapping(
+                r.vbytes.as_ptr(),
+                vb.contents as *mut u8,
+                vbytes_len as usize,
+            );
+            std::ptr::copy_nonoverlapping(
+                r.ibytes.as_ptr(),
+                ib.contents as *mut u8,
+                ibytes_len as usize,
+            );
         }
         let rec = self.meshes.get_mut(&r.cc).unwrap();
         rec.vbuf = vb;
@@ -461,8 +562,16 @@ impl<'c> World<'c> {
             return;
         }
         unsafe {
-            std::ptr::copy_nonoverlapping(vbytes.as_ptr(), vb.contents as *mut u8, mr.vertex_bytes as usize);
-            std::ptr::copy_nonoverlapping(ibytes.as_ptr(), ib.contents as *mut u8, mr.index_bytes as usize);
+            std::ptr::copy_nonoverlapping(
+                vbytes.as_ptr(),
+                vb.contents as *mut u8,
+                mr.vertex_bytes as usize,
+            );
+            std::ptr::copy_nonoverlapping(
+                ibytes.as_ptr(),
+                ib.contents as *mut u8,
+                mr.index_bytes as usize,
+            );
         }
         let rec = self.meshes.get_mut(&cc).unwrap();
         rec.vbuf = vb;

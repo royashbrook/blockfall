@@ -5,11 +5,11 @@
 # that launches the last BUILT app, not the latest source, so you can silently
 # test stale code after new commits land. This rebuilds first, every time.
 #
-#   ./play.sh            # debug build (fast to compile), then launch
-#   ./play.sh release    # release build (faster runtime), then launch
+#   ./play.sh            # release build (best for playtesting FPS), then launch
+#   ./play.sh debug      # debug build (faster compile), then launch
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="/opt/homebrew/bin:$PATH"
-"$ROOT/ci/build.sh" "${1:-debug}"
+"$ROOT/ci/build.sh" "${1:-release}"
 echo "==> launching $ROOT/build/Blockfall.app"
 open "$ROOT/build/Blockfall.app"

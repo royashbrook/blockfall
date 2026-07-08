@@ -176,7 +176,11 @@ impl<'c> World<'c> {
                 self.yaw = p.f32().unwrap_or(self.yaw);
                 self.pitch = p.f32().unwrap_or(self.pitch);
                 let m = p.u8().unwrap_or(self.mode as i32 as u8);
-                self.mode = if m == 1 { bf_game_mode::BF_MODE_CREATIVE } else { bf_game_mode::BF_MODE_SURVIVAL };
+                self.mode = if m == 1 {
+                    bf_game_mode::BF_MODE_CREATIVE
+                } else {
+                    bf_game_mode::BF_MODE_SURVIVAL
+                };
                 self.health = p.f32().unwrap_or(self.health);
                 self.hunger = p.f32().unwrap_or(self.hunger);
                 self.selected = p.u8().unwrap_or(self.selected);
@@ -185,7 +189,14 @@ impl<'c> World<'c> {
                     let count = p.u16().unwrap_or(0);
                     let durability = p.u16().unwrap_or(0xFFFF);
                     if let Some(inv) = self.inv.as_mut() {
-                        inv.set(i, ItemStack { item, count, durability });
+                        inv.set(
+                            i,
+                            ItemStack {
+                                item,
+                                count,
+                                durability,
+                            },
+                        );
                     }
                 }
                 if p.take(4) == Some(b"BFQ1") {
@@ -204,7 +215,8 @@ impl<'c> World<'c> {
                     self.quests_completed = qc as i32;
                     self.all_quests_done = aqd != 0;
                     let an = p.u32().unwrap_or(0);
-                    for i in 0..an.min(K_ACHIEVEMENT_COUNT as u32) {   // #216 cap
+                    for i in 0..an.min(K_ACHIEVEMENT_COUNT as u32) {
+                        // #216 cap
                         let dn = p.u8().unwrap_or(0);
                         let pr = p.i32().unwrap_or(0);
                         if (i as usize) < K_ACHIEVEMENT_COUNT {
@@ -266,16 +278,24 @@ impl<'c> World<'c> {
                         (Some(x), Some(y), Some(z)) => (x, y, z),
                         _ => break,
                     };
-                    let mut data = ChestData { slots: [ItemStack::default(); CHEST_SLOTS], filled: true };
+                    let mut data = ChestData {
+                        slots: [ItemStack::default(); CHEST_SLOTS],
+                        filled: true,
+                    };
                     for i in 0..slots {
                         let item = cr.u16().unwrap_or(0);
                         let count = cr.u16().unwrap_or(0);
                         let durability = cr.u16().unwrap_or(0xFFFF);
                         if i < CHEST_SLOTS {
-                            data.slots[i] = ItemStack { item, count, durability };
+                            data.slots[i] = ItemStack {
+                                item,
+                                count,
+                                durability,
+                            };
                         }
                     }
-                    self.chests.insert((Self::wrap_block(x), y, Self::wrap_block(z)), data);
+                    self.chests
+                        .insert((Self::wrap_block(x), y, Self::wrap_block(z)), data);
                 }
             }
         }
@@ -296,7 +316,11 @@ impl<'c> World<'c> {
                     let progress = cr.i32().unwrap_or(0);
                     self.villages.insert(
                         (Self::wrap_block(ax), Self::wrap_block(az)),
-                        VillageState { tier, wood_cells, progress },
+                        VillageState {
+                            tier,
+                            wood_cells,
+                            progress,
+                        },
                     );
                 }
             }
@@ -307,7 +331,7 @@ impl<'c> World<'c> {
         {
             let px = Self::ifloor(self.pos.x);
             let pz = Self::ifloor(self.pos.z);
-            self.reveal_render_radius(px, pz);   // #191 reveal at render-distance scale on load
+            self.reveal_render_radius(px, pz); // #191 reveal at render-distance scale on load
         }
         self.ensure_clear_spawn();
         self.last_center = Self::to_chunk(IVec3 {
@@ -362,7 +386,9 @@ impl<'a> ByteReader<'a> {
     }
     pub(super) fn u64(&mut self) -> Option<u64> {
         let b = self.take(8)?;
-        Some(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+        Some(u64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
     }
     pub(super) fn f32(&mut self) -> Option<f32> {
         let b = self.take(4)?;

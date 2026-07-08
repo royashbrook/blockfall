@@ -238,6 +238,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     }()
     let propModelTable = Renderer.makePropModelTable(device: device)
     var propInstBuf: MTLBuffer? = nil
+    var propDrawBuckets = Array(repeating: [bf_prop_instance](), count: Renderer.propRowCount)
+    let skipProps = ProcessInfo.processInfo.environment["BF_NOPROPS"] == "1"
     // #70 viewmodel (so --shot reflects the live render)
     let viewModelPipeline: MTLRenderPipelineState? = {
         let d = MTLRenderPipelineDescriptor()
@@ -254,8 +256,6 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         let dd = MTLDepthStencilDescriptor(); dd.depthCompareFunction = .always; dd.isDepthWriteEnabled = false
         return device.makeDepthStencilState(descriptor: dd)
     }()
-    let kPropVertsPerInstance = 5 * 144
-
     let dsd = MTLDepthStencilDescriptor(); dsd.depthCompareFunction = .less; dsd.isDepthWriteEnabled = true
     let depthState = device.makeDepthStencilState(descriptor: dsd)
     let skyDSD = MTLDepthStencilDescriptor(); skyDSD.depthCompareFunction = .always; skyDSD.isDepthWriteEnabled = false
@@ -269,7 +269,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     var cfg = bf_engine_config()
     cfg.abi_version = BF_ABI_VERSION; cfg.role = BF_ROLE_SINGLEPLAYER; cfg.start_mode = BF_MODE_SURVIVAL
     cfg.render_distance_chunks = 24                      // match the game (async gen + culling, #25/#5)
-    cfg.content_dir = persistentCString("."); cfg.save_dir = persistentCString(NSTemporaryDirectory() + "bf_perf")
+    let perfSaveDir = ProcessInfo.processInfo.environment["BF_PERF_SAVE_DIR"] ?? (NSTemporaryDirectory() + "bf_perf")
+    cfg.content_dir = persistentCString("."); cfg.save_dir = persistentCString(perfSaveDir)
     cfg.player_name = persistentCString("perf")
     var err = BF_OK
     guard let e = bf_engine_create(&cfg, &err), err == BF_OK else { return false }
@@ -283,6 +284,16 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     // under review (e.g. a desert spawn for a dune-relief check). Default 2026.
     let worldSeed = UInt64(ProcessInfo.processInfo.environment["BF_SHOT_SEED"] ?? "") ?? 2026
     _ = bf_world_new(e, worldSeed)
+    var perfCameraSet = false
+    if let cam = ProcessInfo.processInfo.environment["BF_PERF_CAMERA"] {
+        let vals = cam.split(separator: ",").compactMap { Float($0.trimmingCharacters(in: .whitespaces)) }
+        if vals.count >= 5 {
+            bf_debug_set_camera(e, vals[0], vals[1], vals[2], vals[3], vals[4])
+            perfCameraSet = true
+        } else {
+            print("WARN: BF_PERF_CAMERA expected x,y,z,yaw,pitch")
+        }
+    }
 
     // ---- Render targets (full size; shadow map at the live 2048) ----------
     // BF_PERF_RES=<scale> multiplies the render resolution (default 1.0 = 1280x800).
@@ -323,9 +334,28 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     // #116 diagnostic capture (env-gated): nearest-entity dump for aiming verification shots.
     var lastEntDump = ""
     var fpsSamples: [Double] = []
+    var frameMsSamples: [Double] = []
+    var engineMsSamples: [Double] = []
+    var encodeMsSamples: [Double] = []
+    var gpuMsSamples: [Double] = []
+    var drawSamples: [UInt64] = []
+    var shadowDrawSamples: [UInt64] = []
+    var propSamples: [UInt64] = []
+    var indexSamples: [UInt64] = []
     var peakMem = 0.0
     let start = CACurrentMediaTime()
     var lastDt = CACurrentMediaTime()
+
+    struct PerfFrameStats {
+        var frameMs: Double
+        var engineMs: Double
+        var encodeMs: Double
+        var gpuMs: Double
+        var draws: UInt64
+        var shadowDraws: UInt64
+        var props: UInt64
+        var terrainIndices: UInt64
+    }
 
     // #89 diagnosis: lets the yaw-sweep experiment turn the camera WITHOUT walking
     // forward, so the camera ORIGIN is identical at every yaw and the only variable is
@@ -333,15 +363,26 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     // #179: accumulated look-yaw so a shot can aim at an ABSOLUTE heading
     // (BF_SHOT_SETYAW) — the engine spawns procedural worlds at yaw 0.6.
     var yawAccum: Float = 0
-    func renderOneFrame(pitch: Float = 0, yaw: Float = 0.004, forward: Float = 1) {
+    @discardableResult
+    func renderOneFrame(pitch: Float = 0, yaw: Float = 0.004, forward: Float = 1) -> PerfFrameStats {
+        let frameStart = CACurrentMediaTime()
         frameIdx += 1; registry.currentFrame = frameIdx
+        registry.collect()
         yawAccum += yaw
         let now = CACurrentMediaTime(); let dt = now - lastDt; lastDt = now
         // Keep the player slowly orbiting so chunks stream continuously (worst case).
         var input = bf_frame_input(); input.move_forward = forward; input.look_yaw_delta = yaw
         input.look_pitch_delta = pitch   // #52 shot mode tilts down to frame ground props
+        let engineStart = CACurrentMediaTime()
         _ = bf_frame_begin(e, &input, dt)
         var f = bf_render_frame(); _ = bf_frame_acquire_render(e, &f)
+        let engineMs = (CACurrentMediaTime() - engineStart) * 1000.0
+        var terrainIndices: UInt64 = 0
+        if let draws = f.draws {
+            for i in 0..<Int(f.draw_count) {
+                terrainIndices += UInt64(draws[i].index_count)
+            }
+        }
 
         // BF_SHOT_TOD=<0..1> overrides the whole-scene time of day (and the matching
         // sun direction) so a headless shot can be driven to any point in the day, e.g.
@@ -403,6 +444,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         let hNear = hInv * SIMD4<Float>(0, 0, 0, 1)
         let horizonCamH = SIMD4<Float>(hNear.x / hNear.w, hNear.y / hNear.w, hNear.z / hNear.w, 1)
         windU.camPosH = horizonCamH
+        let encodeStart = CACurrentMediaTime()
         let cmd = queue.makeCommandBuffer()!
 
         // PASS 1 (shadow-map depth) is RETIRED. World-space voxel shadows: pull the engine
@@ -482,23 +524,48 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                                           indexType: .uint32, indexBuffer: ib, indexBufferOffset: Int(d.index_offset))
             }
             // Props (#52: GPU-instanced, identical to the live renderer).
-            let propN = Int(f.prop_instance_count)
+            let propN = skipProps ? 0 : Int(f.prop_instance_count)
             lastShotPropN = propN
             if propN > 0, let insts = f.prop_instances, let pp = propPipeline {
-                let need = propN * MemoryLayout<bf_prop_instance>.stride
+                for i in propDrawBuckets.indices {
+                    propDrawBuckets[i].removeAll(keepingCapacity: true)
+                }
+                var batchedPropN = 0
+                for i in 0..<propN {
+                    let inst = insts[i]
+                    let row = Renderer.propRow(for: inst.type)
+                    if row >= 0 {
+                        propDrawBuckets[row].append(inst)
+                        batchedPropN += 1
+                    }
+                }
+                let stride = MemoryLayout<bf_prop_instance>.stride
+                let need = batchedPropN * stride
                 if propInstBuf == nil || propInstBuf!.length < need {
                     propInstBuf = device.makeBuffer(length: max(need, 65536), options: .storageModeShared)
                 }
-                if let ib = propInstBuf {
-                    memcpy(ib.contents(), insts, need)
+                if let ib = propInstBuf, batchedPropN > 0 {
                     let dayBright = 0.30 + 0.70 * Renderer.dayLight(f.camera.time_of_day)
-                    var pu2 = PropUniforms(viewProj: viewProj, params: SIMD4<Float>(dayBright, Float(wallClock), 0, 0),
+                    let pu2 = PropUniforms(viewProj: viewProj, params: SIMD4<Float>(dayBright, Float(wallClock), 0, 0),
                                            camPosH: horizonCamH)   // #180 horizon curvature
                     enc.setRenderPipelineState(pp); enc.setDepthStencilState(depthState); enc.setCullMode(.none)
-                    enc.setVertexBuffer(ib, offset: 0, index: 0)
-                    enc.setVertexBytes(&pu2, length: MemoryLayout<PropUniforms>.stride, index: 1)
                     enc.setVertexBuffer(propModelTable, offset: 0, index: 2)
-                    enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: kPropVertsPerInstance, instanceCount: propN)
+                    var offsetBytes = 0
+                    for row in 0..<Renderer.propRowCount {
+                        let bucket = propDrawBuckets[row]
+                        if bucket.isEmpty { continue }
+                        _ = bucket.withUnsafeBytes { raw in
+                            memcpy(ib.contents().advanced(by: offsetBytes), raw.baseAddress!, raw.count)
+                        }
+                        enc.setVertexBuffer(ib, offset: offsetBytes, index: 0)
+                        var rowPu = pu2
+                        rowPu.params.w = Float(Renderer.propRowVertsPerShape[row])
+                        enc.setVertexBytes(&rowPu, length: MemoryLayout<PropUniforms>.stride, index: 1)
+                        enc.drawPrimitives(type: .triangle, vertexStart: 0,
+                                           vertexCount: Renderer.propRowVertexCounts[row],
+                                           instanceCount: bucket.count)
+                        offsetBytes += bucket.count * stride
+                    }
                 }
             }
 
@@ -711,10 +778,9 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 enc.endEncoding()
             }
-            // #136 fold in the god-ray intensity slider. BF_GODRAY_STR (0..1) drives the same
-            // fraction the live pause-menu slider does, so a 0 / 0.5 / 1.0 sweep here verifies
-            // the slider scales the rays and that the shipped 0.5 default is half full strength.
-            let grFrac = Float(ProcessInfo.processInfo.environment["BF_GODRAY_STR"] ?? "0.5") ?? 0.5
+            // #136 fold in the god-ray intensity slider. Default is 0 to match the live
+            // perf-first shipping default; BF_GODRAY_STR=0.5/1 opts into quality A/Bs.
+            let grFrac = Float(ProcessInfo.processInfo.environment["BF_GODRAY_STR"] ?? "0") ?? 0
             var onStrength = godOff ? 0 : dayT * Renderer.kGodRayStrength * max(0, min(1, grFrac))
             if debug { onStrength = -max(onStrength, 0.85) }   // sentinel: output raw shaft term
             let onFlare: Float = flareOff ? 0 : flareGate.strength   // #132
@@ -732,8 +798,20 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             }
         }
 
+        let encodeMs = (CACurrentMediaTime() - encodeStart) * 1000.0
         cmd.commit(); cmd.waitUntilCompleted()
+        registry.markFrameCompleted(frameIdx)
+        let gpuMs = max(0.0, (cmd.gpuEndTime - cmd.gpuStartTime) * 1000.0)
         bf_frame_end(e); registry.collect()
+        return PerfFrameStats(
+            frameMs: (CACurrentMediaTime() - frameStart) * 1000.0,
+            engineMs: engineMs,
+            encodeMs: encodeMs,
+            gpuMs: gpuMs,
+            draws: UInt64(f.draw_count),
+            shadowDraws: UInt64(f.shadow_draw_count),
+            props: UInt64(f.prop_instance_count),
+            terrainIndices: terrainIndices)
     }
 
     // Warm up: stream the world in for ~3 s before measuring.
@@ -810,30 +888,69 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         return true
     }
 
+    let defaultSettle = perfCameraSet ? 360 : 0
+    let settleFrames = Int(ProcessInfo.processInfo.environment["BF_PERF_SETTLE"] ?? "\(defaultSettle)") ?? defaultSettle
+    for _ in 0..<max(0, settleFrames) {
+        _ = renderOneFrame()
+    }
+
     let measureStart = CACurrentMediaTime()
     while CACurrentMediaTime() - measureStart < seconds {
-        let t0 = CACurrentMediaTime()
-        renderOneFrame()
-        let ms = (CACurrentMediaTime() - t0) * 1000.0
-        if ms > 0 { fpsSamples.append(1000.0 / ms) }
+        let s = renderOneFrame()
+        if s.frameMs > 0 { fpsSamples.append(1000.0 / s.frameMs) }
+        frameMsSamples.append(s.frameMs)
+        engineMsSamples.append(s.engineMs)
+        encodeMsSamples.append(s.encodeMs)
+        if s.gpuMs > 0 { gpuMsSamples.append(s.gpuMs) }
+        drawSamples.append(s.draws)
+        shadowDrawSamples.append(s.shadowDraws)
+        propSamples.append(s.props)
+        indexSamples.append(s.terrainIndices)
         peakMem = max(peakMem, residentFootprintMB())
     }
 
     let sorted = fpsSamples.sorted()
     func pct(_ p: Double) -> Double { sorted.isEmpty ? 0 : sorted[max(0, min(sorted.count-1, Int(Double(sorted.count) * p)))] }
+    func medianD(_ xs: [Double]) -> Double {
+        let s = xs.sorted()
+        return s.isEmpty ? 0 : s[s.count / 2]
+    }
+    func medianU(_ xs: [UInt64]) -> UInt64 {
+        let s = xs.sorted()
+        return s.isEmpty ? 0 : s[s.count / 2]
+    }
     let median = pct(0.5)
     let low1 = pct(0.01)
+    let frameMsMedian = medianD(frameMsSamples)
+    let engineMsMedian = medianD(engineMsSamples)
+    let encodeMsMedian = medianD(encodeMsSamples)
+    let gpuMsMedian = medianD(gpuMsSamples)
+    let drawsMedian = medianU(drawSamples)
+    let shadowDrawsMedian = medianU(shadowDrawSamples)
+    let propsMedian = medianU(propSamples)
+    let indicesMedian = medianU(indexSamples)
+    let regStats = registry.stats()
     let passFps = median >= 60.0 && low1 >= 30.0
     let passMem = peakMem < 10_000.0
-    print(String(format: "PERF: %d frames over %.0fs — median %.1f FPS, 1%%-low %.1f FPS, peak mem %.0f MB  [%@]",
-                 fpsSamples.count, seconds, median, low1, peakMem,
+    print(String(format: "PERF: %d frames over %.0fs — median %.1f FPS, 1%%-low %.1f FPS, frame %.2f ms, encode %.2f ms, gpu %.2f ms, draws %llu, indices %llu, peak mem %.0f MB  [%@]",
+                 fpsSamples.count, seconds, median, low1, frameMsMedian, encodeMsMedian,
+                 gpuMsMedian, drawsMedian, indicesMedian, peakMem,
                  (passFps && passMem) ? "PASS (dev box)" : "below gate"))
 
     if let path = jsonPath {
         let json = """
-        { "scene": "ref(rd10, animals, day/night, streaming, shadows+bloom)", "seconds": \(seconds), \
+        { "scene": "ref(rd24 legacy-units, animals, day/night, streaming, shadows+bloom)", "seconds": \(seconds), \
         "frames": \(fpsSamples.count), "fps_median": \(String(format:"%.1f",median)), \
         "fps_1pct_low": \(String(format:"%.1f",low1)), "peak_mem_mb": \(String(format:"%.0f",peakMem)), \
+        "frame_ms_median": \(String(format:"%.3f",frameMsMedian)), \
+        "engine_ms_median": \(String(format:"%.3f",engineMsMedian)), \
+        "encode_ms_median": \(String(format:"%.3f",encodeMsMedian)), \
+        "gpu_ms_median": \(String(format:"%.3f",gpuMsMedian)), \
+        "draws_median": \(drawsMedian), "shadow_draws_median": \(shadowDrawsMedian), \
+        "props_median": \(propsMedian), "terrain_indices_median": \(indicesMedian), \
+        "live_buffers": \(regStats.liveBuffers), "retired_buffers": \(regStats.retiredBuffers), \
+        "reusable_buffers": \(regStats.reusableBuffers), "reusable_bytes": \(regStats.reusableBytes), \
+        "new_buffers": \(regStats.newBuffers), "reused_buffers": \(regStats.reusedBuffers), \
         "pass_fps": \(passFps), "pass_mem": \(passMem), \
         "note": "dev-box reference; the gate is an M1 Air sustained 10-min run" }
         """

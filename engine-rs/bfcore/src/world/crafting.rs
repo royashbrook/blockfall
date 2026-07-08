@@ -87,7 +87,11 @@ impl<'c> World<'c> {
         if self.craft_commit(&pattern, grid_size) {
             let pv = self.player_voxel();
             self.fx(4, pv, 0);
-            let made = if result_count > 0 { result_count as i32 } else { 1 };
+            let made = if result_count > 0 {
+                result_count as i32
+            } else {
+                1
+            };
             let rname = self.item_name(result_item);
             for _ in 0..made {
                 self.notify_quest("craft_item", &rname);
@@ -124,7 +128,11 @@ impl<'c> World<'c> {
         for (&item, &need) in &required {
             inv.remove_item(item, need);
         }
-        let result = ItemStack { item: m.result, count: m.count, durability: 0xFFFF };
+        let result = ItemStack {
+            item: m.result,
+            count: m.count,
+            durability: 0xFFFF,
+        };
         if !inv.add(result) {
             *inv = before;
             return false;

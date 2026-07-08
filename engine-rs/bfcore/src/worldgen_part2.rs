@@ -48,7 +48,10 @@ fn tree_floordiv(a: i32, b: i32) -> i32 {
 }
 
 fn tree_cell(wx: i32, wz: i32) -> (i32, i32) {
-    (tree_floordiv(wx, TREE_CELL_SIZE), tree_floordiv(wz, TREE_CELL_SIZE))
+    (
+        tree_floordiv(wx, TREE_CELL_SIZE),
+        tree_floordiv(wz, TREE_CELL_SIZE),
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -106,7 +109,11 @@ fn tree_for_cell(cell_cx: i32, cell_cz: i32, seed: u64) -> TreeDesc {
     let tseed = fmix64(seed ^ TREE_SEED_MIX);
     // #179: hash on the canonical cell so the tree grid is periodic; the cell
     // origin (and therefore root position) stays in the caller's frame.
-    let h = hash2(wrap_cell(cell_cx, TREE_CELL_COUNT), wrap_cell(cell_cz, TREE_CELL_COUNT), tseed);
+    let h = hash2(
+        wrap_cell(cell_cx, TREE_CELL_COUNT),
+        wrap_cell(cell_cz, TREE_CELL_COUNT),
+        tseed,
+    );
 
     let prob = h & 0xFFFF;
     // Cheap universal reject before the voronoi lookup: no biome's threshold
@@ -303,7 +310,11 @@ fn tree_for_cell(cell_cx: i32, cell_cz: i32, seed: u64) -> TreeDesc {
                 CANOPY_WEEPING
             };
             let ib = birch_bits <= 1;
-            if !ib && thick_bit == 1 && th >= 5 && (cs == CANOPY_BROAD || cs == CANOPY_COMPACT || cs == CANOPY_WEEPING) {
+            if !ib
+                && thick_bit == 1
+                && th >= 5
+                && (cs == CANOPY_BROAD || cs == CANOPY_COMPACT || cs == CANOPY_WEEPING)
+            {
                 thick_trunk = false;
             }
             trunk_h = th;
@@ -590,7 +601,15 @@ fn in_canopy_forked(dx: i32, dy: i32, dz: i32) -> bool {
     left_fork || right_fork
 }
 
-fn keep_leaf_voxel(leaf_hash: u64, sparse: i32, wlx: i32, wly: i32, wlz: i32, dx: i32, dz: i32) -> bool {
+fn keep_leaf_voxel(
+    leaf_hash: u64,
+    sparse: i32,
+    wlx: i32,
+    wly: i32,
+    wlz: i32,
+    dx: i32,
+    dz: i32,
+) -> bool {
     let mut rxz = if dx < 0 { -dx } else { dx };
     let az = if dz < 0 { -dz } else { dz };
     if az > rxz {
@@ -677,8 +696,12 @@ fn canopy_dy_min(shape: i32) -> i32 {
 }
 
 /// Pure helper exposed for the test (worldgen_trunk_fit_to_ceiling).
-pub fn worldgen_trunk_fit_to_ceiling(surface_h: i32, canopy_dy_max: i32, desired_trunk: i32) -> i32 {
-    let world_top_y = 4 * K_CHUNK_DIM - 1; // y 63
+pub fn worldgen_trunk_fit_to_ceiling(
+    surface_h: i32,
+    canopy_dy_max: i32,
+    desired_trunk: i32,
+) -> i32 {
+    let world_top_y = 63;
     let max_trunk = world_top_y - surface_h - canopy_dy_max;
     if max_trunk < 3 {
         return 0;

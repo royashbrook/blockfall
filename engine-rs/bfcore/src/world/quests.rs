@@ -9,26 +9,126 @@ struct Achievement {
 }
 
 const K_ACHIEVEMENTS: &[Achievement] = &[
-    Achievement { trig: "collect_item", target: "oak_log", count: 1, title: "Knock On Wood" },
-    Achievement { trig: "mine_block", target: "oak_log", count: 3, title: "Timberrr!" },
-    Achievement { trig: "collect_item", target: "dirt", count: 16, title: "Dirt Rich" },
-    Achievement { trig: "mine_block", target: "stone", count: 1, title: "Between a Rock" },
-    Achievement { trig: "craft_item", target: "", count: 1, title: "Arts & Crafts" },
-    Achievement { trig: "mine_block", target: "coal_ore", count: 1, title: "Coal Digger" },
-    Achievement { trig: "mine_block", target: "iron_ore", count: 1, title: "Pumping Iron" },
-    Achievement { trig: "place_block", target: "", count: 10, title: "Block Party" },
-    Achievement { trig: "collect_item", target: "mushroom", count: 1, title: "Fun Guy" },
-    Achievement { trig: "place_block", target: "crafting_table", count: 1, title: "Table Manners" },
-    Achievement { trig: "befriend_creature", target: "", count: 1, title: "Best Friends Furever" },
-    Achievement { trig: "defeat_animal", target: "", count: 1, title: "Circle of Life" },
-    Achievement { trig: "defeat_monster", target: "", count: 1, title: "Who's Scared Now?" },
-    Achievement { trig: "mine_block", target: "iron_ore", count: 5, title: "Iron Will" },
-    Achievement { trig: "collect_item", target: "color_dust", count: 4, title: "Tickled Pink" },
-    Achievement { trig: "reach_location", target: "dim_barrens", count: 1, title: "Into the Grey" },
-    Achievement { trig: "calm_boss", target: "", count: 1, title: "Big Softie" },
-    Achievement { trig: "light_beacon", target: "", count: 1, title: "Guiding Light" },
-    Achievement { trig: "restore_region", target: "dim_barrens", count: 1, title: "True Colors" },
-    Achievement { trig: "befriend_creature", target: "platypus", count: 1, title: "Perry the Platypus" },
+    Achievement {
+        trig: "collect_item",
+        target: "oak_log",
+        count: 1,
+        title: "Knock On Wood",
+    },
+    Achievement {
+        trig: "mine_block",
+        target: "oak_log",
+        count: 3,
+        title: "Timberrr!",
+    },
+    Achievement {
+        trig: "collect_item",
+        target: "dirt",
+        count: 16,
+        title: "Dirt Rich",
+    },
+    Achievement {
+        trig: "mine_block",
+        target: "stone",
+        count: 1,
+        title: "Between a Rock",
+    },
+    Achievement {
+        trig: "craft_item",
+        target: "",
+        count: 1,
+        title: "Arts & Crafts",
+    },
+    Achievement {
+        trig: "mine_block",
+        target: "coal_ore",
+        count: 1,
+        title: "Coal Digger",
+    },
+    Achievement {
+        trig: "mine_block",
+        target: "iron_ore",
+        count: 1,
+        title: "Pumping Iron",
+    },
+    Achievement {
+        trig: "place_block",
+        target: "",
+        count: 10,
+        title: "Block Party",
+    },
+    Achievement {
+        trig: "collect_item",
+        target: "mushroom",
+        count: 1,
+        title: "Fun Guy",
+    },
+    Achievement {
+        trig: "place_block",
+        target: "crafting_table",
+        count: 1,
+        title: "Table Manners",
+    },
+    Achievement {
+        trig: "befriend_creature",
+        target: "",
+        count: 1,
+        title: "Best Friends Furever",
+    },
+    Achievement {
+        trig: "defeat_animal",
+        target: "",
+        count: 1,
+        title: "Circle of Life",
+    },
+    Achievement {
+        trig: "defeat_monster",
+        target: "",
+        count: 1,
+        title: "Who's Scared Now?",
+    },
+    Achievement {
+        trig: "mine_block",
+        target: "iron_ore",
+        count: 5,
+        title: "Iron Will",
+    },
+    Achievement {
+        trig: "collect_item",
+        target: "color_dust",
+        count: 4,
+        title: "Tickled Pink",
+    },
+    Achievement {
+        trig: "reach_location",
+        target: "dim_barrens",
+        count: 1,
+        title: "Into the Grey",
+    },
+    Achievement {
+        trig: "calm_boss",
+        target: "",
+        count: 1,
+        title: "Big Softie",
+    },
+    Achievement {
+        trig: "light_beacon",
+        target: "",
+        count: 1,
+        title: "Guiding Light",
+    },
+    Achievement {
+        trig: "restore_region",
+        target: "dim_barrens",
+        count: 1,
+        title: "True Colors",
+    },
+    Achievement {
+        trig: "befriend_creature",
+        target: "platypus",
+        count: 1,
+        title: "Perry the Platypus",
+    },
 ];
 
 pub(super) const K_ACHIEVEMENT_COUNT: usize = K_ACHIEVEMENTS.len();
@@ -105,7 +205,11 @@ impl<'c> World<'c> {
                 let id = self.item_id_by_name(&item);
                 if id != 0 {
                     if let Some(inv) = self.inv.as_mut() {
-                        inv.add(ItemStack { item: id, count: cnt as u16, durability: 0xFFFF });
+                        inv.add(ItemStack {
+                            item: id,
+                            count: cnt as u16,
+                            durability: 0xFFFF,
+                        });
                     }
                 }
             }
@@ -131,7 +235,12 @@ impl<'c> World<'c> {
         for i in 0..(n as usize).min(cap) {
             let q = &qs[i];
             let e = &mut out[i];
-            *e = bf_quest_entry { title: [0; 64], objective: [0; 96], state: 0, progress: 0.0 };
+            *e = bf_quest_entry {
+                title: [0; 64],
+                objective: [0; 96],
+                state: 0,
+                progress: 0.0,
+            };
             Self::cstr_copy(&mut e.title, &q.title);
             let done = self.all_quests_done || (i as u32) < self.active_quest as u32;
             let active = !self.all_quests_done && i == self.active_quest;
@@ -153,8 +262,15 @@ impl<'c> World<'c> {
                         objtext = &o.text;
                     }
                 }
-                Self::cstr_copy(&mut e.objective, if !objtext.is_empty() { objtext } else { "..." });
-                e.progress = if total != 0 { cdone as f32 / total as f32 } else { 0.0 };
+                Self::cstr_copy(
+                    &mut e.objective,
+                    if !objtext.is_empty() { objtext } else { "..." },
+                );
+                e.progress = if total != 0 {
+                    cdone as f32 / total as f32
+                } else {
+                    0.0
+                };
             } else {
                 e.progress = if done { 1.0 } else { 0.0 };
                 if !q.objectives.is_empty() {
@@ -166,7 +282,17 @@ impl<'c> World<'c> {
     }
 
     pub fn fill_quest_target(&self, out: &mut bf_quest_target) -> bool {
-        *out = bf_quest_target { active: 0, is_boss: 0, position: bf_vec3 { x: 0.0, y: 0.0, z: 0.0 }, distance: 0.0, label: [0; 48] };
+        *out = bf_quest_target {
+            active: 0,
+            is_boss: 0,
+            position: bf_vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            distance: 0.0,
+            label: [0; 48],
+        };
         let x = match self.extra {
             Some(x) => x,
             None => return false,

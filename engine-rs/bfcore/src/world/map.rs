@@ -95,8 +95,10 @@ impl<'c> World<'c> {
     }
 
     pub fn debug_explored_at(&self, wx: i32, wz: i32) -> bool {
-        let (byte, bit) =
-            Self::explored_bit(Self::wrap_block(wx) / MAP_CELL, Self::wrap_block(wz) / MAP_CELL);
+        let (byte, bit) = Self::explored_bit(
+            Self::wrap_block(wx) / MAP_CELL,
+            Self::wrap_block(wz) / MAP_CELL,
+        );
         (self.explored[byte] & bit) != 0
     }
 
@@ -186,7 +188,8 @@ impl<'c> World<'c> {
 
     /// All markers in a stable order: home, then visited villages, then totems.
     pub fn map_markers(&self) -> Vec<MapMarkerInfo> {
-        let mut out: Vec<MapMarkerInfo> = Vec::with_capacity(1 + self.visited_villages.len() + self.totems.len());
+        let mut out: Vec<MapMarkerInfo> =
+            Vec::with_capacity(1 + self.visited_villages.len() + self.totems.len());
         out.push(MapMarkerInfo {
             pos: IVec3 {
                 x: Self::ifloor(self.spawn.x),
@@ -275,7 +278,11 @@ impl<'c> World<'c> {
         // surface_top generates the destination column if it is not resident,
         // so this works for far-away, never-visited targets.
         let top = self.surface_top(tx, tz);
-        let y = if top != NO_FLOOR { top as f32 + 3.2 } else { 40.0 };
+        let y = if top != NO_FLOOR {
+            top as f32 + 3.2
+        } else {
+            40.0
+        };
         self.pos = V3::new(tx as f32 + 0.5, y, tz as f32 + 0.5);
         self.vy = 0.0;
         self.on_ground = false;
@@ -287,8 +294,8 @@ impl<'c> World<'c> {
         self.first_stream = true;
         self.stream_active_r = 2.min(self.stream_r);
         self.recompute_stream_set();
-        self.reveal_render_radius(tx, tz);   // #191 reveal the arrival area at view scale
-        // Arrival sparkle + sound (same fx code the respawn poof uses).
+        self.reveal_render_radius(tx, tz); // #191 reveal the arrival area at view scale
+                                           // Arrival sparkle + sound (same fx code the respawn poof uses).
         let pv = self.player_voxel();
         self.fx(6, pv, 0);
     }
@@ -301,7 +308,11 @@ impl<'c> World<'c> {
         }
         let pc = Self::to_chunk(self.player_voxel());
         for cy in (CY_MIN..=CY_MAX).rev() {
-            let cc = ChunkCoord { x: pc.x, y: cy, z: pc.z };
+            let cc = ChunkCoord {
+                x: pc.x,
+                y: cy,
+                z: pc.z,
+            };
             if self.store.is_resident(cc) {
                 continue;
             }
@@ -375,7 +386,11 @@ impl<'c> World<'c> {
             let num = r.u32();
             if let (Some(x), Some(y), Some(z), Some(num)) = (x, y, z, num) {
                 self.totems.push(TotemMark {
-                    pos: IVec3 { x: Self::wrap_block(x), y, z: Self::wrap_block(z) },
+                    pos: IVec3 {
+                        x: Self::wrap_block(x),
+                        y,
+                        z: Self::wrap_block(z),
+                    },
                     num,
                 });
             }
@@ -385,7 +400,8 @@ impl<'c> World<'c> {
             let ax = r.i32();
             let az = r.i32();
             if let (Some(ax), Some(az)) = (ax, az) {
-                self.visited_villages.push((Self::wrap_block(ax), Self::wrap_block(az)));
+                self.visited_villages
+                    .push((Self::wrap_block(ax), Self::wrap_block(az)));
             }
         }
     }

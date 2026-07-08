@@ -83,13 +83,23 @@ impl<'c> World<'c> {
     }
 
     pub(super) fn shadow_radius_chunks(&self) -> i32 {
-        if self.stream_r >= 16 { 16 } else { 8 }
+        let stream_blocks = self.stream_r * KCHUNK_DIM;
+        let shadow_blocks = if stream_blocks >= 16 * RENDER_DISTANCE_UNIT_BLOCKS {
+            16 * RENDER_DISTANCE_UNIT_BLOCKS
+        } else {
+            8 * RENDER_DISTANCE_UNIT_BLOCKS
+        };
+        block_radius_to_chunk_radius(shadow_blocks)
     }
 
     #[inline]
     fn wrap(v: i32, dim: i32) -> i32 {
         let m = v % dim;
-        if m < 0 { m + dim } else { m }
+        if m < 0 {
+            m + dim
+        } else {
+            m
+        }
     }
 
     fn shadow_fill_column(&mut self, cx: i32, cz: i32) {
@@ -113,7 +123,11 @@ impl<'c> World<'c> {
             }
         }
         for cy in CY_MIN..=CY_MAX {
-            let cc = ChunkCoord { x: cx, y: cy, z: cz };
+            let cc = ChunkCoord {
+                x: cx,
+                y: cy,
+                z: cz,
+            };
             let ch = match self.store.get(cc) {
                 Some(c) => c,
                 None => continue,
@@ -196,11 +210,14 @@ impl<'c> World<'c> {
         let y_lo = CY_MIN * KCHUNK_DIM;
         let cx0 = pc.x - rc;
         let cz0 = pc.z - rc;
-        let origin = IVec3 { x: cx0 * KCHUNK_DIM, y: y_lo, z: cz0 * KCHUNK_DIM };
+        let origin = IVec3 {
+            x: cx0 * KCHUNK_DIM,
+            y: y_lo,
+            z: cz0 * KCHUNK_DIM,
+        };
 
-        let dims_changed = self.shadow.dim_x != dim_x
-            || self.shadow.dim_y != dim_y
-            || self.shadow.dim_z != dim_z;
+        let dims_changed =
+            self.shadow.dim_x != dim_x || self.shadow.dim_y != dim_y || self.shadow.dim_z != dim_z;
 
         if self.shadow.needs_full || dims_changed {
             let total = (dim_x as usize) * (dim_y as usize) * (dim_z as usize);
@@ -283,8 +300,16 @@ impl<'c> World<'c> {
             }
             if x_hi >= x_lo {
                 self.shadow.mark_dirty(
-                    IVec3 { x: x_lo * KCHUNK_DIM, y: y_lo, z: cz0 * KCHUNK_DIM },
-                    IVec3 { x: (x_hi + 1) * KCHUNK_DIM - 1, y: y_lo + dim_y - 1, z: cz1 * KCHUNK_DIM - 1 },
+                    IVec3 {
+                        x: x_lo * KCHUNK_DIM,
+                        y: y_lo,
+                        z: cz0 * KCHUNK_DIM,
+                    },
+                    IVec3 {
+                        x: (x_hi + 1) * KCHUNK_DIM - 1,
+                        y: y_lo + dim_y - 1,
+                        z: cz1 * KCHUNK_DIM - 1,
+                    },
                 );
                 changed = true;
             }
@@ -293,8 +318,16 @@ impl<'c> World<'c> {
                 let zx1 = oxx1.min(cx1);
                 if zx1 > zx0 {
                     self.shadow.mark_dirty(
-                        IVec3 { x: zx0 * KCHUNK_DIM, y: y_lo, z: z_lo * KCHUNK_DIM },
-                        IVec3 { x: zx1 * KCHUNK_DIM - 1, y: y_lo + dim_y - 1, z: (z_hi + 1) * KCHUNK_DIM - 1 },
+                        IVec3 {
+                            x: zx0 * KCHUNK_DIM,
+                            y: y_lo,
+                            z: z_lo * KCHUNK_DIM,
+                        },
+                        IVec3 {
+                            x: zx1 * KCHUNK_DIM - 1,
+                            y: y_lo + dim_y - 1,
+                            z: (z_hi + 1) * KCHUNK_DIM - 1,
+                        },
                     );
                 }
                 changed = true;
@@ -316,8 +349,16 @@ impl<'c> World<'c> {
                 let wx = cx * KCHUNK_DIM;
                 let wz = cz * KCHUNK_DIM;
                 self.shadow.mark_dirty(
-                    IVec3 { x: wx, y: y_lo, z: wz },
-                    IVec3 { x: wx + KCHUNK_DIM - 1, y: y_lo + dim_y - 1, z: wz + KCHUNK_DIM - 1 },
+                    IVec3 {
+                        x: wx,
+                        y: y_lo,
+                        z: wz,
+                    },
+                    IVec3 {
+                        x: wx + KCHUNK_DIM - 1,
+                        y: y_lo + dim_y - 1,
+                        z: wz + KCHUNK_DIM - 1,
+                    },
                 );
                 changed = true;
             }
@@ -344,8 +385,16 @@ impl<'c> World<'c> {
             let n = boxes.len().min(SHADOW_MAX_DIRTY);
             vol.dirty_count = n as u32;
             for i in 0..n {
-                vol.dirty_lo[i] = bf_ivec3 { x: boxes[i].0.x, y: boxes[i].0.y, z: boxes[i].0.z };
-                vol.dirty_hi[i] = bf_ivec3 { x: boxes[i].1.x, y: boxes[i].1.y, z: boxes[i].1.z };
+                vol.dirty_lo[i] = bf_ivec3 {
+                    x: boxes[i].0.x,
+                    y: boxes[i].0.y,
+                    z: boxes[i].0.z,
+                };
+                vol.dirty_hi[i] = bf_ivec3 {
+                    x: boxes[i].1.x,
+                    y: boxes[i].1.y,
+                    z: boxes[i].1.z,
+                };
             }
         };
         write_boxes(vol, &self.shadow.dirty);
@@ -392,9 +441,12 @@ impl<'c> World<'c> {
     pub fn debug_shadow_occupancy(&mut self, x: i32, y: i32, z: i32) -> i32 {
         self.ensure_shadow_volume();
         let o = self.shadow.origin;
-        if x < o.x || x >= o.x + self.shadow.dim_x
-            || y < o.y || y >= o.y + self.shadow.dim_y
-            || z < o.z || z >= o.z + self.shadow.dim_z
+        if x < o.x
+            || x >= o.x + self.shadow.dim_x
+            || y < o.y
+            || y >= o.y + self.shadow.dim_y
+            || z < o.z
+            || z >= o.z + self.shadow.dim_z
         {
             return -1;
         }

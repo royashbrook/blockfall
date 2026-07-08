@@ -10,7 +10,10 @@ pub(super) struct ChestData {
 
 impl Default for ChestData {
     fn default() -> ChestData {
-        ChestData { slots: [ItemStack::default(); CHEST_SLOTS], filled: false }
+        ChestData {
+            slots: [ItemStack::default(); CHEST_SLOTS],
+            filled: false,
+        }
     }
 }
 
@@ -71,7 +74,11 @@ impl<'c> World<'c> {
             }
             let span = (hi - lo + 1) as u64;
             let count = lo + ((h >> 24) % span) as u16;
-            out[slot] = ItemStack { item: id, count, durability: 0xFFFF };
+            out[slot] = ItemStack {
+                item: id,
+                count,
+                durability: 0xFFFF,
+            };
         }
         out
     }
@@ -84,7 +91,13 @@ impl<'c> World<'c> {
         };
         if needs_fill {
             let slots = self.roll_chest_loot(w);
-            self.chests.insert(key, ChestData { slots, filled: true });
+            self.chests.insert(
+                key,
+                ChestData {
+                    slots,
+                    filled: true,
+                },
+            );
         }
     }
 
@@ -103,7 +116,11 @@ impl<'c> World<'c> {
                 }
                 let mut remaining = s.count;
                 while remaining > 0 {
-                    let one = ItemStack { item: s.item, count: 1, durability: s.durability };
+                    let one = ItemStack {
+                        item: s.item,
+                        count: 1,
+                        durability: s.durability,
+                    };
                     let placed = self.inv.as_mut().map(|inv| inv.add(one)).unwrap_or(false);
                     if !placed {
                         break;
@@ -111,7 +128,11 @@ impl<'c> World<'c> {
                     remaining -= 1;
                 }
                 if remaining > 0 {
-                    leftover.slots[i] = ItemStack { item: s.item, count: remaining, durability: s.durability };
+                    leftover.slots[i] = ItemStack {
+                        item: s.item,
+                        count: remaining,
+                        durability: s.durability,
+                    };
                     any_left = true;
                 }
             }
@@ -160,7 +181,11 @@ impl<'c> World<'c> {
         };
         let mut remaining = src.count;
         while remaining > 0 {
-            let one = ItemStack { item: src.item, count: 1, durability: src.durability };
+            let one = ItemStack {
+                item: src.item,
+                count: 1,
+                durability: src.durability,
+            };
             if !inv.add(one) {
                 break;
             }
@@ -193,7 +218,11 @@ impl<'c> World<'c> {
         if held.is_empty() {
             return false;
         }
-        let max_s = self.content.map(|c| c.item_max_stack(held.item)).filter(|&m| m > 0).unwrap_or(64);
+        let max_s = self
+            .content
+            .map(|c| c.item_max_stack(held.item))
+            .filter(|&m| m > 0)
+            .unwrap_or(64);
         let mut remaining = held.count;
         {
             let c = self.chests.get_mut(&key).expect("chest present");
@@ -213,7 +242,11 @@ impl<'c> World<'c> {
                 }
                 if s.is_empty() {
                     let take = remaining.min(max_s);
-                    *s = ItemStack { item: held.item, count: take, durability: held.durability };
+                    *s = ItemStack {
+                        item: held.item,
+                        count: take,
+                        durability: held.durability,
+                    };
                     remaining -= take;
                 }
             }
