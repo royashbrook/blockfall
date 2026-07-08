@@ -67,7 +67,11 @@ fn totem_place_registers_break_unregisters() {
     let (tx, tz) = (px as i32 + 2, pz as i32 + 2);
     let ty = 40; // an air cell above the terrain; exact block content is irrelevant
     assert!(w.debug_place_totem(tx, ty, tz));
-    assert_eq!(w.debug_totem_count(), 1, "placing a totem registers a marker");
+    assert_eq!(
+        w.debug_totem_count(),
+        1,
+        "placing a totem registers a marker"
+    );
     assert_eq!(w.debug_block_at(tx, ty, tz), world::WARP_TOTEM);
 
     // Markers include home + the totem, and the totem is auto-named Totem 1.
@@ -93,7 +97,10 @@ fn totem_cap_enforced_at_16() {
         let _ = w.debug_place_totem(px as i32 + 3 + i, 40, pz as i32 + 3);
     }
     assert_eq!(w.debug_totem_count(), 16, "totem markers cap at 16");
-    assert!(!w.debug_place_totem(px as i32, 45, pz as i32), "17th placement refused");
+    assert!(
+        !w.debug_place_totem(px as i32, 45, pz as i32),
+        "17th placement refused"
+    );
 }
 
 #[test]
@@ -143,10 +150,18 @@ fn village_visit_recorded_within_range() {
     }
     let (ax, az) = found.expect("seed 11 has at least one settlement in 4K x 4K");
     w.debug_visit_village(ax, az);
-    assert_eq!(w.debug_visited_village_count(), 1, "village recorded when within range");
+    assert_eq!(
+        w.debug_visited_village_count(),
+        1,
+        "village recorded when within range"
+    );
     // Same village again: no duplicate.
     w.debug_visit_village(ax + 5, az + 5);
-    assert_eq!(w.debug_visited_village_count(), 1, "no duplicate for the same anchor");
+    assert_eq!(
+        w.debug_visited_village_count(),
+        1,
+        "no duplicate for the same anchor"
+    );
 }
 
 #[test]
@@ -177,18 +192,32 @@ fn map_dat_roundtrip() {
             w.debug_visit_village(ax, az);
         }
         assert!(w.save(&dir), "save wrote map.dat");
-        (w.debug_explored_count(), w.debug_totem_count(), w.debug_visited_village_count())
+        (
+            w.debug_explored_count(),
+            w.debug_totem_count(),
+            w.debug_visited_village_count(),
+        )
     };
-    assert!(std::fs::metadata(format!("{}/map.dat", dir)).is_ok(), "map.dat exists");
+    assert!(
+        std::fs::metadata(format!("{}/map.dat", dir)).is_ok(),
+        "map.dat exists"
+    );
 
     let mut w2 = World::new(Some(TerrainGen::new()));
     w2.debug_set_sync_streaming(true);
     w2.set_content(&content);
     assert!(w2.load(&dir), "reload the save");
     assert_eq!(w2.debug_totem_count(), totems, "totems survive reload");
-    assert_eq!(w2.debug_visited_village_count(), villages, "villages survive reload");
+    assert_eq!(
+        w2.debug_visited_village_count(),
+        villages,
+        "villages survive reload"
+    );
     // Load re-marks around the player, which can only ADD explored cells.
-    assert!(w2.debug_explored_count() >= explored, "explored bits survive reload");
+    assert!(
+        w2.debug_explored_count() >= explored,
+        "explored bits survive reload"
+    );
     // Totem numbering continues after reload (Totem 3, not Totem 1 again).
     let (px, _py, pz, _) = w2.get_player();
     assert!(w2.debug_place_totem(px as i32 + 6, 40, pz as i32 + 2));
@@ -217,7 +246,12 @@ fn teleport_lands_on_surface_never_in_solid() {
     let (nx, ny, nz, _) = w.get_player();
     let dx = (nx as i32 - ttx).abs();
     let dz = (nz as i32 - ttz).abs();
-    assert!(dx <= 1 && dz <= 1, "arrived at the totem column ({} {})", dx, dz);
+    assert!(
+        dx <= 1 && dz <= 1,
+        "arrived at the totem column ({} {})",
+        dx,
+        dz
+    );
     assert!(!w.debug_player_collides(), "never arrive inside solid");
     assert!(ny > surf as f32, "standing above the surface");
     // Streaming recentred: the destination area becomes resident on update.
@@ -229,7 +263,10 @@ fn teleport_lands_on_surface_never_in_solid() {
         "destination streams after teleport"
     );
     // The destination map cell is revealed.
-    assert!(w.debug_explored_at(ttx, ttz), "teleport reveals the destination cell");
+    assert!(
+        w.debug_explored_at(ttx, ttz),
+        "teleport reveals the destination cell"
+    );
 
     // Home teleport works too and lands clear of solid.
     assert!(w.map_teleport(1), "teleport home succeeds");

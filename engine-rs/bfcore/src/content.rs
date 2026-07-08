@@ -314,56 +314,55 @@ impl ContentRegistry {
                     continue;
                 }
             };
-            let process = |reg: &mut ContentRegistry,
-                           pend: &mut HashMap<usize, String>,
-                           obj: &Value| {
-                if !is_object(obj) {
-                    return;
-                }
-                let id_v = get(obj, "id");
-                let name_v = get(obj, "name");
-                if id_v.is_none() || name_v.is_none() {
-                    return;
-                }
-                let id_v = id_v.unwrap();
-                let name_v = name_v.unwrap();
-
-                let def = BlockDef {
-                    id: as_int(id_v) as u16,
-                    name: as_str(name_v).to_string(),
-                    hardness: if get(obj, "hardness").is_some() {
-                        as_int(get(obj, "hardness").unwrap()) as u8
-                    } else {
-                        0
-                    },
-                    required_tier: if get(obj, "required_tier").is_some() {
-                        as_int(get(obj, "required_tier").unwrap()) as u8
-                    } else {
-                        0
-                    },
-                    light_emit: if get(obj, "light_emit").is_some() {
-                        as_int(get(obj, "light_emit").unwrap()) as u8
-                    } else {
-                        0
-                    },
-                    flags: make_block_flags(obj),
-                    drop_item: 0, // resolved in cross-ref pass
-                };
-
-                let idx = reg.blocks.len();
-                let id = def.id;
-                let name = def.name.clone();
-                reg.blocks.push(def);
-                reg.block_id_map.insert(id as u32, idx);
-                reg.block_name_map.insert(name, idx);
-
-                // Record explicit drop_item name.
-                if let Some(di) = get(obj, "drop_item") {
-                    if is_string(di) && !as_str(di).is_empty() {
-                        pend.insert(idx, as_str(di).to_string());
+            let process =
+                |reg: &mut ContentRegistry, pend: &mut HashMap<usize, String>, obj: &Value| {
+                    if !is_object(obj) {
+                        return;
                     }
-                }
-            };
+                    let id_v = get(obj, "id");
+                    let name_v = get(obj, "name");
+                    if id_v.is_none() || name_v.is_none() {
+                        return;
+                    }
+                    let id_v = id_v.unwrap();
+                    let name_v = name_v.unwrap();
+
+                    let def = BlockDef {
+                        id: as_int(id_v) as u16,
+                        name: as_str(name_v).to_string(),
+                        hardness: if get(obj, "hardness").is_some() {
+                            as_int(get(obj, "hardness").unwrap()) as u8
+                        } else {
+                            0
+                        },
+                        required_tier: if get(obj, "required_tier").is_some() {
+                            as_int(get(obj, "required_tier").unwrap()) as u8
+                        } else {
+                            0
+                        },
+                        light_emit: if get(obj, "light_emit").is_some() {
+                            as_int(get(obj, "light_emit").unwrap()) as u8
+                        } else {
+                            0
+                        },
+                        flags: make_block_flags(obj),
+                        drop_item: 0, // resolved in cross-ref pass
+                    };
+
+                    let idx = reg.blocks.len();
+                    let id = def.id;
+                    let name = def.name.clone();
+                    reg.blocks.push(def);
+                    reg.block_id_map.insert(id as u32, idx);
+                    reg.block_name_map.insert(name, idx);
+
+                    // Record explicit drop_item name.
+                    if let Some(di) = get(obj, "drop_item") {
+                        if is_string(di) && !as_str(di).is_empty() {
+                            pend.insert(idx, as_str(di).to_string());
+                        }
+                    }
+                };
 
             if is_array(&root) {
                 for el in root.as_array().unwrap() {
@@ -390,60 +389,59 @@ impl ContentRegistry {
                     continue;
                 }
             };
-            let process = |reg: &mut ContentRegistry,
-                           pend: &mut HashMap<usize, String>,
-                           obj: &Value| {
-                if !is_object(obj) {
-                    return;
-                }
-                let id_v = get(obj, "id");
-                let name_v = get(obj, "name");
-                if id_v.is_none() || name_v.is_none() {
-                    return;
-                }
-                let id_v = id_v.unwrap();
-                let name_v = name_v.unwrap();
+            let process =
+                |reg: &mut ContentRegistry, pend: &mut HashMap<usize, String>, obj: &Value| {
+                    if !is_object(obj) {
+                        return;
+                    }
+                    let id_v = get(obj, "id");
+                    let name_v = get(obj, "name");
+                    if id_v.is_none() || name_v.is_none() {
+                        return;
+                    }
+                    let id_v = id_v.unwrap();
+                    let name_v = name_v.unwrap();
 
-                let mut def = ItemDef {
-                    id: as_int(id_v) as u16,
-                    name: as_str(name_v).to_string(),
-                    max_stack: if get(obj, "max_stack").is_some() {
-                        as_int(get(obj, "max_stack").unwrap()) as u16
-                    } else {
-                        64
-                    },
-                    tool_tier: 0,
-                    tool_kind: 0,
-                    tool_durability: 0,
-                    places_block: 0, // resolved in cross-ref pass
+                    let mut def = ItemDef {
+                        id: as_int(id_v) as u16,
+                        name: as_str(name_v).to_string(),
+                        max_stack: if get(obj, "max_stack").is_some() {
+                            as_int(get(obj, "max_stack").unwrap()) as u16
+                        } else {
+                            64
+                        },
+                        tool_tier: 0,
+                        tool_kind: 0,
+                        tool_durability: 0,
+                        places_block: 0, // resolved in cross-ref pass
+                    };
+                    if let Some(tool) = get(obj, "tool") {
+                        if is_object(tool) {
+                            if let Some(tier) = get(tool, "tier") {
+                                def.tool_tier = as_int(tier) as u8;
+                            }
+                            if let Some(kind) = get(tool, "kind") {
+                                def.tool_kind = tool_kind_encode(as_str(kind));
+                            }
+                            if let Some(dur) = get(tool, "durability") {
+                                def.tool_durability = as_int(dur) as u16;
+                            }
+                        }
+                    }
+
+                    let idx = reg.items.len();
+                    let id = def.id;
+                    let name = def.name.clone();
+                    reg.items.push(def);
+                    reg.item_id_map.insert(id as u32, idx);
+                    reg.item_name_map.insert(name, idx);
+
+                    if let Some(pb) = get(obj, "places_block") {
+                        if is_string(pb) && !as_str(pb).is_empty() {
+                            pend.insert(idx, as_str(pb).to_string());
+                        }
+                    }
                 };
-                if let Some(tool) = get(obj, "tool") {
-                    if is_object(tool) {
-                        if let Some(tier) = get(tool, "tier") {
-                            def.tool_tier = as_int(tier) as u8;
-                        }
-                        if let Some(kind) = get(tool, "kind") {
-                            def.tool_kind = tool_kind_encode(as_str(kind));
-                        }
-                        if let Some(dur) = get(tool, "durability") {
-                            def.tool_durability = as_int(dur) as u16;
-                        }
-                    }
-                }
-
-                let idx = reg.items.len();
-                let id = def.id;
-                let name = def.name.clone();
-                reg.items.push(def);
-                reg.item_id_map.insert(id as u32, idx);
-                reg.item_name_map.insert(name, idx);
-
-                if let Some(pb) = get(obj, "places_block") {
-                    if is_string(pb) && !as_str(pb).is_empty() {
-                        pend.insert(idx, as_str(pb).to_string());
-                    }
-                }
-            };
 
             if is_array(&root) {
                 for el in root.as_array().unwrap() {
@@ -591,7 +589,9 @@ impl ContentRegistry {
         }
     }
     pub fn block_by_id(&self, id: BlockId) -> Option<&BlockDef> {
-        self.block_id_map.get(&(id as u32)).map(|&i| &self.blocks[i])
+        self.block_id_map
+            .get(&(id as u32))
+            .map(|&i| &self.blocks[i])
     }
     pub fn block_by_name(&self, name: &str) -> Option<&BlockDef> {
         self.block_name_map.get(name).map(|&i| &self.blocks[i])
@@ -928,9 +928,17 @@ mod tests {
         let dirt_item = reg.item_by_name("dirt").expect("dirt item");
         assert_eq!(dirt_item.places_block, 2);
         let pick = reg.item_by_name("wood_pickaxe").expect("wood_pickaxe");
-        assert_eq!((pick.tool_tier, pick.tool_kind, pick.tool_durability), (1, 1, 300));
+        assert_eq!(
+            (pick.tool_tier, pick.tool_kind, pick.tool_durability),
+            (1, 1, 300)
+        );
         let r0 = reg.recipe(0);
-        assert!(!r0.shapeless && r0.grid_size == 2 && r0.result_count == 4 && r0.pattern == vec![12, 0, 0, 0]);
+        assert!(
+            !r0.shapeless
+                && r0.grid_size == 2
+                && r0.result_count == 4
+                && r0.pattern == vec![12, 0, 0, 0]
+        );
     }
 
     #[test]

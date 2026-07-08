@@ -221,7 +221,14 @@ impl ReliableEndpoint {
 
     /// Serialise the BFNW header into `buf` (resizes it to NET_HEADER_SIZE).
     /// Uses the current cumulative-ack state for the ack/ack_bits fields.
-    fn write_header(&self, buf: &mut Vec<u8>, ch: NetChannel, flags: u8, seq: u32, payload_len: u16) {
+    fn write_header(
+        &self,
+        buf: &mut Vec<u8>,
+        ch: NetChannel,
+        flags: u8,
+        seq: u32,
+        payload_len: u16,
+    ) {
         buf.clear();
         buf.resize(NET_HEADER_SIZE, 0);
         buf[0] = b'B';
@@ -748,7 +755,9 @@ impl UdpTransport {
         let saddr = addr.clone();
         let sport = port;
         let sink: DatagramSink = Box::new(move |dg: &[u8]| {
-            outbox.borrow_mut().push((saddr.clone(), sport, dg.to_vec()));
+            outbox
+                .borrow_mut()
+                .push((saddr.clone(), sport, dg.to_vec()));
         });
 
         let mut endpoint = ReliableEndpoint::new(sink, id as u16);

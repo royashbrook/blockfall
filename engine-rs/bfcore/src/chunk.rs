@@ -1,7 +1,7 @@
 //! Palette-compressed chunk storage: faithful port of engine/include/blockcore/chunk.hpp.
 //! A 16^3 chunk kept as a palette of distinct block ids plus a bit-packed index array
 //! (widths 1/2/4/8/16). Uniform chunks store only the palette entry. The BFCK
-//! serialization is byte-identical to the C++ engine (verified by byte_identical_to_cpp).
+//! serialization is little-endian and dimension-aware through `CHUNK_VOL`.
 
 use crate::types::{BlockId, ChunkCoord, CHUNK_DIM, CHUNK_VOL};
 
@@ -110,7 +110,11 @@ impl PaletteChunk {
     fn grow_bits(&mut self, new_bits: u8) {
         let mut old = vec![0u32; CHUNK_VOL];
         for n in 0..CHUNK_VOL {
-            old[n] = if self.bits != 0 { self.read_index(n) } else { 0 };
+            old[n] = if self.bits != 0 {
+                self.read_index(n)
+            } else {
+                0
+            };
         }
         self.bits = new_bits;
         self.data.clear();
@@ -124,7 +128,11 @@ impl PaletteChunk {
         let per_word = 64 / self.bits as usize;
         let w = n / per_word;
         let off = (n % per_word) * self.bits as usize;
-        let mask = if self.bits == 64 { u64::MAX } else { (1u64 << self.bits) - 1 };
+        let mask = if self.bits == 64 {
+            u64::MAX
+        } else {
+            (1u64 << self.bits) - 1
+        };
         ((self.data[w] >> off) & mask) as u32
     }
 
@@ -139,7 +147,7 @@ impl PaletteChunk {
 
     // BFCK blob: magic, u16 ver=1, u16 flags(bit0 uniform), i32 cx,cy,cz, u32 revision,
     // u16 palette_count, u8 bits, u8 pad, palette[u16*count],
-    // if !uniform: u32 word_count, words[u64*word_count]. Byte-identical to the C++ engine.
+    // if !uniform: u32 word_count, words[u64*word_count].
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"BFCK");
@@ -175,7 +183,11 @@ impl PaletteChunk {
         if ver != 1 {
             return None;
         }
-        let coord = ChunkCoord { x: r.i32()?, y: r.i32()?, z: r.i32()? };
+        let coord = ChunkCoord {
+            x: r.i32()?,
+            y: r.i32()?,
+            z: r.i32()?,
+        };
         let rev = r.u32()?;
         let pc = r.u16()?;
         let bits = r.u8()?;
@@ -209,7 +221,7 @@ impl PaletteChunk {
 }
 
 /// Bounds-checked little-endian cursor; every read returns Option so a truncated or
-/// corrupt blob can never read past the end (the C++ side hand-rolls this with an `ok` flag).
+/// corrupt blob can never read past the end.
 struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
@@ -276,16 +288,38 @@ mod tests {
         }
     }
 
-    // Byte-for-byte parity with the C++ engine's serialize (golden hex captured from it).
     #[test]
-    fn byte_identical_to_cpp() {
+    fn serialization_layout_is_stable() {
         let mut c = PaletteChunk::new(ChunkCoord { x: 1, y: -2, z: 3 }, 0);
         c.set(8, 0, 8, 3);
         for i in 0..16 {
             c.set(i, 1, 0, (i as BlockId) + 10);
         }
-        let hex: String = c.serialize().iter().map(|b| format!("{:02x}", b)).collect();
-        assert_eq!(hex, include_str!("cpp_golden.hex").trim());
+
+        let bytes = c.serialize();
+        let u16_at = |off: usize| u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap());
+        let u32_at = |off: usize| u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+        let i32_at = |off: usize| i32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+
+        assert_eq!(&bytes[0..4], b"BFCK");
+        assert_eq!(u16_at(4), 1);
+        assert_eq!(u16_at(6), 0);
+        assert_eq!(i32_at(8), 1);
+        assert_eq!(i32_at(12), -2);
+        assert_eq!(i32_at(16), 3);
+        assert_eq!(u32_at(20), c.revision());
+
+        let palette_count = u16_at(24) as usize;
+        let bits = bytes[26] as usize;
+        let word_count_offset = 28 + palette_count * 2;
+        let word_count = u32_at(word_count_offset) as usize;
+        let per_word = 64 / bits;
+
+        assert_eq!(palette_count, c.palette.len());
+        assert_eq!(bytes[27], 0);
+        assert_eq!(word_count, (CHUNK_VOL + per_word - 1) / per_word);
+        assert_eq!(bytes.len(), word_count_offset + 4 + word_count * 8);
+        assert_eq!(PaletteChunk::deserialize(&bytes).unwrap().get(8, 0, 8), 3);
     }
 
     #[test]

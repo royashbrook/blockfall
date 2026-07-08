@@ -11,7 +11,10 @@ impl<'c> World<'c> {
         // #179: canonical chunk first so region keys are unique on the torus
         // (KREGION_CHUNKS divides WRAP_CHUNKS, so regions tile it exactly).
         let cc = Self::canon_chunk(cc);
-        RegionKey { x: Self::floordiv(cc.x, KREGION_CHUNKS), z: Self::floordiv(cc.z, KREGION_CHUNKS) }
+        RegionKey {
+            x: Self::floordiv(cc.x, KREGION_CHUNKS),
+            z: Self::floordiv(cc.z, KREGION_CHUNKS),
+        }
     }
 
     pub(super) fn region_sat(&self, cc: ChunkCoord) -> f32 {

@@ -185,7 +185,11 @@ fn reliable_unordered() {
     }
 
     let mut sorted = received.borrow().clone();
-    assert_eq!(sorted.len() as i32, MSGS, "all 100 messages eventually received");
+    assert_eq!(
+        sorted.len() as i32,
+        MSGS,
+        "all 100 messages eventually received"
+    );
     sorted.sort_unstable();
     for i in 1..sorted.len() {
         assert_ne!(sorted[i], sorted[i - 1], "no message delivered twice");

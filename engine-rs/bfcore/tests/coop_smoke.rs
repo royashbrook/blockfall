@@ -66,7 +66,8 @@ impl<'c> Node<'c> {
         }));
 
         let mut session = NetSession::new(role);
-        let outbox: Rc<RefCell<Vec<(u16, NetChannel, Vec<u8>)>>> = Rc::new(RefCell::new(Vec::new()));
+        let outbox: Rc<RefCell<Vec<(u16, NetChannel, Vec<u8>)>>> =
+            Rc::new(RefCell::new(Vec::new()));
         let ob = outbox.clone();
         session.set_sender(Box::new(move |peer: u16, ch, payload: &[u8]| {
             ob.borrow_mut().push((peer, ch, payload.to_vec()));
@@ -86,7 +87,8 @@ impl<'c> Node<'c> {
     /// Mirrors bf_frame_begin's net pump.
     fn pump(&mut self, dt: f64) {
         self.transport.poll();
-        let inbound: Vec<(u16, NetChannel, Vec<u8>)> = std::mem::take(&mut *self.inbox.borrow_mut());
+        let inbound: Vec<(u16, NetChannel, Vec<u8>)> =
+            std::mem::take(&mut *self.inbox.borrow_mut());
         for (peer, ch, payload) in inbound {
             self.session.on_payload(peer, ch, &payload, &mut self.world);
         }
@@ -131,7 +133,7 @@ fn coop_smoke_localhost() {
         "client failed to open a UDP socket (sandbox may block UDP)"
     );
     client.session.on_peer_join(1); // host is peer 1
-    // Flush the queued HELLO right away (as bf_net_client_connect does).
+                                    // Flush the queued HELLO right away (as bf_net_client_connect does).
     let outbound: Vec<(u16, NetChannel, Vec<u8>)> =
         std::mem::take(&mut *client.outbox.borrow_mut());
     for (peer, ch, payload) in outbound {
@@ -150,7 +152,10 @@ fn coop_smoke_localhost() {
             break;
         }
     }
-    assert!(joined, "client never received WELCOME / joined over localhost");
+    assert!(
+        joined,
+        "client never received WELCOME / joined over localhost"
+    );
     assert_eq!(
         client.world.world_seed(),
         4242,
@@ -195,6 +200,12 @@ fn coop_smoke_localhost() {
     );
 
     // Peer counts reflect the live link.
-    assert!(host.transport.peer_count() >= 1, "host sees the client peer");
-    assert!(client.transport.peer_count() >= 1, "client sees the host peer");
+    assert!(
+        host.transport.peer_count() >= 1,
+        "host sees the client peer"
+    );
+    assert!(
+        client.transport.peer_count() >= 1,
+        "client sees the host peer"
+    );
 }

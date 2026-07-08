@@ -124,7 +124,8 @@ impl<'c> World<'c> {
             sprint_spd
         } else {
             base_spd
-        }) * hyper * dtf;
+        }) * hyper
+            * dtf;
         let hmove = flat * (input.move_forward * speed) + right * (input.move_strafe * speed);
         if self.mode == bf_game_mode::BF_MODE_CREATIVE {
             self.pos = self.pos + hmove;

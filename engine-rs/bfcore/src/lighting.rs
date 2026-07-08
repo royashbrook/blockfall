@@ -55,7 +55,11 @@ fn column_open(store: &ChunkStore, cc: ChunkCoord, x: usize, z: usize) -> bool {
     // saturating add: chunk-y is bounded by streaming in practice, but guard against a
     // debug overflow panic if a corrupt/extreme cc.y is ever passed in.
     for cy in cc.y.saturating_add(1)..=cc.y.saturating_add(8) {
-        match store.get(ChunkCoord { x: cc.x, y: cy, z: cc.z }) {
+        match store.get(ChunkCoord {
+            x: cc.x,
+            y: cy,
+            z: cc.z,
+        }) {
             None => return true, // nothing resident above -> sky
             Some(above) => {
                 for y in 0..N {
@@ -70,9 +74,15 @@ fn column_open(store: &ChunkStore, cc: ChunkCoord, x: usize, z: usize) -> bool {
 }
 
 // Increase-only BFS over a level grid, blocked by opaque blocks.
-fn bfs(blocks: &[BlockId; CHUNK_VOL], lvl: &mut [u8; CHUNK_VOL], q: &mut Vec<usize>) {
-    let steps: [(isize, isize, isize); 6] =
-        [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)];
+fn bfs(blocks: &[BlockId], lvl: &mut [u8], q: &mut Vec<usize>) {
+    let steps: [(isize, isize, isize); 6] = [
+        (1, 0, 0),
+        (-1, 0, 0),
+        (0, 1, 0),
+        (0, -1, 0),
+        (0, 0, 1),
+        (0, 0, -1),
+    ];
     let mut head = 0;
     while head < q.len() {
         let packed = q[head];
@@ -88,7 +98,13 @@ fn bfs(blocks: &[BlockId; CHUNK_VOL], lvl: &mut [u8; CHUNK_VOL], q: &mut Vec<usi
             let nx = x as isize + dx;
             let ny = y as isize + dy;
             let nz = z as isize + dz;
-            if nx < 0 || ny < 0 || nz < 0 || nx >= N as isize || ny >= N as isize || nz >= N as isize {
+            if nx < 0
+                || ny < 0
+                || nz < 0
+                || nx >= N as isize
+                || ny >= N as isize
+                || nz >= N as isize
+            {
                 continue;
             }
             let (nx, ny, nz) = (nx as usize, ny as usize, nz as usize);
@@ -112,9 +128,9 @@ pub fn light_chunk(store: &mut ChunkStore, cc: ChunkCoord) -> u8 {
     }
 
     // ---- Phase 1: gather every read into owned locals. ----------------------
-    let mut blocks = [0u16; CHUNK_VOL];
-    let mut old_sky = [0u8; CHUNK_VOL];
-    let mut old_blk = [0u8; CHUNK_VOL];
+    let mut blocks = vec![0u16; CHUNK_VOL];
+    let mut old_sky = vec![0u8; CHUNK_VOL];
+    let mut old_blk = vec![0u8; CHUNK_VOL];
     {
         let ch = store.get(cc).unwrap();
         for z in 0..N {
@@ -128,20 +144,30 @@ pub fn light_chunk(store: &mut ChunkStore, cc: ChunkCoord) -> u8 {
             }
         }
     }
-    let mut col_open = [[false; N]; N];
+    let mut col_open = vec![false; N * N];
     for x in 0..N {
         for z in 0..N {
-            col_open[x][z] = column_open(store, cc, x, z);
+            col_open[x * N + z] = column_open(store, cc, x, z);
         }
     }
     // Neighbour boundary seeds: for each of our boundary cells, the highest (nv-1)
     // from the adjacent neighbour cell. Computed for sky and block light separately.
-    let dirs: [(i32, i32, i32); 6] =
-        [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)];
-    let mut seed_sky = [0u8; CHUNK_VOL];
-    let mut seed_blk = [0u8; CHUNK_VOL];
+    let dirs: [(i32, i32, i32); 6] = [
+        (1, 0, 0),
+        (-1, 0, 0),
+        (0, 1, 0),
+        (0, -1, 0),
+        (0, 0, 1),
+        (0, 0, -1),
+    ];
+    let mut seed_sky = vec![0u8; CHUNK_VOL];
+    let mut seed_blk = vec![0u8; CHUNK_VOL];
     for (dx, dy, dz) in dirs {
-        let nb = match store.get(ChunkCoord { x: cc.x + dx, y: cc.y + dy, z: cc.z + dz }) {
+        let nb = match store.get(ChunkCoord {
+            x: cc.x + dx,
+            y: cc.y + dy,
+            z: cc.z + dz,
+        }) {
             Some(nb) => nb,
             None => continue,
         };
@@ -152,15 +178,24 @@ pub fn light_chunk(store: &mut ChunkStore, cc: ChunkCoord) -> u8 {
                 if dx != 0 {
                     x = if dx > 0 { N - 1 } else { 0 };
                     nx = if dx > 0 { 0 } else { N - 1 };
-                    y = a; ny = a; z = b; nz = b;
+                    y = a;
+                    ny = a;
+                    z = b;
+                    nz = b;
                 } else if dy != 0 {
                     y = if dy > 0 { N - 1 } else { 0 };
                     ny = if dy > 0 { 0 } else { N - 1 };
-                    x = a; nx = a; z = b; nz = b;
+                    x = a;
+                    nx = a;
+                    z = b;
+                    nz = b;
                 } else {
                     z = if dz > 0 { N - 1 } else { 0 };
                     nz = if dz > 0 { 0 } else { N - 1 };
-                    x = a; nx = a; y = b; ny = b;
+                    x = a;
+                    nx = a;
+                    y = b;
+                    ny = b;
                 }
                 let i = idx(x, y, z);
                 let svs = nb.sky_light(nx, ny, nz);
@@ -176,14 +211,14 @@ pub fn light_chunk(store: &mut ChunkStore, cc: ChunkCoord) -> u8 {
     }
 
     // ---- Phase 2: compute sky + block light on the gathered locals. ---------
-    let mut sky = [0u8; CHUNK_VOL];
-    let mut blk = [0u8; CHUNK_VOL];
+    let mut sky = vec![0u8; CHUNK_VOL];
+    let mut blk = vec![0u8; CHUNK_VOL];
     let mut q: Vec<usize> = Vec::with_capacity(512);
 
     // sky: direct vertical sunlight + hard shadow
     for x in 0..N {
         for z in 0..N {
-            let mut s: u8 = if col_open[x][z] { 15 } else { 0 };
+            let mut s: u8 = if col_open[x * N + z] { 15 } else { 0 };
             for y in (0..N).rev() {
                 let b = blocks[idx(x, y, z)];
                 if light_opaque(b) {
@@ -230,12 +265,24 @@ pub fn light_chunk(store: &mut ChunkStore, cc: ChunkCoord) -> u8 {
             for z in 0..N {
                 let i = idx(x, y, z);
                 if on_boundary(x, y, z) && (old_sky[i] != sky[i] || old_blk[i] != blk[i]) {
-                    if x == N - 1 { changed_faces |= 1 << 0; }
-                    if x == 0 { changed_faces |= 1 << 1; }
-                    if y == N - 1 { changed_faces |= 1 << 2; }
-                    if y == 0 { changed_faces |= 1 << 3; }
-                    if z == N - 1 { changed_faces |= 1 << 4; }
-                    if z == 0 { changed_faces |= 1 << 5; }
+                    if x == N - 1 {
+                        changed_faces |= 1 << 0;
+                    }
+                    if x == 0 {
+                        changed_faces |= 1 << 1;
+                    }
+                    if y == N - 1 {
+                        changed_faces |= 1 << 2;
+                    }
+                    if y == 0 {
+                        changed_faces |= 1 << 3;
+                    }
+                    if z == N - 1 {
+                        changed_faces |= 1 << 4;
+                    }
+                    if z == 0 {
+                        changed_faces |= 1 << 5;
+                    }
                 }
                 ch.set_light(x, y, z, sky[i], blk[i]);
             }

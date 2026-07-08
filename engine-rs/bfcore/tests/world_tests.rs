@@ -5,7 +5,7 @@
 
 use bfcore::abi::*;
 use bfcore::content::{ContentExtra, ContentRegistry};
-use bfcore::types::{ItemId, IVec3};
+use bfcore::types::{IVec3, ItemId};
 use bfcore::world::{self, World};
 use bfcore::worldgen::{self, TerrainGen};
 
@@ -20,7 +20,11 @@ extern "C" fn alloc_fn(_user: *mut c_void, bytes: u32) -> bf_gpu_buffer {
     let mut v = vec![0u8; n];
     let p = v.as_mut_ptr();
     std::mem::forget(v);
-    bf_gpu_buffer { handle: p as u64, contents: p as *mut c_void, bytes }
+    bf_gpu_buffer {
+        handle: p as u64,
+        contents: p as *mut c_void,
+        bytes,
+    }
 }
 extern "C" fn free_fn(_user: *mut c_void, handle: bf_handle) {
     if handle == 0 {
@@ -33,7 +37,11 @@ extern "C" fn free_fn(_user: *mut c_void, handle: bf_handle) {
 }
 
 fn allocator() -> bf_gpu_allocator {
-    bf_gpu_allocator { user: std::ptr::null_mut(), alloc: Some(alloc_fn), free_: Some(free_fn) }
+    bf_gpu_allocator {
+        user: std::ptr::null_mut(),
+        alloc: Some(alloc_fn),
+        free_: Some(free_fn),
+    }
 }
 
 fn total_indices(f: &bf_render_frame, draws: &[bf_draw_item]) -> u32 {
@@ -65,8 +73,15 @@ fn world_mine_place_loop() {
 
     let zero: bf_frame_input = unsafe { std::mem::zeroed() };
     w.update(&zero, 0.016);
-    assert!(w.debug_has_target(), "raycast acquired a target looking down");
-    assert_eq!(w.debug_block_at(8, 7, 8), world::GRASS, "ground top is grass");
+    assert!(
+        w.debug_has_target(),
+        "raycast acquired a target looking down"
+    );
+    assert_eq!(
+        w.debug_block_at(8, 7, 8),
+        world::GRASS,
+        "ground top is grass"
+    );
 
     let mut draws: Vec<bf_draw_item> = Vec::new();
     let mut shadow: Vec<bf_draw_item> = Vec::new();
@@ -77,15 +92,29 @@ fn world_mine_place_loop() {
     assert!(f.draw_count > 0 && idx0 > 0, "world meshed into draw list");
 
     // MINE
-    let mine_start = bf_action { kind: bf_action_kind::BF_ACT_MINE_START, arg_i: 0, arg_j: 0, arg_k: 0 };
+    let mine_start = bf_action {
+        kind: bf_action_kind::BF_ACT_MINE_START,
+        arg_i: 0,
+        arg_j: 0,
+        arg_k: 0,
+    };
     w.action(&mine_start);
     let mut i = 0;
     while i < 60 && w.debug_block_at(8, 7, 8) != world::AIR {
         w.update(&zero, 0.05);
         i += 1;
     }
-    assert_eq!(w.debug_block_at(8, 7, 8), world::AIR, "mined block is now air");
-    let mine_stop = bf_action { kind: bf_action_kind::BF_ACT_MINE_STOP, arg_i: 0, arg_j: 0, arg_k: 0 };
+    assert_eq!(
+        w.debug_block_at(8, 7, 8),
+        world::AIR,
+        "mined block is now air"
+    );
+    let mine_stop = bf_action {
+        kind: bf_action_kind::BF_ACT_MINE_STOP,
+        arg_i: 0,
+        arg_j: 0,
+        arg_k: 0,
+    };
     w.action(&mine_stop);
 
     w.build_frame(&mut f, &mut draws, &mut shadow, &mut props, 0.0);
@@ -96,12 +125,24 @@ fn world_mine_place_loop() {
     w.update(&zero, 0.016);
     assert_eq!(w.debug_block_at(8, 6, 8), world::DIRT, "exposed dirt below");
     w.debug_set_selected(0);
-    let place = bf_action { kind: bf_action_kind::BF_ACT_PLACE, arg_i: 0, arg_j: 0, arg_k: 0 };
+    let place = bf_action {
+        kind: bf_action_kind::BF_ACT_PLACE,
+        arg_i: 0,
+        arg_j: 0,
+        arg_k: 0,
+    };
     w.action(&place);
-    assert_eq!(w.debug_block_at(8, 7, 8), world::GLOW, "placed block appears");
+    assert_eq!(
+        w.debug_block_at(8, 7, 8),
+        world::GLOW,
+        "placed block appears"
+    );
 
     w.build_frame(&mut f, &mut draws, &mut shadow, &mut props, 0.0);
-    assert!(f.draw_count > 0 && total_indices(&f, &draws) > 0, "world still meshes after place");
+    assert!(
+        f.draw_count > 0 && total_indices(&f, &draws) > 0,
+        "world still meshes after place"
+    );
 
     assert!(
         w.debug_stream_back_is_nearest(),
@@ -128,20 +169,36 @@ fn shadow_occupancy_grid() {
     // Solid terrain casts; air above does not.
     assert_eq!(w.debug_shadow_occupancy(8, 7, 8), 1, "grass surface casts");
     assert_eq!(w.debug_shadow_occupancy(8, 0, 8), 1, "stone floor casts");
-    assert_eq!(w.debug_shadow_occupancy(8, 9, 8), 0, "air above does not cast");
-    assert_eq!(w.debug_shadow_occupancy(8, 30, 8), 0, "high air does not cast");
+    assert_eq!(
+        w.debug_shadow_occupancy(8, 9, 8),
+        0,
+        "air above does not cast"
+    );
+    assert_eq!(
+        w.debug_shadow_occupancy(8, 30, 8),
+        0,
+        "high air does not cast"
+    );
 
     let rev0 = w.debug_shadow_revision();
 
     // Mining the surface block must clear that voxel and bump the revision.
     w.debug_edit(8, 7, 8, world::AIR);
-    assert_eq!(w.debug_shadow_occupancy(8, 7, 8), 0, "mined voxel no longer casts");
+    assert_eq!(
+        w.debug_shadow_occupancy(8, 7, 8),
+        0,
+        "mined voxel no longer casts"
+    );
     let rev1 = w.debug_shadow_revision();
     assert_ne!(rev1, rev0, "occupancy revision bumps after an edit");
 
     // A placed leaf casts a shadow (foliage casts, matching the old shadow map).
     w.debug_edit(8, 9, 8, world::LEAF);
-    assert_eq!(w.debug_shadow_occupancy(8, 9, 8), 1, "leaf casts a sun shadow");
+    assert_eq!(
+        w.debug_shadow_occupancy(8, 9, 8),
+        1,
+        "leaf casts a sun shadow"
+    );
 
     // Water does NOT cast.
     w.debug_edit(8, 10, 8, world::WATER);
@@ -160,8 +217,14 @@ fn shadow_occupancy_grid() {
 fn doors_open_close() {
     let mut c = ContentRegistry::new();
     assert!(c.load(CONTENT), "content load");
-    assert!(c.block_by_name("oak_door").is_some(), "content has oak_door");
-    assert!(c.block_by_name("oak_door_open").is_some(), "content has oak_door_open");
+    assert!(
+        c.block_by_name("oak_door").is_some(),
+        "content has oak_door"
+    );
+    assert!(
+        c.block_by_name("oak_door_open").is_some(),
+        "content has oak_door_open"
+    );
 
     let mut w = World::new(Some(TerrainGen::new()));
     w.debug_set_sync_streaming(true);
@@ -172,34 +235,74 @@ fn doors_open_close() {
 
     let zero: bf_frame_input = unsafe { std::mem::zeroed() };
     let (dx, dy, dz) = (100, 145, 100);
-    w.debug_set_camera(dx as f32 + 0.5, dy as f32 + 5.0, dz as f32 + 0.5, 0.0, -1.5707);
+    w.debug_set_camera(
+        dx as f32 + 0.5,
+        dy as f32 + 5.0,
+        dz as f32 + 0.5,
+        0.0,
+        -1.5707,
+    );
     for _ in 0..25 {
         w.update(&zero, 0.05);
     }
 
     w.debug_edit(dx, dy, dz, 33);
-    w.debug_set_camera(dx as f32 + 0.5, dy as f32 + 5.0, dz as f32 + 0.5, 0.0, -1.5707);
+    w.debug_set_camera(
+        dx as f32 + 0.5,
+        dy as f32 + 5.0,
+        dz as f32 + 0.5,
+        0.0,
+        -1.5707,
+    );
     w.update(&zero, 0.016);
     assert_eq!(w.debug_block_at(dx, dy, dz), 33, "closed door in place");
-    assert!(w.debug_collide_solid(dx, dy, dz), "a closed door blocks movement");
+    assert!(
+        w.debug_collide_solid(dx, dy, dz),
+        "a closed door blocks movement"
+    );
     assert!(w.debug_has_target(), "aimed at the door");
 
-    let usea = bf_action { kind: bf_action_kind::BF_ACT_INTERACT, arg_i: 0, arg_j: 0, arg_k: 0 };
+    let usea = bf_action {
+        kind: bf_action_kind::BF_ACT_INTERACT,
+        arg_i: 0,
+        arg_j: 0,
+        arg_k: 0,
+    };
     w.action(&usea);
     w.update(&zero, 0.016);
-    assert_eq!(w.debug_block_at(dx, dy, dz), 50, "interacting opens the door");
-    assert!(!w.debug_collide_solid(dx, dy, dz), "an open door is passable");
+    assert_eq!(
+        w.debug_block_at(dx, dy, dz),
+        50,
+        "interacting opens the door"
+    );
+    assert!(
+        !w.debug_collide_solid(dx, dy, dz),
+        "an open door is passable"
+    );
 
     w.action(&usea);
     w.update(&zero, 0.016);
-    assert_eq!(w.debug_block_at(dx, dy, dz), 33, "interacting again closes the door");
-    assert!(w.debug_collide_solid(dx, dy, dz), "the re-closed door blocks movement again");
+    assert_eq!(
+        w.debug_block_at(dx, dy, dz),
+        33,
+        "interacting again closes the door"
+    );
+    assert!(
+        w.debug_collide_solid(dx, dy, dz),
+        "the re-closed door blocks movement again"
+    );
 
     // #89 2-tall door.
     let (ex, ey, ez) = (104, 145, 104);
     w.debug_edit(ex, ey, ez, 33);
     w.debug_edit(ex, ey + 1, ez, 33);
-    w.debug_set_camera(ex as f32 + 0.5, ey as f32 + 5.0, ez as f32 + 0.5, 0.0, -1.5707);
+    w.debug_set_camera(
+        ex as f32 + 0.5,
+        ey as f32 + 5.0,
+        ez as f32 + 0.5,
+        0.0,
+        -1.5707,
+    );
     w.update(&zero, 0.016);
     assert!(
         w.debug_block_at(ex, ey, ez) == 33 && w.debug_block_at(ex, ey + 1, ez) == 33,
@@ -222,7 +325,13 @@ fn doors_open_close() {
     // independent 1-tall halves. Target the top half and canonicalize the whole run.
     w.debug_edit(ex, ey, ez, 33);
     w.debug_edit(ex, ey + 1, ez, 50);
-    w.debug_set_camera(ex as f32 + 0.5, ey as f32 + 6.0, ez as f32 + 0.5, 0.0, -1.5707);
+    w.debug_set_camera(
+        ex as f32 + 0.5,
+        ey as f32 + 6.0,
+        ez as f32 + 0.5,
+        0.0,
+        -1.5707,
+    );
     w.update(&zero, 0.016);
     assert!(w.debug_has_target(), "aimed at the top half of the door");
     w.action(&usea);
@@ -234,9 +343,18 @@ fn doors_open_close() {
 
     w.debug_edit(ex, ey, ez, 50);
     w.debug_edit(ex, ey + 1, ez, 33);
-    w.debug_set_camera(ex as f32 + 0.5, ey as f32 + 5.0, ez as f32 + 0.5, 0.0, -1.5707);
+    w.debug_set_camera(
+        ex as f32 + 0.5,
+        ey as f32 + 5.0,
+        ez as f32 + 0.5,
+        0.0,
+        -1.5707,
+    );
     w.update(&zero, 0.016);
-    assert!(w.debug_has_target(), "aimed at the bottom half of the mixed door");
+    assert!(
+        w.debug_has_target(),
+        "aimed at the bottom half of the mixed door"
+    );
     w.action(&usea);
     w.update(&zero, 0.016);
     assert!(
@@ -255,7 +373,11 @@ fn quest_engine() {
     let mut x = ContentExtra::new();
     assert!(x.load(CONTENT), "extra load");
     assert!(x.quests().len() >= 12, "loaded ~12+ quests");
-    let bosses = x.creatures().iter().filter(|cr| cr.disposition == "boss").count();
+    let bosses = x
+        .creatures()
+        .iter()
+        .filter(|cr| cr.disposition == "boss")
+        .count();
     assert_eq!(bosses, 2, "two bosses in the roster");
 
     let mut w = World::new(Some(TerrainGen::new()));
@@ -282,7 +404,11 @@ fn quest_engine() {
         }
     }
     assert_eq!(w.debug_quests_completed(), 1, "first quest completed");
-    assert_ne!(w.debug_active_quest(), first_id, "advanced to the next quest");
+    assert_ne!(
+        w.debug_active_quest(),
+        first_id,
+        "advanced to the next quest"
+    );
 
     // Quest-target compass.
     {
@@ -317,20 +443,35 @@ fn quest_engine() {
         let (befr_target, _) = befr.unwrap();
 
         let mut qt: bf_quest_target = unsafe { std::mem::zeroed() };
-        assert!(!w2.fill_quest_target(&mut qt), "no target while the creature isn't loaded");
+        assert!(
+            !w2.fill_quest_target(&mut qt),
+            "no target while the creature isn't loaded"
+        );
         w2.debug_spawn_named(&befr_target);
-        assert!(w2.fill_quest_target(&mut qt), "target active once the creature is loaded");
-        assert!(qt.active == 1 && qt.is_boss == 0, "befriend target: active, not a boss");
+        assert!(
+            w2.fill_quest_target(&mut qt),
+            "target active once the creature is loaded"
+        );
+        assert!(
+            qt.active == 1 && qt.is_boss == 0,
+            "befriend target: active, not a boss"
+        );
         let label = cstr_str(&qt.label);
         assert_eq!(label, "Gloom Stag", "label title-cased from creature name");
-        assert!(qt.distance > 0.0 && qt.distance < 20.0, "distance to target is sane");
+        assert!(
+            qt.distance > 0.0 && qt.distance < 20.0,
+            "distance to target is sane"
+        );
 
         let boss = advance_to(&mut w2, "calm_boss");
         assert!(boss.is_some(), "reached a calm_boss quest");
         let (boss_target, _) = boss.unwrap();
         let mut qb: bf_quest_target = unsafe { std::mem::zeroed() };
         w2.debug_spawn_named(&boss_target);
-        assert!(w2.fill_quest_target(&mut qb), "boss target active once loaded");
+        assert!(
+            w2.fill_quest_target(&mut qb),
+            "boss target active once loaded"
+        );
         assert_eq!(qb.is_boss, 1, "calm_boss target is flagged is_boss");
     }
 
@@ -385,7 +526,11 @@ fn quest_loop_end_to_end() {
             } else {
                 c.item_by_name(t).is_some() || c.block_by_name(t).is_some()
             };
-            assert!(ok, "quest {} objective '{}' targets '{}'", q.id, o.trigger, t);
+            assert!(
+                ok,
+                "quest {} objective '{}' targets '{}'",
+                q.id, o.trigger, t
+            );
         }
     }
 
@@ -398,7 +543,11 @@ fn quest_loop_end_to_end() {
         w.set_mode(bf_game_mode::BF_MODE_CREATIVE);
         w.init_world(11);
 
-        assert_eq!(w.debug_active_quest(), x.quests()[0].id, "first quest active on spawn");
+        assert_eq!(
+            w.debug_active_quest(),
+            x.quests()[0].id,
+            "first quest active on spawn"
+        );
         assert!(!w.debug_all_quests_done(), "not won at the start");
 
         let mut guard = 0;
@@ -434,26 +583,54 @@ fn quest_loop_end_to_end() {
 
         let zero: bf_frame_input = unsafe { std::mem::zeroed() };
         let (bx, by, bz) = (2000, 145, 2000);
-        w.debug_set_camera(bx as f32 + 0.5, by as f32 + 5.0, bz as f32 + 0.5, 0.0, -1.5707);
+        w.debug_set_camera(
+            bx as f32 + 0.5,
+            by as f32 + 5.0,
+            bz as f32 + 0.5,
+            0.0,
+            -1.5707,
+        );
         for _ in 0..30 {
             w.update(&zero, 0.05);
         }
-        assert!(w.debug_region_sat(chunk_of(bx), chunk_of(bz)) < 0.99, "far region starts Grey");
+        assert!(
+            w.debug_region_sat(chunk_of(bx), chunk_of(bz)) < 0.99,
+            "far region starts Grey"
+        );
 
         w.debug_edit(bx, by, bz, world::STONE);
-        w.debug_set_camera(bx as f32 + 0.5, by as f32 + 5.0, bz as f32 + 0.5, 0.0, -1.5707);
+        w.debug_set_camera(
+            bx as f32 + 0.5,
+            by as f32 + 5.0,
+            bz as f32 + 0.5,
+            0.0,
+            -1.5707,
+        );
         w.update(&zero, 0.016);
-        assert!(w.debug_has_target(), "aimed at the stone block for placement");
+        assert!(
+            w.debug_has_target(),
+            "aimed at the stone block for placement"
+        );
 
         let beacon = w.debug_item_id("beacon_block");
         assert_ne!(beacon, 0, "content has a beacon_block item");
         w.debug_clear_inventory();
         w.debug_give(beacon, 1);
-        let sel = bf_action { kind: bf_action_kind::BF_ACT_HOTBAR_SELECT, arg_i: 0, arg_j: 0, arg_k: 0 };
+        let sel = bf_action {
+            kind: bf_action_kind::BF_ACT_HOTBAR_SELECT,
+            arg_i: 0,
+            arg_j: 0,
+            arg_k: 0,
+        };
         w.action(&sel);
 
         let restored_before = w.debug_regions_restored();
-        let place = bf_action { kind: bf_action_kind::BF_ACT_PLACE, arg_i: 0, arg_j: 0, arg_k: 0 };
+        let place = bf_action {
+            kind: bf_action_kind::BF_ACT_PLACE,
+            arg_i: 0,
+            arg_j: 0,
+            arg_k: 0,
+        };
         w.action(&place);
         w.update(&zero, 0.016);
 
@@ -501,7 +678,10 @@ fn creature_collision_and_villages() {
     let base = w.debug_creature_count();
     w.debug_spawn_named("river_fox");
     w.debug_spawn_named("river_fox");
-    assert!(w.debug_creature_count() >= base + 2, "two creatures spawned");
+    assert!(
+        w.debug_creature_count() >= base + 2,
+        "two creatures spawned"
+    );
     for _ in 0..12 {
         w.update(&zero, 0.05);
     }
@@ -550,7 +730,10 @@ fn creature_collision_and_villages() {
         assert!(after1 >= built1, "village: built cells present in ring");
         let built2 = w.debug_build_palisade(vcx, vcz, 6);
         let after2 = ring_logs(&w);
-        assert!(built2 > 0 && after2 > after1, "village: second donation extends the wall");
+        assert!(
+            built2 > 0 && after2 > after1,
+            "village: second donation extends the wall"
+        );
     }
 
     // Natural regrowth. #: with real oceans the origin region for seed 11 is open
@@ -565,8 +748,10 @@ fn creature_collision_and_villages() {
                     let h = worldgen::worldgen_surface_height(sx, sz, 11);
                     if h > 10
                         && !worldgen::worldgen_is_ocean_col(sx, sz, 11)
-                        && worldgen::worldgen_dominant_biome(sx, sz, 11) != worldgen::Biome::Desert as i32
-                        && worldgen::worldgen_dominant_biome(sx, sz, 11) != worldgen::Biome::Beach as i32
+                        && worldgen::worldgen_dominant_biome(sx, sz, 11)
+                            != worldgen::Biome::Desert as i32
+                        && worldgen::worldgen_dominant_biome(sx, sz, 11)
+                            != worldgen::Biome::Beach as i32
                     {
                         spot = Some((sx, sz));
                         break 'grow;
@@ -575,7 +760,10 @@ fn creature_collision_and_villages() {
             }
         }
         let (tx, tz) = spot.expect("regrowth: no dry-land column found in scan");
-        assert!(w.debug_grow_tree(tx, tz), "regrowth: tree grown on a dry-land column");
+        assert!(
+            w.debug_grow_tree(tx, tz),
+            "regrowth: tree grown on a dry-land column"
+        );
         let mut logs = 0;
         let mut leaves = 0;
         for wy in 0..=120 {
@@ -624,10 +812,25 @@ fn save_load_round_trip() {
         w.debug_set_sync_streaming(true);
         w.set_allocator(allocator());
         assert!(w.load(&dir), "load succeeded");
-        assert_eq!(w.debug_block_at(3, 70, 3), world::GLOW, "edited GLOW persisted");
-        assert_eq!(w.debug_block_at(4, 70, 3), world::BRICK, "edited BRICK persisted");
-        assert_eq!(w.debug_block_at(3, 70, 4), world::AIR, "dug-out edit persisted");
-        assert!(w.debug_region_sat(0, 0) > 0.9, "restored spawn region persisted");
+        assert_eq!(
+            w.debug_block_at(3, 70, 3),
+            world::GLOW,
+            "edited GLOW persisted"
+        );
+        assert_eq!(
+            w.debug_block_at(4, 70, 3),
+            world::BRICK,
+            "edited BRICK persisted"
+        );
+        assert_eq!(
+            w.debug_block_at(3, 70, 4),
+            world::AIR,
+            "dug-out edit persisted"
+        );
+        assert!(
+            w.debug_region_sat(0, 0) > 0.9,
+            "restored spawn region persisted"
+        );
 
         let mut w3 = World::new(Some(TerrainGen::new()));
         w3.debug_set_sync_streaming(true);
@@ -650,7 +853,10 @@ fn save_load_round_trip() {
                 }
             }
         }
-        assert_eq!(matches, total, "loaded procedural terrain matches a fresh same-seed gen");
+        assert_eq!(
+            matches, total,
+            "loaded procedural terrain matches a fresh same-seed gen"
+        );
     }
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -682,17 +888,29 @@ fn gameplay_drops_crafting_creatures() {
 
     let cobble = w.debug_item_id("cobblestone");
     assert_ne!(cobble, 0, "content has a cobblestone item");
-    let mine_start = bf_action { kind: bf_action_kind::BF_ACT_MINE_START, arg_i: 0, arg_j: 0, arg_k: 0 };
+    let mine_start = bf_action {
+        kind: bf_action_kind::BF_ACT_MINE_START,
+        arg_i: 0,
+        arg_j: 0,
+        arg_k: 0,
+    };
     w.action(&mine_start);
     let mut i = 0;
     while i < 200 && w.debug_block_at(100, 95, 100) != world::AIR {
         w.update(&zero, 0.05);
         i += 1;
     }
-    assert_eq!(w.debug_block_at(100, 95, 100), world::AIR, "stone mined away");
+    assert_eq!(
+        w.debug_block_at(100, 95, 100),
+        world::AIR,
+        "stone mined away"
+    );
     // #170 the drop now rides on physical debris; walk the player up to the
     // fragments so the magnet collects them into the inventory.
-    assert!(w.debug_debris_count() > 0, "mining burst the stone into debris");
+    assert!(
+        w.debug_debris_count() > 0,
+        "mining burst the stone into debris"
+    );
     for _ in 0..40 {
         w.update(&zero, 0.05); // let the burst arc + settle
     }
@@ -703,18 +921,32 @@ fn gameplay_drops_crafting_creatures() {
         w.update(&zero, 0.05);
         i += 1;
     }
-    assert!(w.debug_item_count(cobble) >= 1, "survival mining dropped cobblestone (collected from debris)");
+    assert!(
+        w.debug_item_count(cobble) >= 1,
+        "survival mining dropped cobblestone (collected from debris)"
+    );
 
     // crafting consumes inputs, produces output.
     let log = w.debug_item_id("oak_log");
     let planks = w.debug_item_id("oak_planks");
-    assert!(log != 0 && planks != 0, "content has oak_log and oak_planks");
+    assert!(
+        log != 0 && planks != 0,
+        "content has oak_log and oak_planks"
+    );
     w.debug_clear_inventory();
     w.debug_give(log, 4);
     let planks_before = w.debug_item_count(planks);
-    let craft = bf_action { kind: bf_action_kind::BF_ACT_CRAFT, arg_i: 0, arg_j: 0, arg_k: 0 };
+    let craft = bf_action {
+        kind: bf_action_kind::BF_ACT_CRAFT,
+        arg_i: 0,
+        arg_j: 0,
+        arg_k: 0,
+    };
     w.action(&craft);
-    assert!(w.debug_item_count(planks) > planks_before, "crafting produced planks");
+    assert!(
+        w.debug_item_count(planks) > planks_before,
+        "crafting produced planks"
+    );
     assert!(w.debug_item_count(log) < 4, "crafting consumed a log");
 
     // creatures populate + defeat one.
@@ -728,10 +960,18 @@ fn gameplay_drops_crafting_creatures() {
         cw.update(&zero, 0.05);
         i += 1;
     }
-    assert!(cw.debug_creature_count() >= 8, "animals populate near the player");
+    assert!(
+        cw.debug_creature_count() >= 8,
+        "animals populate near the player"
+    );
     assert!(cw.debug_aim_at_creature0(), "aimed at an animal");
     let before = cw.debug_creature_count();
-    let attack = bf_action { kind: bf_action_kind::BF_ACT_ATTACK, arg_i: 0, arg_j: 0, arg_k: 0 };
+    let attack = bf_action {
+        kind: bf_action_kind::BF_ACT_ATTACK,
+        arg_i: 0,
+        arg_j: 0,
+        arg_k: 0,
+    };
     let mut h = 0;
     while h < 8 && cw.debug_creature_count() == before {
         cw.debug_aim_at_creature0();
@@ -739,7 +979,11 @@ fn gameplay_drops_crafting_creatures() {
         cw.update(&zero, 0.02);
         h += 1;
     }
-    assert_eq!(cw.debug_creature_count(), before - 1, "defeating an aimed animal removes it");
+    assert_eq!(
+        cw.debug_creature_count(),
+        before - 1,
+        "defeating an aimed animal removes it"
+    );
 
     // #7 deep-underground hostiles.
     {
@@ -771,7 +1015,10 @@ fn gameplay_drops_crafting_creatures() {
             cave.update(&zero, 0.05);
             i += 1;
         }
-        assert!(cave.debug_hostile_count() > 0, "hostiles spawn deep underground (#7)");
+        assert!(
+            cave.debug_hostile_count() > 0,
+            "hostiles spawn deep underground (#7)"
+        );
     }
     let _ = IVec3::default();
 }
@@ -799,12 +1046,24 @@ fn hostiles_spawn_at_night_on_surface() {
     // Stand on the surface (not in a cave), then jump the clock to deep night.
     let (cx, cz) = (200, 200);
     let surf = worldgen::worldgen_surface_height(cx, cz, 5);
-    w.debug_set_camera(cx as f32 + 0.5, surf as f32 + 2.0, cz as f32 + 0.5, 0.0, 0.0);
+    w.debug_set_camera(
+        cx as f32 + 0.5,
+        surf as f32 + 2.0,
+        cz as f32 + 0.5,
+        0.0,
+        0.0,
+    );
     for _ in 0..30 {
         w.update(&zero, 0.05);
     }
     w.debug_set_day_time(0.90); // t > 0.80 => night
-    w.debug_set_camera(cx as f32 + 0.5, surf as f32 + 2.0, cz as f32 + 0.5, 0.0, 0.0);
+    w.debug_set_camera(
+        cx as f32 + 0.5,
+        surf as f32 + 2.0,
+        cz as f32 + 0.5,
+        0.0,
+        0.0,
+    );
     assert!(w.debug_day_time() > 0.80, "world clock is at night");
 
     let mut i = 0;
@@ -828,16 +1087,30 @@ fn hostiles_spawn_at_night_on_surface() {
     day.debug_set_day_time(0.30); // bright morning, not night
     let (dx, dz) = (200, 200);
     let dsurf = worldgen::worldgen_surface_height(dx, dz, 5);
-    day.debug_set_camera(dx as f32 + 0.5, dsurf as f32 + 2.0, dz as f32 + 0.5, 0.0, 0.0);
+    day.debug_set_camera(
+        dx as f32 + 0.5,
+        dsurf as f32 + 2.0,
+        dz as f32 + 0.5,
+        0.0,
+        0.0,
+    );
     let mut j = 0;
     while j < 400 && day.debug_creature_count() < 4 {
         day.update(&zero, 0.05);
         j += 1;
     }
-    assert!(day.debug_day_time() < 0.20 || day.debug_day_time() > 0.80 || day.debug_creature_count() >= 4,
-        "stayed daytime");
+    assert!(
+        day.debug_day_time() < 0.20
+            || day.debug_day_time() > 0.80
+            || day.debug_creature_count() >= 4,
+        "stayed daytime"
+    );
     assert!(day.debug_creature_count() >= 4, "daytime fauna still spawn");
-    assert_eq!(day.debug_hostile_count(), 0, "no hostiles in daylight on the surface");
+    assert_eq!(
+        day.debug_hostile_count(),
+        0,
+        "no hostiles in daylight on the surface"
+    );
 }
 
 // A ruined structure is a localized "danger site": a hostile or two spawn at it in
@@ -961,7 +1234,10 @@ fn creative_sprint_is_five_x_survival_sprint() {
         "creative sprint should be ~5x survival sprint (survival {survival}, creative {creative}, ratio {ratio})"
     );
     // And it must clearly beat survival sprint (not just nominally faster).
-    assert!(creative > survival * 4.0, "creative sprint clearly faster than survival sprint");
+    assert!(
+        creative > survival * 4.0,
+        "creative sprint clearly faster than survival sprint"
+    );
 }
 
 // ============================================================================
@@ -984,7 +1260,8 @@ fn ruin_danger_site_is_clearable() {
     let mut best_d2 = i64::MAX;
     for gz in (-3000..=3000).step_by(64) {
         for gx in (-3000..=3000).step_by(64) {
-            if let Some(s @ (ax, _, az)) = worldgen::worldgen_dangerous_site_near(gx, gz, 64, SEED) {
+            if let Some(s @ (ax, _, az)) = worldgen::worldgen_dangerous_site_near(gx, gz, 64, SEED)
+            {
                 let d2 = (ax as i64) * (ax as i64) + (az as i64) * (az as i64);
                 if d2 < best_d2 {
                     best_d2 = d2;
@@ -1025,22 +1302,36 @@ fn ruin_danger_site_is_clearable() {
         w.update(&zero, 0.5);
     }
     let armed = w.debug_ruin_hostile_count();
-    assert!(armed <= 3, "ruin defender band stays small/fixed (got {armed}, expected <= 3)");
+    assert!(
+        armed <= 3,
+        "ruin defender band stays small/fixed (got {armed}, expected <= 3)"
+    );
 
     // Reward item ids (granted once when the ruin is cleared).
     let cake = w.debug_item_id("honey_cake");
     let ingot = w.debug_item_id("iron_ingot");
     let brick = w.debug_item_id("stone_brick");
-    assert!(cake != 0 && ingot != 0 && brick != 0, "reward items exist in content");
+    assert!(
+        cake != 0 && ingot != 0 && brick != 0,
+        "reward items exist in content"
+    );
     // No reward yet (ruin not cleared).
-    assert_eq!(w.debug_item_count(cake), 0, "no reward before the ruin is cleared");
+    assert_eq!(
+        w.debug_item_count(cake),
+        0,
+        "no reward before the ruin is cleared"
+    );
     let ingot_before = w.debug_item_count(ingot);
     let brick_before = w.debug_item_count(brick);
 
     // Player clears the ruin: kill every defender.
     let killed = w.debug_kill_ruin_hostiles();
     assert!(killed >= 2, "cleared the ruin defenders (removed {killed})");
-    assert_eq!(w.debug_ruin_hostile_count(), 0, "no ruin hostiles left after clearing");
+    assert_eq!(
+        w.debug_ruin_hostile_count(),
+        0,
+        "no ruin hostiles left after clearing"
+    );
 
     // The danger-site pass needs one tick to notice the defenders are gone, mark the
     // site cleared, and grant the reward. Stay put and keep pumping: the ruin must NOT
@@ -1063,16 +1354,35 @@ fn ruin_danger_site_is_clearable() {
     let cake_after = w.debug_item_count(cake);
     let ingot_after = w.debug_item_count(ingot);
     let brick_after = w.debug_item_count(brick);
-    assert_eq!(cake_after, 2, "clearing the ruin dropped the food reward once");
-    assert_eq!(ingot_after - ingot_before, 2, "clearing the ruin dropped the material reward once");
-    assert_eq!(brick_after - brick_before, 4, "clearing the ruin dropped the block reward once");
+    assert_eq!(
+        cake_after, 2,
+        "clearing the ruin dropped the food reward once"
+    );
+    assert_eq!(
+        ingot_after - ingot_before,
+        2,
+        "clearing the ruin dropped the material reward once"
+    );
+    assert_eq!(
+        brick_after - brick_before,
+        4,
+        "clearing the ruin dropped the block reward once"
+    );
 
     // Pump more frames on the cleared site: the reward does not fire again.
     for _ in 0..40 {
         w.update(&zero, 0.5);
     }
-    assert_eq!(w.debug_item_count(cake), cake_after, "ruin reward fires only once");
-    assert_eq!(w.debug_item_count(brick), brick_after, "ruin reward fires only once");
+    assert_eq!(
+        w.debug_item_count(cake),
+        cake_after,
+        "ruin reward fires only once"
+    );
+    assert_eq!(
+        w.debug_item_count(brick),
+        brick_after,
+        "ruin reward fires only once"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,11 +1416,24 @@ fn chain_tiers(is_city: bool, size: i32) -> Vec<i32> {
 #[test]
 fn city_hosts_full_profession_chain() {
     let tiers = chain_tiers(true, 6);
-    assert!(tiers.contains(&WOOD), "city missing Woodcutter (wood): {tiers:?}");
-    assert!(tiers.contains(&STONE), "city missing Stone Mason (stone): {tiers:?}");
-    assert!(tiers.contains(&IRON), "city missing Blacksmith (iron): {tiers:?}");
+    assert!(
+        tiers.contains(&WOOD),
+        "city missing Woodcutter (wood): {tiers:?}"
+    );
+    assert!(
+        tiers.contains(&STONE),
+        "city missing Stone Mason (stone): {tiers:?}"
+    );
+    assert!(
+        tiers.contains(&IRON),
+        "city missing Blacksmith (iron): {tiers:?}"
+    );
     let first_three = chain_tiers(true, 3);
-    assert_eq!(first_three, vec![WOOD, STONE, IRON], "city should front-load the chain");
+    assert_eq!(
+        first_three,
+        vec![WOOD, STONE, IRON],
+        "city should front-load the chain"
+    );
 }
 
 // A village of ANY size must yield a chain that is a strict bottom-up prefix: stone
@@ -1126,7 +1449,10 @@ fn village_professions_are_a_chain_prefix() {
         let have_stone = tiers.contains(&STONE);
         let have_iron = tiers.contains(&IRON);
         if have_stone {
-            assert!(have_wood, "village size {size}: Stone Mason without Woodcutter: {tiers:?}");
+            assert!(
+                have_wood,
+                "village size {size}: Stone Mason without Woodcutter: {tiers:?}"
+            );
         }
         if have_iron {
             assert!(
@@ -1139,10 +1465,16 @@ fn village_professions_are_a_chain_prefix() {
         // lower tier afterwards are fine and do not strand the player.
         let first_of = |tier: i32| tiers.iter().position(|&t| t == tier);
         if let (Some(w), Some(s)) = (first_of(WOOD), first_of(STONE)) {
-            assert!(w < s, "village size {size}: Stone debuts before Wood: {tiers:?}");
+            assert!(
+                w < s,
+                "village size {size}: Stone debuts before Wood: {tiers:?}"
+            );
         }
         if let (Some(s), Some(ir)) = (first_of(STONE), first_of(IRON)) {
-            assert!(s < ir, "village size {size}: Iron debuts before Stone: {tiers:?}");
+            assert!(
+                s < ir,
+                "village size {size}: Iron debuts before Stone: {tiers:?}"
+            );
         }
     }
     // A lone village (one villager) must be a Woodcutter, never a stranded high tier.
@@ -1153,7 +1485,11 @@ fn village_professions_are_a_chain_prefix() {
     );
     // A two-villager village must not yet contain stone or iron (only wood + a social).
     let two = chain_tiers(false, 2);
-    assert_eq!(two, vec![WOOD], "a 2-villager village has only the wood tier of the chain");
+    assert_eq!(
+        two,
+        vec![WOOD],
+        "a 2-villager village has only the wood tier of the chain"
+    );
 }
 
 // read a NUL-terminated fixed byte buffer as a String slice.
@@ -1253,7 +1589,10 @@ fn creature_climbs_step_smoothly() {
             break;
         }
     }
-    assert!(reached_top, "creature climbed onto the 1-block step (ends at y=9)");
+    assert!(
+        reached_top,
+        "creature climbed onto the 1-block step (ends at y=9)"
+    );
 
     // The rise must be GRADUAL: count frames where Y sits strictly between the
     // start floor (8) and the step top (9). A single-tick pop would show zero or
@@ -1337,7 +1676,11 @@ fn chest_loot_is_deterministic_from_seed() {
     for s in 0..world::CHEST_SLOTS {
         let ra = a.debug_chest_slot(pa.0, pa.1, pa.2, s);
         let rb = b.debug_chest_slot(pb.0, pb.1, pb.2, s);
-        assert_eq!(ra, rb, "slot {} deterministic across two same-seed worlds", s);
+        assert_eq!(
+            ra, rb,
+            "slot {} deterministic across two same-seed worlds",
+            s
+        );
         if ra.0 != 0 {
             any = true;
         }
@@ -1359,7 +1702,11 @@ fn chest_loot_is_deterministic_from_seed() {
 #[test]
 fn chest_take_moves_to_player_inventory() {
     let (mut w, p) = chest_world(42);
-    let pos = IVec3 { x: p.0, y: p.1, z: p.2 };
+    let pos = IVec3 {
+        x: p.0,
+        y: p.1,
+        z: p.2,
+    };
     // Find a non-empty chest slot.
     let slots = w.chest_slots(pos).expect("chest present");
     let slot = (0..world::CHEST_SLOTS)
@@ -1367,22 +1714,37 @@ fn chest_take_moves_to_player_inventory() {
         .expect("at least one filled slot");
     let item = slots[slot].item;
     let count = slots[slot].count;
-    assert_eq!(w.debug_item_count(item), 0, "inventory starts without this item");
+    assert_eq!(
+        w.debug_item_count(item),
+        0,
+        "inventory starts without this item"
+    );
 
     assert!(w.chest_take(pos, slot), "take moved the stack");
-    assert_eq!(w.debug_item_count(item), count as i32, "the whole stack landed in the inventory");
+    assert_eq!(
+        w.debug_item_count(item),
+        count as i32,
+        "the whole stack landed in the inventory"
+    );
     let after = w.chest_slots(pos).expect("chest present");
     assert_eq!(after[slot].item, 0, "the chest slot is now empty");
 
     // Re-querying (the panel reopening) shows the updated, reduced contents: taking the
     // now-empty slot again moves nothing.
-    assert!(!w.chest_take(pos, slot), "taking an already-empty slot moves nothing");
+    assert!(
+        !w.chest_take(pos, slot),
+        "taking an already-empty slot moves nothing"
+    );
 }
 
 #[test]
 fn chest_take_full_inventory_leaves_items() {
     let (mut w, p) = chest_world(42);
-    let pos = IVec3 { x: p.0, y: p.1, z: p.2 };
+    let pos = IVec3 {
+        x: p.0,
+        y: p.1,
+        z: p.2,
+    };
     let slots = w.chest_slots(pos).expect("chest present");
     let slot = (0..world::CHEST_SLOTS)
         .find(|&i| slots[i].item != 0)
@@ -1400,9 +1762,19 @@ fn chest_take_full_inventory_leaves_items() {
     assert!(!moved, "nothing moved: the inventory was full");
     // The item is NOT destroyed: it is still in the chest, unchanged.
     let after = w.chest_slots(pos).expect("chest present");
-    assert_eq!(after[slot].item, chest_item, "chest item preserved on a full inventory");
-    assert_eq!(after[slot].count, chest_count, "chest count preserved on a full inventory");
-    assert_eq!(w.debug_item_count(chest_item), 0, "no chest item leaked into the full inventory");
+    assert_eq!(
+        after[slot].item, chest_item,
+        "chest item preserved on a full inventory"
+    );
+    assert_eq!(
+        after[slot].count, chest_count,
+        "chest count preserved on a full inventory"
+    );
+    assert_eq!(
+        w.debug_item_count(chest_item),
+        0,
+        "no chest item leaked into the full inventory"
+    );
 }
 
 #[test]
@@ -1411,7 +1783,11 @@ fn chest_contents_persist_round_trip() {
     let dir = dir.to_string_lossy().to_string();
     let _ = std::fs::remove_dir_all(&dir);
 
-    let pos = IVec3 { x: 120, y: 80, z: 120 };
+    let pos = IVec3 {
+        x: 120,
+        y: 80,
+        z: 120,
+    };
     let (taken_item, remaining): (ItemId, [(ItemId, u16); 9]);
 
     // Session 1: open the chest (rolls loot), take one slot, then save.
@@ -1419,7 +1795,9 @@ fn chest_contents_persist_round_trip() {
         let (mut w, p) = chest_world(31337);
         assert_eq!((p.0, p.1, p.2), (pos.x, pos.y, pos.z));
         let slots = w.chest_slots(pos).expect("chest present");
-        let slot = (0..world::CHEST_SLOTS).find(|&i| slots[i].item != 0).expect("a filled slot");
+        let slot = (0..world::CHEST_SLOTS)
+            .find(|&i| slots[i].item != 0)
+            .expect("a filled slot");
         taken_item = slots[slot].item;
         assert!(w.chest_take(pos, slot), "took a stack");
         let after = w.chest_slots(pos).expect("chest present");
@@ -1445,7 +1823,11 @@ fn chest_contents_persist_round_trip() {
         w.set_content(content);
         assert!(w.load(&dir), "load succeeded");
         // The chest block itself persisted via the chunk edit.
-        assert_eq!(w.debug_block_at(pos.x, pos.y, pos.z), world::CHEST, "chest block persisted");
+        assert_eq!(
+            w.debug_block_at(pos.x, pos.y, pos.z),
+            world::CHEST,
+            "chest block persisted"
+        );
         let slots = w.chest_slots(pos).expect("chest present after reload");
         for i in 0..world::CHEST_SLOTS {
             assert_eq!(
@@ -1463,7 +1845,11 @@ fn chest_contents_persist_round_trip() {
 #[test]
 fn chest_deposit_moves_from_inventory() {
     let (mut w, p) = chest_world(9000);
-    let pos = IVec3 { x: p.0, y: p.1, z: p.2 };
+    let pos = IVec3 {
+        x: p.0,
+        y: p.1,
+        z: p.2,
+    };
     // Empty the chest so deposits land in clean slots, and give the player an item.
     for s in 0..world::CHEST_SLOTS {
         let _ = w.chest_take(pos, s);
@@ -1478,7 +1864,11 @@ fn chest_deposit_moves_from_inventory() {
     assert!(w.chest_deposit(pos, 0), "deposit moved the stack");
     assert_eq!(w.debug_item_count(item), 0, "the stack left the inventory");
     let slots = w.chest_slots(pos).expect("chest present");
-    let in_chest: u16 = slots.iter().filter(|s| s.item == item).map(|s| s.count).sum();
+    let in_chest: u16 = slots
+        .iter()
+        .filter(|s| s.item == item)
+        .map(|s| s.count)
+        .sum();
     assert_eq!(in_chest, 10, "the stack landed in the chest");
 }
 
@@ -1561,7 +1951,11 @@ fn village_woodcutter_builds_wall_to_tier1() {
         w.debug_count_wall(ax, az, 21),
         total
     );
-    assert_eq!(w.debug_village_tier(ax, az), 1, "tier advances to 1 (wood) when ring closes");
+    assert_eq!(
+        w.debug_village_tier(ax, az),
+        1,
+        "tier advances to 1 (wood) when ring closes"
+    );
 }
 
 #[test]
@@ -1593,11 +1987,22 @@ fn village_mason_upgrades_wood_to_stone_tier2() {
     w.debug_give(stone, 64);
     w.debug_set_selected(0);
     let _ = w.debug_try_donation(mason); // first donation: spends 16, flips tier
-    assert_eq!(w.debug_village_tier(ax, az), 2, "tier advances to 2 (stone)");
+    assert_eq!(
+        w.debug_village_tier(ax, az),
+        2,
+        "tier advances to 2 (stone)"
+    );
     let stone_wall = w.debug_count_wall(ax, az, 8);
     let wood_after = w.debug_count_wall(ax, az, 21);
-    assert!(stone_wall > 0, "wall is now stone brick ({} cells)", stone_wall);
-    assert!(wood_after < wood_before, "wood wall cells were converted to stone");
+    assert!(
+        stone_wall > 0,
+        "wall is now stone brick ({} cells)",
+        stone_wall
+    );
+    assert!(
+        wood_after < wood_before,
+        "wood wall cells were converted to stone"
+    );
 }
 
 #[test]
@@ -1626,7 +2031,11 @@ fn village_blacksmith_adds_iron_gate_tier3() {
     w.debug_give(stone, 64);
     w.debug_set_selected(0);
     let _ = w.debug_try_donation(mason);
-    assert_eq!(w.debug_village_tier(ax, az), 2, "reached tier 2 before iron");
+    assert_eq!(
+        w.debug_village_tier(ax, az),
+        2,
+        "reached tier 2 before iron"
+    );
 
     // Donate iron: 8 needed; flips to tier 3 and stamps the iron gate (block 53).
     w.debug_clear_inventory();
@@ -1645,7 +2054,10 @@ fn village_blacksmith_adds_iron_gate_tier3() {
             }
         }
     }
-    assert!(iron_blocks > 0, "an iron gate (block 53) was placed at the south opening");
+    assert!(
+        iron_blocks > 0,
+        "an iron gate (block 53) was placed at the south opening"
+    );
 }
 
 #[test]
@@ -1695,7 +2107,11 @@ fn village_tier_persists_round_trip() {
         w2.set_allocator(allocator());
         w2.set_content(content);
         assert!(w2.load(&path), "load");
-        assert_eq!(w2.debug_village_tier(ax, az), 2, "tier 2 restored after reload");
+        assert_eq!(
+            w2.debug_village_tier(ax, az),
+            2,
+            "tier 2 restored after reload"
+        );
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1704,7 +2120,10 @@ fn village_tier_persists_round_trip() {
 fn village_wall_marks_protected_interior() {
     let (mut w, (ax, az)) = village_world(11);
     // Before any donation, nothing is protected.
-    assert!(!w.debug_village_protects(ax, az), "no protection before tier 1");
+    assert!(
+        !w.debug_village_protects(ax, az),
+        "no protection before tier 1"
+    );
     // Build the wood ring to reach tier 1.
     let wc = w.debug_spawn_villager_role(ax, az, 4);
     let log = w.debug_item_id("oak_log");
@@ -1720,8 +2139,14 @@ fn village_wall_marks_protected_interior() {
     }
     assert_eq!(w.debug_village_tier(ax, az), 1, "tier 1");
     // The interior centre is protected; a point well outside the ring is not.
-    assert!(w.debug_village_protects(ax, az), "village centre is protected at tier 1");
-    assert!(!w.debug_village_protects(ax + 40, az + 40), "far away is not protected");
+    assert!(
+        w.debug_village_protects(ax, az),
+        "village centre is protected at tier 1"
+    );
+    assert!(
+        !w.debug_village_protects(ax + 40, az + 40),
+        "far away is not protected"
+    );
 }
 
 #[test]
@@ -1828,7 +2253,11 @@ fn debris_settles_on_flat_ground() {
     for _ in 0..360 {
         w.update(&zero, 1.0 / 60.0);
     }
-    assert_eq!(w.debug_debris_count(), n, "nothing collected (player far away)");
+    assert_eq!(
+        w.debug_debris_count(),
+        n,
+        "nothing collected (player far away)"
+    );
     assert_eq!(w.debug_debris_settled_count(), n, "all fragments settled");
     for i in 0..n {
         let (_, py, _) = w.debug_debris_pos(i);
@@ -1838,7 +2267,10 @@ fn debris_settles_on_flat_ground() {
             "settled fragment {i} rests on the ground (y = {py})"
         );
         let (vx, vy, vz) = w.debug_debris_vel(i);
-        assert!(vx == 0.0 && vy == 0.0 && vz == 0.0, "settled fragment {i} is still");
+        assert!(
+            vx == 0.0 && vy == 0.0 && vz == 0.0,
+            "settled fragment {i} is still"
+        );
     }
 }
 
@@ -1865,8 +2297,16 @@ fn debris_magnet_collects_to_inventory() {
             w.debug_set_camera(px, py + 1.6, pz, 0.0, -1.5707);
         }
     }
-    assert_eq!(w.debug_debris_count(), 0, "all fragments magneted to the player");
-    assert_eq!(w.debug_item_count(dirt), 1, "one broken grass = one dirt in the inventory");
+    assert_eq!(
+        w.debug_debris_count(),
+        0,
+        "all fragments magneted to the player"
+    );
+    assert_eq!(
+        w.debug_item_count(dirt),
+        1,
+        "one broken grass = one dirt in the inventory"
+    );
 }
 
 #[test]
@@ -1877,7 +2317,10 @@ fn debris_hard_cap_collapses_oldest() {
     for k in 0..80 {
         w.debug_spawn_debris(8.5, 12.0 + (k % 3) as f32, 8.5, world::STONE);
     }
-    assert!(w.debug_debris_count() <= 256, "live debris never exceeds the hard cap");
+    assert!(
+        w.debug_debris_count() <= 256,
+        "live debris never exceeds the hard cap"
+    );
     assert!(w.debug_debris_count() > 200, "the pool actually filled up");
 }
 
@@ -1891,7 +2334,9 @@ fn debris_trajectories_are_deterministic() {
         for _ in 0..90 {
             w.update(&zero, 1.0 / 60.0);
         }
-        (0..w.debug_debris_count()).map(|i| w.debug_debris_pos(i)).collect()
+        (0..w.debug_debris_count())
+            .map(|i| w.debug_debris_pos(i))
+            .collect()
     };
     let a = run();
     let b = run();
@@ -2038,7 +2483,13 @@ fn wrap_seam_walk_east() {
     let x0 = WRAP - 20;
     let h = worldgen::worldgen_surface_height(x0, z, seed);
     // Face +x: forward = (sin yaw, 0, cos yaw) with pitch 0.
-    w.debug_set_camera(x0 as f32 + 0.5, h as f32 + 3.5, z as f32 + 0.5, std::f32::consts::FRAC_PI_2, 0.0);
+    w.debug_set_camera(
+        x0 as f32 + 0.5,
+        h as f32 + 3.5,
+        z as f32 + 0.5,
+        std::f32::consts::FRAC_PI_2,
+        0.0,
+    );
 
     let mut input: bf_frame_input = unsafe { std::mem::zeroed() };
     input.move_forward = 1.0;
@@ -2066,7 +2517,10 @@ fn wrap_seam_walk_east() {
     assert!(crossed, "player never crossed the seam (x = {px})");
     // Grounded on real terrain the whole way: never fell into the void and is
     // standing near the local surface now.
-    assert!(min_y > 0.0, "player fell through the world near the seam (min y {min_y})");
+    assert!(
+        min_y > 0.0,
+        "player fell through the world near the seam (min y {min_y})"
+    );
     let hs = worldgen::worldgen_surface_height(px as i32, pz as i32, seed);
     assert!(
         (py - hs as f32).abs() < 8.0,
@@ -2127,7 +2581,6 @@ fn wrap_creature_follows_across_seam() {
     // so spawn a plain creature via the hostile hook and befriend it: Pet AI.
     let idx = w.debug_spawn_hostile_at(cx, hc as f32 + 1.0, z as f32 + 0.5);
     w.debug_make_pet(idx); // real Pet AI: follows the player
-
 
     let wrapped = |a: f32, b: f32| {
         let d = (a - b).rem_euclid(WRAP as f32);

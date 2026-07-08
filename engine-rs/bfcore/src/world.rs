@@ -25,48 +25,48 @@ use crate::inventory::Inventory;
 use crate::lighting;
 use crate::mesher::{self, GreedyMesher};
 use crate::store::ChunkStore;
-use crate::types::{BlockId, ChunkCoord, ItemId, ItemStack, IVec3, CHUNK_DIM, REGION_CHUNKS};
+use crate::types::{BlockId, ChunkCoord, IVec3, ItemId, ItemStack, CHUNK_DIM, REGION_CHUNKS};
 use crate::worldgen::{self, TerrainGen};
 
 use std::collections::{HashMap, HashSet};
 
-mod streaming;
-mod meshing;
-mod persistence;
-mod chests;
-mod villages;
-mod shadows;
-mod quests;
-mod crafting;
-mod regions;
-mod time;
-mod falling;
-mod debris;
-mod coords;
-mod blocks;
-mod interaction;
-mod combat;
-mod biomes;
-mod creature_spawning;
-mod danger_sites;
-mod regrowth;
-mod creature_update;
-mod debug;
-mod render_frame;
 mod actions;
-mod player_update;
+mod biomes;
+mod blocks;
+mod chests;
+mod combat;
+mod coords;
+mod crafting;
+mod creature_spawning;
+mod creature_update;
+mod danger_sites;
+mod debris;
+mod debug;
+mod falling;
+mod interaction;
 mod lifecycle;
 mod map;
+mod meshing;
+mod persistence;
+mod player_update;
+mod quests;
+mod regions;
+mod regrowth;
+mod render_frame;
+mod shadows;
+mod streaming;
+mod time;
+mod villages;
 
 pub(crate) use self::coords::WRAP_CHUNKS;
 
 use self::chests::ChestData;
+use self::debris::Debris;
+use self::falling::FallingBlock;
 use self::map::TotemMark;
 pub use self::map::{
     MapMarkerInfo, HOME_CLEARING_CELLS, MAP_CELL, MAP_CELLS, MAP_EXPLORED_BYTES, WARP_TOTEM,
 };
-use self::debris::Debris;
-use self::falling::FallingBlock;
 use self::quests::K_ACHIEVEMENT_COUNT;
 use self::regions::RegionKey;
 use self::shadows::ShadowVol;
@@ -96,6 +96,24 @@ pub const CHEST_SLOTS: usize = 9;
 
 const KCHUNK_DIM: i32 = CHUNK_DIM as i32;
 const KREGION_CHUNKS: i32 = REGION_CHUNKS;
+const RENDER_DISTANCE_UNIT_BLOCKS: i32 = 16;
+const RENDER_DISTANCE_MIN_UNITS: i32 = 4;
+const RENDER_DISTANCE_MAX_UNITS: i32 = 40;
+const FULL_STACK_RADIUS_BLOCKS: i32 = 32;
+
+fn block_radius_to_chunk_radius(blocks: i32) -> i32 {
+    ((blocks.max(KCHUNK_DIM) + KCHUNK_DIM - 1) / KCHUNK_DIM).max(2)
+}
+
+fn full_stack_radius_chunks() -> i32 {
+    ((FULL_STACK_RADIUS_BLOCKS + KCHUNK_DIM - 1) / KCHUNK_DIM).max(1)
+}
+
+fn render_units_to_chunk_radius(units: i32) -> i32 {
+    let blocks = units.clamp(RENDER_DISTANCE_MIN_UNITS, RENDER_DISTANCE_MAX_UNITS)
+        * RENDER_DISTANCE_UNIT_BLOCKS;
+    block_radius_to_chunk_radius(blocks)
+}
 
 // ============================================================================
 // Small vector / matrix math (mirrors mathx.hpp V3/M4 + look_at/perspective).
@@ -134,7 +152,11 @@ fn dot(a: V3, b: V3) -> f32 {
     a.x * b.x + a.y * b.y + a.z * b.z
 }
 fn cross(a: V3, b: V3) -> V3 {
-    V3::new(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
+    V3::new(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x,
+    )
 }
 fn normalize(v: V3) -> V3 {
     let l = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
@@ -151,10 +173,22 @@ fn look_at(eye: V3, ctr: V3, up: V3) -> [f32; 16] {
     let s = normalize(cross(f, up));
     let u = cross(s, f);
     [
-        s.x, u.x, -f.x, 0.0,
-        s.y, u.y, -f.y, 0.0,
-        s.z, u.z, -f.z, 0.0,
-        -dot(s, eye), -dot(u, eye), dot(f, eye), 1.0,
+        s.x,
+        u.x,
+        -f.x,
+        0.0,
+        s.y,
+        u.y,
+        -f.y,
+        0.0,
+        s.z,
+        u.z,
+        -f.z,
+        0.0,
+        -dot(s, eye),
+        -dot(u, eye),
+        dot(f, eye),
+        1.0,
     ]
 }
 fn perspective(fovy: f32, aspect: f32, znear: f32, zfar: f32) -> [f32; 16] {
@@ -349,8 +383,16 @@ struct MeshRec {
 impl Default for MeshRec {
     fn default() -> MeshRec {
         MeshRec {
-            vbuf: bf_gpu_buffer { handle: 0, contents: std::ptr::null_mut(), bytes: 0 },
-            ibuf: bf_gpu_buffer { handle: 0, contents: std::ptr::null_mut(), bytes: 0 },
+            vbuf: bf_gpu_buffer {
+                handle: 0,
+                contents: std::ptr::null_mut(),
+                bytes: 0,
+            },
+            ibuf: bf_gpu_buffer {
+                handle: 0,
+                contents: std::ptr::null_mut(),
+                bytes: 0,
+            },
             index_count: 0,
             has_buffers: false,
             has_water: false,
@@ -368,11 +410,23 @@ type FxCb = Box<dyn FnMut(i32, IVec3, i32)>;
 type EditCb = Box<dyn FnMut(IVec3, BlockId)>;
 
 const DIM_SAT: f32 = 0.18;
-const CY_MIN: i32 = -1;
-const CY_MAX: i32 = 3;
+const WORLD_Y_MIN_BLOCK: i32 = -16;
+const WORLD_Y_MAX_BLOCK: i32 = 63;
+const CY_MIN: i32 = floor_div_const(WORLD_Y_MIN_BLOCK, KCHUNK_DIM);
+const CY_MAX: i32 = floor_div_const(WORLD_Y_MAX_BLOCK, KCHUNK_DIM);
 const GEN_BUDGET: i32 = 6;
 const MESH_BUDGET: usize = 12;
 const NO_FLOOR: i32 = -1000000;
+
+const fn floor_div_const(a: i32, b: i32) -> i32 {
+    let q = a / b;
+    let r = a % b;
+    if r != 0 && ((r < 0) != (b < 0)) {
+        q - 1
+    } else {
+        q
+    }
+}
 
 /// The single player sim. Borrows content/extra for its lifetime (`'c`), mirroring
 /// the C++ `const ContentRegistry*` / `const ContentExtra*`. The mesher + worldgen
@@ -539,7 +593,6 @@ impl<'c> creature_ai::WorldQuery for World<'c> {
         self.ai_floor(x, y_top, z)
     }
 }
-
 
 #[cfg(test)]
 mod time_mode_tests;

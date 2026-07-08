@@ -1648,13 +1648,16 @@ mod worldgen_tests {
     // skirt that fills the lower trunk with leaves.
     #[test]
     fn dense_forest_is_leafy() {
-        let span = 6;
+        let legacy_chunk = 16;
+        let span = ((5 * legacy_chunk + K_CHUNK_DIM - 1) / K_CHUNK_DIM) + 1;
+        let step = ((6 * legacy_chunk + K_CHUNK_DIM - 1) / K_CHUNK_DIM).max(1) as usize;
+        let chunk_from_legacy = |c: i32| (c * legacy_chunk).div_euclid(K_CHUNK_DIM);
         let mut best = (0i32, 0i32, 0usize);
         // #181: the origin is the warm equator now (deserts, sparse trees), so
         // hunt for the dense wood in the temperate mid-latitude band instead
-        // (chunk z 512 is block z = 8192 = W/4, latitude factor ~0).
-        for cz0 in (482..=542).step_by(6) {
-            for cx0 in (-30..=30).step_by(6) {
+        // (legacy chunk z 512 is block z = 8192 = W/4, latitude factor ~0).
+        for cz0 in (chunk_from_legacy(482)..=chunk_from_legacy(542)).step_by(step) {
+            for cx0 in (chunk_from_legacy(-30)..=chunk_from_legacy(30)).step_by(step) {
                 let recs = scan_tree_retention(SEED, cx0, cx0 + span, cz0, cz0 + span);
                 let nf = recs.iter().filter(|r| r.forest).count();
                 if nf > best.2 {

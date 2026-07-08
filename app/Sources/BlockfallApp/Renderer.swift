@@ -73,11 +73,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var lastHeldItem = -1
     private var swingPulse: Double = -100          // #: time of last mine/place/attack (tool swing)
     private var propInstanceBuffer: MTLBuffer?   // per-frame: the bf_prop_instance list (tiny)
-    private let kPropMaxCuboids = 5
-    // #62: each part now draws up to 144 verts so it can be a box, sphere, cone, or
-    // cylinder (the richest is an 8-slice x 3-stack sphere = 144). Unused verts are
-    // emitted degenerate and culled.
-    private let kPropVertsPerInstance = 5 * 144  // kPropMaxCuboids × kVertsPerShape
+    private var propDrawBuckets = Array(repeating: [bf_prop_instance](), count: Renderer.propRowCount)
 
     // ---- Graphics effect toggles (pause-menu Options) ------------------------
     // Each effect can be switched on/off live. Persisted in UserDefaults; loaded
@@ -85,8 +81,14 @@ final class Renderer: NSObject, MTKViewDelegate {
     // default OFF (too busy/realistic for the kid target); most other effects default ON.
     var gfxFoliage = UserDefaults.standard.object(forKey: "gfxFoliage") as? Bool ?? false
     var gfxWater   = UserDefaults.standard.object(forKey: "gfxWater")   as? Bool ?? true
-    // #167: default ON again, the quarter-res pass cut the cost 3x (was disabled for FPS).
-    var gfxGodRays = UserDefaults.standard.object(forKey: "gfxGodRays") as? Bool ?? true
+    // #167: default OFF again. Even quarter-res shafts are a large forest/village GPU hit;
+    // keep them as an optional quality toggle instead of a baseline cost.
+    var gfxGodRays: Bool = {
+        if let s = ProcessInfo.processInfo.environment["BF_GODRAYS"], let v = Int(s) {
+            return v != 0
+        }
+        return UserDefaults.standard.object(forKey: "gfxGodRays") as? Bool ?? false
+    }()
     // #132 lens flare: classic screen-space flare when the sun is on-screen and not
     // occluded. Separate toggle from God Rays (which drives the descending shafts).
     // Defaults ON; OFF removes the flare entirely (no cost, byte-identical to no-flare).
@@ -345,7 +347,6 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Bloom intermediates (half scene size)
     private var bloomBright: MTLTexture?  // rgba16Float half-res bright pass
     private var bloomBlurA:  MTLTexture?  // rgba16Float blur ping
-    private var bloomBlurB:  MTLTexture?  // rgba16Float blur pong
     // #167 half-res god-ray in-scatter (r = shaft, g = litFrac debug, b = hit distance)
     private var godrayTex:   MTLTexture?
     private var currentDrawableSize: CGSize = .zero
@@ -378,16 +379,14 @@ final class Renderer: NSObject, MTKViewDelegate {
     //
     // THE PRIMARY QUALITY/PERF KNOB: the march distance (world units). A fragment is sun-lit
     // if no casting voxel is hit within this distance toward the sun. The per-fragment march
-    // is THE cost (the spec flagged this), and it scales with this distance: on the dev box
-    // (RD24 stress) ~20 holds the median comfortably above 60 while still covering the contact
-    // shadows players actually notice (under trees, beside structures, terraces). Larger gives
-    // longer grazing shadows but costs more; smaller is cheaper. BF_MARCH_DIST overrides it.
-    // M1 AIR NOTE: drop this to ~12-16 on the Air; raise toward 48+ only on a strong GPU.
+    // is THE cost (the spec flagged this), and it scales with this distance. Keep the default
+    // tight for the M1 target: contact shadows under trees / structures survive, while long
+    // grazing shadows remain a BF_MARCH_DIST quality override.
     static let kShadowMarchDist: Float = {
         if let s = ProcessInfo.processInfo.environment["BF_MARCH_DIST"], let v = Float(s) {
             return max(8, min(256, v))
         }
-        return 20.0
+        return 8.0
     }()
     // Coverage radius used only to fade the god-ray contribution near the grid edge.
     private let kShadowFarR:  Float = 384
@@ -886,7 +885,6 @@ final class Renderer: NSObject, MTKViewDelegate {
         hdrDepth    = make2D(.depth32Float, SW,  SH, usage: [.renderTarget, .shaderRead])
         bloomBright = make2D(.rgba16Float, HW,  HH, usage: [.renderTarget, .shaderRead])
         bloomBlurA  = make2D(.rgba16Float, HW,  HH, usage: [.renderTarget, .shaderRead])
-        bloomBlurB  = make2D(.rgba16Float, HW,  HH, usage: [.renderTarget, .shaderRead])
         // #167 god rays march at a fraction of the scene res (kGodRayDownscale); the
         // composite upsamples this depth-aware so shaft edges stay full-res crisp.
         let gds = Int(Renderer.kGodRayDownscale)
@@ -1048,13 +1046,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         frameCounter += 1
         perfLogFrames += 1
         registry.currentFrame = frameCounter
+        registry.collect()
 
         // Lazy texture init / resize check
         let dSize = view.drawableSize
         if currentDrawableSize != dSize { rebuildHDRTextures(size: dSize) }
         guard let hdrColor = hdrColor, let hdrDepth = hdrDepth,
-              let bloomBright = bloomBright, let bloomBlurA = bloomBlurA,
-              let bloomBlurB = bloomBlurB else { return }
+              let bloomBright = bloomBright, let bloomBlurA = bloomBlurA else { return }
 
         // 1) input -> engine
         var input = gameView?.makeFrameInput() ?? bf_frame_input()
@@ -1366,23 +1364,48 @@ final class Renderer: NSObject, MTKViewDelegate {
             //     list and let the GPU expand the models. No per-frame CPU rebuild. ---
             let propN = Int(frame.prop_instance_count)
             if propN > 0, let insts = frame.prop_instances {
-                let need = propN * MemoryLayout<bf_prop_instance>.stride
+                for i in propDrawBuckets.indices {
+                    propDrawBuckets[i].removeAll(keepingCapacity: true)
+                }
+                var batchedPropN = 0
+                for i in 0..<propN {
+                    let inst = insts[i]
+                    let row = Renderer.propRow(for: inst.type)
+                    if row >= 0 {
+                        propDrawBuckets[row].append(inst)
+                        batchedPropN += 1
+                    }
+                }
+                let stride = MemoryLayout<bf_prop_instance>.stride
+                let need = batchedPropN * stride
                 if propInstanceBuffer == nil || propInstanceBuffer!.length < need {
                     propInstanceBuffer = device.makeBuffer(length: max(need, 64 * 1024), options: .storageModeShared)
                 }
-                if let ib = propInstanceBuffer {
-                    memcpy(ib.contents(), insts, need)
+                if let ib = propInstanceBuffer, batchedPropN > 0 {
                     let dayBright = 0.30 + 0.70 * Renderer.dayLight(frame.camera.time_of_day)
-                    var pu2 = PropUniforms(viewProj: viewProj,
+                    let pu2 = PropUniforms(viewProj: viewProj,
                                            params: SIMD4<Float>(dayBright, wallClock, gfxFoliage ? 1 : 0, 0),
                                            camPosH: horizonCamH)   // #180 horizon curvature
                     enc.setRenderPipelineState(propPipeline)
                     enc.setDepthStencilState(depthState)
                     enc.setCullMode(.none)   // small opaque cuboids; skip winding concerns
-                    enc.setVertexBuffer(ib, offset: 0, index: 0)
-                    enc.setVertexBytes(&pu2, length: MemoryLayout<PropUniforms>.stride, index: 1)
                     enc.setVertexBuffer(propModelTable, offset: 0, index: 2)
-                    enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: kPropVertsPerInstance, instanceCount: propN)
+                    var offsetBytes = 0
+                    for row in 0..<Renderer.propRowCount {
+                        let bucket = propDrawBuckets[row]
+                        if bucket.isEmpty { continue }
+                        _ = bucket.withUnsafeBytes { raw in
+                            memcpy(ib.contents().advanced(by: offsetBytes), raw.baseAddress!, raw.count)
+                        }
+                        enc.setVertexBuffer(ib, offset: offsetBytes, index: 0)
+                        var rowPu = pu2
+                        rowPu.params.w = Float(Renderer.propRowVertsPerShape[row])
+                        enc.setVertexBytes(&rowPu, length: MemoryLayout<PropUniforms>.stride, index: 1)
+                        enc.drawPrimitives(type: .triangle, vertexStart: 0,
+                                           vertexCount: Renderer.propRowVertexCounts[row],
+                                           instanceCount: bucket.count)
+                        offsetBytes += bucket.count * stride
+                    }
                 }
             }
 
@@ -1549,16 +1572,10 @@ final class Renderer: NSObject, MTKViewDelegate {
                              inTexture: hdrColor, outTexture: bloomBright,
                              uniforms: nil, uniformsSize: 0)
 
-        // Separable Gaussian blur, two H+V sweeps (ping-pong; can't alias in Metal).
+        // Separable Gaussian blur, one H+V sweep (matches the perf harness).
         // Final result lands back in bloomBright for the composite pass.
         encodeFullscreenPass(cmd: cmd, pipeline: bloomBlurHPipeline,
                              inTexture: bloomBright, outTexture: bloomBlurA,
-                             uniforms: nil, uniformsSize: 0)
-        encodeFullscreenPass(cmd: cmd, pipeline: bloomBlurVPipeline,
-                             inTexture: bloomBlurA, outTexture: bloomBlurB,
-                             uniforms: nil, uniformsSize: 0)
-        encodeFullscreenPass(cmd: cmd, pipeline: bloomBlurHPipeline,
-                             inTexture: bloomBlurB, outTexture: bloomBlurA,
                              uniforms: nil, uniformsSize: 0)
         encodeFullscreenPass(cmd: cmd, pipeline: bloomBlurVPipeline,
                              inTexture: bloomBlurA, outTexture: bloomBright,
@@ -2329,17 +2346,61 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
     }
 
+    private static let propMaxCuboids = 5
+    static let propTypeRows: [UInt32] = [36, 37, 39, 40, 38, 41, 42, 43, 44, 45, 46, 47,
+                                         5, 27, 21, 22, 48, 49]
+    static let propRowCount = propTypeRows.count
+
+    static func propRow(for type: UInt32) -> Int {
+        switch type {
+        case 36: return 0
+        case 37: return 1
+        case 39: return 2
+        case 40: return 3
+        case 38: return 4
+        case 41: return 5
+        case 42: return 6
+        case 43: return 7
+        case 44: return 8
+        case 45: return 9
+        case 46: return 10
+        case 47: return 11
+        case 5:  return 12
+        case 27: return 13
+        case 21: return 14
+        case 22: return 15
+        case 48: return 16
+        case 49: return 17
+        default: return -1
+        }
+    }
+
+    private static func propVertsPerShape(_ shape: Float) -> Int {
+        switch Int(shape + 0.5) {
+        case 1: return 72      // sphere: 6 slices x 2 stacks
+        case 2: return 54      // cone: sides + base cap
+        case 3: return 72      // cylinder: sides + two caps
+        default: return 36     // box
+        }
+    }
+
+    static let propRowVertsPerShape: [Int] = propTypeRows.map { type in
+        propVertsPerShape(propPartShape(type))
+    }
+
+    static let propRowVertexCounts: [Int] = propTypeRows.enumerated().map { row, type in
+        min(propModel(type).count, propMaxCuboids) * propRowVertsPerShape[row]
+    }
+
     // Build the static model table: type rows × cuboid slots of PropCuboidGPU.
     // Unused slots are left zero (zero half-extent → the vertex shader skips them).
     static func makePropModelTable(device: MTLDevice) -> MTLBuffer {
-        let rows = 18, slots = 5
+        let rows = propRowCount, slots = propMaxCuboids
         var table = [PropCuboidGPU](repeating: PropCuboidGPU(cx:0,cy:0,cz:0, hx:0,hy:0,hz:0, r:0,g:0,b:0),
                                     count: rows * slots)
-        let typeForRow: [UInt32] = [36, 37, 39, 40, 38, 41, 42, 43, 44, 45, 46, 47,
-                                    5, 27, 21, 22, 48, 49]  // #62 foliage(12,13) trunk(14,15) pine needles(16) pine log(17)
         for row in 0..<rows {
-            let model = propModel(typeForRow[row])
-            let shape = propPartShape(typeForRow[row])   // #62 box/sphere/cone/cylinder
+            let model = propModel(propTypeRows[row])
+            let shape = propPartShape(propTypeRows[row])   // #62 box/sphere/cone/cylinder
             for (s, cu) in model.prefix(slots).enumerated() {
                 table[row * slots + s] = PropCuboidGPU(cx: cu.0.x, cy: cu.0.y, cz: cu.0.z,
                                                        hx: cu.1.x, hy: cu.1.y, hz: cu.1.z,

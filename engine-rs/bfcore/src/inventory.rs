@@ -13,7 +13,10 @@ pub struct Inventory<'r> {
 
 impl<'r> Inventory<'r> {
     pub fn new(slot_count: usize, registry: Option<&'r dyn ItemRegistry>) -> Self {
-        Self { slots: vec![ItemStack::default(); slot_count], registry }
+        Self {
+            slots: vec![ItemStack::default(); slot_count],
+            registry,
+        }
     }
 
     pub fn slot_count(&self) -> usize {
@@ -74,7 +77,11 @@ impl<'r> Inventory<'r> {
             }
             if slot.is_empty() {
                 let take = s.count.min(max_s);
-                *slot = ItemStack { item: s.item, count: take, durability: s.durability };
+                *slot = ItemStack {
+                    item: s.item,
+                    count: take,
+                    durability: s.durability,
+                };
                 s.count -= take;
             }
         }
@@ -99,7 +106,11 @@ impl<'r> Inventory<'r> {
 
         if self.slots[to].is_empty() {
             let src = self.slots[from];
-            self.slots[to] = ItemStack { item: src.item, count: move_count, durability: src.durability };
+            self.slots[to] = ItemStack {
+                item: src.item,
+                count: move_count,
+                durability: src.durability,
+            };
             self.slots[from].count -= move_count;
             if self.slots[from].count == 0 {
                 self.slots[from] = ItemStack::default();
@@ -109,7 +120,11 @@ impl<'r> Inventory<'r> {
 
         if self.slots[to].item == self.slots[from].item {
             let max_s = self.max_stack(self.slots[from].item);
-            let space = if self.slots[to].count < max_s { max_s - self.slots[to].count } else { 0 };
+            let space = if self.slots[to].count < max_s {
+                max_s - self.slots[to].count
+            } else {
+                0
+            };
             let take = move_count.min(space);
             if take == 0 {
                 return false;
@@ -137,7 +152,11 @@ impl<'r> Inventory<'r> {
                 total += slot.count as u32;
             }
         }
-        if total < 0xFFFF { total as u16 } else { 0xFFFF }
+        if total < 0xFFFF {
+            total as u16
+        } else {
+            0xFFFF
+        }
     }
 
     /// Remove exactly `count` of `item` across slots; all-or-nothing.
@@ -173,11 +192,19 @@ mod tests {
     struct Reg; // item 99 caps at 16, everything else default 64
     impl ItemRegistry for Reg {
         fn max_stack(&self, item: ItemId) -> u16 {
-            if item == 99 { 16 } else { 64 }
+            if item == 99 {
+                16
+            } else {
+                64
+            }
         }
     }
     fn stack(item: ItemId, count: u16) -> ItemStack {
-        ItemStack { item, count, durability: 0xFFFF }
+        ItemStack {
+            item,
+            count,
+            durability: 0xFFFF,
+        }
     }
 
     #[test]

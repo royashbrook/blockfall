@@ -50,18 +50,42 @@ impl<'c> World<'c> {
         if self.block_at(t) != AIR {
             return;
         }
-        let fed = self.block_at(IVec3 { x: t.x, y: t.y + 1, z: t.z }) == WATER
-            || self.block_at(IVec3 { x: t.x + 1, y: t.y, z: t.z }) == WATER
-            || self.block_at(IVec3 { x: t.x - 1, y: t.y, z: t.z }) == WATER
-            || self.block_at(IVec3 { x: t.x, y: t.y, z: t.z + 1 }) == WATER
-            || self.block_at(IVec3 { x: t.x, y: t.y, z: t.z - 1 }) == WATER;
+        let fed = self.block_at(IVec3 {
+            x: t.x,
+            y: t.y + 1,
+            z: t.z,
+        }) == WATER
+            || self.block_at(IVec3 {
+                x: t.x + 1,
+                y: t.y,
+                z: t.z,
+            }) == WATER
+            || self.block_at(IVec3 {
+                x: t.x - 1,
+                y: t.y,
+                z: t.z,
+            }) == WATER
+            || self.block_at(IVec3 {
+                x: t.x,
+                y: t.y,
+                z: t.z + 1,
+            }) == WATER
+            || self.block_at(IVec3 {
+                x: t.x,
+                y: t.y,
+                z: t.z - 1,
+            }) == WATER;
         if !fed {
             return;
         }
         self.set_block_internal(t, WATER);
         let mut w = t;
         for _ in 0..64 {
-            let below = IVec3 { x: w.x, y: w.y - 1, z: w.z };
+            let below = IVec3 {
+                x: w.x,
+                y: w.y - 1,
+                z: w.z,
+            };
             if self.block_at(below) != AIR {
                 break;
             }
@@ -72,7 +96,11 @@ impl<'c> World<'c> {
     }
 
     pub(super) fn apply_gravity_above(&mut self, w: IVec3) {
-        let mut up = IVec3 { x: w.x, y: w.y + 1, z: w.z };
+        let mut up = IVec3 {
+            x: w.x,
+            y: w.y + 1,
+            z: w.z,
+        };
         while Self::is_gravity_block(self.block_at(up)) {
             let b = self.block_at(up);
             self.set_block_internal(up, AIR);
@@ -94,7 +122,11 @@ impl<'c> World<'c> {
             for dx in -1..=1 {
                 for dy in 0..=1 {
                     for dz in -1..=1 {
-                        let n = IVec3 { x: w.x + dx, y: w.y + dy, z: w.z + dz };
+                        let n = IVec3 {
+                            x: w.x + dx,
+                            y: w.y + dy,
+                            z: w.z + dz,
+                        };
                         if !Self::is_log(self.block_at(n)) {
                             continue;
                         }
@@ -123,7 +155,11 @@ impl<'c> World<'c> {
             for dx in -3..=3 {
                 for dy in -1..=4 {
                     for dz in -3..=3 {
-                        let n = IVec3 { x: lw.x + dx, y: lw.y + dy, z: lw.z + dz };
+                        let n = IVec3 {
+                            x: lw.x + dx,
+                            y: lw.y + dy,
+                            z: lw.z + dz,
+                        };
                         let lf = self.block_at(n);
                         if !Self::is_leaf(lf) {
                             continue;
@@ -154,7 +190,11 @@ impl<'c> World<'c> {
             };
             let fy = self.floor_below(Self::ifloor(px), py.floor() as i32 + 1, Self::ifloor(pz));
             if fy != NO_FLOOR && py <= fy as f32 {
-                let land = IVec3 { x: Self::ifloor(px), y: fy, z: Self::ifloor(pz) };
+                let land = IVec3 {
+                    x: Self::ifloor(px),
+                    y: fy,
+                    z: Self::ifloor(pz),
+                };
                 let (as_item, block) = {
                     let fb = &self.falling[i];
                     (fb.as_item, fb.block)
@@ -163,7 +203,11 @@ impl<'c> World<'c> {
                     let id = self.item_that_places(block);
                     if id != 0 {
                         if let Some(inv) = self.inv.as_mut() {
-                            inv.add(ItemStack { item: id, count: 1, durability: 0xFFFF });
+                            inv.add(ItemStack {
+                                item: id,
+                                count: 1,
+                                durability: 0xFFFF,
+                            });
                         }
                     }
                     self.fx(7, land, 0);
@@ -176,7 +220,11 @@ impl<'c> World<'c> {
                     }
                     if self.block_at(settle) == AIR {
                         self.set_block_internal(settle, block);
-                        self.fx(0, settle, ((block as i32) << 4) | Self::sound_class_for(block));
+                        self.fx(
+                            0,
+                            settle,
+                            ((block as i32) << 4) | Self::sound_class_for(block),
+                        );
                     }
                 }
                 self.falling[i].life = 0.0;

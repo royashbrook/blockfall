@@ -332,7 +332,9 @@ impl<'c> World<'c> {
 
     fn village_state_mut(&mut self, ax: i32, az: i32) -> &mut VillageState {
         // #179: canonical settlement key on the torus.
-        self.villages.entry((Self::wrap_block(ax), Self::wrap_block(az))).or_default()
+        self.villages
+            .entry((Self::wrap_block(ax), Self::wrap_block(az)))
+            .or_default()
     }
 
     pub(super) fn try_village_donation(&mut self, idx: usize) -> bool {
@@ -391,7 +393,11 @@ impl<'c> World<'c> {
                 if !is_stone {
                     return false;
                 }
-                let tier = self.villages.get(&(Self::wrap_block(ax), Self::wrap_block(az))).map(|v| v.tier).unwrap_or(0);
+                let tier = self
+                    .villages
+                    .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
+                    .map(|v| v.tier)
+                    .unwrap_or(0);
                 if tier < 1 {
                     self.toast("Mason: build Finn's wooden wall first, then I can make it stone.");
                     return true;
@@ -435,7 +441,11 @@ impl<'c> World<'c> {
                 if !is_iron {
                     return false;
                 }
-                let tier = self.villages.get(&(Self::wrap_block(ax), Self::wrap_block(az))).map(|v| v.tier).unwrap_or(0);
+                let tier = self
+                    .villages
+                    .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
+                    .map(|v| v.tier)
+                    .unwrap_or(0);
                 if tier < 2 {
                     self.toast("Blacksmith: get Bria to finish the stonework, then bring me iron.");
                     return true;

@@ -5,14 +5,18 @@ impl<'c> World<'c> {
     /// from chunk meshes; a fixed 120-block cutoff made high-altitude creative flight show
     /// terrain without nearby scenery. Keep small ground clutter bounded for the M1 Air target.
     pub(super) fn prop_detail_radius_blocks(&self) -> f32 {
-        ((self.stream_r as f32) * KCHUNK_DIM as f32).clamp(120.0, 384.0)
+        ((self.stream_r as f32) * KCHUNK_DIM as f32).clamp(120.0, 192.0)
     }
 
-    /// Far scenery LOD: keep tree trunks/leaves visible through the render distance even
-    /// after tiny grass/flower props drop out. This is the first step toward real prop LOD
-    /// without expanding the ABI yet.
+    /// Leaf props dominate dense-forest vertex count, so keep canopies closer than trunks.
+    pub(super) fn prop_leaf_radius_blocks(&self) -> f32 {
+        ((self.stream_r as f32) * KCHUNK_DIM as f32).clamp(120.0, 256.0)
+    }
+
+    /// Far scenery LOD: keep trunks visible after tiny grass/flower props and leaf detail
+    /// drop out. This is a CPU-side prop cull, so it needs no renderer ABI changes.
     pub(super) fn prop_scenery_radius_blocks(&self) -> f32 {
-        ((self.stream_r as f32) * KCHUNK_DIM as f32).clamp(120.0, 640.0)
+        ((self.stream_r as f32) * KCHUNK_DIM as f32).clamp(120.0, 384.0)
     }
 
     // ---- build_frame -----------------------------------------------------
@@ -97,9 +101,11 @@ impl<'c> World<'c> {
             // while their occupancy shadows did (a field of tree shadows with
             // invisible, breakable trees). Props do not need mesh buffers.
             let detail_radius = self.prop_detail_radius_blocks();
+            let leaf_radius = self.prop_leaf_radius_blocks();
             let scenery_radius = self.prop_scenery_radius_blocks();
-            if dist < scenery_radius {
-                let props = self.meshes[cc].props.clone();
+            let max_prop_radius = detail_radius.max(leaf_radius).max(scenery_radius);
+            if dist < max_prop_radius + kchunk_r {
+                let props = &self.meshes[cc].props;
                 if !props.is_empty() {
                     // #179: props carry ABSOLUTE world positions and the prop shader
                     // does world = position + local, so they must be shifted by the
@@ -116,16 +122,21 @@ impl<'c> World<'c> {
                         p.position.z += dz_off;
                         p
                     };
-                    if dist < detail_radius {
-                        prop_instances.extend(props.iter().copied().map(shift));
-                    } else {
-                        prop_instances.extend(
-                            props
-                                .iter()
-                                .copied()
-                                .filter(|p| Self::is_tree_block(p.type_ as BlockId))
-                                .map(shift),
-                        );
+                    let detail_r2 = detail_radius * detail_radius;
+                    let leaf_r2 = leaf_radius * leaf_radius;
+                    let scenery_r2 = scenery_radius * scenery_radius;
+                    for p in props.iter().copied().map(shift) {
+                        let dx = p.position.x - cam_pos.x;
+                        let dy = p.position.y - cam_pos.y;
+                        let dz = p.position.z - cam_pos.z;
+                        let d2 = dx * dx + dy * dy + dz * dz;
+                        let ty = p.type_ as BlockId;
+                        if d2 < detail_r2
+                            || (d2 < leaf_r2 && Self::is_leaf(ty))
+                            || (d2 < scenery_r2 && Self::is_log(ty))
+                        {
+                            prop_instances.push(p);
+                        }
                     }
                 }
             }
@@ -274,57 +285,11 @@ impl<'c> World<'c> {
         out.regions = std::ptr::null();
         out.region_count = 0;
 
-        // Shadow occluders: resident meshes, no cone cull, bounded radius.
+        // The shadow-map pass is retired. World-space voxel shadows use
+        // bf_world_shadow_volume instead, so keep the ABI field empty.
         shadow_draws.clear();
-        // #120 must be >= the renderer far shadow cascade (kShadowFarR 400) plus a margin so a
-        // tall caster just outside the cascade still throws its shadow inward. The far cascade's
-        // inscribed circle now reaches PAST the render distance (384), so occluders must exist
-        // all the way out there for shadows to be full across the whole visible vista. 420 gives
-        // the cascade a 20-block ring of occluders just beyond its edge.
-        let kshadow_r = 420.0f32;
-        for cc in &mesh_coords {
-            let (has_buffers, index_count, vbuf_h, ibuf_h) = {
-                let rec = &self.meshes[cc];
-                (
-                    rec.has_buffers,
-                    rec.index_count,
-                    rec.vbuf.handle,
-                    rec.ibuf.handle,
-                )
-            };
-            if !has_buffers || index_count == 0 {
-                continue;
-            }
-            let (rcx, rcz) = rel_chunk(cc);
-            let sctr = V3::new(
-                (rcx as f32 + 0.5) * KCHUNK_DIM as f32,
-                (cc.y as f32 + 0.5) * KCHUNK_DIM as f32,
-                (rcz as f32 + 0.5) * KCHUNK_DIM as f32,
-            );
-            let stoc = V3::new(sctr.x - cam_pos.x, sctr.y - cam_pos.y, sctr.z - cam_pos.z);
-            if dot(stoc, stoc) > kshadow_r * kshadow_r {
-                continue;
-            }
-            shadow_draws.push(bf_draw_item {
-                vertex_buffer: vbuf_h,
-                index_buffer: ibuf_h,
-                vertex_offset: 0,
-                index_offset: 0,
-                index_count,
-                material_id: 0,
-                chunk_origin: bf_ivec3 {
-                    x: rcx * KCHUNK_DIM,
-                    y: cc.y * KCHUNK_DIM,
-                    z: rcz * KCHUNK_DIM,
-                },
-                dim_saturation: 0.0,
-                dim_sat_px: 0.0,
-                dim_sat_pz: 0.0,
-                dim_sat_pxz: 0.0,
-            });
-        }
-        out.shadow_draws = shadow_draws.as_ptr();
-        out.shadow_draw_count = shadow_draws.len() as u32;
+        out.shadow_draws = std::ptr::null();
+        out.shadow_draw_count = 0;
         out.prop_instances = prop_instances.as_ptr();
         out.prop_instance_count = prop_instances.len() as u32;
 

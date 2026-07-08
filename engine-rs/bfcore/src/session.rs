@@ -464,7 +464,12 @@ mod tests {
         world.init_world(123);
         let mut session = NetSession::new(NetRole::Host);
 
-        session.on_payload(7, NetChannel::ReliableOrdered, &welcome_packet(999), &mut world);
+        session.on_payload(
+            7,
+            NetChannel::ReliableOrdered,
+            &welcome_packet(999),
+            &mut world,
+        );
 
         assert_eq!(world.world_seed(), 123);
         assert!(!session.joined());
@@ -478,7 +483,12 @@ mod tests {
         let before = world.debug_block_at(pos.x, pos.y, pos.z);
         let mut session = NetSession::new(NetRole::Host);
 
-        session.on_payload(7, NetChannel::ReliableOrdered, &edit_packet(pos, 42), &mut world);
+        session.on_payload(
+            7,
+            NetChannel::ReliableOrdered,
+            &edit_packet(pos, 42),
+            &mut world,
+        );
 
         assert_eq!(world.debug_block_at(pos.x, pos.y, pos.z), before);
     }

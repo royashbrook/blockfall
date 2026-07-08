@@ -5,7 +5,7 @@ impl<'c> World<'c> {
         self.gen_queue.clear();
         let c = self.last_center;
         let target_r = self.stream_active_r.clamp(2, self.stream_r);
-        let near_r = 5.min(target_r);
+        let near_r = full_stack_radius_chunks().min(target_r);
         let player_cy = Self::floordiv(Self::ifloor(self.pos.y), KCHUNK_DIM);
         for dx in -target_r..=target_r {
             for dz in -target_r..=target_r {
@@ -14,7 +14,7 @@ impl<'c> World<'c> {
                 // the full stack so digging and caves always work. Creative used to force
                 // FULL Y stacks for every column in radius, which burned most of the gen
                 // budget on invisible underground and left visible holes while flying.
-                let near = dx.abs() <= near_r && dz.abs() <= near_r;
+                let near = dx * dx + dz * dz <= near_r * near_r;
                 // #191: a SQUARE load box, filled radiating outward (the gen_queue
                 // sorts nearest-first below). An earlier round cull was reverted:
                 // culling the corners de-rendered already-loaded chunks as the
@@ -60,14 +60,19 @@ impl<'c> World<'c> {
                     if !want {
                         continue;
                     }
-                    let cc = ChunkCoord { x: col_cx, y: cy, z: col_cz };
+                    let cc = ChunkCoord {
+                        x: col_cx,
+                        y: cy,
+                        z: col_cz,
+                    };
                     if !self.store.is_resident(cc) {
                         self.gen_queue.push(cc);
                     }
                 }
             }
         }
-        self.gen_queue.sort_by(|a, b| Self::dist2(*b, c).cmp(&Self::dist2(*a, c)));
+        self.gen_queue
+            .sort_by(|a, b| Self::dist2(*b, c).cmp(&Self::dist2(*a, c)));
         self.evict_far();
     }
 
@@ -146,12 +151,36 @@ impl<'c> World<'c> {
     pub(super) fn dirty_chunk_and_resident_neighbours(&mut self, cc: ChunkCoord) {
         self.mark_dirty(cc);
         let dirs = [
-            ChunkCoord { x: cc.x + 1, y: cc.y, z: cc.z },
-            ChunkCoord { x: cc.x - 1, y: cc.y, z: cc.z },
-            ChunkCoord { x: cc.x, y: cc.y + 1, z: cc.z },
-            ChunkCoord { x: cc.x, y: cc.y - 1, z: cc.z },
-            ChunkCoord { x: cc.x, y: cc.y, z: cc.z + 1 },
-            ChunkCoord { x: cc.x, y: cc.y, z: cc.z - 1 },
+            ChunkCoord {
+                x: cc.x + 1,
+                y: cc.y,
+                z: cc.z,
+            },
+            ChunkCoord {
+                x: cc.x - 1,
+                y: cc.y,
+                z: cc.z,
+            },
+            ChunkCoord {
+                x: cc.x,
+                y: cc.y + 1,
+                z: cc.z,
+            },
+            ChunkCoord {
+                x: cc.x,
+                y: cc.y - 1,
+                z: cc.z,
+            },
+            ChunkCoord {
+                x: cc.x,
+                y: cc.y,
+                z: cc.z + 1,
+            },
+            ChunkCoord {
+                x: cc.x,
+                y: cc.y,
+                z: cc.z - 1,
+            },
         ];
         for nc in dirs {
             // mark_dirty canonicalizes; is_resident wraps in the store.
@@ -173,7 +202,9 @@ impl<'c> World<'c> {
         if self.pool.is_some() {
             return;
         }
-        self.pool = Some(crate::jobs::WorkerPool::new(crate::jobs::recommended_workers()));
+        self.pool = Some(crate::jobs::WorkerPool::new(
+            crate::jobs::recommended_workers(),
+        ));
         let (gtx, grx) = std::sync::mpsc::channel::<GenResult>();
         let (mtx, mrx) = std::sync::mpsc::channel::<MeshJobResult>();
         self.gen_tx = Some(gtx);
@@ -213,7 +244,13 @@ impl<'c> World<'c> {
         let bulk = self.bulk_fill();
         let catchup = self.catchup_fill();
 
-        let gen_collect = if bulk { 24 } else if catchup { 16 } else { 12 };
+        let gen_collect = if bulk {
+            24
+        } else if catchup {
+            16
+        } else {
+            12
+        };
         let gen_drain = gen_collect * 4;
         if let Some(rx) = self.gen_rx.as_ref() {
             while self.pending_gen_results.len() < gen_drain {
@@ -223,11 +260,14 @@ impl<'c> World<'c> {
                 }
             }
         }
-        self.pending_gen_results
-            .sort_by(|a, b| Self::dist2(b.cc, self.last_center).cmp(&Self::dist2(a.cc, self.last_center)));
+        self.pending_gen_results.sort_by(|a, b| {
+            Self::dist2(b.cc, self.last_center).cmp(&Self::dist2(a.cc, self.last_center))
+        });
         let mut handled = 0;
         while handled < gen_collect {
-            let Some(r) = self.pending_gen_results.pop() else { break };
+            let Some(r) = self.pending_gen_results.pop() else {
+                break;
+            };
             handled += 1;
             self.gen_inflight.remove(&r.cc);
             if self.store.is_resident(r.cc) {
@@ -241,7 +281,13 @@ impl<'c> World<'c> {
             self.shadow.refill_cols.insert((r.cc.x, r.cc.z));
         }
 
-        let max_inflight = if bulk { 48 } else if catchup { 32 } else { 24 };
+        let max_inflight = if bulk {
+            48
+        } else if catchup {
+            32
+        } else {
+            24
+        };
         let seed = self.seed;
         while !self.gen_queue.is_empty() && self.gen_inflight.len() < max_inflight {
             let cc = self.gen_queue.pop().unwrap();

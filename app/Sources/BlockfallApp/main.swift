@@ -7,6 +7,7 @@
 // ============================================================================
 import AppKit
 import MetalKit
+import QuartzCore
 import CBlockcore
 
 // Keep C strings alive for the engine's lifetime (process-scoped).
@@ -53,11 +54,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var godRaySlider: NSSlider?
     private weak var celOutlineSlider: NSSlider?
     private weak var bloomSlider: NSSlider?   // #205 greyed when Bloom is toggled off
+    private var uncappedDrawTimer: DispatchSourceTimer?
 
     // ---- HUD option persistence (#: text size + visibility) ----
     // UserDefaults keys. Loaded at startup (startGame) and written on change.
     static let kHUDScaleKey = "hudScale"
     static let kHUDVisibleKey = "hudVisible"
+    static let kVSyncKey = "gfxVSync"
     static func loadHUDScale() -> CGFloat {
         let d = UserDefaults.standard
         // Absent key -> default 1.0; clamp to the supported 1.0–2.0 range.
@@ -68,6 +71,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let d = UserDefaults.standard
         guard d.object(forKey: kHUDVisibleKey) != nil else { return true }  // default ON
         return d.bool(forKey: kHUDVisibleKey)
+    }
+    static func loadVSyncEnabled() -> Bool {
+        let d = UserDefaults.standard
+        guard d.object(forKey: kVSyncKey) != nil else { return true }
+        return d.bool(forKey: kVSyncKey)
+    }
+
+    private func stopUncappedDrawPump() {
+        uncappedDrawTimer?.cancel()
+        uncappedDrawTimer = nil
+    }
+
+    private func applyFrameSync(_ enabled: Bool, to target: GameView? = nil) {
+        UserDefaults.standard.set(enabled, forKey: AppDelegate.kVSyncKey)
+        guard let view = target ?? gameView else { return }
+        let maxHz = max(60, window.screen?.maximumFramesPerSecond ?? NSScreen.main?.maximumFramesPerSecond ?? 60)
+        view.preferredFramesPerSecond = enabled ? maxHz : 1000
+        (view.layer as? CAMetalLayer)?.displaySyncEnabled = enabled
+        if enabled {
+            stopUncappedDrawPump()
+            view.isPaused = false
+        } else {
+            view.isPaused = true
+            guard uncappedDrawTimer == nil else { return }
+            let timer = DispatchSource.makeTimerSource(queue: .main)
+            timer.schedule(deadline: .now(), repeating: .milliseconds(1), leeway: .milliseconds(0))
+            timer.setEventHandler { [weak view] in view?.draw() }
+            uncappedDrawTimer = timer
+            timer.resume()
+        }
     }
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -120,8 +153,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let frame = window.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         let mtkView = GameView(frame: frame, device: device)
         mtkView.colorPixelFormat = .bgra8Unorm
-        mtkView.preferredFramesPerSecond = 60
         mtkView.presentsWithTransaction = true   // so the AppKit HUD overlay composites on top
+        applyFrameSync(AppDelegate.loadVSyncEnabled(), to: mtkView)
 
         let r = Renderer(view: mtkView, device: device, saveDir: saveDir, audio: audio,
                          fresh: fresh, seed: seed)
@@ -358,6 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // #187 corner minimap toggle (default on).
             gfxCheckbox("Minimap", tag: 10,
                         on: UserDefaults.standard.object(forKey: "minimap") as? Bool ?? true),
+            gfxCheckbox("VSync", tag: 12, on: AppDelegate.loadVSyncEnabled()),
         ])
         fxStack.orientation = .vertical; fxStack.spacing = 8; fxStack.alignment = .leading
 
@@ -731,7 +765,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // #: graphics toggle → live renderer + persisted. Tags match gfxCheckbox order.
     @objc private func gfxToggleChanged(_ sender: NSButton) {
         let on = (sender.state == .on)
-        let keys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows", "gfxCelShade", "gfxLensFlare", "gfxCharShadows", "gfxClouds", "hyperspeed", "minimap", "gfxBloom"]
+        let keys = ["gfxFoliage", "gfxWater", "gfxGodRays", "gfxPollen", "gfxShadows", "gfxCelShade", "gfxLensFlare", "gfxCharShadows", "gfxClouds", "hyperspeed", "minimap", "gfxBloom", AppDelegate.kVSyncKey]
         guard sender.tag >= 0 && sender.tag < keys.count else { return }
         UserDefaults.standard.set(on, forKey: keys[sender.tag])
         switch sender.tag {
@@ -747,6 +781,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case 9: gameView?.setHyperspeed(on)   // #184 creative 100x flight
         case 10: minimapOverlay?.isHidden = !on   // #187 corner minimap
         case 11: renderer?.gfxBloom = on; bloomSlider?.isEnabled = on   // #205 bloom toggle
+        case 12: applyFrameSync(on)
         default: break
         }
     }
@@ -780,6 +815,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         renderer?.gfxBloomStr = Float(s.doubleValue)
     }
     @objc private func quitToMenu() {
+        stopUncappedDrawPump()
         pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
         mapOverlay?.removeFromSuperview(); mapOverlay = nil   // #182
         minimapOverlay?.stop(); minimapOverlay?.removeFromSuperview(); minimapOverlay = nil  // #187
@@ -803,6 +839,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_: Notification) {
+        stopUncappedDrawPump()
         renderer?.shutdown()
         audio.stop()
     }
@@ -1098,7 +1135,8 @@ if let idx = CommandLine.arguments.firstIndex(of: "--critters"), idx + 1 < Comma
 }
 if let idx = CommandLine.arguments.firstIndex(of: "--perftest") {
     let secs = (idx + 1 < CommandLine.arguments.count) ? (Double(CommandLine.arguments[idx + 1]) ?? 20) : 20
-    let ok = runPerfTest(seconds: secs, jsonPath: "/tmp/blockfall_perf.json")
+    let jsonPath = ProcessInfo.processInfo.environment["BF_METAL_PERF_JSON"] ?? "/tmp/blockfall_perf.json"
+    let ok = runPerfTest(seconds: secs, jsonPath: jsonPath)
     exit(ok ? 0 : 1)
 }
 

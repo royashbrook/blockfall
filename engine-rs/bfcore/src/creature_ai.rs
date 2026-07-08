@@ -179,7 +179,14 @@ fn standable<Q: WorldQuery>(q: &Q, x: i32, z: i32, y_ref: i32) -> Option<i32> {
 /// after the start to the goal (start excluded), or an empty vec if no usable route
 /// was found. The route is post simplified to drop collinear points so following it
 /// produces long smooth straights instead of a stair step wobble.
-pub fn find_path<Q: WorldQuery>(q: &Q, sx: i32, sz: i32, sy: i32, gx: i32, gz: i32) -> Vec<(i32, i32)> {
+pub fn find_path<Q: WorldQuery>(
+    q: &Q,
+    sx: i32,
+    sz: i32,
+    sy: i32,
+    gx: i32,
+    gz: i32,
+) -> Vec<(i32, i32)> {
     if sx == gx && sz == gz {
         return Vec::new();
     }
@@ -194,7 +201,13 @@ pub fn find_path<Q: WorldQuery>(q: &Q, sx: i32, sz: i32, sy: i32, gx: i32, gz: i
     // is bounded so this stays tiny.
     let mut best: std::collections::HashMap<(i32, i32), i32> = std::collections::HashMap::new();
 
-    open.push(Node { x: sx, z: sz, g: 0, f: heuristic(sx, sz, cgx, cgz), parent: -1 });
+    open.push(Node {
+        x: sx,
+        z: sz,
+        g: 0,
+        f: heuristic(sx, sz, cgx, cgz),
+        parent: -1,
+    });
     best.insert((sx, sz), 0);
 
     let mut best_goal_node: i32 = -1;
@@ -250,7 +263,9 @@ pub fn find_path<Q: WorldQuery>(q: &Q, sx: i32, sz: i32, sy: i32, gx: i32, gz: i
             // No corner cutting on diagonals: both orthogonal neighbours must be
             // walkable, else the creature would clip a wall corner.
             if dx != 0 && dz != 0 {
-                if standable(q, cur.x + dx, cur.z, cy).is_none() || standable(q, cur.x, cur.z + dz, cy).is_none() {
+                if standable(q, cur.x + dx, cur.z, cy).is_none()
+                    || standable(q, cur.x, cur.z + dz, cy).is_none()
+                {
                     continue;
                 }
             }
@@ -262,7 +277,13 @@ pub fn find_path<Q: WorldQuery>(q: &Q, sx: i32, sz: i32, sy: i32, gx: i32, gz: i
                 }
             }
             best.insert(key, ng);
-            open.push(Node { x: nx, z: nz, g: ng, f: ng + heuristic(nx, nz, cgx, cgz), parent: cur_idx });
+            open.push(Node {
+                x: nx,
+                z: nz,
+                g: ng,
+                f: ng + heuristic(nx, nz, cgx, cgz),
+                parent: cur_idx,
+            });
         }
     }
 
@@ -358,7 +379,12 @@ pub fn approach_speed(speed: f32, target: f32, dt: f32) -> f32 {
 /// displacement (dx, dz) to apply this tick plus the updated (heading, speed). The
 /// caller still owns collision, climb, gravity and writing the result back, so the
 /// existing climb step keeps working untouched.
-pub fn step_locomotion(ai: &CreatureAi, desired_heading: f32, desired_speed: f32, dt: f32) -> (f32, f32, f32, f32) {
+pub fn step_locomotion(
+    ai: &CreatureAi,
+    desired_heading: f32,
+    desired_speed: f32,
+    dt: f32,
+) -> (f32, f32, f32, f32) {
     let heading = turn_toward(ai.heading, desired_heading, dt);
     let speed = approach_speed(ai.speed, desired_speed, dt);
     // Move along the *current* (smoothed) heading, not the desired one, so a turning
@@ -418,7 +444,11 @@ pub fn decide(
     // never re-roll, flee, or path. Keeps the locomotion tests deterministic.
     if temper == Temperament::Scripted {
         ai.state = AiState::Wander;
-        return Decision { desired_heading: ai.goal_heading(), speed_frac: 1.0, path_goal: None };
+        return Decision {
+            desired_heading: ai.goal_heading(),
+            speed_frac: 1.0,
+            path_goal: None,
+        };
     }
 
     ai.state_timer -= dt;
@@ -490,25 +520,41 @@ pub fn decide(
     }
 
     match ai.state {
-        AiState::Idle => Decision { desired_heading: ai.heading, speed_frac: 0.0, path_goal: None },
+        AiState::Idle => Decision {
+            desired_heading: ai.heading,
+            speed_frac: 0.0,
+            path_goal: None,
+        },
         AiState::Wander => {
             // Re-roll a heading occasionally so the amble meanders.
             if ai.state_timer <= 0.0 {
                 ai.state_timer = 1.5 + rng01(seed) * 2.0;
                 ai.heading_target_set(rng01(seed) * std::f32::consts::TAU);
             }
-            Decision { desired_heading: ai.goal_heading(), speed_frac: 0.45, path_goal: None }
+            Decision {
+                desired_heading: ai.goal_heading(),
+                speed_frac: 0.45,
+                path_goal: None,
+            }
         }
         AiState::Flee => {
             // Head directly away from the player, fast.
             let away = (cx - px).atan2(cz - pz);
-            Decision { desired_heading: away, speed_frac: 1.0, path_goal: None }
+            Decision {
+                desired_heading: away,
+                speed_frac: 1.0,
+                path_goal: None,
+            }
         }
         AiState::Seek => {
             if to_player_d < SEEK_STOP {
                 // Close enough: face the player, let melee take over, stop pathing.
                 let toward = (px - cx).atan2(pz - cz);
-                Decision { desired_heading: toward, speed_frac: 0.0, path_goal: None }
+                Decision {
+                    desired_heading: toward,
+                    speed_frac: 0.0,
+                    path_goal: None,
+                }
             } else {
                 Decision {
                     desired_heading: ai.heading,
@@ -635,7 +681,10 @@ mod tests {
     }
     impl FlatWorld {
         fn new(floor_y: i32) -> FlatWorld {
-            FlatWorld { walls: std::collections::HashSet::new(), floor_y }
+            FlatWorld {
+                walls: std::collections::HashSet::new(),
+                floor_y,
+            }
         }
         fn wall(&mut self, x: i32, z: i32) {
             self.walls.insert((x, z));
@@ -683,10 +732,17 @@ mod tests {
         assert_eq!(*p.last().unwrap(), (4, 0), "route must reach the goal");
         // It must NOT pass through the wall cells.
         for &(x, z) in &p {
-            assert!(!w.walls.contains(&(x, z)), "route stepped through a wall at {:?}", (x, z));
+            assert!(
+                !w.walls.contains(&(x, z)),
+                "route stepped through a wall at {:?}",
+                (x, z)
+            );
         }
         // And it must leave the z=0 corridor at least once to get around.
-        assert!(p.iter().any(|&(_, z)| z != 0), "route should detour off the blocked line");
+        assert!(
+            p.iter().any(|&(_, z)| z != 0),
+            "route should detour off the blocked line"
+        );
     }
 
     #[test]
@@ -702,7 +758,10 @@ mod tests {
         }
         let p = find_path(&w, 0, 0, 1, 8, 0);
         // Penned in: every neighbour is a wall, so no progress is possible.
-        assert!(p.is_empty(), "no route should be found when fully walled in");
+        assert!(
+            p.is_empty(),
+            "no route should be found when fully walled in"
+        );
     }
 
     #[test]
@@ -711,20 +770,29 @@ mod tests {
         let h0 = 0.0f32;
         let h1 = turn_toward(h0, std::f32::consts::PI, 0.05);
         assert!(h1.abs() > 0.0, "should have begun turning");
-        assert!((h1 - std::f32::consts::PI).abs() > 0.5, "must not snap to the target in one tick (got {h1})");
+        assert!(
+            (h1 - std::f32::consts::PI).abs() > 0.5,
+            "must not snap to the target in one tick (got {h1})"
+        );
         // After enough ticks it converges.
         let mut h = h0;
         for _ in 0..40 {
             h = turn_toward(h, std::f32::consts::PI, 0.05);
         }
-        assert!((wrap_angle(h - std::f32::consts::PI)).abs() < 0.05, "should converge to target");
+        assert!(
+            (wrap_angle(h - std::f32::consts::PI)).abs() < 0.05,
+            "should converge to target"
+        );
     }
 
     #[test]
     fn speed_ramps_no_teleport() {
         // From a standstill, speed must ramp up over ticks, not jump to target.
         let s1 = approach_speed(0.0, 4.0, 0.05);
-        assert!(s1 > 0.0 && s1 < 4.0, "speed should ramp, not jump (got {s1})");
+        assert!(
+            s1 > 0.0 && s1 < 4.0,
+            "speed should ramp, not jump (got {s1})"
+        );
         let mut s = 0.0;
         for _ in 0..30 {
             s = approach_speed(s, 4.0, 0.05);
@@ -737,11 +805,18 @@ mod tests {
 
     #[test]
     fn step_locomotion_curves_through_heading() {
-        let ai = CreatureAi { heading: 0.0, speed: 2.0, ..Default::default() };
+        let ai = CreatureAi {
+            heading: 0.0,
+            speed: 2.0,
+            ..Default::default()
+        };
         // Desired hard turn; one step should move mostly forward along current
         // heading, not teleport sideways toward the desired heading.
         let (dx, dz, nh, _ns) = step_locomotion(&ai, std::f32::consts::FRAC_PI_2, 2.0, 0.05);
-        assert!(dz.abs() > dx.abs(), "should still move mostly along current +Z heading");
+        assert!(
+            dz.abs() > dx.abs(),
+            "should still move mostly along current +Z heading"
+        );
         assert!(nh > 0.0, "heading should have rotated toward the desired");
     }
 
@@ -755,11 +830,24 @@ mod tests {
         let px = 6.0f32; // 1 block east
         let pz = 5.0f32;
         let d = ((px - cx).powi(2) + (pz - cz).powi(2)).sqrt();
-        let dec = decide(&mut ai, Temperament::Passive, cx, cz, px, pz, d, 0.05, &mut seed);
+        let dec = decide(
+            &mut ai,
+            Temperament::Passive,
+            cx,
+            cz,
+            px,
+            pz,
+            d,
+            0.05,
+            &mut seed,
+        );
         assert_eq!(ai.state, AiState::Flee);
         assert!(dec.speed_frac > 0.5, "should flee at speed");
         // Desired heading points away from the player (toward -X here, sin<0).
-        assert!(dec.desired_heading.sin() < 0.0, "should head away from the player");
+        assert!(
+            dec.desired_heading.sin() < 0.0,
+            "should head away from the player"
+        );
         assert!(dec.path_goal.is_none(), "flee does not path");
     }
 
@@ -768,7 +856,17 @@ mod tests {
         let mut ai = CreatureAi::default();
         let mut seed = 0xBEEF1u32;
         // Player far away: never Flee; settles into Idle or Wander.
-        let dec = decide(&mut ai, Temperament::Passive, 0.0, 0.0, 100.0, 100.0, 141.0, 0.05, &mut seed);
+        let dec = decide(
+            &mut ai,
+            Temperament::Passive,
+            0.0,
+            0.0,
+            100.0,
+            100.0,
+            141.0,
+            0.05,
+            &mut seed,
+        );
         assert_ne!(ai.state, AiState::Flee);
         assert!(dec.speed_frac < 1.0);
     }
@@ -778,9 +876,22 @@ mod tests {
         let mut ai = CreatureAi::default();
         let mut seed = 7u32;
         // Player within seek radius but not melee range.
-        let dec = decide(&mut ai, Temperament::Hunter, 0.0, 0.0, 8.0, 0.0, 8.0, 0.05, &mut seed);
+        let dec = decide(
+            &mut ai,
+            Temperament::Hunter,
+            0.0,
+            0.0,
+            8.0,
+            0.0,
+            8.0,
+            0.05,
+            &mut seed,
+        );
         assert_eq!(ai.state, AiState::Seek);
-        assert!(dec.path_goal.is_some(), "hunter should request a path to the player");
+        assert!(
+            dec.path_goal.is_some(),
+            "hunter should request a path to the player"
+        );
         assert_eq!(dec.path_goal.unwrap(), (8, 0));
     }
 
@@ -792,7 +903,17 @@ mod tests {
             let mut seed = 99u32;
             let mut states = Vec::new();
             for _ in 0..50 {
-                decide(&mut ai, Temperament::Villager, 0.0, 0.0, 100.0, 100.0, 141.0, 0.1, &mut seed);
+                decide(
+                    &mut ai,
+                    Temperament::Villager,
+                    0.0,
+                    0.0,
+                    100.0,
+                    100.0,
+                    141.0,
+                    0.1,
+                    &mut seed,
+                );
                 states.push(ai.state);
             }
             (states, seed)
@@ -808,6 +929,9 @@ mod tests {
         // Standing right on the first waypoint center: it should advance to the next.
         let h = ai.follow_heading(1.5, 0.5);
         assert!(h.is_some());
-        assert_eq!(ai.path_idx, 1, "should have consumed the reached first waypoint");
+        assert_eq!(
+            ai.path_idx, 1,
+            "should have consumed the reached first waypoint"
+        );
     }
 }

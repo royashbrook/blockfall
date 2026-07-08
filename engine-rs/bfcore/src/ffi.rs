@@ -170,7 +170,11 @@ pub unsafe extern "C" fn bf_engine_create(
     }
     let cfg = unsafe { *cfg };
     if cfg.abi_version != BF_ABI_VERSION {
-        return fail(bf_result::BF_ERR_ABI_MISMATCH, "ABI version mismatch", out_err);
+        return fail(
+            bf_result::BF_ERR_ABI_MISMATCH,
+            "ABI version mismatch",
+            out_err,
+        );
     }
 
     // Resolve the content dir (default "." like the C++).
@@ -194,8 +198,7 @@ pub unsafe extern "C" fn bf_engine_create(
     // boxes are never moved after this point. See module docs.
     let content_ref: &'static ContentRegistry =
         unsafe { &*(content.as_ref() as *const ContentRegistry) };
-    let extra_ref: &'static ContentExtra =
-        unsafe { &*(extra.as_ref() as *const ContentExtra) };
+    let extra_ref: &'static ContentExtra = unsafe { &*(extra.as_ref() as *const ContentExtra) };
     world.set_content(content_ref);
     world.set_extra(extra_ref);
 
@@ -233,22 +236,27 @@ pub unsafe extern "C" fn bf_engine_create(
     // SAFETY: `raw` points at a live, pinned Engine for the whole World lifetime.
     {
         let e: &mut Engine = unsafe { &mut *raw };
-        e.world.set_fx_callback(Box::new(move |code: i32, p: IVec3, extra: i32| {
-            // SAFETY: see above; `raw` is live whenever the World fires fx.
-            let e: &Engine = unsafe { &*raw };
-            if let Some(fn_) = e.evt_fn {
-                let ev = bf_event {
-                    kind: bf_event_kind::BF_EVT_SFX,
-                    i: code,
-                    j: extra,
-                    pos: bf_ivec3 { x: p.x, y: p.y, z: p.z },
-                    fx: 0.0,
-                    fy: 0.0,
-                    fz: 0.0,
-                };
-                fn_(e.evt_user, &ev as *const bf_event);
-            }
-        }));
+        e.world
+            .set_fx_callback(Box::new(move |code: i32, p: IVec3, extra: i32| {
+                // SAFETY: see above; `raw` is live whenever the World fires fx.
+                let e: &Engine = unsafe { &*raw };
+                if let Some(fn_) = e.evt_fn {
+                    let ev = bf_event {
+                        kind: bf_event_kind::BF_EVT_SFX,
+                        i: code,
+                        j: extra,
+                        pos: bf_ivec3 {
+                            x: p.x,
+                            y: p.y,
+                            z: p.z,
+                        },
+                        fx: 0.0,
+                        fy: 0.0,
+                        fz: 0.0,
+                    };
+                    fn_(e.evt_user, &ev as *const bf_event);
+                }
+            }));
     }
 
     set_create_err("ok");
@@ -302,7 +310,8 @@ pub unsafe extern "C" fn bf_world_new(e: bf_engine, seed: u64) -> bf_result {
         1337
     };
     e.cfg.world_seed = s;
-    e.world.set_render_distance(e.cfg.render_distance_chunks as i32);
+    e.world
+        .set_render_distance(e.cfg.render_distance_chunks as i32);
     e.world.init_world(s);
     e.world_ready = true;
     bf_result::BF_OK
@@ -318,7 +327,8 @@ pub unsafe extern "C" fn bf_world_load(e: bf_engine) -> bf_result {
         }
     };
     let dir = cstr_or(e.cfg.save_dir, "");
-    e.world.set_render_distance(e.cfg.render_distance_chunks as i32);
+    e.world
+        .set_render_distance(e.cfg.render_distance_chunks as i32);
     let meta_path = format!("{}/world.meta", dir);
     match std::fs::metadata(&meta_path) {
         Ok(_) => {
@@ -328,7 +338,11 @@ pub unsafe extern "C" fn bf_world_load(e: bf_engine) -> bf_result {
             }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            let seed = if e.cfg.world_seed != 0 { e.cfg.world_seed } else { 1337 };
+            let seed = if e.cfg.world_seed != 0 {
+                e.cfg.world_seed
+            } else {
+                1337
+            };
             e.world.init_world(seed);
         }
         Err(_) => {
@@ -484,11 +498,7 @@ pub unsafe extern "C" fn bf_frame_end(e: bf_engine) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn bf_quest_list(
-    e: bf_engine,
-    out: *mut bf_quest_entry,
-    cap: u32,
-) -> u32 {
+pub unsafe extern "C" fn bf_quest_list(e: bf_engine, out: *mut bf_quest_entry, cap: u32) -> u32 {
     let e = match engine_ref(e) {
         Some(e) => e,
         None => return 0,
@@ -549,8 +559,7 @@ pub unsafe extern "C" fn bf_input_action(e: bf_engine, act: *const bf_action) ->
     let act = unsafe { *act };
     e.world.action(&act);
     if let Some(fn_) = e.evt_fn {
-        if act.kind == bf_action_kind::BF_ACT_PLACE
-            || act.kind == bf_action_kind::BF_ACT_MINE_STOP
+        if act.kind == bf_action_kind::BF_ACT_PLACE || act.kind == bf_action_kind::BF_ACT_MINE_STOP
         {
             let kind = if act.kind == bf_action_kind::BF_ACT_PLACE {
                 bf_event_kind::BF_EVT_BLOCK_PLACED
@@ -638,15 +647,19 @@ fn wire_net(e: &mut Engine, role: crate::session::NetRole) {
 
     let mut transport = UdpTransport::new();
     let inbox = e.net_inbox.clone();
-    transport.set_receive_callback(Box::new(move |peer: u32, ch: NetChannel, payload: &[u8]| {
-        inbox.borrow_mut().push((peer as u16, ch, payload.to_vec()));
-    }));
+    transport.set_receive_callback(Box::new(
+        move |peer: u32, ch: NetChannel, payload: &[u8]| {
+            inbox.borrow_mut().push((peer as u16, ch, payload.to_vec()));
+        },
+    ));
 
     let mut session = NetSession::new(role);
     let outbox = e.net_outbox.clone();
-    session.set_sender(Box::new(move |peer: u16, ch: NetChannel, payload: &[u8]| {
-        outbox.borrow_mut().push((peer, ch, payload.to_vec()));
-    }));
+    session.set_sender(Box::new(
+        move |peer: u16, ch: NetChannel, payload: &[u8]| {
+            outbox.borrow_mut().push((peer, ch, payload.to_vec()));
+        },
+    ));
     // Funnel local edits (NOT remote ones) into the session's replication queue.
     session.install_edit_callback(&mut e.world);
 
@@ -784,9 +797,19 @@ pub unsafe extern "C" fn bf_world_shadow_volume(
 /// slot shape). Empty stacks become an all-zero slot.
 fn hud_slot_from(s: crate::types::ItemStack) -> bf_hud_slot {
     if s.is_empty() {
-        bf_hud_slot { item: 0, count: 0, durability: 0, _pad: 0 }
+        bf_hud_slot {
+            item: 0,
+            count: 0,
+            durability: 0,
+            _pad: 0,
+        }
     } else {
-        bf_hud_slot { item: s.item, count: s.count, durability: s.durability, _pad: 0 }
+        bf_hud_slot {
+            item: s.item,
+            count: s.count,
+            durability: s.durability,
+            _pad: 0,
+        }
     }
 }
 
@@ -803,7 +826,13 @@ pub unsafe extern "C" fn bf_chest_open_pos(e: bf_engine, out_pos: *mut bf_ivec3)
         Some(p) => {
             if !out_pos.is_null() {
                 // SAFETY: caller guarantees out_pos is a writable bf_ivec3.
-                unsafe { *out_pos = bf_ivec3 { x: p.x, y: p.y, z: p.z } };
+                unsafe {
+                    *out_pos = bf_ivec3 {
+                        x: p.x,
+                        y: p.y,
+                        z: p.z,
+                    }
+                };
             }
             1
         }
@@ -832,7 +861,11 @@ pub unsafe extern "C" fn bf_chest_query(
         set_err("world not ready");
         return bf_result::BF_ERR_NOT_READY;
     }
-    let w = IVec3 { x: pos.x, y: pos.y, z: pos.z };
+    let w = IVec3 {
+        x: pos.x,
+        y: pos.y,
+        z: pos.z,
+    };
     // SAFETY: caller guarantees `out` is a writable bf_chest_view.
     let view = unsafe { &mut *out };
     view.pos = pos;
@@ -846,7 +879,12 @@ pub unsafe extern "C" fn bf_chest_query(
         }
         None => {
             view.present = 0;
-            view.slots = [bf_hud_slot { item: 0, count: 0, durability: 0, _pad: 0 }; BF_CHEST_SLOTS];
+            view.slots = [bf_hud_slot {
+                item: 0,
+                count: 0,
+                durability: 0,
+                _pad: 0,
+            }; BF_CHEST_SLOTS];
         }
     }
     bf_result::BF_OK
@@ -861,7 +899,11 @@ pub unsafe extern "C" fn bf_chest_take(e: bf_engine, pos: bf_ivec3, slot: u32) -
     if !e.world_ready {
         return 0;
     }
-    let w = IVec3 { x: pos.x, y: pos.y, z: pos.z };
+    let w = IVec3 {
+        x: pos.x,
+        y: pos.y,
+        z: pos.z,
+    };
     if e.world.chest_take(w, slot as usize) {
         1
     } else {
@@ -878,7 +920,11 @@ pub unsafe extern "C" fn bf_chest_deposit(e: bf_engine, pos: bf_ivec3, inv_slot:
     if !e.world_ready {
         return 0;
     }
-    let w = IVec3 { x: pos.x, y: pos.y, z: pos.z };
+    let w = IVec3 {
+        x: pos.x,
+        y: pos.y,
+        z: pos.z,
+    };
     if e.world.chest_deposit(w, inv_slot as usize) {
         1
     } else {
@@ -995,7 +1041,11 @@ pub unsafe extern "C" fn bf_map_query(e: bf_engine, out: *mut bf_map_view) -> bf
         let len = src.len().min(23);
         name[..len].copy_from_slice(&src[..len]);
         view.markers[i] = bf_map_marker {
-            pos: bf_ivec3 { x: m.pos.x, y: m.pos.y, z: m.pos.z },
+            pos: bf_ivec3 {
+                x: m.pos.x,
+                y: m.pos.y,
+                z: m.pos.z,
+            },
             kind: m.kind,
             id: m.id,
             name,
@@ -1017,6 +1067,24 @@ pub unsafe extern "C" fn bf_map_teleport(e: bf_engine, marker_id: u32) -> u8 {
         1
     } else {
         0
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn bf_debug_set_camera(
+    e: bf_engine,
+    px: f32,
+    py: f32,
+    pz: f32,
+    yaw: f32,
+    pitch: f32,
+) {
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => return,
+    };
+    if e.world_ready {
+        e.world.debug_set_camera(px, py, pz, yaw, pitch);
     }
 }
 
