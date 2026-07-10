@@ -2937,9 +2937,15 @@ extension Renderer {
                 float lU = celLinearizeDepth(sceneDepth.sample(s, in.uv - float2(0.0, texel.y)));
                 float lD = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2(0.0, texel.y)));
                 float curv = (abs(lL + lR - 2.0 * lc) + abs(lU + lD - 2.0 * lc)) / max(lc, 1.0);
-                // Smoothstep gate around CEL_DEPTH_SENS so the line antialiases instead of a
-                // hard 1-px jaggy. Above ~2x the threshold it is a full-strength edge.
-                float edge = smoothstep(CEL_DEPTH_SENS, CEL_DEPTH_SENS * 2.2, curv);
+                // #219: DISTANCE-scaled threshold. On flat ground at grazing angles the
+                // horizon-bend quad diagonals leave rows of tiny depth creases whose
+                // normalised curvature GROWS with distance, printing dashed lines across
+                // open sand. A real silhouette at that range is a huge depth step, orders
+                // above the crease, so raising the gate with distance kills the dashes
+                // and costs nothing visible. Near range keeps the original sensitivity.
+                float sens = CEL_DEPTH_SENS * (1.0 + lc * 0.030);
+                // Smoothstep gate so the line antialiases instead of a hard 1-px jaggy.
+                float edge = smoothstep(sens, sens * 2.2, curv);
                 // Fade the ink in the far haze so the distant render edge does not get a
                 // busy net of lines (keeps the vista readable, matches the terrain fog).
                 float farFade = 1.0 - smoothstep(CEL_FAR * 0.6, CEL_FAR * 0.92, lc);
