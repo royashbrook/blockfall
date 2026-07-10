@@ -3885,10 +3885,51 @@ extension EntityRenderer {
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, headY, headZ), SIMD3(hW, hH, hD)), rgb: skinCol, sat: sat)
 
-        // Hair — brown cap over the top/back of the head.
-        drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(0, headY + hH * 0.34, -hD * 0.06), SIMD3(hW * 1.04, hH * 0.36, hD * 1.04)),
-                 rgb: hairCol, sat: sat)
+        // #210: STRUCTURAL head variety from the stable per-villager seed, so a
+        // crowd differs in silhouette, not just shade. Styles: 0 classic cap,
+        // 1 tall hair, 2 side tufts, 3 bald + headband, 4 straw hat, 5 beanie.
+        let hstyle = Int((vs >> 13) % 6)
+        switch hstyle {
+        case 1: // tall hair: high block on top.
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(0, headY + hH * 0.34, -hD * 0.06), SIMD3(hW * 1.04, hH * 0.36, hD * 1.04)),
+                     rgb: hairCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(0, headY + hH * 0.66, -hD * 0.04), SIMD3(hW * 0.64, hH * 0.42, hD * 0.62)),
+                     rgb: hairCol, sat: sat)
+        case 2: // side tufts over the ears + thin top.
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(0, headY + hH * 0.42, -hD * 0.06), SIMD3(hW * 1.02, hH * 0.20, hD * 1.02)),
+                     rgb: hairCol, sat: sat)
+            for tx in [-hW * 0.56, hW * 0.56] {
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: pw(SIMD3(tx, headY + hH * 0.05, 0), SIMD3(hW * 0.14, hH * 0.42, hD * 0.5)),
+                         rgb: hairCol, sat: sat)
+            }
+        case 3: // bald with a bright headband (uses the tunic trim colour).
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(0, headY + hH * 0.28, 0), SIMD3(hW * 1.05, hH * 0.12, hD * 1.05)),
+                     rgb: tunicTrim, sat: sat)
+        case 4: // straw hat: wide brim + crown, warm straw colour.
+            let straw = SIMD3<Float>(0.88, 0.76, 0.42)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(0, headY + hH * 0.42, 0), SIMD3(hW * 1.55, hH * 0.10, hD * 1.55)),
+                     rgb: straw, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(0, headY + hH * 0.60, 0), SIMD3(hW * 0.72, hH * 0.30, hD * 0.72)),
+                     rgb: straw, sat: sat)
+        case 5: // beanie: snug cap in the tunic colour with a lighter fold.
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(0, headY + hH * 0.44, 0), SIMD3(hW * 1.06, hH * 0.30, hD * 1.06)),
+                     rgb: tunicCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(0, headY + hH * 0.30, 0), SIMD3(hW * 1.10, hH * 0.10, hD * 1.10)),
+                     rgb: tunicTrim, sat: sat)
+        default: // classic cap over the top/back of the head.
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(0, headY + hH * 0.34, -hD * 0.06), SIMD3(hW * 1.04, hH * 0.36, hD * 1.04)),
+                     rgb: hairCol, sat: sat)
+        }
 
         // ---- FACE (on the +Z front of the head, so it faces the heading dir) ----
         let hFaceZ: Float = headZ + hD * 0.50 + s * 0.01
