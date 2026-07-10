@@ -580,6 +580,10 @@ pub struct World<'c> {
     totems: Vec<TotemMark>,
     totem_next: u32,
     visited_villages: Vec<(i32, i32)>,
+    // #233: where the last movement reveal stamped, so fast flight sweeps the
+    // travelled segment instead of leaving gaps. Not persisted; re-anchored by
+    // the load/teleport reveals.
+    last_reveal_pos: Option<(i32, i32)>,
 
     // World-space voxel sun-shadow occupancy (ABI v19). A persistent occupancy
     // grid (1 byte/voxel: 1 = casts sun shadow) covering a fixed-size region

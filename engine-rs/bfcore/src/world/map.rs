@@ -92,6 +92,35 @@ impl<'c> World<'c> {
     pub(super) fn reveal_render_radius(&mut self, wx: i32, wz: i32) {
         let r_cells = ((2 * self.stream_r * KCHUNK_DIM + MAP_CELL - 1) / MAP_CELL).max(1);
         self.reveal_circle(wx, wz, r_cells);
+        self.last_reveal_pos = Some((Self::wrap_block(wx), Self::wrap_block(wz)));
+    }
+
+    /// #233: movement reveal with no gaps. Hyperspeed flight plus a hitchy frame
+    /// can jump farther between chunk crossings than the reveal disc's radius,
+    /// leaving unexplored holes along a path the player plainly flew over. Sweep
+    /// discs along the segment travelled since the last reveal before stamping
+    /// the current one. Teleports and loads go through reveal_render_radius,
+    /// which re-anchors the segment so a warp never paints a line across the map.
+    pub(super) fn reveal_swept(&mut self, wx: i32, wz: i32) {
+        let r_cells = ((2 * self.stream_r * KCHUNK_DIM + MAP_CELL - 1) / MAP_CELL).max(1);
+        if let Some((lx, lz)) = self.last_reveal_pos {
+            let dx = Self::wrap_signed_block(wx - lx) as f32;
+            let dz = Self::wrap_signed_block(wz - lz) as f32;
+            let dist = (dx * dx + dz * dz).sqrt();
+            let step = (r_cells * MAP_CELL) as f32 * 0.5;
+            if dist > step {
+                // Bounded sweep: even a worst-case half-period hop stays cheap,
+                // and the widened spacing still overlaps the disc radius.
+                let n = ((dist / step).ceil() as i32).min(64);
+                for i in 1..n {
+                    let t = i as f32 / n as f32;
+                    let ix = Self::wrap_block(lx + (dx * t) as i32);
+                    let iz = Self::wrap_block(lz + (dz * t) as i32);
+                    self.reveal_circle(ix, iz, r_cells);
+                }
+            }
+        }
+        self.reveal_render_radius(wx, wz);
     }
 
     pub fn debug_explored_at(&self, wx: i32, wz: i32) -> bool {

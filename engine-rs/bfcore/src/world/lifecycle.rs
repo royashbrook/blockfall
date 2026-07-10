@@ -106,6 +106,7 @@ impl<'c> World<'c> {
             totems: Vec::new(),
             totem_next: 0,
             visited_villages: Vec::new(),
+            last_reveal_pos: None,
             shadow: ShadowVol::new(),
         }
     }
@@ -409,9 +410,13 @@ impl<'c> World<'c> {
         self.totems.clear();
         self.totem_next = 0;
         self.visited_villages.clear();
+        self.last_reveal_pos = None;
         // #189: reveal a round clearing centred on spawn so HOME reads dead-centre
         // of the non-grey circle, not at the edge of the trail walked after landing.
         self.reveal_circle(sx, sz, crate::world::HOME_CLEARING_CELLS);
+        // #233: anchor the movement sweep at spawn so even the first hop away
+        // reveals its whole path.
+        self.last_reveal_pos = Some((Self::wrap_block(sx), Self::wrap_block(sz)));
         self.creature_timer = 0.0;
         self.all_quests_done = false;
         self.quests_completed = 0;

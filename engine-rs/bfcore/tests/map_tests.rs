@@ -129,6 +129,31 @@ fn explored_bits_set_as_player_moves() {
     assert!(w.debug_explored_count() > before, "exploration grew");
 }
 
+// #233: a single-frame jump much larger than the reveal disc (hyperspeed +
+// hitchy frame) must not leave unexplored holes along the flown path — the
+// movement reveal sweeps the whole travelled segment.
+#[test]
+fn fast_flight_reveals_the_whole_path() {
+    let mut content = ContentRegistry::new();
+    content.load(CONTENT);
+    let mut w = make_world(&content, 11);
+    let (px, _py, pz, _) = w.get_player();
+
+    // One giant hop: 6000 blocks east in a single update.
+    let far_x = px + 6000.0;
+    w.debug_set_camera(far_x, 80.0, pz, 0.0, 0.0);
+    w.update(&zero_input(), 0.05);
+
+    // Every point along the segment is explored, not just the endpoints.
+    for i in 0..=20 {
+        let x = px + 6000.0 * (i as f32) / 20.0;
+        assert!(
+            w.debug_explored_at(x as i32, pz as i32),
+            "path cell at x={x} explored (no gaps in the flight trail)"
+        );
+    }
+}
+
 #[test]
 fn village_visit_recorded_within_range() {
     let mut content = ContentRegistry::new();

@@ -210,9 +210,9 @@ impl<'c> World<'c> {
             let px = Self::ifloor(self.pos.x);
             let pz = Self::ifloor(self.pos.z);
             // #191: reveal the full render-distance disc so the map keeps up with
-            // how far the player can see (a fixed 3x3 patch barely filled in from
-            // altitude even with a big render distance).
-            self.reveal_render_radius(px, pz);
+            // how far the player can see. #233: swept along the travelled segment
+            // so hyperspeed flight can't out-jump the disc and leave map holes.
+            self.reveal_swept(px, pz);
             self.note_village_visits(px, pz);
         }
         self.stream_tick();
