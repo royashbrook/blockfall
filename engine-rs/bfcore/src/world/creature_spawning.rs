@@ -266,7 +266,7 @@ impl<'c> World<'c> {
         });
         let t = Self::day_time(self.world_clock);
         let surv = self.mode == bf_game_mode::BF_MODE_SURVIVAL;
-        let night = surv && (t < 0.20 || t > 0.80);
+        let night = surv && Self::is_night_phase(t);
         let dark_cave = surv
             && (worldgen::worldgen_surface_height(
                 Self::ifloor(self.pos.x),

@@ -47,6 +47,15 @@ impl<'c> World<'c> {
         (clock * (tau / 1531.0) + p3).sin() > 0.15
     }
 
+    // Night = the sun is below the horizon, from the SAME sun model render uses
+    // (render_frame: sun elevation = sin(2*pi*t) + 0.25, noon at t = 0.25,
+    // midnight at 0.75). Everything that gates on "night" must use this, not a
+    // hand-rolled band: #237 shipped a t<0.20||t>0.80 gate that was mostly
+    // morning, so night monsters never spawned at the T night pin (0.75).
+    pub(super) fn is_night_phase(t: f32) -> bool {
+        (t * 6.2831853).sin() < -0.25
+    }
+
     pub(super) fn set_time_mode(&mut self, mode: i32) {
         self.time_mode = mode;
         match mode {

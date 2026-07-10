@@ -1211,7 +1211,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // Feed the HUD the time of day for a day/night indicator (HUDView method
         // added by another agent; guarded so it's a no-op until then).
-        hud?.setTimeOfDay(frame.camera.time_of_day)
+        hud?.setTimeOfDay(Renderer.clockPhase(frame.camera.time_of_day))
 
         // #42: when the quest log overlay is open, fetch the FULL quest chain
         // from the engine and forward it to the HUD. Done only while open so the
@@ -1330,7 +1330,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // PASS 2: Main scene → HDR colour texture (rgba16Float)
         //   Sub-passes: sky, terrain, entities, particles, underwater
         // =====================================================================
-        let sky = skyColor(frame.camera.time_of_day)
+        let sky = skyColor(Renderer.clockPhase(frame.camera.time_of_day))
         let hdrRP = MTLRenderPassDescriptor()
         hdrRP.colorAttachments[0].texture     = hdrColor
         hdrRP.colorAttachments[0].loadAction  = .clear
@@ -1840,7 +1840,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         // Audio: drive day/evening music + splash when entering water.
-        audio?.setTimeOfDay(frame.camera.time_of_day)
+        audio?.setTimeOfDay(Renderer.clockPhase(frame.camera.time_of_day))
         audio?.tickGrey(inGrey: frame.hud.in_dim != 0, dt: Float(dt))   // #88 darker music in the grey
         let nowUnder = frame.camera.underwater > 0.5
         if nowUnder && !lastUnderwater { audio?.play(.splash) }
@@ -1937,7 +1937,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         deg = deg.truncatingRemainder(dividingBy: 360); if deg < 0 { deg += 360 }
         let face = names[Int((deg / 45.0).rounded()) % 8]
         let phase: String
-        switch cam.time_of_day {
+        switch Renderer.clockPhase(cam.time_of_day) {
         case 0.23..<0.30: phase = "dawn"
         case 0.30..<0.70: phase = "day"
         case 0.70..<0.77: phase = "dusk"
@@ -2492,6 +2492,18 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     // MARK: Sky colour (clear colour tint — sky pass renders on top)
+
+    // #237: the ENGINE day phase puts noon at 0.25 and midnight at 0.75 (the
+    // render_frame sun model); the HUD clock, audio schedule, sky tint and shot
+    // filenames were all written midnight-at-zero (0.5 = noon), so the labels
+    // said Night at 8am and crickets sang at breakfast. Convert ONCE here for
+    // every clock-convention consumer. Sun-elevation consumers (dayLight,
+    // updateAmbientSprites) take the raw engine phase and must NOT use this.
+    static func clockPhase(_ t: Float) -> Float {
+        var s = (t + 0.25).truncatingRemainder(dividingBy: 1)
+        if s < 0 { s += 1 }
+        return s
+    }
 
     private func skyColor(_ t: Float) -> (Double, Double, Double) {
         let dayT  = Double(max(0.0, sin(t * .pi)))

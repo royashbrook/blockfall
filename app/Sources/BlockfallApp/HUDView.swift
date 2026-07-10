@@ -285,10 +285,11 @@ final class HUDView: NSView {
         return names[idx]
     }
 
-    // #30: Renderer pushes the world time-of-day each frame (0=midnight,
-    // 0.5=noon, wrapping at 1). We normalize into [0,1) and only request a
-    // repaint when the displayed phase label or the integer clock hour changes,
-    // so the always-on indicator doesn't force a redraw 60×/s while time creeps.
+    // #30: Renderer pushes the world time-of-day each frame, pre-converted by
+    // Renderer.clockPhase to this view's midnight-at-zero convention (0=midnight,
+    // 0.5=noon; see #237). We normalize into [0,1) and only request a repaint
+    // when the displayed phase label or the integer clock hour changes, so the
+    // always-on indicator doesn't force a redraw 60×/s while time creeps.
     func setTimeOfDay(_ t: Float) {
         var nt = t.truncatingRemainder(dividingBy: 1)
         if nt < 0 { nt += 1 }

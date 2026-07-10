@@ -229,6 +229,35 @@ fn phase_hour(phase: f32) -> f32 {
     (((phase - 0.25) * 24.0 + 12.0) % 24.0 + 24.0) % 24.0
 }
 
+// #237: the hostile-spawn night gate must agree with the sun. is_night_phase
+// says night exactly when the sun is below the horizon in the render geometry,
+// so the T night pin (TIME_PHASE_NIGHT) spawns monsters and mornings never do.
+#[test]
+fn night_gate_tracks_the_sun() {
+    // The pinned phases are the two anchor cases that were broken.
+    assert!(World::is_night_phase(World::TIME_PHASE_NIGHT), "night pin must gate as night");
+    assert!(!World::is_night_phase(World::TIME_PHASE_DAY), "day pin must not gate as night");
+    // The old t<0.20||t>0.80 band called 8am night; never again.
+    for &h in &[6.5f32, 8.0, 10.0, 12.0, 18.0] {
+        let phase = (0.25 + (h - 12.0) / 24.0).rem_euclid(1.0);
+        assert!(!World::is_night_phase(phase), "{h:.1}h gated as night");
+    }
+    for &h in &[0.0f32, 2.0, 22.0, 23.5] {
+        let phase = (0.25 + (h - 12.0) / 24.0).rem_euclid(1.0);
+        assert!(World::is_night_phase(phase), "{h:.1}h should gate as night");
+    }
+    // And it must match the sun's sign everywhere (sunrise/sunset crossings are
+    // exactly where sin(2*pi*t) = -0.25, the elevation zero).
+    for i in 0..10_000u32 {
+        let phase = (i as f32 + 0.5) / 10_000.0;
+        assert_eq!(
+            World::is_night_phase(phase),
+            sun_elev(phase) < 0.0,
+            "gate/sun disagree at phase {phase:.4}"
+        );
+    }
+}
+
 // The day phase should occupy ~14/24 of the cycle and the night ~10/24: the sun
 // is above the horizon for roughly 14 of every 24 hours, generous day vs short
 // night. We sample one full cycle by stepping world_clock and counting how long
