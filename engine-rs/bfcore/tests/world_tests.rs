@@ -2602,3 +2602,36 @@ fn wrap_creature_follows_across_seam() {
         "pet did not close the gap across the seam (start {d0:.1}, end {d1:.1})"
     );
 }
+
+// #177: a Magnet Charm in the inventory triples the debris pull radius, so loot
+// zips over from a distance the bare radius (2.5) would never reach.
+#[test]
+fn magnet_charm_extends_pickup_radius() {
+    let (_c, mut w) = debris_world();
+    let charm = w.debug_item_id("magnet_charm");
+    assert_ne!(charm, 0, "content has the magnet charm");
+    w.debug_clear_inventory();
+    w.debug_give(charm, 1);
+    // Stand ~4 blocks from the break: outside the bare 2.5 radius, and even the
+    // outermost scatter stays inside the charmed 7.5. All fragments must come
+    // home without moving the player (bare radius would strand the far ones).
+    w.debug_set_camera(5.5, 9.7, 8.5, 0.0, -1.5707);
+    // Burst an above-ground block so no fragment can land in a dug pit (a pit
+    // traps fragments regardless of magnet radius; the charm pulls, walls win).
+    let stone = w.debug_item_id("stone");
+    let _ = stone;
+    w.debug_edit(9, 8, 9, world::BRICK);
+    w.debug_break_block(9, 8, 9);
+    assert!(w.debug_debris_count() > 0, "burst spawned debris");
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    let mut i = 0;
+    while i < 900 && w.debug_debris_count() > 0 {
+        w.update(&zero, 1.0 / 60.0);
+        i += 1;
+    }
+    assert_eq!(
+        w.debug_debris_count(),
+        0,
+        "charmed magnet pulled every fragment from ~4 blocks"
+    );
+}

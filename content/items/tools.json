@@ -142,5 +142,11 @@
       "durability": 1500,
       "mine_speed": 1.0
     }
+  },
+  {
+    "id": 95,
+    "name": "magnet_charm",
+    "display_name": "Magnet Charm",
+    "max_stack": 1
   }
 ]

@@ -226,6 +226,19 @@ impl<'c> World<'c> {
         }
         // Player body centre (pos is the eye; the body reaches ~1.6 below).
         let player = V3::new(self.pos.x, self.pos.y - 0.8, self.pos.z);
+        // #177: a Magnet Charm anywhere in the inventory triples the pull radius.
+        // One name lookup + one 36-slot scan per tick, not per fragment.
+        let magnet_r = {
+            let charm = self.item_id_by_name("magnet_charm");
+            let has = charm != 0
+                && self.inv.as_ref().map_or(false, |inv| {
+                    (0..BF_INVENTORY_SLOTS).any(|i| {
+                        let s = inv.get(i);
+                        s.item == charm && s.count > 0
+                    })
+                });
+            if has { DEBRIS_MAGNET_R * 3.0 } else { DEBRIS_MAGNET_R }
+        };
         let mut i = 0;
         while i < self.debris.len() {
             let mut d = self.debris[i].clone();
@@ -239,7 +252,7 @@ impl<'c> World<'c> {
                 Self::wrap_signed_f(player.z - d.pos.z),
             );
             let dist = dot(to, to).sqrt();
-            if d.age >= DEBRIS_ARM_DELAY && dist < DEBRIS_MAGNET_R {
+            if d.age >= DEBRIS_ARM_DELAY && dist < magnet_r {
                 if dist < DEBRIS_COLLECT_R {
                     self.debris[i] = d;
                     if self.collect_debris(i) {
