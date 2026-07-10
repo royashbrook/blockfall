@@ -337,6 +337,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         buildPauseOverlay()
     }
 
+    // #206: ALL pause-menu text follows the Text Size slider (1.0x = today's
+    // sizes). Fonts route through mfs(); the #205 scroll region absorbs growth.
+    private var menuScale: CGFloat { CGFloat(hud?.hudScale ?? AppDelegate.loadHUDScale()) }
+    private func mfs(_ base: CGFloat) -> CGFloat { (base * menuScale).rounded() }
+
     private func buildPauseOverlay() {
         guard let container = gameContainer else { return }
         gameView?.setPaused(true)
@@ -346,7 +351,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ov.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
 
         let title = NSTextField(labelWithString: "Paused")
-        title.font = .boldSystemFont(ofSize: 40); title.textColor = .white
+        title.font = .boldSystemFont(ofSize: mfs(40)); title.textColor = .white
         title.alignment = .center; title.translatesAutoresizingMaskIntoConstraints = false
 
         let resume = pauseButton("Keep Playing", #selector(resumeGame))
@@ -357,7 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Both write through to the live HUDView immediately and persist to
         // UserDefaults so they stick between sessions.
         let textLabel = NSTextField(labelWithString: "Text Size")
-        textLabel.font = .boldSystemFont(ofSize: 28); textLabel.textColor = .white
+        textLabel.font = .boldSystemFont(ofSize: mfs(28)); textLabel.textColor = .white
 
         let slider = NSSlider(value: Double(hud?.hudScale ?? AppDelegate.loadHUDScale()),
                               minValue: 1.0, maxValue: 2.0,
@@ -367,7 +372,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hudScaleSlider = slider
 
         let valueLabel = NSTextField(labelWithString: "")
-        valueLabel.font = .systemFont(ofSize: 24); valueLabel.textColor = .white
+        valueLabel.font = .systemFont(ofSize: mfs(24)); valueLabel.textColor = .white
         valueLabel.alignment = .center
         hudScaleValueLabel = valueLabel
 
@@ -379,7 +384,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showHUD.state = (hud?.hudVisible ?? AppDelegate.loadHUDVisible()) ? .on : .off
         showHUD.contentTintColor = .white
         showHUD.attributedTitle = NSAttributedString(string: "Show HUD", attributes: [
-            .font: NSFont.boldSystemFont(ofSize: 28), .foregroundColor: NSColor.white,
+            .font: NSFont.boldSystemFont(ofSize: mfs(28)), .foregroundColor: NSColor.white,
         ])
 
         updateHUDScaleLabel()   // fill the live value label now that it exists
@@ -389,7 +394,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // slider beside the checkbox; Bloom (always on) gets its own labelled slider row. The
         // slider greys out when the effect is toggled off. Lens Flare stays a plain toggle.
         let fxTitle = NSTextField(labelWithString: "Effects")
-        fxTitle.font = .boldSystemFont(ofSize: 30); fxTitle.textColor = .white
+        fxTitle.font = .boldSystemFont(ofSize: mfs(30)); fxTitle.textColor = .white
 
         // God Rays + Cel Shading: checkbox with an intensity slider beside it.
         let godRayCb = gfxCheckbox("God Rays", tag: 2, on: renderer?.gfxGodRays ?? false)
@@ -438,7 +443,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // #85 Render-distance slider (chunks 8..28), live + persisted.
         let rdLabel = NSTextField(labelWithString: "Render Distance")
-        rdLabel.font = .systemFont(ofSize: 24); rdLabel.textColor = .white
+        rdLabel.font = .systemFont(ofSize: mfs(24)); rdLabel.textColor = .white
         let rdVal = UserDefaults.standard.object(forKey: "gfxRenderDist") as? Int ?? 24
         let rdSlider = NSSlider(value: Double(rdVal), minValue: 8, maxValue: 40,
                                 target: self, action: #selector(renderDistChanged(_:)))
@@ -450,7 +455,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // #238 Difficulty: Easy = no bad guys at all, Normal = the usual night
         // monsters, Hard = lots more of them. Per-world, live + persisted.
         let diffLabel = NSTextField(labelWithString: "Difficulty")
-        diffLabel.font = .systemFont(ofSize: 24); diffLabel.textColor = .white
+        diffLabel.font = .systemFont(ofSize: mfs(24)); diffLabel.textColor = .white
         let diffSeg = NSSegmentedControl(labels: ["Easy", "Normal", "Hard"],
                                          trackingMode: .selectOne,
                                          target: self, action: #selector(difficultyChanged(_:)))
@@ -460,7 +465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // ---- Audio toggles (#3: music + ambience on/off, live + persisted) ----
         let auTitle = NSTextField(labelWithString: "Audio")
-        auTitle.font = .boldSystemFont(ofSize: 30); auTitle.textColor = .white
+        auTitle.font = .boldSystemFont(ofSize: mfs(30)); auTitle.textColor = .white
         let auStack = NSStackView(views: [
             volumeSliderRow("Music Volume", key: "audMusicVol", sel: #selector(musicVolChanged(_:))),
             volumeSliderRow("Sound Volume", key: "audSoundVol", sel: #selector(soundVolChanged(_:))),
@@ -553,14 +558,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.layer?.cornerRadius = 12
         b.contentTintColor = .white
         b.attributedTitle = NSAttributedString(string: t, attributes: [
-            .font: NSFont.boldSystemFont(ofSize: 30),
+            .font: NSFont.boldSystemFont(ofSize: mfs(30)),
             .foregroundColor: NSColor.white,
         ])
         b.translatesAutoresizingMaskIntoConstraints = false
         // #208: 300 was tight for "Customize Character" at the #205 30pt font; give
         // long labels comfortable padding (rows are fill-equally so pairs match).
         b.widthAnchor.constraint(greaterThanOrEqualToConstant: 380).isActive = true
-        b.heightAnchor.constraint(equalToConstant: 52).isActive = true
+        b.heightAnchor.constraint(equalToConstant: mfs(52)).isActive = true
         return b
     }
     // ---- world map (#182) ----
@@ -767,6 +772,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud?.hudScale = v
         UserDefaults.standard.set(Double(v), forKey: AppDelegate.kHUDScaleKey)
         updateHUDScaleLabel()
+        // #206: menu text follows the slider too. Rebuild the overlay once the
+        // drag ends (rebuilding on every tick would churn the whole panel).
+        let dragging = NSApp.currentEvent?.type == .leftMouseDragged
+        if !dragging, pauseOverlay != nil {
+            pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
+            buildPauseOverlay()
+        }
     }
     // #: Show HUD checkbox → live HUD + persisted.
     @objc private func hudVisibleChanged(_ sender: NSButton) {
@@ -782,7 +794,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // #: a labeled 0..1 volume slider row (independent music vs sounds).
     private func volumeSliderRow(_ title: String, key: String, sel: Selector) -> NSStackView {
         let lbl = NSTextField(labelWithString: title)
-        lbl.font = .systemFont(ofSize: 24); lbl.textColor = .white
+        lbl.font = .systemFont(ofSize: mfs(24)); lbl.textColor = .white
         let v = UserDefaults.standard.object(forKey: key) as? Double ?? 1.0
         let s = NSSlider(value: v, minValue: 0.0, maxValue: 1.0, target: self, action: sel)
         s.translatesAutoresizingMaskIntoConstraints = false
@@ -813,7 +825,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.state = on ? .on : .off
         b.contentTintColor = .white
         b.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: 26), .foregroundColor: NSColor.white,
+            .font: NSFont.systemFont(ofSize: mfs(26)), .foregroundColor: NSColor.white,
         ])
         return b
     }
@@ -833,7 +845,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.state = on ? .on : .off
         b.contentTintColor = .white
         b.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: 26), .foregroundColor: NSColor.white,
+            .font: NSFont.systemFont(ofSize: mfs(26)), .foregroundColor: NSColor.white,
         ])
         return b
     }
