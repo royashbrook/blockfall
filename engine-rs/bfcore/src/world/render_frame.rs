@@ -5,7 +5,11 @@ impl<'c> World<'c> {
     /// from chunk meshes; a fixed 120-block cutoff made high-altitude creative flight show
     /// terrain without nearby scenery. Keep small ground clutter bounded for the M1 Air target.
     pub(super) fn prop_detail_radius_blocks(&self) -> f32 {
-        ((self.stream_r as f32) * KCHUNK_DIM as f32).clamp(120.0, 192.0)
+        // #219: capped 192 -> 130. Past ~130 blocks a grass sprig is 1-3px, too
+        // small to read, and under cel shading its ink outline collapsed it into
+        // black plus-dots printing rows across open ground in every biome. Also a
+        // small #211 win (fewer far clutter instances).
+        ((self.stream_r as f32) * KCHUNK_DIM as f32).clamp(96.0, 130.0)
     }
 
     /// Leaf props dominate dense-forest vertex count, so keep canopies closer than trunks.

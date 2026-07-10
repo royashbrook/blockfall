@@ -2946,25 +2946,29 @@ extension Renderer {
                 float sens = CEL_DEPTH_SENS * (1.0 + lc * 0.030);
                 // Smoothstep gate so the line antialiases instead of a hard 1-px jaggy.
                 float edge = smoothstep(sens, sens * 2.2, curv);
-                // #219 second guard: a REAL silhouette also has a large absolute depth
-                // gap to some neighbour (another surface behind). The bend creases have
-                // huge curvature but a tiny gap (the two quads still touch), so require
-                // at least ~a third of a block of true separation before inking. Kills
-                // the remaining plus-shaped dot clusters on open ground at every range;
-                // block edges, grass, trees, and creatures all clear a 1-block step.
-                float gap = max(max(abs(lc - lL), abs(lc - lR)),
-                                max(abs(lc - lU), abs(lc - lD)));
-                edge *= smoothstep(0.22, 0.38, gap);
-                // #219 the actual culprit: 1-3px DISTANT SPRIG PROPS. The ink outline
-                // is thicker than the feature, so each far grass sprig collapsed into a
-                // black plus-shaped blob, printing dotted rows along the plant lattice
-                // on open sand. A pixel INSIDE such a sliver sees BOTH its left and
-                // right neighbours far behind it; a pixel on a real silhouette edge
-                // always keeps one near-side neighbour on its own surface. Fade the ink
-                // as the thinner-side background distance grows, so slivers stop
-                // inking while blades, blocks, trunks, and creatures keep their edges.
-                float slim = max(min(lL, lR) - lc, min(lU, lD) - lc);
-                edge *= 1.0 - smoothstep(0.9, 1.8, slim);
+                // #219 (root cause via colour probe): the dotted rows are PIXEL-WIDE
+                // CRACKS, T-junction slits the smoothed terrain mesh leaves along its
+                // contour lines. A slit shows the surface behind through a 1px gap;
+                // the ink pass then outlines the slit (its centre and each arm look
+                // like tiny edges), printing plus-shaped dots in rows in every biome.
+                // Two crack-aware rules kill them without touching real silhouettes:
+                // 1. A neighbour only counts as a silhouette if it is STILL far at
+                //    ring-2 in the same direction (a real background is; a 1px slit
+                //    is not), so the slit's arms stop inking.
+                // 2. The centre must be the NEAR side (an outline belongs to the near
+                //    surface), so the through-the-slit centre pixel stops inking.
+                float lL2 = celLinearizeDepth(sceneDepth.sample(s, in.uv - float2(texel.x * 2.5, 0.0)));
+                float lR2 = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2(texel.x * 2.5, 0.0)));
+                float lU2 = celLinearizeDepth(sceneDepth.sample(s, in.uv - float2(0.0, texel.y * 2.5)));
+                float lD2 = celLinearizeDepth(sceneDepth.sample(s, in.uv + float2(0.0, texel.y * 2.5)));
+                float gL = min(abs(lc - lL), abs(lc - lL2));
+                float gR = min(abs(lc - lR), abs(lc - lR2));
+                float gU = min(abs(lc - lU), abs(lc - lU2));
+                float gD = min(abs(lc - lD), abs(lc - lD2));
+                float effGap = max(max(gL, gR), max(gU, gD));
+                edge *= smoothstep(0.28, 0.55, effGap);
+                float minN = min(min(lL, lR), min(lU, lD));
+                edge *= 1.0 - smoothstep(0.35, 0.80, lc - minN);
                 // Fade the ink in the far haze so the distant render edge does not get a
                 // busy net of lines (keeps the vista readable, matches the terrain fog).
                 float farFade = 1.0 - smoothstep(CEL_FAR * 0.6, CEL_FAR * 0.92, lc);

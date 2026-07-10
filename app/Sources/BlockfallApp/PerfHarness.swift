@@ -328,6 +328,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     // without touching UserDefaults. Defaults OFF in the harness so existing shots/perf
     // numbers are unchanged unless explicitly requested.
     let celShot: Float = (ProcessInfo.processInfo.environment["BF_CEL"] == "1") ? 1 : 0
+    // #219 dissect: BF_CEL_INK=0 keeps the cel grade but kills the ink outline pass.
+    let celInk: Float = (ProcessInfo.processInfo.environment["BF_CEL_INK"] == "0") ? 0 : 1
 
     var frameIdx = 0
     var lastShotPropN = 0
@@ -769,6 +771,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                                       sunScreenX: flareGate.uv.x, sunScreenY: flareGate.uv.y,
                                       sunColorR: 1.0, sunColorG: 0.6 + 0.35 * dayT, sunColorB: 0.3 + 0.5 * dayT)
                 pu.celShade = celShot   // #130 ink outlines + cel grade in --shot when BF_CEL=1
+                pu.celOutlineStr = celInk   // #219 dissect
                 pu.lensFlareStr = flareStrength   // #132 lens flare in --shot
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 enc.setFragmentTexture(hdrDepth,  index: 2)
@@ -833,7 +836,15 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         // BF_SHOT_TRAVEL=<frames> overrides how far the shot walks before the capture, so a
         // verification shot can stop near spawn (less likely to bury the camera in terrain).
         let travelEnv = Int(ProcessInfo.processInfo.environment["BF_SHOT_TRAVEL"] ?? "")
-        let travel = testCreatureMode ? tcWalk : (travelEnv ?? (treeMode ? 320 : 700))
+        // #219: BF_SHOT_POS="x,y,z,yaw,pitch" pins the camera at an exact spot so a
+        // player-reported view reproduces headless (skips the walk entirely).
+        let posEnv = ProcessInfo.processInfo.environment["BF_SHOT_POS"]?
+            .split(separator: ",").compactMap { Float($0.trimmingCharacters(in: .whitespaces)) }
+        if let pv = posEnv, pv.count == 5 {
+            bf_debug_set_camera(e, pv[0], pv[1], pv[2], pv[3], pv[4])
+            for _ in 0..<240 { renderOneFrame(yaw: 0, forward: 0) }   // stream the area in
+        }
+        let travel = (posEnv?.count == 5) ? 0 : (testCreatureMode ? tcWalk : (travelEnv ?? (treeMode ? 320 : 700)))
         for _ in 0..<travel { renderOneFrame(yaw: 0) }       // travel STRAIGHT to cross into grass/forest
         if testCreatureMode { for _ in 0..<240 { renderOneFrame(yaw: 0, forward: 0) } }  // settle on ground
         // BF_SHOT_PITCH=<total radians> aims the camera up/down before the capture

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn visual_detail_radii_scale_with_render_distance() {
-    let detail_radius = |chunks: i32| (chunks as f32 * KCHUNK_DIM as f32).clamp(120.0, 192.0);
+    let detail_radius = |chunks: i32| (chunks as f32 * KCHUNK_DIM as f32).clamp(96.0, 130.0);   // #219 clutter cap
     let leaf_radius = |chunks: i32| (chunks as f32 * KCHUNK_DIM as f32).clamp(120.0, 256.0);
     let scenery_radius = |chunks: i32| (chunks as f32 * KCHUNK_DIM as f32).clamp(120.0, 384.0);
     let shadow_radius = |chunks: i32| {
