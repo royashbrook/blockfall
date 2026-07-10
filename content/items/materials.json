@@ -76,5 +76,11 @@
     "name": "glow_dust",
     "display_name": "Glow Dust",
     "max_stack": 64
+  },
+  {
+    "id": 96,
+    "name": "coin",
+    "display_name": "Gold Coin",
+    "max_stack": 99
   }
 ]

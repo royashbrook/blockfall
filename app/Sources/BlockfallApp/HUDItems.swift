@@ -68,6 +68,8 @@ private let kItemTable: [UInt16: ItemInfo] = [
     91: .init(name: "Mushroom Stew", color: itemColor(0.70, 0.50, 0.34)),
     92: .init(name: "Honey Cake",    color: itemColor(0.92, 0.70, 0.28)),
     93: .init(name: "Mushroom",      color: itemColor(0.78, 0.36, 0.32)),
+    95: .init(name: "Magnet Charm",  color: itemColor(0.75, 0.55, 0.95)),
+    96: .init(name: "Gold Coin",     color: itemColor(0.95, 0.80, 0.25)),
 ]
 func itemName(_ id: UInt16) -> String { kItemTable[id]?.name ?? "Item \(id)" }
 func itemChipColor(_ id: UInt16) -> NSColor { kItemTable[id]?.color ?? NSColor(hue: CGFloat(id % 12)/12, saturation: 0.6, brightness: 0.9, alpha: 1) }

@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 25u  /* v25: bf_map_biomes (map biome layer, append-only) */
+#define BF_ABI_VERSION 26u  /* v26: trade offers + execute (#203, append-only) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -653,6 +653,29 @@ BF_API uint8_t bf_map_teleport(bf_engine e, uint32_t marker_id);
  * (row-major, cells_per_axis^2 bytes; indices 0 plains, 1 forest, 2 mountains,
  * 3 desert, 4 snowy, 5 swamp, 6 beach). Pure seeded worldgen, no streaming.  */
 BF_API bf_result bf_map_biomes(bf_engine e, uint8_t* out, uint32_t cap);
+
+/* ---- #203 (v26): kid-friendly money + trade -------------------------------
+ * Coins are a plain item. Each trade-capable villager profession (npc_id:
+ * 1 Elder, 3 Herbalist, 4 Woodcutter, 5 Stone Mason, 6 Blacksmith) carries a
+ * small fixed offer sheet; the player pays give_item x give_count and gets
+ * get_item x get_count. Stateless: query the sheet, execute by index.        */
+typedef struct bf_trade_offer {
+    uint16_t give_item;   /* what the player PAYS                              */
+    uint16_t give_count;
+    uint16_t get_item;    /* what the player RECEIVES                          */
+    uint16_t get_count;
+} bf_trade_offer;
+
+typedef struct bf_trade_view {
+    uint32_t active;      /* 0 = this profession does not trade                */
+    uint32_t npc_id;
+    uint32_t offer_count; /* filled entries in offers[]                        */
+    uint32_t _pad;
+    bf_trade_offer offers[6];
+} bf_trade_view;
+
+BF_API bf_result bf_trade_offers(bf_engine e, int32_t npc_id, bf_trade_view* out);
+BF_API uint8_t   bf_trade_execute(bf_engine e, int32_t npc_id, uint32_t idx);
 
 /* [MAIN][DEBUG] Move the camera/player for deterministic screenshots/perf.
  * The next frame recentres streaming normally. No-op before a world is ready. */

@@ -23,6 +23,11 @@ struct DialogueNPC: Codable {
 }
 
 final class DialogueController {
+    // #203: trade wiring. hasTrade asks the engine whether this profession has an
+    // offer sheet; onOpenTrade swaps the dialogue for the trade panel.
+    var hasTrade: ((Int) -> Bool)? = nil
+    var onOpenTrade: ((Int) -> Void)? = nil
+    private var currentNpcId: Int = 0
     private var npcs: [DialogueNPC] = []
     private weak var overlay: NSView?
     var onClose: (() -> Void)?
@@ -51,6 +56,7 @@ final class DialogueController {
         ov.layer?.backgroundColor = NSColor(calibratedWhite: 0, alpha: 0.55).cgColor
         parent.addSubview(ov)
         overlay = ov
+        currentNpcId = npcId
         showNode(npc, npc.root ?? 0)
     }
 
@@ -85,6 +91,19 @@ final class DialogueController {
             rows.append(b)
             _ = i
         }
+        // #203: a gold Trade button above Goodbye when this profession trades.
+        if hasTrade?(currentNpcId) == true {
+            let tb = NSButton(title: "Trade", target: self, action: #selector(tradeClicked(_:)))
+            tb.bezelStyle = .regularSquare; tb.isBordered = false; tb.wantsLayer = true
+            tb.layer?.backgroundColor = NSColor(calibratedRed: 0.80, green: 0.62, blue: 0.20, alpha: 1).cgColor
+            tb.layer?.cornerRadius = 10
+            tb.attributedTitle = NSAttributedString(string: "Trade", attributes: [
+                .font: NSFont.boldSystemFont(ofSize: 16), .foregroundColor: NSColor.white])
+            tb.translatesAutoresizingMaskIntoConstraints = false
+            tb.widthAnchor.constraint(equalToConstant: 460).isActive = true
+            tb.heightAnchor.constraint(equalToConstant: 40).isActive = true
+            rows.append(tb)
+        }
         // Stash the current npc so the click handler can navigate.
         currentNPC = npc
 
@@ -107,6 +126,12 @@ final class DialogueController {
             panel.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
             panel.centerYAnchor.constraint(equalTo: ov.centerYAnchor),
         ])
+    }
+
+    @objc private func tradeClicked(_ sender: NSButton) {
+        let npc = currentNpcId
+        close()
+        onOpenTrade?(npc)
     }
 
     private var currentNPC: DialogueNPC?

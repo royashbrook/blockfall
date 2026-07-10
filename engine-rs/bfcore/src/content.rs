@@ -921,7 +921,7 @@ mod tests {
         let mut reg = ContentRegistry::new();
         assert!(reg.load(CONTENT));
         assert_eq!(reg.block_count(), 55);
-        assert_eq!(reg.item_count(), 62);   // #177 magnet_charm
+        assert_eq!(reg.item_count(), 63);   // #177 magnet_charm, #203 coin
         assert_eq!(reg.recipe_count(), 36);  // #177 magnet_charm_craft
         let oak = reg.block_by_name("oak_log").expect("oak_log");
         assert_eq!((oak.id, oak.drop_item), (21, 12));

@@ -35,7 +35,7 @@ use core::ffi::{c_char, c_void};
 /// v23: appended bf_map_marker + bf_map_view + bf_map_query + bf_map_teleport
 ///      (world map + warp totems, #182). Purely additive; no existing struct
 ///      layout changed.
-pub const BF_ABI_VERSION: u32 = 25;
+pub const BF_ABI_VERSION: u32 = 26;
 
 // ---------------------------------------------------------------------------
 // Primitive types
@@ -544,6 +544,35 @@ pub type bf_event_fn = Option<extern "C" fn(user: *mut c_void, ev: *const bf_eve
 // Golden values captured from `clang -I contract dump.c` on the target.
 // ===========================================================================
 
+/// #203 (v26): one trade offer. The player PAYS give_item x give_count and
+/// RECEIVES get_item x get_count. Plain data, append-only.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct bf_trade_offer {
+    pub give_item: u16,
+    pub give_count: u16,
+    pub get_item: u16,
+    pub get_count: u16,
+}
+
+/// #203 (v26): the offer sheet for one villager profession. Filled by
+/// bf_trade_offers; caller-owned, fixed arrays, no pointers.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct bf_trade_view {
+    pub active: u32,
+    pub npc_id: u32,
+    pub offer_count: u32,
+    pub _pad: u32,
+    pub offers: [bf_trade_offer; 6],
+}
+
+impl Default for bf_trade_view {
+    fn default() -> Self {
+        bf_trade_view { active: 0, npc_id: 0, offer_count: 0, _pad: 0, offers: [bf_trade_offer::default(); 6] }
+    }
+}
+
 #[cfg(test)]
 mod parity {
     use super::*;
@@ -601,6 +630,17 @@ mod parity {
         assert_eq!(offset_of!(bf_chest_view, present), 12);
         assert_eq!(offset_of!(bf_chest_view, _pad), 13);
         assert_eq!(offset_of!(bf_chest_view, slots), 16);
+    }
+
+    #[test]
+    fn trade_view_layout() {
+        assert_eq!(size_of::<bf_trade_offer>(), 8, "bf_trade_offer size");
+        assert_eq!(align_of::<bf_trade_view>(), 4, "bf_trade_view align");
+        assert_eq!(offset_of!(bf_trade_view, active), 0);
+        assert_eq!(offset_of!(bf_trade_view, npc_id), 4);
+        assert_eq!(offset_of!(bf_trade_view, offer_count), 8);
+        assert_eq!(offset_of!(bf_trade_view, offers), 16);
+        assert_eq!(size_of::<bf_trade_view>(), 64, "bf_trade_view size");
     }
 
     #[test]

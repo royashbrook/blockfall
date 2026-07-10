@@ -320,6 +320,38 @@ final class Renderer: NSObject, MTKViewDelegate {
         return ok ? buf : nil
     }
 
+    // #203 trade: offer sheet + execute + coin/goods balance for the panel.
+    private var lastHudState: bf_hud_state?
+    func tradeOffers(npcId: Int32) -> [TradeView.Offer]? {
+        guard let e = engine else { return nil }
+        var v = bf_trade_view()
+        guard bf_trade_offers(e, npcId, &v) == BF_OK, v.active == 1 else { return nil }
+        var out: [TradeView.Offer] = []
+        withUnsafeBytes(of: v.offers) { raw in
+            let p = raw.bindMemory(to: bf_trade_offer.self)
+            for i in 0..<min(Int(v.offer_count), 6) {
+                out.append(TradeView.Offer(giveItem: p[i].give_item, giveCount: p[i].give_count,
+                                           getItem: p[i].get_item, getCount: p[i].get_count))
+            }
+        }
+        return out.isEmpty ? nil : out
+    }
+    func tradeExecute(npcId: Int32, index: UInt32) -> Bool {
+        guard let e = engine else { return false }
+        return bf_trade_execute(e, npcId, index) != 0
+    }
+    func inventoryCount(item: UInt16) -> Int {
+        guard let h = lastHudState else { return 0 }
+        var n = 0
+        withUnsafeBytes(of: h.hotbar) { raw in
+            for s in raw.bindMemory(to: bf_hud_slot.self) where s.item == item { n += Int(s.count) }
+        }
+        withUnsafeBytes(of: h.inventory) { raw in
+            for s in raw.bindMemory(to: bf_hud_slot.self) where s.item == item { n += Int(s.count) }
+        }
+        return n
+    }
+
     // Teleport to a marker (bf_map_teleport). The charge-up happens app-side.
     @discardableResult
     func mapTeleport(_ id: UInt32) -> Bool {
@@ -1815,6 +1847,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         lastUnderwater = nowUnder
 
         hud?.update(from: frame.hud)
+        lastHudState = frame.hud   // #203 trade panel reads coin balance from here
 
         // #109 chests: poll the engine for an open chest (set by a right-click on a
         // chest block) and push its live contents to the HUD so the chest panel shows

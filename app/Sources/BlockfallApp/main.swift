@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // #182 world map overlay (M key / pause-menu button). The world pauses
     // underneath (same setPaused path as the pause menu, #127).
     var mapOverlay: MapView?
+    var tradeOverlay: TradeView?   // #203 trade panel (opened from dialogue)
     // #187 always-on corner minimap (toggle in the pause menu, hidden while the
     // big map is open).
     var minimapOverlay: MinimapView?
@@ -261,6 +262,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // a right-click on a villager. Release the pointer so the player can click choices.
         dialogue.load()
         dialogue.onClose = { [weak self] in self?.gameView?.grabMouse() }
+        // #203: villagers with an offer sheet grow a Trade button in dialogue.
+        dialogue.hasTrade = { [weak r] npc in r?.tradeOffers(npcId: Int32(npc)) != nil }
+        dialogue.onOpenTrade = { [weak self] npc in self?.openTrade(npcId: Int32(npc)) }
         r.onDialogue = { [weak self] npcId in
             guard let self = self, let cv = self.window.contentView, !self.dialogue.isOpen else { return }
             self.gameView?.releaseMouse()
@@ -577,6 +581,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeFirstResponder(mv)
     }
 
+    // #203: trade panel over the game, pointer released like dialogue/chest.
+    private func openTrade(npcId: Int32) {
+        guard tradeOverlay == nil, let container = gameContainer else { return }
+        gameView?.releaseMouse()
+        let tv = TradeView(frame: container.bounds, npcId: npcId, renderer: renderer)
+        tv.onClose = { [weak self] in
+            self?.tradeOverlay?.removeFromSuperview()
+            self?.tradeOverlay = nil
+            self?.gameView?.grabMouse()
+            if let gv = self?.gameView { self?.window.makeFirstResponder(gv) }
+        }
+        tv.onTraded = { [weak self] in self?.audio.play(.craft) }
+        container.addSubview(tv)
+        tradeOverlay = tv
+        window.makeFirstResponder(tv)
+    }
+
     private func closeMap() {
         guard let mv = mapOverlay else { return }
         mv.removeFromSuperview()
@@ -847,6 +868,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopUncappedDrawPump()
         pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
         mapOverlay?.removeFromSuperview(); mapOverlay = nil   // #182
+        tradeOverlay?.removeFromSuperview(); tradeOverlay = nil   // #203
         minimapOverlay?.stop(); minimapOverlay?.removeFromSuperview(); minimapOverlay = nil  // #187
         // #135 drop the loading overlay if we quit mid-load (rare, but the
         // pending fade/grab callbacks must not run against a torn-down game).

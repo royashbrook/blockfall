@@ -2635,3 +2635,30 @@ fn magnet_charm_extends_pickup_radius() {
         "charmed magnet pulled every fragment from ~4 blocks"
     );
 }
+
+// #203: trading swaps inventory both ways and never half-executes.
+#[test]
+fn trade_buy_and_sell_roundtrip() {
+    let (_c, mut w) = debris_world();
+    let coin = w.debug_item_id("coin");
+    let log = w.debug_item_id("oak_log");
+    let planks = w.debug_item_id("oak_planks");
+    assert!(coin != 0 && log != 0 && planks != 0, "trade items exist");
+    w.debug_clear_inventory();
+    // No goods: woodcutter (npc 4) offer 0 (8 logs -> 1 coin) must refuse.
+    assert!(!w.trade_execute(4, 0), "cannot sell logs you do not have");
+    // Sell 8 logs for a coin.
+    w.debug_give(log, 8);
+    assert!(w.trade_execute(4, 0), "sell logs");
+    assert_eq!(w.debug_item_count(coin), 1);
+    assert_eq!(w.debug_item_count(log), 0);
+    // Buy 8 planks with that coin.
+    assert!(w.trade_execute(4, 1), "buy planks");
+    assert_eq!(w.debug_item_count(coin), 0);
+    assert_eq!(w.debug_item_count(planks), 8);
+    // Broke now: buying again refuses.
+    assert!(!w.trade_execute(4, 1), "no coins, no planks");
+    // Bad profession / bad index refuse cleanly.
+    assert!(!w.trade_execute(2, 0), "builder does not trade");
+    assert!(!w.trade_execute(4, 9), "bad offer index");
+}

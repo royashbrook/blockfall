@@ -46,6 +46,7 @@ mod falling;
 mod interaction;
 mod lifecycle;
 mod map;
+mod trade;
 mod meshing;
 mod persistence;
 mod player_update;

@@ -1101,6 +1101,35 @@ pub unsafe extern "C" fn bf_map_biomes(e: bf_engine, out: *mut u8, cap: u32) -> 
     bf_result::BF_OK
 }
 
+/// #203 (v26): the trade offer sheet for a villager profession (npc_id from
+/// bf_hud_state dialogue / the interact fx). Pure data, no session state.
+#[no_mangle]
+pub unsafe extern "C" fn bf_trade_offers(e: bf_engine, npc_id: i32, out: *mut bf_trade_view) -> bf_result {
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => return bf_result::BF_ERR_BAD_ARG,
+    };
+    if out.is_null() || !e.world_ready {
+        return bf_result::BF_ERR_BAD_ARG;
+    }
+    e.world.trade_offers(npc_id, &mut *out);
+    bf_result::BF_OK
+}
+
+/// #203 (v26): execute offer `idx` of the profession's sheet. Returns 1 when the
+/// swap happened, 0 when payment was short / no room / bad index (no change).
+#[no_mangle]
+pub unsafe extern "C" fn bf_trade_execute(e: bf_engine, npc_id: i32, idx: u32) -> u8 {
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => return 0,
+    };
+    if !e.world_ready {
+        return 0;
+    }
+    if e.world.trade_execute(npc_id, idx) { 1 } else { 0 }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn bf_debug_set_camera(
     e: bf_engine,
