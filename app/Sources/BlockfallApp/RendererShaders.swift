@@ -2946,6 +2946,15 @@ extension Renderer {
                 float sens = CEL_DEPTH_SENS * (1.0 + lc * 0.030);
                 // Smoothstep gate so the line antialiases instead of a hard 1-px jaggy.
                 float edge = smoothstep(sens, sens * 2.2, curv);
+                // #219 second guard: a REAL silhouette also has a large absolute depth
+                // gap to some neighbour (another surface behind). The bend creases have
+                // huge curvature but a tiny gap (the two quads still touch), so require
+                // at least ~a third of a block of true separation before inking. Kills
+                // the remaining plus-shaped dot clusters on open ground at every range;
+                // block edges, grass, trees, and creatures all clear a 1-block step.
+                float gap = max(max(abs(lc - lL), abs(lc - lR)),
+                                max(abs(lc - lU), abs(lc - lD)));
+                edge *= smoothstep(0.22, 0.38, gap);
                 // Fade the ink in the far haze so the distant render edge does not get a
                 // busy net of lines (keeps the vista readable, matches the terrain fog).
                 float farFade = 1.0 - smoothstep(CEL_FAR * 0.6, CEL_FAR * 0.92, lc);
