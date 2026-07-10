@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 24u  /* v24: BF_ACT_SET_HYPERSPEED (creative 100x flight toggle, append-only) */
+#define BF_ABI_VERSION 25u  /* v25: bf_map_biomes (map biome layer, append-only) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -648,6 +648,11 @@ BF_API bf_result bf_map_query(bf_engine e, bf_map_view* out);
  * on the surface, resets velocity, recentres streaming. Returns 1 on success,
  * 0 for an unknown id / pre-world. */
 BF_API uint8_t bf_map_teleport(bf_engine e, uint32_t marker_id);
+
+/* #224 (v25): fill `out` with the dominant biome index of every map cell
+ * (row-major, cells_per_axis^2 bytes; indices 0 plains, 1 forest, 2 mountains,
+ * 3 desert, 4 snowy, 5 swamp, 6 beach). Pure seeded worldgen, no streaming.  */
+BF_API bf_result bf_map_biomes(bf_engine e, uint8_t* out, uint32_t cap);
 
 /* [MAIN][DEBUG] Move the camera/player for deterministic screenshots/perf.
  * The next frame recentres streaming normally. No-op before a world is ready. */

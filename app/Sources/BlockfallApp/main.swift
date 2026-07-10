@@ -561,6 +561,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mv.cellSize = snap.cellSize
         mv.cells = snap.cells
         mv.markers = snap.markers
+        mv.biomes = r.mapBiomes(cells: snap.cells) ?? []   // #224 biome tint layer
         mv.playerX = snap.playerX
         mv.playerZ = snap.playerZ
         mv.playerFacing = snap.facing
@@ -1237,6 +1238,12 @@ if let idx = CommandLine.arguments.firstIndex(of: "--mapshot"), idx + 1 < Comman
     for dz in -4...4 { for dx in -4...4 where dx*dx + dz*dz <= 18 { // a far camp blob
         reveal(pcx + 38 + dx, pcz - 22 + dz) } }
     mv.explored = explored
+    // #224: synthetic biome bands so the tint layer previews headless.
+    var biomes = [UInt8](repeating: 0, count: cells * cells)
+    for cz in 0..<cells { for cx in 0..<cells {
+        biomes[cz * cells + cx] = UInt8((cx / 12 + cz / 16) % 7)
+    } }
+    mv.biomes = biomes
     mv.playerX = Float(px); mv.playerZ = Float(pz); mv.playerFacing = 0.8
     mv.markers = [
         // Home sits at spawn, dead-centre of the clearing (#189).

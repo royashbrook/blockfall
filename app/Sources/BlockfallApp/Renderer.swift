@@ -309,6 +309,17 @@ final class Renderer: NSObject, MTKViewDelegate {
                            facing: lastPlayerFacing)
     }
 
+    // #224: whole-planet biome layer (one byte per map cell), for the map's
+    // biome tint. Pure worldgen engine-side; fetched once per map open.
+    func mapBiomes(cells: Int) -> [UInt8]? {
+        guard let e = engine, cells > 0 else { return nil }
+        var buf = [UInt8](repeating: 0, count: cells * cells)
+        let ok = buf.withUnsafeMutableBufferPointer { b in
+            bf_map_biomes(e, b.baseAddress, UInt32(b.count)) == BF_OK
+        }
+        return ok ? buf : nil
+    }
+
     // Teleport to a marker (bf_map_teleport). The charge-up happens app-side.
     @discardableResult
     func mapTeleport(_ id: UInt32) -> Bool {

@@ -1070,6 +1070,37 @@ pub unsafe extern "C" fn bf_map_teleport(e: bf_engine, marker_id: u32) -> u8 {
     }
 }
 
+/// #224 (v25): fill `out` with the dominant biome index of every map cell
+/// (row-major, cells_per_axis^2 bytes: 0 plains, 1 forest, 2 mountains, 3 desert,
+/// 4 snowy, 5 swamp, 6 beach). Pure worldgen (seeded hash), no world streaming.
+/// Returns BF_ERR_BAD_ARG if the buffer is too small or null.
+#[no_mangle]
+pub unsafe extern "C" fn bf_map_biomes(e: bf_engine, out: *mut u8, cap: u32) -> bf_result {
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => return bf_result::BF_ERR_BAD_ARG,
+    };
+    if !e.world_ready {
+        return bf_result::BF_ERR_BAD_ARG;
+    }
+    let cells = crate::world::MAP_CELLS as usize;
+    let need = cells * cells;
+    if out.is_null() || (cap as usize) < need {
+        return bf_result::BF_ERR_BAD_ARG;
+    }
+    let seed = e.world.debug_seed();
+    let cell = crate::world::MAP_CELL;
+    let buf = core::slice::from_raw_parts_mut(out, need);
+    for cz in 0..cells {
+        for cx in 0..cells {
+            let wx = cx as i32 * cell + cell / 2;
+            let wz = cz as i32 * cell + cell / 2;
+            buf[cz * cells + cx] = crate::worldgen::worldgen_biome_at(wx, wz, seed);
+        }
+    }
+    bf_result::BF_OK
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn bf_debug_set_camera(
     e: bf_engine,

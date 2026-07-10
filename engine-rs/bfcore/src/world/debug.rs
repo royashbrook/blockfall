@@ -53,6 +53,10 @@ impl<'c> World<'c> {
     pub fn debug_set_selected(&mut self, s: u8) {
         self.selected = s;
     }
+    /// #224: world seed accessor for the FFI map-biome fill.
+    pub fn debug_seed(&self) -> u64 {
+        self.seed
+    }
     pub fn debug_region_sat(&self, cx: i32, cz: i32) -> f32 {
         self.region_sat(ChunkCoord { x: cx, y: 0, z: cz })
     }

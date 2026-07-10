@@ -31,6 +31,10 @@ final class MapView: NSView {
     var cellSize: Int = 64              // blocks per explored cell
     var cells: Int = 512                // cells per axis
     var markers: [Marker] = []
+    // #224: one biome index per map cell (row-major, cells^2; empty = no layer).
+    // showBiomes tints EXPLORED cells by biome (default ON, persisted).
+    var biomes: [UInt8] = []
+    var showBiomes: Bool = UserDefaults.standard.object(forKey: "mapBiomes") as? Bool ?? true
     var playerX: Float = 0
     var playerZ: Float = 0
     var playerFacing: Float = 0         // yaw radians (atan2(fwd.x, fwd.z))
@@ -46,6 +50,7 @@ final class MapView: NSView {
     var viewSpan: Int = 4096
     private let kMinSpan = 1024
     private var zoomInRect: NSRect = .zero
+    private var biomeToggleRect: NSRect = .zero   // #224 Biomes on/off chip
     private var zoomOutRect: NSRect = .zero
 
     // Interaction state.
@@ -126,9 +131,26 @@ final class MapView: NSView {
                 let checker = (cx ^ cz) & 1 == 0
                 let o = (j * n + i) * 4
                 if on {
-                    data[o] = checker ? 226 : 218      // R parchment
-                    data[o + 1] = checker ? 208 : 199  // G
-                    data[o + 2] = checker ? 168 : 158  // B
+                    // #224: biome tint for explored cells (kid-legible terrain map);
+                    // plain parchment when the layer is off or missing.
+                    var rgb: (UInt8, UInt8, UInt8) = checker ? (226, 208, 168) : (218, 199, 158)
+                    if showBiomes, biomes.count >= total * total {
+                        let base: (UInt8, UInt8, UInt8)
+                        switch biomes[bit] {
+                        case 1:  base = (96, 168, 88)    // forest: leafy green
+                        case 2:  base = (150, 148, 152)  // mountains: grey
+                        case 3:  base = (232, 204, 130)  // desert: sand
+                        case 4:  base = (236, 240, 246)  // snowy: white-blue
+                        case 5:  base = (110, 142, 110)  // swamp: murky green
+                        case 6:  base = (238, 222, 170)  // beach: pale sand
+                        default: base = (150, 196, 110)  // plains: light green
+                        }
+                        let dim: Float = checker ? 1.0 : 0.93
+                        rgb = (UInt8(Float(base.0) * dim), UInt8(Float(base.1) * dim), UInt8(Float(base.2) * dim))
+                    }
+                    data[o] = rgb.0
+                    data[o + 1] = rgb.1
+                    data[o + 2] = rgb.2
                 } else {
                     data[o] = checker ? 24 : 21
                     data[o + 1] = checker ? 27 : 24
@@ -195,6 +217,7 @@ final class MapView: NSView {
 
         // Zoom buttons (bottom-right, inside the frame): big friendly + / −.
         drawZoomButtons(in: r)
+        drawBiomeToggle(in: r)   // #224
 
         // The player: a bold arrow at the map centre, rotated to the facing.
         drawPlayerArrow(at: CGPoint(x: r.midX, y: r.midY), ctx: ctx)
@@ -318,6 +341,27 @@ final class MapView: NSView {
                                                  y: rect.midY - sz.height / 2),
                                      withAttributes: attrs)
         }
+    }
+
+    // #224: a small labelled chip (bottom-left of the chart) toggling the biome tint.
+    private func drawBiomeToggle(in r: NSRect) {
+        let w: CGFloat = 118, h: CGFloat = 40
+        biomeToggleRect = NSRect(x: r.minX + 12, y: r.minY + 12, width: w, height: h)
+        NSColor(calibratedRed: 0.10, green: 0.12, blue: 0.18, alpha: 0.92).setFill()
+        NSBezierPath(roundedRect: biomeToggleRect, xRadius: 10, yRadius: 10).fill()
+        NSColor.white.withAlphaComponent(showBiomes ? 1 : 0.45).setStroke()
+        let ring = NSBezierPath(roundedRect: biomeToggleRect.insetBy(dx: 2, dy: 2), xRadius: 8, yRadius: 8)
+        ring.lineWidth = 2
+        ring.stroke()
+        let label = showBiomes ? "Biomes: On" : "Biomes: Off"
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: 15),
+            .foregroundColor: NSColor.white.withAlphaComponent(showBiomes ? 1 : 0.5),
+        ]
+        let sz = (label as NSString).size(withAttributes: attrs)
+        (label as NSString).draw(at: NSPoint(x: biomeToggleRect.midX - sz.width / 2,
+                                             y: biomeToggleRect.midY - sz.height / 2),
+                                 withAttributes: attrs)
     }
 
     private func setZoom(span: Int) {
@@ -455,6 +499,12 @@ final class MapView: NSView {
         // Zoom buttons.
         if zoomInRect.contains(p) { setZoom(span: viewSpan / 2); return }
         if zoomOutRect.contains(p) { setZoom(span: viewSpan * 2); return }
+        if biomeToggleRect.contains(p) {   // #224
+            showBiomes.toggle()
+            UserDefaults.standard.set(showBiomes, forKey: "mapBiomes")
+            rebuild()
+            return
+        }
         // Confirm chip first.
         if selectedMarker != nil, goRect != .zero, goRect.insetBy(dx: -8, dy: -8).contains(p) {
             beginCharge()
