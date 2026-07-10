@@ -22,6 +22,13 @@ struct DialogueNPC: Codable {
     let nodes: [DialogueNode]
 }
 
+// #239: the dim backdrop closes the dialogue on a click outside the panel
+// (the panel is a subview, so its own clicks never reach here).
+private final class DialogueBackdrop: NSView {
+    var onBackgroundClick: (() -> Void)?
+    override func mouseDown(with event: NSEvent) { onBackgroundClick?() }
+}
+
 final class DialogueController {
     // #203: trade wiring. hasTrade asks the engine whether this profession has an
     // offer sheet; onOpenTrade swaps the dialogue for the trade panel.
@@ -35,6 +42,22 @@ final class DialogueController {
     private weak var overlay: NSView?
     var onClose: (() -> Void)?
     var isOpen: Bool { overlay != nil }
+    // #240: nameplate title ("Pip the Woodcutter") shown instead of the roster
+    // name when the app passes one at open.
+    private var titleOverride: String? = nil
+    // #239: Esc closes; walking away closes. The sim keeps running behind the
+    // dialogue, so a per-frame position hook drives the distance check.
+    private var escMonitor: Any? = nil
+    private var openPos: (x: Float, z: Float)? = nil
+    func playerMoved(x: Float, z: Float) {
+        guard isOpen else { openPos = nil; return }
+        guard let p = openPos else { openPos = (x, z); return }
+        // Nearest-image deltas: a chat at the torus seam must not read as 32k.
+        let period: Float = 32768
+        var dx = x - p.x; dx -= period * (dx / period).rounded()
+        var dz = z - p.z; dz -= period * (dz / period).rounded()
+        if dx * dx + dz * dz > 5.0 * 5.0 { close() }
+    }
 
     func load() {
         guard let url = Bundle.main.resourceURL?
@@ -47,19 +70,27 @@ final class DialogueController {
         npcs = list
     }
 
-    func show(npcId: Int, in parent: NSView) {
+    func show(npcId: Int, in parent: NSView, title: String? = nil) {
         guard !isOpen else { return }
         // Fall back to the first NPC if the id is unknown so a villager always says something.
         let npc = npcs.first(where: { $0.npc_id == npcId }) ?? npcs.first
         guard let npc = npc else { return }
 
-        let ov = NSView(frame: parent.bounds)
+        let ov = DialogueBackdrop(frame: parent.bounds)
         ov.autoresizingMask = [.width, .height]
         ov.wantsLayer = true
         ov.layer?.backgroundColor = NSColor(calibratedWhite: 0, alpha: 0.55).cgColor
+        ov.onBackgroundClick = { [weak self] in self?.close() }
         parent.addSubview(ov)
         overlay = ov
         currentNpcId = npcId
+        titleOverride = (title?.isEmpty == false) ? title : nil
+        openPos = nil   // first playerMoved after open anchors the walk-away check
+        // #239: Esc leaves the chat, same as every other overlay.
+        escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            if e.keyCode == 53, self?.isOpen == true { self?.close(); return nil }
+            return e
+        }
         showNode(npc, npc.root ?? 0)
     }
 
@@ -68,8 +99,21 @@ final class DialogueController {
         ov.subviews.forEach { $0.removeFromSuperview() }
         guard nodeId >= 0, let node = npc.nodes.first(where: { $0.id == nodeId }) else { close(); return }
 
-        let nameLbl = NSTextField(labelWithString: npc.name)
+        // #240: prefer the live nameplate title ("Pip the Woodcutter") so the
+        // chat header names the exact villager clicked, not a roster stand-in.
+        let nameLbl = NSTextField(labelWithString: titleOverride ?? npc.name)
         nameLbl.font = .boldSystemFont(ofSize: 22); nameLbl.textColor = .white
+
+        // #239: an X in the corner so leaving never requires picking a line.
+        let xBtn = NSButton(title: "✕", target: self, action: #selector(closeClicked))
+        xBtn.bezelStyle = .regularSquare; xBtn.isBordered = false; xBtn.wantsLayer = true
+        xBtn.layer?.backgroundColor = NSColor(calibratedRed: 0.55, green: 0.22, blue: 0.22, alpha: 1).cgColor
+        xBtn.layer?.cornerRadius = 8
+        xBtn.attributedTitle = NSAttributedString(string: "✕", attributes: [
+            .font: NSFont.boldSystemFont(ofSize: 16), .foregroundColor: NSColor.white])
+        xBtn.translatesAutoresizingMaskIntoConstraints = false
+        xBtn.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        xBtn.heightAnchor.constraint(equalToConstant: 32).isActive = true
 
         let textLbl = NSTextField(wrappingLabelWithString: node.text)
         textLbl.font = .systemFont(ofSize: 16); textLbl.textColor = .white
@@ -77,7 +121,12 @@ final class DialogueController {
         textLbl.translatesAutoresizingMaskIntoConstraints = false
         textLbl.widthAnchor.constraint(equalToConstant: 460).isActive = true
 
-        var rows: [NSView] = [nameLbl, textLbl]
+        let header = NSStackView(views: [nameLbl, NSView(), xBtn])
+        header.orientation = .horizontal; header.spacing = 12
+        header.translatesAutoresizingMaskIntoConstraints = false
+        header.widthAnchor.constraint(equalToConstant: 460).isActive = true
+
+        var rows: [NSView] = [header, textLbl]
         let choices = node.choices.isEmpty ? [DialogueChoice(label: "Goodbye.", target: -1)] : node.choices
         for (i, ch) in choices.enumerated() {
             let b = NSButton(title: ch.label, target: self, action: #selector(choiceClicked(_:)))
@@ -164,8 +213,12 @@ final class DialogueController {
         if sender.tag < 0 { close() } else { showNode(npc, sender.tag) }
     }
 
+    @objc private func closeClicked() { close() }
+
     func close() {
         overlay?.removeFromSuperview(); overlay = nil
+        if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
+        openPos = nil
         onClose?()
     }
 
@@ -173,5 +226,7 @@ final class DialogueController {
     // which grabs the mouse back and traps the pointer under the new panel.
     private func closeForHandoff() {
         overlay?.removeFromSuperview(); overlay = nil
+        if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
+        openPos = nil
     }
 }

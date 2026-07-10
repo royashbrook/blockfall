@@ -322,6 +322,16 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // #203 trade: offer sheet + execute + coin/goods balance for the panel.
     private var lastHudState: bf_hud_state?
+    // #239: per-frame player x/z for the dialogue walk-away close.
+    var onPlayerPos: ((Float, Float) -> Void)?
+    // #240: the current look-at nameplate ("Pip the Woodcutter"), so the
+    // dialogue header can name the exact villager that was clicked.
+    var lookName: String {
+        guard var h = lastHudState else { return "" }
+        return withUnsafeBytes(of: &h.look_name) { raw in
+            String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+        }
+    }
     func tradeOffers(npcId: Int32) -> [TradeView.Offer]? {
         guard let e = engine else { return nil }
         var v = bf_trade_view()
@@ -1861,6 +1871,9 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         hud?.update(from: frame.hud)
         lastHudState = frame.hud   // #203 trade panel reads coin balance from here
+        // #239: dialogue walk-away check rides the frame loop (the sim keeps
+        // running behind the chat overlay).
+        onPlayerPos?(frame.camera.position.x, frame.camera.position.z)
 
         // #109 chests: poll the engine for an open chest (set by a right-click on a
         // chest block) and push its live contents to the HUD so the chest panel shows

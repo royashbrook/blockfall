@@ -267,11 +267,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dialogue.onOpenTrade = { [weak self] npc in self?.openTrade(npcId: Int32(npc)) }
         // #227: explicit donation, INTERACT with arg 1 (must still be facing them).
         dialogue.onDonate = { [weak mtkView] _ in mtkView?.requestDonate() }
-        r.onDialogue = { [weak self] npcId in
+        r.onDialogue = { [weak self, weak r] npcId in
             guard let self = self, let cv = self.window.contentView, !self.dialogue.isOpen else { return }
             self.gameView?.releaseMouse()
-            self.dialogue.show(npcId: npcId, in: cv)
+            // #240: header carries the clicked villager's full nameplate.
+            self.dialogue.show(npcId: npcId, in: cv, title: r?.lookName)
         }
+        // #239: walking ~5 blocks away ends the chat naturally.
+        r.onPlayerPos = { [weak self] x, z in self?.dialogue.playerMoved(x: x, z: z) }
         gameView = mtkView
         gameContainer = container
     }
