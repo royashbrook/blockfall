@@ -1,5 +1,5 @@
 // ===========================================================================
-// Part 2 of the worldgen port (included from lib.rs).
+// Trees, canopies, and surface plant helpers.
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -712,5 +712,3 @@ pub fn worldgen_trunk_fit_to_ceiling(
         desired_trunk
     }
 }
-
-include!("worldgen_part3.rs");

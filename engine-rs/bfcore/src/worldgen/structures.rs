@@ -1,6 +1,5 @@
 // ===========================================================================
-// Part 3 of the worldgen port (included from worldgen_part2.rs).
-// Structures, deadwood, cave features, decorations, generate, public API.
+// Structure selection, settlement layout, and structure stamping.
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -11,6 +10,9 @@ const STRUCT_CELL_COUNT: i32 = WORLD_PERIOD / STRUCT_CELL_SIZE; // 512
 const STRUCT_SEED_MIX: u64 = 0x57AC7EDEDBEF5717;
 const MARKER_BLOCK: BlockId = 34;
 const STRUCT_PROB_THRESH: u64 = 128;
+const STRUCT_ANCHOR_MIN_OFFSET: i32 = 7;
+const STRUCT_ANCHOR_OFFSET_CHOICES: i32 = 50;
+const STRUCT_ANCHOR_OFFSET_SPAN: i32 = STRUCT_ANCHOR_OFFSET_CHOICES - 1;
 
 const STRUCT_NONE: i32 = 0;
 const STRUCT_CABIN: i32 = 1;
@@ -34,14 +36,36 @@ const STRUCT_CITY: i32 = 13; // a larger settlement cluster (town / city)
 // only lifts cities to "reliably encountered", not "everywhere".
 const STRUCT_CITY_UPGRADE_THRESH: u64 = 150;
 
+// #222: settlement thinning. Structure cells are 64 blocks wide, so a 500-block
+// spacing rule is roughly eight structure cells. Cities get a wider city-vs-city
+// exclusion zone so they do not cluster into the same nearby biome patch.
+const SETTLEMENT_MIN_SPACING_BLOCKS: i32 = 500;
+const CITY_MIN_SPACING_BLOCKS: i32 = 768;
+const SETTLEMENT_SPACING_SCAN_CELLS: i32 = CITY_MIN_SPACING_BLOCKS / STRUCT_CELL_SIZE + 2;
+
+const SETTLEMENT_SITE_JITTER: i32 = 3;
+const SETTLEMENT_BUILDING_REACH: i32 = 4;
+const SETTLEMENT_MAX_SITES: usize = 15;
+const VILLAGE_MIN_BUILDINGS: usize = 5;
+const VILLAGE_MAX_BUILDINGS: usize = 7;
+const VILLAGE_SITE_MIN_RADIUS: i32 = 20;
+const VILLAGE_SITE_RADIUS_SPAN: i32 = 18;
+const VILLAGE_LAYOUT_REACH: i32 =
+    VILLAGE_SITE_MIN_RADIUS + VILLAGE_SITE_RADIUS_SPAN + SETTLEMENT_SITE_JITTER + SETTLEMENT_BUILDING_REACH;
+const CITY_MIN_BUILDINGS: usize = 12;
+const CITY_MAX_BUILDINGS: usize = SETTLEMENT_MAX_SITES;
+const CITY_SITE_MIN_RADIUS: i32 = 16;
+const CITY_SITE_RADIUS_SPAN: i32 = 28;
+const CITY_LAYOUT_REACH: i32 =
+    CITY_SITE_MIN_RADIUS + CITY_SITE_RADIUS_SPAN + SETTLEMENT_SITE_JITTER + SETTLEMENT_BUILDING_REACH;
+
 // Largest structure footprint reaches out from its anchor by this many blocks in
 // X and Z. The placement loop scans every structure cell within this reach of a
 // chunk so a structure spanning a chunk border is stamped identically into both
 // chunks (seam safe). Must be >= the biggest structure half-extent below: the city
-// is the widest (huts on a ring out to +/-18 plus a villager-home radius of up to 3,
-// so ~21; the bare cross-road cobble runs to 22 but those are single blocks). 26
-// leaves headroom over the 21 footprint reach so a home is never clipped at a border.
-const STRUCT_MAX_REACH_XZ: i32 = 26;
+// and the procedural city layout are the widest. Keep this tied to layout constants
+// so chunk-border stamping follows future settlement-size tweaks.
+const STRUCT_MAX_REACH_XZ: i32 = CITY_LAYOUT_REACH;
 
 #[derive(Clone, Copy)]
 struct StructDesc {
@@ -60,6 +84,11 @@ fn struct_is_ruin(typ: i32) -> bool {
     typ == STRUCT_RUIN
 }
 
+#[inline]
+fn struct_is_settlement(typ: i32) -> bool {
+    typ == STRUCT_VILLAGE || typ == STRUCT_CITY
+}
+
 // Half extent (in blocks, from the anchor) of a structure type's solid footprint.
 // Used to carve a no-tree clearance zone around placed structures so trunks and
 // canopies do not punch through walls or roofs (#143). Values track the widest
@@ -75,12 +104,12 @@ fn struct_footprint_reach(typ: i32) -> i32 {
         x if x == STRUCT_TEMPLE => 3,
         x if x == STRUCT_CAIRN => 1,
         x if x == STRUCT_WELL => 1,
-        x if x == STRUCT_VILLAGE => 16,    // #213: huts spread onto a wider ring (~11/13) + hut radius 3
+        x if x == STRUCT_VILLAGE => VILLAGE_LAYOUT_REACH,
         x if x == STRUCT_SHRINE => 3,
         x if x == STRUCT_TALL_TOWER => 2,
         x if x == STRUCT_KEEP => 4,        // curtain wall + turrets at +/-4
         x if x == STRUCT_RUIN => 4,
-        x if x == STRUCT_CITY => 22,       // outer hut ring +/-18 + radius, cross roads to 22
+        x if x == STRUCT_CITY => CITY_LAYOUT_REACH,
         _ => 0,
     }
 }
@@ -126,20 +155,24 @@ fn struct_surface(wx: i32, wz: i32, seed: u64) -> i32 {
     surface_height(wx, wz, seed)
 }
 
+#[inline]
+fn struct_none() -> StructDesc {
+    StructDesc { anchor_wx: 0, anchor_wz: 0, typ: STRUCT_NONE, cell_hash: 0, present: false }
+}
 
-fn struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
+fn raw_struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
     let sseed = fmix64(seed ^ STRUCT_SEED_MIX);
     // #179: canonical cell hash (periodic grid); anchor geometry stays in the
     // caller's frame so seam-adjacent placement works on raw coordinates.
     let h = hash2(wrap_cell(scx, STRUCT_CELL_COUNT), wrap_cell(scz, STRUCT_CELL_COUNT), sseed);
 
     if (h & 0xFF) >= STRUCT_PROB_THRESH {
-        return StructDesc { anchor_wx: 0, anchor_wz: 0, typ: STRUCT_NONE, cell_hash: 0, present: false };
+        return struct_none();
     }
 
     let h2s = fmix64(h ^ 0xFACEBEEF0BAB);
-    let off_x = 7 + ((h2s >> 0) % 50) as i32;
-    let off_z = 7 + ((h2s >> 16) % 50) as i32;
+    let off_x = STRUCT_ANCHOR_MIN_OFFSET + ((h2s >> 0) % (STRUCT_ANCHOR_OFFSET_CHOICES as u64)) as i32;
+    let off_z = STRUCT_ANCHOR_MIN_OFFSET + ((h2s >> 16) % (STRUCT_ANCHOR_OFFSET_CHOICES as u64)) as i32;
 
     let ax = scx * STRUCT_CELL_SIZE + off_x;
     let az = scz * STRUCT_CELL_SIZE + off_z;
@@ -156,7 +189,7 @@ fn struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
         || is_ocean_column(ax as f32, az as f32, seed)
         || river_channel_t(ax as f32, az as f32, seed) > 0.4
     {
-        return StructDesc { anchor_wx: 0, anchor_wz: 0, typ: STRUCT_NONE, cell_hash: 0, present: false };
+        return struct_none();
     }
 
     // Big / rare structures. A minority of present cells become a large structure
@@ -282,6 +315,119 @@ fn struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
     };
 
     StructDesc { anchor_wx: ax, anchor_wz: az, typ: stype, cell_hash: h2s, present: true }
+}
+
+// Fast mirror of raw_struct_for_cell for spacing scans. It returns only cells that
+// the full raw picker would classify as VILLAGE or CITY, avoiding full structure
+// classification for every neighbour in the spacing radius.
+fn raw_settlement_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
+    let sseed = fmix64(seed ^ STRUCT_SEED_MIX);
+    let h = hash2(wrap_cell(scx, STRUCT_CELL_COUNT), wrap_cell(scz, STRUCT_CELL_COUNT), sseed);
+    if (h & 0xFF) >= STRUCT_PROB_THRESH {
+        return struct_none();
+    }
+
+    let h2s = fmix64(h ^ 0xFACEBEEF0BAB);
+    if ((h2s >> 48) & 0xFF) < 36 {
+        return struct_none();
+    }
+
+    let type_bits = (h2s >> 32) & 0x7;
+    if type_bits != 0 && type_bits != 1 && type_bits != 5 {
+        return struct_none();
+    }
+
+    let off_x = STRUCT_ANCHOR_MIN_OFFSET + ((h2s >> 0) % (STRUCT_ANCHOR_OFFSET_CHOICES as u64)) as i32;
+    let off_z = STRUCT_ANCHOR_MIN_OFFSET + ((h2s >> 16) % (STRUCT_ANCHOR_OFFSET_CHOICES as u64)) as i32;
+    let ax = scx * STRUCT_CELL_SIZE + off_x;
+    let az = scz * STRUCT_CELL_SIZE + off_z;
+
+    let dom = voronoi_biome(ax, az, seed);
+    let is_village_candidate =
+        (dom == Biome::Forest && type_bits == 5) || (dom == Biome::Plains && type_bits <= 1);
+    if !is_village_candidate {
+        return struct_none();
+    }
+
+    let h = struct_surface(ax, az, seed);
+    if h <= SEA_LEVEL + 1
+        || is_ocean_column(ax as f32, az as f32, seed)
+        || river_channel_t(ax as f32, az as f32, seed) > 0.4
+    {
+        return struct_none();
+    }
+
+    let typ = if ((h2s >> 56) & 0xFF) < STRUCT_CITY_UPGRADE_THRESH {
+        STRUCT_CITY
+    } else {
+        STRUCT_VILLAGE
+    };
+    StructDesc { anchor_wx: ax, anchor_wz: az, typ, cell_hash: h2s, present: true }
+}
+
+#[inline]
+fn settlement_priority(sd: &StructDesc) -> (u64, u64) {
+    // Cities are rarer and gameplay-significant, so when a village and a city fight
+    // over the same 500-block pocket, keep the city. Ties fall back to the hash mark.
+    (if sd.typ == STRUCT_CITY { 0 } else { 1 }, sd.cell_hash)
+}
+
+fn settlement_rejected_by_spacing(sd: &StructDesc, scx: i32, scz: i32, seed: u64) -> bool {
+    let priority = settlement_priority(sd);
+    let max_radius = if sd.typ == STRUCT_CITY {
+        CITY_MIN_SPACING_BLOCKS
+    } else {
+        SETTLEMENT_MIN_SPACING_BLOCKS
+    };
+    let max_radius2 = (max_radius as i64) * (max_radius as i64);
+    for dcz in -SETTLEMENT_SPACING_SCAN_CELLS..=SETTLEMENT_SPACING_SCAN_CELLS {
+        for dcx in -SETTLEMENT_SPACING_SCAN_CELLS..=SETTLEMENT_SPACING_SCAN_CELLS {
+            if dcx == 0 && dcz == 0 {
+                continue;
+            }
+
+            let min_dx = (dcx.abs() * STRUCT_CELL_SIZE - STRUCT_ANCHOR_OFFSET_SPAN).max(0) as i64;
+            let min_dz = (dcz.abs() * STRUCT_CELL_SIZE - STRUCT_ANCHOR_OFFSET_SPAN).max(0) as i64;
+            if min_dx * min_dx + min_dz * min_dz >= max_radius2 {
+                continue;
+            }
+
+            let nscx = scx + dcx;
+            let nscz = scz + dcz;
+            let other = raw_settlement_for_cell(nscx, nscz, seed);
+            if !other.present {
+                continue;
+            }
+
+            let radius = if sd.typ == STRUCT_CITY && other.typ == STRUCT_CITY {
+                CITY_MIN_SPACING_BLOCKS
+            } else {
+                SETTLEMENT_MIN_SPACING_BLOCKS
+            };
+            let dx = (sd.anchor_wx - other.anchor_wx) as i64;
+            let dz = (sd.anchor_wz - other.anchor_wz) as i64;
+            if dx * dx + dz * dz >= (radius as i64) * (radius as i64) {
+                continue;
+            }
+
+            let other_priority = settlement_priority(&other);
+            if other_priority < priority || (other_priority == priority && (nscz, nscx) < (scz, scx)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
+    let sd = raw_struct_for_cell(scx, scz, seed);
+    if !sd.present || !struct_is_settlement(sd.typ) {
+        return sd;
+    }
+    if settlement_rejected_by_spacing(&sd, scx, scz, seed) {
+        return struct_none();
+    }
+    sd
 }
 
 fn struct_set<C: Chunk>(chunk: &mut C, wx: i32, wy: i32, wz: i32, wx_min: i32, wy_min: i32, wz_min: i32, b: BlockId) -> bool {
@@ -814,6 +960,190 @@ fn place_hut<C: Chunk>(cx: i32, cz: i32, hh: u64, seed: u64, chunk: &mut C, wx_m
     struct_set(chunk, cx, wall_top, cz, wx_min, wy_min, wz_min, GLOW_BLOCK);
 }
 
+const SETTLEMENT_BUILDING_HUT: i32 = 0;
+const SETTLEMENT_BUILDING_CABIN: i32 = 1;
+const SETTLEMENT_BUILDING_WELL: i32 = 2;
+
+#[derive(Clone, Copy)]
+struct SettlementSite {
+    dx: i32,
+    dz: i32,
+    kind: i32,
+}
+
+const SETTLEMENT_EMPTY_SITE: SettlementSite = SettlementSite {
+    dx: 0,
+    dz: 0,
+    kind: SETTLEMENT_BUILDING_HUT,
+};
+
+const SETTLEMENT_DIRS: [[i32; 2]; 16] = [
+    [4, 0],
+    [4, 2],
+    [3, 3],
+    [2, 4],
+    [0, 4],
+    [-2, 4],
+    [-3, 3],
+    [-4, 2],
+    [-4, 0],
+    [-4, -2],
+    [-3, -3],
+    [-2, -4],
+    [0, -4],
+    [2, -4],
+    [3, -3],
+    [4, -2],
+];
+
+fn settlement_building_kind(h: u64, i: usize, wanted: usize, city: bool) -> i32 {
+    let well_a = ((h >> 7) as usize) % wanted;
+    if i == well_a {
+        return SETTLEMENT_BUILDING_WELL;
+    }
+    if city {
+        let well_b = (well_a + wanted / 2) % wanted;
+        if i == well_b {
+            return SETTLEMENT_BUILDING_WELL;
+        }
+        if (i + ((h >> 12) as usize)) % 3 == 0 {
+            SETTLEMENT_BUILDING_CABIN
+        } else {
+            SETTLEMENT_BUILDING_HUT
+        }
+    } else if i == (well_a + 2 + ((h >> 11) as usize & 1)) % wanted {
+        SETTLEMENT_BUILDING_CABIN
+    } else {
+        SETTLEMENT_BUILDING_HUT
+    }
+}
+
+fn settlement_site_is_clear(sites: &[SettlementSite; SETTLEMENT_MAX_SITES], n: usize, dx: i32, dz: i32, min_sep: i32) -> bool {
+    for s in sites.iter().take(n) {
+        let ddx = dx - s.dx;
+        let ddz = dz - s.dz;
+        if ddx * ddx + ddz * ddz < min_sep * min_sep {
+            return false;
+        }
+    }
+    true
+}
+
+fn settlement_sites(h: u64, wanted: usize, city: bool) -> ([SettlementSite; SETTLEMENT_MAX_SITES], usize) {
+    let wanted = wanted.min(SETTLEMENT_MAX_SITES).max(1);
+    let (min_r, span, min_sep) = if city {
+        (CITY_SITE_MIN_RADIUS, CITY_SITE_RADIUS_SPAN, 10)
+    } else {
+        (VILLAGE_SITE_MIN_RADIUS, VILLAGE_SITE_RADIUS_SPAN, 13)
+    };
+    let mut sites = [SETTLEMENT_EMPTY_SITE; SETTLEMENT_MAX_SITES];
+    let mut n = 0usize;
+    let rot = ((h >> 21) & 0xF) as usize;
+    let attempts = wanted * 5 + 8;
+    for attempt in 0..attempts {
+        if n >= wanted {
+            break;
+        }
+        let hh = fmix64(h ^ ((attempt as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(0xA53)));
+        let dir = SETTLEMENT_DIRS[(rot + attempt * 5 + ((hh >> 4) as usize & 1)) & 15];
+        let r = min_r + ((hh >> 9) % ((span + 1) as u64)) as i32;
+        let jitter = (SETTLEMENT_SITE_JITTER * 2 + 1) as u64;
+        let dx = dir[0] * r / 4 + ((hh >> 18) % jitter) as i32 - SETTLEMENT_SITE_JITTER;
+        let dz = dir[1] * r / 4 + ((hh >> 25) % jitter) as i32 - SETTLEMENT_SITE_JITTER;
+        if settlement_site_is_clear(&sites, n, dx, dz, min_sep) {
+            sites[n] = SettlementSite {
+                dx,
+                dz,
+                kind: settlement_building_kind(h, n, wanted, city),
+            };
+            n += 1;
+        }
+    }
+
+    let fallback_r = min_r + span / 2;
+    for i in 0..SETTLEMENT_DIRS.len() {
+        if n >= wanted {
+            break;
+        }
+        let dir = SETTLEMENT_DIRS[(rot + i * 5) & 15];
+        let dx = dir[0] * fallback_r / 4;
+        let dz = dir[1] * fallback_r / 4;
+        if settlement_site_is_clear(&sites, n, dx, dz, min_sep) {
+            sites[n] = SettlementSite {
+                dx,
+                dz,
+                kind: settlement_building_kind(h, n, wanted, city),
+            };
+            n += 1;
+        }
+    }
+    (sites, n)
+}
+
+fn settlement_pave<C: Chunk>(chunk: &mut C, wx: i32, wz: i32, seed: u64, wx_min: i32, wy_min: i32, wz_min: i32, b: BlockId) {
+    let h = struct_surface(wx, wz, seed);
+    struct_set(chunk, wx, h, wz, wx_min, wy_min, wz_min, b);
+}
+
+fn place_settlement_road<C: Chunk>(
+    ax: i32,
+    az: i32,
+    dx: i32,
+    dz: i32,
+    h: u64,
+    seed: u64,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+    b: BlockId,
+) {
+    let x_first = h & 1 == 0;
+    if x_first {
+        let mut px = 0;
+        while px != dx {
+            px += dx.signum();
+            settlement_pave(chunk, ax + px, az, seed, wx_min, wy_min, wz_min, b);
+        }
+        let mut pz = 0;
+        while pz != dz {
+            pz += dz.signum();
+            settlement_pave(chunk, ax + dx, az + pz, seed, wx_min, wy_min, wz_min, b);
+        }
+    } else {
+        let mut pz = 0;
+        while pz != dz {
+            pz += dz.signum();
+            settlement_pave(chunk, ax, az + pz, seed, wx_min, wy_min, wz_min, b);
+        }
+        let mut px = 0;
+        while px != dx {
+            px += dx.signum();
+            settlement_pave(chunk, ax + px, az + dz, seed, wx_min, wy_min, wz_min, b);
+        }
+    }
+}
+
+fn place_settlement_building<C: Chunk>(
+    ax: i32,
+    az: i32,
+    site: SettlementSite,
+    h: u64,
+    seed: u64,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+) {
+    let bx = ax + site.dx;
+    let bz = az + site.dz;
+    match site.kind {
+        SETTLEMENT_BUILDING_CABIN => place_cabin(bx, bz, h, seed, chunk, wx_min, wy_min, wz_min),
+        SETTLEMENT_BUILDING_WELL => place_well(bx, bz, h, seed, chunk, wx_min, wy_min, wz_min),
+        _ => place_hut(bx, bz, h, seed, chunk, wx_min, wy_min, wz_min),
+    }
+}
+
 fn place_village<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
     for dz in -1..=1 {
         for dx in -1..=1 {
@@ -823,29 +1153,15 @@ fn place_village<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, w
         }
     }
 
-    // #213: wider ring so buildings sit 5-10 blocks apart (huts are radius 3), not
-    // crammed together. Centres ~12-15 apart give roomy gaps between huts.
-    let huts = [[-11, -7], [11, 7], [0, 13], [-11, 7], [11, -7]];
-    let n_huts = if (h >> 10) & 1 != 0 { 5 } else { 4 };
-    for i in 0..n_huts {
+    let wanted = VILLAGE_MIN_BUILDINGS + ((h >> 10) as usize % (VILLAGE_MAX_BUILDINGS - VILLAGE_MIN_BUILDINGS + 1));
+    let (sites, n_sites) = settlement_sites(h, wanted, false);
+    for (i, site) in sites.iter().take(n_sites).enumerate() {
         let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x2545F4914F6CDD1D).wrapping_add(71)));
-        place_hut(ax + huts[i][0], az + huts[i][1], hh, seed, chunk, wx_min, wy_min, wz_min);
-        let pdx = if huts[i][0] > 0 {
-            2
-        } else if huts[i][0] < 0 {
-            -2
-        } else {
-            0
-        };
-        let pdz = if huts[i][1] > 0 {
-            2
-        } else if huts[i][1] < 0 {
-            -2
-        } else {
-            0
-        };
-        let ph = struct_surface(ax + pdx, az + pdz, seed);
-        struct_set(chunk, ax + pdx, ph, az + pdz, wx_min, wy_min, wz_min, COBBLESTONE);
+        place_settlement_road(ax, az, site.dx, site.dz, hh, seed, chunk, wx_min, wy_min, wz_min, COBBLESTONE);
+    }
+    for (i, site) in sites.iter().take(n_sites).enumerate() {
+        let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x2545F4914F6CDD1D).wrapping_add(71)));
+        place_settlement_building(ax, az, *site, hh, seed, chunk, wx_min, wy_min, wz_min);
     }
 
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
@@ -1126,15 +1442,13 @@ fn place_ruin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
 
-// A city: a scaled-up village. A central plaza (paved, lamp-lit well at its core)
-// with simple cross roads, ringed by many huts on two rings plus a couple of bigger
-// cabins. Reuses place_hut / place_cabin for the buildings. Widest hut ring is at
-// +/-18 and a villager home reaches up to 3 from its centre, so the home footprint
-// extent is ~21, under STRUCT_MAX_REACH_XZ (26).
+// A city: a larger procedural settlement around a paved plaza. Buildings are chosen
+// from the same small kit as villages, but with more sites and a larger radius so two
+// cities do not read as the same fixed ring.
 fn place_city<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
-    // Paved central plaza, 5x5, with a marker / lamp core.
-    for dz in -2..=2 {
-        for dx in -2..=2 {
+    // Paved central plaza, 7x7, with a marker / lamp core.
+    for dz in -3..=3 {
+        for dx in -3..=3 {
             let col_h = struct_surface(ax + dx, az + dz, seed);
             let centre = dx == 0 && dz == 0;
             let b = if centre { GLOW_BLOCK } else { STONE_BRICK };
@@ -1142,34 +1456,16 @@ fn place_city<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
         }
     }
 
-    // Simple cross roads of cobblestone radiating from the plaza out to the rings.
-    for d in 3..=22 {
-        for &(sx, sz) in &[(d, 0), (-d, 0), (0, d), (0, -d)] {
-            let col_h = struct_surface(ax + sx, az + sz, seed);
-            struct_set(chunk, ax + sx, col_h, az + sz, wx_min, wy_min, wz_min, COBBLESTONE);
-        }
-    }
-
-    // Inner ring of huts.
-    let inner = [[-8, -6], [8, 6], [0, 9], [9, -6], [-9, 6], [-8, 0], [8, -1]];
-    for (i, hpos) in inner.iter().enumerate() {
-        let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x2545F4914F6CDD1D).wrapping_add(71)));
-        place_hut(ax + hpos[0], az + hpos[1], hh, seed, chunk, wx_min, wy_min, wz_min);
-    }
-
-    // Outer ring: more huts plus two bigger cabins as "town hall" style anchors.
-    let outer = [[-16, -12], [16, 12], [-16, 12], [16, -12], [0, 18], [0, -18], [18, 0], [-18, 0]];
-    for (i, hpos) in outer.iter().enumerate() {
+    let wanted = CITY_MIN_BUILDINGS + ((h >> 10) as usize % (CITY_MAX_BUILDINGS - CITY_MIN_BUILDINGS + 1));
+    let (sites, n_sites) = settlement_sites(h ^ 0xC17A, wanted, true);
+    for (i, site) in sites.iter().take(n_sites).enumerate() {
         let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(131)));
-        if i < 2 {
-            place_cabin(ax + hpos[0], az + hpos[1], hh, seed, chunk, wx_min, wy_min, wz_min);
-        } else {
-            place_hut(ax + hpos[0], az + hpos[1], hh, seed, chunk, wx_min, wy_min, wz_min);
-        }
+        place_settlement_road(ax, az, site.dx, site.dz, hh, seed, chunk, wx_min, wy_min, wz_min, STONE_BRICK);
     }
-
-    // A well at the plaza edge for flavour.
-    place_well(ax + 3, az + 3, h, seed, chunk, wx_min, wy_min, wz_min);
+    for (i, site) in sites.iter().take(n_sites).enumerate() {
+        let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(131)));
+        place_settlement_building(ax, az, *site, hh, seed, chunk, wx_min, wy_min, wz_min);
+    }
 
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
@@ -1192,280 +1488,3 @@ fn place_structure<C: Chunk>(sd: &StructDesc, seed: u64, chunk: &mut C, wx_min: 
         _ => {}
     }
 }
-
-// ---------------------------------------------------------------------------
-// Deadwood (#22)
-// ---------------------------------------------------------------------------
-// #179: 12 -> 16 so the deadwood grid divides WORLD_PERIOD; probability below
-// rescaled 40 -> 71 (x 16^2/12^2) to keep deadwood-per-area unchanged.
-const DEADWOOD_CELL: i32 = 16;
-const DEADWOOD_CELL_COUNT: i32 = WORLD_PERIOD / DEADWOOD_CELL; // 2048
-const DEADWOOD_REACH_XZ: i32 = 5;
-const DEADWOOD_SEED_MIX: u64 = 0xDEAD0F00DDEAD066;
-
-const DEADWOOD_NONE: i32 = 0;
-const DEADWOOD_STUMP: i32 = 1;
-const DEADWOOD_LOG: i32 = 2;
-
-#[derive(Clone, Copy)]
-struct DeadwoodDesc {
-    wx: i32,
-    wz: i32,
-    kind: i32,
-    length: i32,
-    dir: i32,
-    log_id: BlockId,
-    leaf_nub: bool,
-    present: bool,
-}
-
-#[inline]
-fn deadwood_floordiv(a: i32, b: i32) -> i32 {
-    a / b - if a % b != 0 && (a ^ b) < 0 { 1 } else { 0 }
-}
-
-fn deadwood_for_cell(dcx: i32, dcz: i32, seed: u64) -> DeadwoodDesc {
-    let dseed = fmix64(seed ^ DEADWOOD_SEED_MIX);
-    let h = hash2(wrap_cell(dcx, DEADWOOD_CELL_COUNT), wrap_cell(dcz, DEADWOOD_CELL_COUNT), dseed);
-
-    if (h & 0xFF) >= 71 {
-        return DeadwoodDesc { wx: 0, wz: 0, kind: DEADWOOD_NONE, length: 0, dir: 0, log_id: 0, leaf_nub: false, present: false };
-    }
-
-    let h2 = fmix64(h ^ 0xF0FFEEDDEADBEEF1);
-    let off_x = 2 + ((h2 >> 0) % ((DEADWOOD_CELL - 4) as u64)) as i32;
-    let off_z = 2 + ((h2 >> 8) % ((DEADWOOD_CELL - 4) as u64)) as i32;
-    let ax = dcx * DEADWOOD_CELL + off_x;
-    let az = dcz * DEADWOOD_CELL + off_z;
-
-    let dom = voronoi_biome(ax, az, seed);
-    if dom == Biome::Desert || dom == Biome::Beach || dom == Biome::Snowy {
-        return DeadwoodDesc { wx: 0, wz: 0, kind: DEADWOOD_NONE, length: 0, dir: 0, log_id: 0, leaf_nub: false, present: false };
-    }
-
-    let is_log_kind = ((h2 >> 16) & 0x1) == 0;
-    let kind = if is_log_kind { DEADWOOD_LOG } else { DEADWOOD_STUMP };
-    let length = if is_log_kind {
-        3 + ((h2 >> 20) % 3) as i32
-    } else {
-        1 + ((h2 >> 20) & 1) as i32
-    };
-    let dir = ((h2 >> 24) & 0x3) as i32;
-    let birch = ((h2 >> 26) & 0x3) == 0;
-    let leaf_nub = !is_log_kind && (((h2 >> 28) & 0x3) == 0);
-
-    DeadwoodDesc {
-        wx: ax,
-        wz: az,
-        kind,
-        length,
-        dir,
-        log_id: if birch { BIRCH_LOG } else { OAK_LOG },
-        leaf_nub,
-        present: true,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Cave interior features (#37)
-// ---------------------------------------------------------------------------
-fn cave_surface_h(wx: i32, wz: i32, seed: u64) -> i32 {
-    surface_height(wx, wz, seed)
-}
-
-fn cave_voxel_is_air(wx: i32, wy: i32, wz: i32, seed: u64) -> bool {
-    let h = cave_surface_h(wx, wz, seed);
-    if wy >= h - CAVE_SURFACE_MARGIN {
-        return false;
-    }
-    if wy <= K_COLUMN_MIN_Y + 4 {
-        return false;
-    }
-    // #179: canonical coords + integer cave lattice period (2048 = 1/16).
-    let wx = wrap_world(wx);
-    let wz = wrap_world(wz);
-    let cave = fbm3(wx as f32, wy as f32, wz as f32, fmix64(seed ^ 0xCA4E5EED1234), 3, CAVE_NOISE_PERIOD);
-    cave > CAVE_THRESH
-}
-
-fn cave_voxel_is_solid(wx: i32, wy: i32, wz: i32, seed: u64) -> bool {
-    let h = cave_surface_h(wx, wz, seed);
-    if wy > h {
-        return false;
-    }
-    !cave_voxel_is_air(wx, wy, wz, seed)
-}
-
-// #179: 9 -> 8 so the cave-feature grid divides WORLD_PERIOD (4096 cells);
-// per-cell roll rescaled 56 -> 39 (x 8^3/9^3) to keep features-per-volume.
-const CAVE_FEAT_CELL: i32 = 8;
-const CAVE_FEAT_CELL_COUNT: i32 = WORLD_PERIOD / CAVE_FEAT_CELL; // 4096
-const CAVE_FEAT_SEED_MIX: u64 = 0xCA7EFEA70FEA7C00;
-
-const CFEAT_MUSHROOMS: i32 = 1;
-const CFEAT_CRYSTALS: i32 = 2;
-const CFEAT_POOL: i32 = 3;
-const CFEAT_ORE_KNOT: i32 = 4;
-const CFEAT_CAMP: i32 = 5;
-
-fn place_cave_features<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64) {
-    let wx_min = c.x * K_CHUNK_DIM;
-    let wy_min = c.y * K_CHUNK_DIM;
-    let wz_min = c.z * K_CHUNK_DIM;
-    let wx_max = wx_min + K_CHUNK_DIM - 1;
-    let wy_max = wy_min + K_CHUNK_DIM - 1;
-    let wz_max = wz_min + K_CHUNK_DIM - 1;
-
-    if wy_min > 0 {
-        return;
-    }
-
-    let feat_reach = 3;
-    let fseed = fmix64(seed ^ CAVE_FEAT_SEED_MIX);
-
-    let fdiv = |a: i32, b: i32| a / b - if a % b != 0 && (a ^ b) < 0 { 1 } else { 0 };
-
-    let cx0 = fdiv(wx_min - feat_reach, CAVE_FEAT_CELL);
-    let cx1 = fdiv(wx_max + feat_reach, CAVE_FEAT_CELL);
-    let cy0 = fdiv(wy_min - feat_reach, CAVE_FEAT_CELL);
-    let cy1 = fdiv(wy_max + feat_reach, CAVE_FEAT_CELL);
-    let cz0 = fdiv(wz_min - feat_reach, CAVE_FEAT_CELL);
-    let cz1 = fdiv(wz_max + feat_reach, CAVE_FEAT_CELL);
-
-    // Clipped writer.
-    macro_rules! put {
-        ($chunk:expr, $wx:expr, $wy:expr, $wz:expr, $b:expr, $only_into_air:expr) => {{
-            let wx = $wx;
-            let wy = $wy;
-            let wz = $wz;
-            if !(wx < wx_min || wx > wx_max || wy < wy_min || wy > wy_max || wz < wz_min || wz > wz_max) {
-                let lx = wx - wx_min;
-                let ly = wy - wy_min;
-                let lz = wz - wz_min;
-                let cur = $chunk.get(lx, ly, lz);
-                if !($only_into_air && cur != AIR) {
-                    $chunk.set(lx, ly, lz, $b);
-                }
-            }
-        }};
-    }
-
-    for cy in cy0..=cy1 {
-        for cz in cz0..=cz1 {
-            for cx in cx0..=cx1 {
-                let h = hash3(wrap_cell(cx, CAVE_FEAT_CELL_COUNT), cy, wrap_cell(cz, CAVE_FEAT_CELL_COUNT), fseed);
-                let roll = h & 0xFF;
-                if roll >= 39 {
-                    continue;
-                }
-
-                let h2 = fmix64(h ^ 0x0FEA7C0DECA7EFEA);
-                let ax = cx * CAVE_FEAT_CELL + ((h2 >> 0) % (CAVE_FEAT_CELL as u64)) as i32;
-                let ay = cy * CAVE_FEAT_CELL + ((h2 >> 8) % (CAVE_FEAT_CELL as u64)) as i32;
-                let az = cz * CAVE_FEAT_CELL + ((h2 >> 16) % (CAVE_FEAT_CELL as u64)) as i32;
-
-                let tsel = (h2 >> 24) & 0xFF;
-                let ftype = if tsel < 88 {
-                    CFEAT_MUSHROOMS
-                } else if tsel < 150 {
-                    CFEAT_CRYSTALS
-                } else if tsel < 198 {
-                    CFEAT_ORE_KNOT
-                } else if tsel < 244 {
-                    CFEAT_POOL
-                } else {
-                    CFEAT_CAMP
-                };
-
-                let anchor_air = cave_voxel_is_air(ax, ay, az, seed);
-                let floor_below = cave_voxel_is_solid(ax, ay - 1, az, seed);
-
-                match ftype {
-                    x if x == CFEAT_MUSHROOMS => {
-                        let surface_y = cave_surface_h(ax, az, seed);
-                        let surface_biome = voronoi_biome(ax, az, seed);
-                        if surface_biome == Biome::Desert || surface_biome == Biome::Beach || ay >= surface_y - 4 {
-                            continue;
-                        }
-                        if !anchor_air || !floor_below {
-                            continue;
-                        }
-                        let n = 2 + ((h2 >> 32) % 4) as i32;
-                        for i in 0..n {
-                            let bh = fmix64(h2 ^ ((i as u64).wrapping_mul(0x9E37)));
-                            let dx = ((bh >> 0) % 3) as i32 - 1;
-                            let dz = ((bh >> 8) % 3) as i32 - 1;
-                            if cave_voxel_is_air(ax + dx, ay, az + dz, seed) && cave_voxel_is_solid(ax + dx, ay - 1, az + dz, seed) {
-                                put!(chunk, ax + dx, ay, az + dz, MUSHROOM, true);
-                            }
-                        }
-                        if cave_voxel_is_solid(ax, ay - 1, az, seed) {
-                            put!(chunk, ax, ay - 1, az, GLOW_BLOCK, false);
-                        }
-                    }
-                    x if x == CFEAT_CRYSTALS => {
-                        if !anchor_air {
-                            continue;
-                        }
-                        put!(chunk, ax, ay, az, CRYSTAL_LAMP, true);
-                        let n = 3 + ((h2 >> 32) % 4) as i32;
-                        for i in 0..n {
-                            let bh = fmix64(h2 ^ ((i as u64).wrapping_mul(0xC713)));
-                            let dx = ((bh >> 0) % 3) as i32 - 1;
-                            let dy = ((bh >> 8) % 3) as i32 - 1;
-                            let dz = ((bh >> 16) % 3) as i32 - 1;
-                            if dx == 0 && dy == 0 && dz == 0 {
-                                continue;
-                            }
-                            if cave_voxel_is_solid(ax + dx, ay + dy, az + dz, seed) {
-                                put!(chunk, ax + dx, ay + dy, az + dz, COLOR_CRYSTAL, false);
-                            }
-                        }
-                    }
-                    x if x == CFEAT_ORE_KNOT => {
-                        if !anchor_air {
-                            continue;
-                        }
-                        let ore = if (h2 >> 40) & 1 != 0 { IRON_ORE } else { COAL_ORE };
-                        let n = 3 + ((h2 >> 32) % 4) as i32;
-                        for i in 0..n {
-                            let bh = fmix64(h2 ^ ((i as u64).wrapping_mul(0xA113)));
-                            let dx = ((bh >> 0) % 3) as i32 - 1;
-                            let dy = ((bh >> 8) % 3) as i32 - 1;
-                            let dz = ((bh >> 16) % 3) as i32 - 1;
-                            if cave_voxel_is_solid(ax + dx, ay + dy, az + dz, seed) {
-                                put!(chunk, ax + dx, ay + dy, az + dz, ore, false);
-                            }
-                        }
-                    }
-                    x if x == CFEAT_POOL => {
-                        if !anchor_air || !floor_below {
-                            continue;
-                        }
-                        for dz in -1..=1 {
-                            for dx in -1..=1 {
-                                if cave_voxel_is_air(ax + dx, ay, az + dz, seed) && cave_voxel_is_solid(ax + dx, ay - 1, az + dz, seed) {
-                                    put!(chunk, ax + dx, ay, az + dz, WATER, true);
-                                }
-                            }
-                        }
-                    }
-                    _ => {
-                        // CFEAT_CAMP
-                        if !anchor_air || !floor_below {
-                            continue;
-                        }
-                        put!(chunk, ax, ay, az, CHEST, true);
-                        put!(chunk, ax + 1, ay, az, COBBLESTONE, true);
-                        put!(chunk, ax - 1, ay, az, OAK_PLANKS, true);
-                        if cave_voxel_is_air(ax, ay + 1, az, seed) {
-                            put!(chunk, ax, ay + 1, az, GLOW_BLOCK, true);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-include!("worldgen_part4.rs");

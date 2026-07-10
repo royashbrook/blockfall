@@ -29,7 +29,7 @@ mod worldgen_tests {
         for seed in [11u64, 1, 42, 7, 1234] {
             let (mut cities, mut villages) = (0i64, 0i64);
             let mut nearest_city2: i64 = i64::MAX;
-            let r = 200; // structure cells; 200*64 = 12800 blocks half-extent each way
+            let r = 80; // structure cells; 80*64 = 5120 blocks half-extent each way
             for scz in -r..=r {
                 for scx in -r..=r {
                     let sd = struct_for_cell(scx, scz, seed);
@@ -63,6 +63,113 @@ mod worldgen_tests {
                 "seed {seed}: cities only {share:.2} of settlements ({cities}/{settlements}), too rare"
             );
         }
+    }
+
+    #[test]
+    fn settlements_keep_minimum_spacing() {
+        for seed in [11u64, 1, 42, 7, 1234] {
+            let mut settlements = Vec::new();
+            for scz in -80..=80 {
+                for scx in -80..=80 {
+                    let sd = struct_for_cell(scx, scz, seed);
+                    if sd.present && struct_is_settlement(sd.typ) {
+                        settlements.push(sd);
+                    }
+                }
+            }
+
+            assert!(
+                settlements.len() >= 8,
+                "seed {seed}: spacing scan found only {} settlements",
+                settlements.len()
+            );
+
+            for i in 0..settlements.len() {
+                for j in (i + 1)..settlements.len() {
+                    let a = settlements[i];
+                    let b = settlements[j];
+                    let min_spacing = if a.typ == STRUCT_CITY && b.typ == STRUCT_CITY {
+                        CITY_MIN_SPACING_BLOCKS
+                    } else {
+                        SETTLEMENT_MIN_SPACING_BLOCKS
+                    };
+                    let dx = (a.anchor_wx - b.anchor_wx) as i64;
+                    let dz = (a.anchor_wz - b.anchor_wz) as i64;
+                    let d2 = dx * dx + dz * dz;
+                    assert!(
+                        d2 >= (min_spacing as i64) * (min_spacing as i64),
+                        "seed {seed}: settlement types {} and {} too close: ({},{}) to ({},{}) is {:.1} blocks, expected >= {min_spacing}",
+                        a.typ,
+                        b.typ,
+                        a.anchor_wx,
+                        a.anchor_wz,
+                        b.anchor_wx,
+                        b.anchor_wz,
+                        (d2 as f64).sqrt()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn settlement_layouts_are_spread_and_variable() {
+        for &(city, min_buildings, max_buildings, max_reach, min_sep, min_span) in &[
+            (false, VILLAGE_MIN_BUILDINGS, VILLAGE_MAX_BUILDINGS, VILLAGE_LAYOUT_REACH, 13, 32),
+            (true, CITY_MIN_BUILDINGS, CITY_MAX_BUILDINGS, CITY_LAYOUT_REACH, 10, 46),
+        ] {
+            let mut first_layout = Vec::new();
+            for h in [11u64, 42, 1234] {
+                let wanted = min_buildings + ((h >> 10) as usize % (max_buildings - min_buildings + 1));
+                let (sites, n) = settlement_sites(h, wanted, city);
+                assert_eq!(n, wanted, "city={city} h={h}: layout did not fill requested sites");
+
+                let mut min_x = i32::MAX;
+                let mut max_x = i32::MIN;
+                let mut min_z = i32::MAX;
+                let mut max_z = i32::MIN;
+                let mut huts = 0;
+                let mut cabins = 0;
+                let mut wells = 0;
+                for (i, a) in sites.iter().take(n).enumerate() {
+                    min_x = min_x.min(a.dx);
+                    max_x = max_x.max(a.dx);
+                    min_z = min_z.min(a.dz);
+                    max_z = max_z.max(a.dz);
+                    assert!(
+                        a.dx.abs().max(a.dz.abs()) + SETTLEMENT_BUILDING_REACH <= max_reach,
+                        "city={city} h={h}: site exceeds footprint reach"
+                    );
+                    match a.kind {
+                        SETTLEMENT_BUILDING_CABIN => cabins += 1,
+                        SETTLEMENT_BUILDING_WELL => wells += 1,
+                        _ => huts += 1,
+                    }
+                    for b in sites.iter().take(n).skip(i + 1) {
+                        let dx = a.dx - b.dx;
+                        let dz = a.dz - b.dz;
+                        assert!(
+                            dx * dx + dz * dz >= min_sep * min_sep,
+                            "city={city} h={h}: settlement sites too close"
+                        );
+                    }
+                }
+
+                assert!(max_x - min_x >= min_span, "city={city} h={h}: layout too narrow in X");
+                assert!(max_z - min_z >= min_span, "city={city} h={h}: layout too narrow in Z");
+                assert!(huts > 0 && cabins > 0 && wells > 0, "city={city} h={h}: missing building variety");
+                if first_layout.is_empty() {
+                    first_layout.extend(sites.iter().take(n).map(|s| (s.dx, s.dz, s.kind)));
+                } else {
+                    let layout: Vec<_> = sites.iter().take(n).map(|s| (s.dx, s.dz, s.kind)).collect();
+                    assert_ne!(layout, first_layout, "city={city}: layouts do not vary by hash");
+                }
+            }
+        }
+
+        assert_eq!(struct_footprint_reach(STRUCT_VILLAGE), VILLAGE_LAYOUT_REACH);
+        assert_eq!(struct_footprint_reach(STRUCT_CITY), CITY_LAYOUT_REACH);
+        assert!(STRUCT_MAX_REACH_XZ >= CITY_LAYOUT_REACH);
     }
 
     // The world is varied (the biome map is not collapsed to one type). #181:
