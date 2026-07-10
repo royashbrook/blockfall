@@ -132,6 +132,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.startGame(saveDir: saveDir, fresh: isNew, seed: seed)
         }
         menu.onQuit = { NSApp.terminate(nil) }
+        // #207: rebuild the pause menu after a window resize so its layout can never
+        // stay stuck stacked/overlapped (didEndLiveResize covers drag-resizes; the
+        // plain didResize covers zoom/tile).
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowResizedWhilePaused(_:)),
+            name: NSWindow.didEndLiveResizeNotification, object: window)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowResizedWhilePaused(_:)),
+            name: NSWindow.didResizeNotification, object: window)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         // --playtest: boot straight into a fresh world (skips the menu) so the
@@ -292,11 +301,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // ---- pause menu (Esc) ----
+    // #207: intermittently a live-resize (or app switch mid-resize) left the pause
+    // menu's stack views in a stale overlapped layout until reopened. Rebuild the
+    // overlay from scratch when the window resizes while it is open, the same thing
+    // closing and reopening did by hand, so it can never stay stuck.
+    @objc private func windowResizedWhilePaused(_ n: Notification) {
+        guard pauseOverlay != nil else { return }
+        // Skip the continuous didResize spam during a drag; didEndLiveResize
+        // rebuilds once when the drag settles.
+        if let w = n.object as? NSWindow, w.inLiveResize { return }
+        pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
+        buildPauseOverlay()
+    }
+
     @objc private func pauseGame() {
         // ESC toggles: if the pause overlay is already up, ESC resumes (keep playing)
         // instead of being a no-op. Lets the player open the pause menu, click a graphics
         // checkbox, and ESC straight back to the game without reaching for the mouse.
         if pauseOverlay != nil { resumeGame(); return }
+        buildPauseOverlay()
+    }
+
+    private func buildPauseOverlay() {
         guard let container = gameContainer else { return }
         gameView?.setPaused(true)
         let ov = NSView(frame: container.bounds)
@@ -505,7 +531,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .foregroundColor: NSColor.white,
         ])
         b.translatesAutoresizingMaskIntoConstraints = false
-        b.widthAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
+        // #208: 300 was tight for "Customize Character" at the #205 30pt font; give
+        // long labels comfortable padding (rows are fill-equally so pairs match).
+        b.widthAnchor.constraint(greaterThanOrEqualToConstant: 380).isActive = true
         b.heightAnchor.constraint(equalToConstant: 52).isActive = true
         return b
     }
