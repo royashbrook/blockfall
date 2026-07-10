@@ -579,10 +579,17 @@ impl<'c> World<'c> {
         if ci >= 0 && !self.creatures[ci as usize].name.is_empty() {
             // #234: villagers are named by PROFESSION (what they do), not by the
             // creature kind the spawn pool picked, so the label always matches
-            // the dialogue and trade sheet behind it.
+            // the dialogue and trade sheet behind it. #240: with their personal
+            // name in front ("Pip the Woodcutter") when one was assigned.
             let c = &self.creatures[ci as usize];
             let title = if c.model == 20 { Self::profession_title(c.npc_id) } else { "" };
-            let nm = if title.is_empty() { c.name.clone() } else { title.to_string() };
+            let nm = if title.is_empty() {
+                c.name.clone()
+            } else if c.given.is_empty() {
+                title.to_string()
+            } else {
+                format!("{} the {}", c.given, title)
+            };
             Self::cstr_copy(&mut h.look_name, &nm);
         } else if self.has_target {
             let bn = self.block_name(self.block_at(self.target));

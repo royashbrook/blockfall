@@ -644,6 +644,13 @@ impl<'c> World<'c> {
         }
     }
 
+    // #240: kid-friendly villager given names, indexed by the stable villager
+    // hash. Order matters: changing it renames every villager in every world.
+    const VILLAGER_NAMES: [&'static str; 20] = [
+        "Pip", "Juno", "Milo", "Fern", "Tilly", "Otto", "Hazel", "Finn", "Poppy", "Gus",
+        "Ivy", "Remy", "Sage", "Nell", "Bodi", "Lark", "Coco", "Ziggy", "Maple", "Rue",
+    ];
+
     // #234: the kid-facing title for a profession. The look-at nameplate must say
     // what the person DOES (the trade sheet and dialogue key off npc_id), not
     // which creature kind the spawn pool happened to pick — a "Trader"-labelled
@@ -781,6 +788,10 @@ impl<'c> World<'c> {
             // #212: wider height spread (0.80..1.16) so short and tall villagers read
             // clearly, not just a hair different.
             c.scale = 0.80 + ((vh >> 8) & 0xFF) as f32 / 255.0 * 0.36;
+            // #240: a stable given name off the same hash, so the nameplate can
+            // say "Pip the Woodcutter" and Pip stays Pip forever.
+            c.given = Self::VILLAGER_NAMES[((vh >> 40) % Self::VILLAGER_NAMES.len() as u64) as usize]
+                .to_string();
             c.color = self.villager_clothing_color(ax, az, vh);
             c.wander = 1.0 + self.rand01() * 2.0;
             self.creatures.push(c);

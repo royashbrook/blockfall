@@ -314,6 +314,10 @@ struct Creature {
     // climb. Deterministic: advanced by a fixed climb speed times the fixed dt.
     climb: f32,
     name: String,
+    // #240: villager given name ("Pip", "Juno"), derived from the stable
+    // villager hash at spawn so it never changes across sessions. Empty for
+    // non-villagers; the look-at nameplate composes "Pip the Woodcutter".
+    given: String,
     // Locomotion + AI state (epic #131). Holds the smooth heading/speed, the
     // behaviour state machine, and the throttled A* path. Logic lives in
     // creature_ai.rs; this is just the per creature data riding along.
@@ -345,6 +349,7 @@ impl Default for Creature {
             from_ruin: false,
             climb: 0.0,
             name: String::new(),
+            given: String::new(),
             ai: creature_ai::CreatureAi::default(),
         }
     }
