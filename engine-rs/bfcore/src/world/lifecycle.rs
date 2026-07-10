@@ -284,7 +284,26 @@ impl<'c> World<'c> {
         const SPAWN_MAX_R: i32 = 96; // 96 * 8 = 768 blocks of reach
         let mut sx = 0i32;
         let mut sz = 0i32;
-        if worldgen::worldgen_surface_height(0, 0, self.seed) < SEA_LEVEL + 1 {
+        // #190: HOME is a settlement. Spawn beside the nearest village/city anchor to
+        // the origin (expanding pure-worldgen scans, cheap hash lookups), so a fresh
+        // world always starts in a town. Offset off the anchor so the player stands at
+        // the plaza edge, not inside the glow marker. Falls through to the old dry-land
+        // origin search only if no settlement exists in ~2km (worldgen guarantees one
+        // near the origin, so this is belt and braces).
+        let mut found_home = false;
+        for r in [512, 1024, 2048] {
+            if let Some((_typ, ax, az)) = worldgen::worldgen_settlement_near(0, 0, r, self.seed) {
+                // Dry check: settlements sit on land, but verify so a shoreline
+                // anchor can never put the bed in the water.
+                if worldgen::worldgen_surface_height(ax, az, self.seed) >= SEA_LEVEL + 1 {
+                    sx = ax + 2;
+                    sz = az + 2;
+                    found_home = true;
+                    break;
+                }
+            }
+        }
+        if !found_home && worldgen::worldgen_surface_height(0, 0, self.seed) < SEA_LEVEL + 1 {
             let mut dry = false;
             let mut r = 1;
             while r <= SPAWN_MAX_R && !dry {

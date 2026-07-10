@@ -827,8 +827,12 @@ fn save_load_round_trip() {
             world::AIR,
             "dug-out edit persisted"
         );
+        // #190: spawn sits at the nearest settlement now, not the origin, so check
+        // the saturated homeland ring at the SPAWN chunk rather than chunk (0,0).
+        let (px, _py, pz, _) = w.get_player();
+        let (scx, scz) = ((px as i32).div_euclid(16), (pz as i32).div_euclid(16));
         assert!(
-            w.debug_region_sat(0, 0) > 0.9,
+            w.debug_region_sat(scx, scz) > 0.9,
             "restored spawn region persisted"
         );
 
