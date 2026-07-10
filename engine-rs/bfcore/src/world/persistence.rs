@@ -332,6 +332,14 @@ impl<'c> World<'c> {
             let px = Self::ifloor(self.pos.x);
             let pz = Self::ifloor(self.pos.z);
             self.reveal_render_radius(px, pz); // #191 reveal at render-distance scale on load
+            // #241: HOME is always lit. Worlds saved before the home-clearing
+            // feature (or before spawn moved to a settlement) have map.dat bits
+            // with a dark spawn; re-reveal the clearing on every load.
+            self.reveal_circle(
+                Self::ifloor(self.spawn.x),
+                Self::ifloor(self.spawn.z),
+                crate::world::HOME_CLEARING_CELLS,
+            );
         }
         self.ensure_clear_spawn();
         self.last_center = Self::to_chunk(IVec3 {

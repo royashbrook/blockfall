@@ -94,17 +94,25 @@ final class MapView: NSView {
                       width: side, height: side)
     }
 
+    // #241: at full zoom-out the map is FIXED in place (the whole torus, world
+    // centre in the middle) and the player arrow travels across it, so you can
+    // watch yourself approach the wrap edge. Zoomed-in views follow the player.
+    private var anchored: Bool { viewSpan >= period }
+
     private func wrapSigned(_ d: Int) -> Int {
         let p = period
         return ((d + p / 2) % p + p) % p - p / 2
     }
 
-    // World block position -> view point (player centred, north (-z) up).
+    // World block position -> view point, north (-z) up. Centred on the player
+    // when zoomed in; on the fixed world centre at full zoom-out (#241).
     private func mapPoint(x: Int32, z: Int32) -> CGPoint {
         let r = mapRect
         let scale = r.width / CGFloat(viewSpan)
-        let dx = CGFloat(wrapSigned(Int(x) - Int(playerX.rounded())))
-        let dz = CGFloat(wrapSigned(Int(z) - Int(playerZ.rounded())))
+        let ax = anchored ? period / 2 : Int(playerX.rounded())
+        let az = anchored ? period / 2 : Int(playerZ.rounded())
+        let dx = CGFloat(wrapSigned(Int(x) - ax))
+        let dz = CGFloat(wrapSigned(Int(z) - az))
         return CGPoint(x: r.midX + dx * scale, y: r.midY - dz * scale)
     }
 
@@ -118,8 +126,10 @@ final class MapView: NSView {
         let total = cells
         let n = max(2, min(total, viewSpan / cellSize))
         guard total > 0, explored.count >= total * total / 8 else { return nil }
-        let pcx = ((Int(playerX.rounded()) % period + period) % period) / cellSize
-        let pcz = ((Int(playerZ.rounded()) % period + period) % period) / cellSize
+        let pcx = anchored ? total / 2
+            : ((Int(playerX.rounded()) % period + period) % period) / cellSize
+        let pcz = anchored ? total / 2
+            : ((Int(playerZ.rounded()) % period + period) % period) / cellSize
         var data = [UInt8](repeating: 0, count: n * n * 4)
         // Parchment + dark palettes, with a mild checker so big explored areas
         // still read as a grid of "map squares" (kid-legible scale cue).
@@ -220,8 +230,12 @@ final class MapView: NSView {
         drawZoomButtons(in: r)
         drawBiomeToggle(in: r)   // #224
 
-        // The player: a bold arrow at the map centre, rotated to the facing.
-        drawPlayerArrow(at: CGPoint(x: r.midX, y: r.midY), ctx: ctx)
+        // The player: a bold arrow rotated to the facing. At the map centre when
+        // following; at the player's true spot on the fixed full map (#241).
+        let pp = anchored
+            ? mapPoint(x: Int32(playerX.rounded()), z: Int32(playerZ.rounded()))
+            : CGPoint(x: r.midX, y: r.midY)
+        drawPlayerArrow(at: pp, ctx: ctx)
 
         // Compass rose (top-left, inside the frame): fixed N/E/S/W with a red
         // needle showing which way the player is looking.
