@@ -268,15 +268,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // #227: explicit donation, INTERACT with arg 1 (must still be facing them).
         dialogue.onDonate = { [weak mtkView] _ in mtkView?.requestDonate() }
         r.onDialogue = { [weak self, weak r] npcId in
+            // The guard-fail logs stay: a silently-refused open is exactly the
+            // "interact froze me with no dialogue" report, and these only fire
+            // on the anomaly (#239).
             guard let self = self else { NSLog("dlg: no app delegate"); return }
             guard let cv = self.window.contentView else { NSLog("dlg: no contentView"); return }
             guard !self.dialogue.isOpen else { NSLog("dlg: already open, ignored"); return }
             self.gameView?.releaseMouse()
             // #240: header carries the clicked villager's full nameplate.
-            let t = r?.lookName ?? ""
-            NSLog("dlg: opening npc=%d title='%@'", npcId, t)
-            self.dialogue.show(npcId: npcId, in: cv, title: t)
-            NSLog("dlg: after show isOpen=%d", self.dialogue.isOpen ? 1 : 0)
+            self.dialogue.show(npcId: npcId, in: cv, title: r?.lookName)
+            if !self.dialogue.isOpen { NSLog("dlg: show refused (npc trees loaded?)") }
         }
         // #239: walking ~5 blocks away ends the chat naturally.
         r.onPlayerPos = { [weak self] x, z in self?.dialogue.playerMoved(x: x, z: z) }

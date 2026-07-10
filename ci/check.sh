@@ -20,6 +20,9 @@ step "3. app build + Swift<->Rust self-test (headless)"
 "$ROOT/ci/build.sh" debug >/dev/null
 BIN="$ROOT/build/Blockfall.app/Contents/MacOS/Blockfall"
 "$BIN" --selftest || FAIL=1
+# #239 dialogue smoke: the REAL dialogue overlay opens offscreen with its exit
+# affordances and closes on walk-away (no display needed).
+"$BIN" --dialogueprobe || FAIL=1
 # Offscreen render test: proves chunk meshes actually draw (needs a Metal
 # device; skipped automatically where none is present, e.g. some CI runners).
 if "$BIN" --rendertest; then :; else
