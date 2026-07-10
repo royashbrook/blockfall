@@ -10,6 +10,33 @@ impl<'c> World<'c> {
     // A creature ran into an impassable wall or a water edge: turn it away. Uses the
     // world rng so the turn stays deterministic. Delegates the heading swing to the
     // AI so the body eases around rather than snapping (epic #131).
+    // #226 body-aware creature collision: a creature occupies a scale-based XZ
+    // footprint and up to two cells of height, so a wide animal cannot poke
+    // through a trunk and a villager keeps a natural gap off walls. LEAVES are
+    // passable for creatures (walking under a canopy is fine, per design);
+    // everything else follows collide_solid (plants/snow/water passable).
+    pub(super) fn creature_body_blocked(&self, x: f32, y_feet: i32, z: f32, scale: f32) -> bool {
+        let hw = (scale * 0.30).clamp(0.20, 0.60);
+        let x0 = Self::ifloor(x - hw);
+        let x1 = Self::ifloor(x + hw);
+        let z0 = Self::ifloor(z - hw);
+        let z1 = Self::ifloor(z + hw);
+        let head = if scale > 1.1 { 1 } else { 0 };
+        for cy in y_feet..=(y_feet + head) {
+            for cx in x0..=x1 {
+                for cz in z0..=z1 {
+                    if self.collide_solid(cx, cy, cz) {
+                        let b = self.block_at(IVec3 { x: cx, y: cy, z: cz });
+                        if !Self::is_leaf(b) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     pub(super) fn creature_blocked(&mut self, c: &mut Creature, _dt: f32) {
         let turn = 2.0 + self.rand01() * 2.2;
         c.ai.on_blocked(turn);
@@ -187,7 +214,8 @@ impl<'c> World<'c> {
                 && self
                     .village_protects(Self::ifloor(c.pos.x), Self::ifloor(c.pos.z))
                     .is_none();
-            if !into_water && !into_protected && !self.collide_solid(nv.x, nv.y, nv.z) {
+            let body_blocked = self.creature_body_blocked(next.x, nv.y, next.z, c.scale);
+            if !into_water && !into_protected && !body_blocked {
                 c.pos.x = next.x;
                 c.pos.z = next.z;
             } else if !into_water && !into_protected {
@@ -200,7 +228,8 @@ impl<'c> World<'c> {
                 let mut step_h = 0i32;
                 let mut h = 1i32;
                 while h <= MAX_CLIMB {
-                    if !self.collide_solid(nv.x, nv.y + h, nv.z) {
+                    // #226: the climb landing must be clear for the whole body too.
+                    if !self.creature_body_blocked(next.x, nv.y + h, next.z, c.scale) {
                         step_h = h;
                         break;
                     }
