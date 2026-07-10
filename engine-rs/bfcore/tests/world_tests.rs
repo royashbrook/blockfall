@@ -1170,6 +1170,54 @@ fn difficulty_hard_spawns_more_easy_removes_all() {
     assert_eq!(w.debug_hostile_count(), 0, "easy keeps hostiles gone");
 }
 
+// ============================================================================
+// #231: a creature whose body is embedded in solid blocks (bad spawn, closed
+// wall) must relocate to the nearest clear cell instead of freezing forever.
+// ============================================================================
+#[test]
+fn embedded_creature_unsticks_to_clear_ground() {
+    let mut content = ContentRegistry::new();
+    assert!(content.load(CONTENT), "content load");
+    let mut w = World::new(Some(TerrainGen::new()));
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_content(&content);
+    w.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    w.init_world(5);
+
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    let (cx, cz) = (200, 200);
+    let surf = worldgen::worldgen_surface_height(cx, cz, 5);
+    w.debug_set_camera(cx as f32 + 6.5, surf as f32 + 2.0, cz as f32 + 0.5, 0.0, 0.0);
+    for _ in 0..30 {
+        w.update(&zero, 0.05);
+    }
+
+    // A hostile hunts the player, so it attempts a move every tick. Entomb it in
+    // a 3x3x3 stone block: every step stays inside solid and the 2-block climb
+    // cap can't top the slab, so ONLY the unstick relocation can free it.
+    let idx = w.debug_spawn_hostile_at(cx as f32 + 0.5, surf as f32, cz as f32 + 0.5);
+    for dx in -1..=1 {
+        for dz in -1..=1 {
+            for dy in 0..=2 {
+                w.debug_set_wall_block(cx + dx, surf + dy, cz + dz, 3);
+            }
+        }
+    }
+    for _ in 0..100 {
+        w.update(&zero, 0.05);
+    }
+    let (px, py, pz) = w.debug_creature_pos(idx);
+    let moved = (px - (cx as f32 + 0.5)).abs() > 1.4 || (pz - (cz as f32 + 0.5)).abs() > 1.4;
+    assert!(
+        moved,
+        "embedded creature relocated (still at {px},{py},{pz} vs spawn {},{},{})",
+        cx as f32 + 0.5,
+        surf,
+        cz as f32 + 0.5
+    );
+}
+
 // A ruined structure is a localized "danger site": a hostile or two spawn at it in
 // broad daylight, before any quest is done (independent of the night/quest gate that
 // governs the normal night spawns). Seed 10 has a ruin in plains at (184,76).

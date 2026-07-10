@@ -37,6 +37,40 @@ impl<'c> World<'c> {
         false
     }
 
+    // #231: relocate an embedded creature to the nearest clear standable cell.
+    // Rings outward up to 3 blocks, keeps the landing within +-2 of the current
+    // height so a hut-trapped villager pops out the door line, not onto the roof.
+    // Returns false when no clear cell exists nearby (caller leaves it be).
+    pub(super) fn creature_unstick(&mut self, c: &mut Creature) -> bool {
+        let cx0 = Self::ifloor(c.pos.x);
+        let cy = Self::ifloor(c.pos.y + 0.01);
+        let cz0 = Self::ifloor(c.pos.z);
+        for r in 1..=3i32 {
+            for dx in -r..=r {
+                for dz in -r..=r {
+                    if dx.abs() != r && dz.abs() != r {
+                        continue; // ring perimeter only; inner rings already scanned
+                    }
+                    let x = Self::wrap_block(cx0 + dx);
+                    let z = Self::wrap_block(cz0 + dz);
+                    let fy = self.floor_below(x, cy + 3, z);
+                    if fy == NO_FLOOR || (fy - cy).abs() > 2 {
+                        continue;
+                    }
+                    let fx = x as f32 + 0.5;
+                    let fz = z as f32 + 0.5;
+                    if !self.creature_body_blocked(fx, fy, fz, c.scale) {
+                        c.pos = V3::new(fx, fy as f32, fz);
+                        c.vy = 0.0;
+                        c.climb = 0.0;
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     pub(super) fn creature_blocked(&mut self, c: &mut Creature, _dt: f32) {
         let turn = 2.0 + self.rand01() * 2.2;
         c.ai.on_blocked(turn);
@@ -241,6 +275,16 @@ impl<'c> World<'c> {
                     c.pos.x = next.x;
                     c.pos.z = next.z;
                     c.climb = (step_h as f32 - (c.pos.y - c.pos.y.floor())).max(c.climb);
+                } else if self.creature_body_blocked(
+                    c.pos.x,
+                    Self::ifloor(c.pos.y + 0.01),
+                    c.pos.z,
+                    c.scale,
+                ) {
+                    // #231: the body is embedded where it already STANDS (spawned or
+                    // pushed into a wall), so every heading is blocked forever and the
+                    // creature freezes/vibrates. Relocate to the nearest clear cell.
+                    let _ = self.creature_unstick(&mut c);
                 } else {
                     // Wall too tall to step: nudge the AI to turn away. Pathing
                     // creatures repath next chance; wanderers pick a new amble dir.
