@@ -644,6 +644,22 @@ impl<'c> World<'c> {
         }
     }
 
+    // #234: the kid-facing title for a profession. The look-at nameplate must say
+    // what the person DOES (the trade sheet and dialogue key off npc_id), not
+    // which creature kind the spawn pool happened to pick — a "Trader"-labelled
+    // villager trading like a Woodcutter reads as a lie.
+    pub(super) fn profession_title(npc_id: i32) -> &'static str {
+        match npc_id {
+            1 => "Elder",
+            2 => "Builder",
+            3 => "Herbalist",
+            4 => "Woodcutter",
+            5 => "Stone Mason",
+            6 => "Blacksmith",
+            _ => "",
+        }
+    }
+
     // Profession (npc_id) for the villager at `idx` within a single settlement.
     //
     // The trade roles form a tool chain: Woodcutter (4, wood) -> Stone Mason (5, stone)
