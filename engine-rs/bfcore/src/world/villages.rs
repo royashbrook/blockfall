@@ -786,10 +786,25 @@ impl<'c> World<'c> {
             2 => (0.07, 0.05, 0.60, 0.30),     // mountains: grey-brown wool
             _ => (0.10, 0.16, 0.78, 0.15),
         };
+        // #225 SETTLEMENT SIGNATURE: every town shifts the biome hue by its own
+        // stable amount (hashed from the anchor), so Giggle Grove's people dress
+        // in one colour family and the next village over in another, while both
+        // still read as their biome's culture. The signature also skews value so
+        // some towns dress bright and some muted.
+        let mut sh = (Self::wrap_block(ax) as u32 as u64).wrapping_mul(0x9E3779B97F4A7C15)
+            ^ (Self::wrap_block(az) as u32 as u64).wrapping_mul(0x165667B19E3779F9)
+            ^ self.seed.rotate_left(17);
+        sh ^= sh >> 31;
+        sh = sh.wrapping_mul(0xBF58476D1CE4E5B9);
+        sh ^= sh >> 29;
+        let sig_hue = ((sh & 0xFFFF) as f32 / 65535.0 - 0.5) * 0.22;      // +/-0.11 town hue shift
+        let sig_val = (((sh >> 16) & 0xFF) as f32 / 255.0 - 0.5) * 0.18;  // bright vs muted town
+        // #225 stronger INDIVIDUAL randomness: wider per-villager hue/value jitter
+        // inside the town band (was 1.0x spread / 0.28 value swing).
         let r0 = (vh & 0xFFFF) as f32 / 65535.0;
         let r1 = ((vh >> 16) & 0xFFFF) as f32 / 65535.0;
-        let h = (hc + (r0 - 0.5) * hspread).rem_euclid(1.0);
-        let v = (val + (r1 - 0.5) * 0.28).clamp(0.32, 1.0);
+        let h = (hc + sig_hue + (r0 - 0.5) * hspread * 1.5).rem_euclid(1.0);
+        let v = (val + sig_val + (r1 - 0.5) * 0.36).clamp(0.30, 1.0);
         let base = Self::hue_rgb(h);
         // Mix the lit hue toward white by `pale` (snow parkas read pale, deserts warm).
         let lit = V3::new(base.x * v, base.y * v, base.z * v);
