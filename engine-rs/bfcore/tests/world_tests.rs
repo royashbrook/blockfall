@@ -1005,8 +1005,12 @@ fn gameplay_drops_crafting_creatures() {
         for _ in 0..30 {
             cave.update(&zero, 0.05);
         }
-        for dx in -3..=3 {
-            for dz in -3..=3 {
+        // Carve a cavern wide enough to contain the whole 10..22 spawn ring:
+        // #232 spawns are body-clearance honest now, so hostiles only appear in
+        // real air pockets (the old 7x7 pocket passed only because they spawned
+        // embedded in the rock outside it).
+        for dx in -23..=23 {
+            for dz in -23..=23 {
                 cave.debug_edit(cx + dx, cy - 1, cz + dz, world::STONE);
                 for dy in 0..=3 {
                     cave.debug_edit(cx + dx, cy + dy, cz + dz, world::AIR);
@@ -1302,21 +1306,27 @@ fn async_streaming_fills_world() {
     let mut shadow: Vec<bf_draw_item> = Vec::new();
     let mut props: Vec<bf_prop_instance> = Vec::new();
 
-    // Pump frames; between each give the workers a moment so results are ready to
-    // collect on the next build_frame (the pool runs on its own threads).
+    // Pump frames until the pool lands its first mesh in the draw list. The
+    // budget is WALL-CLOCK, not a fixed frame count: worker throughput on a
+    // loaded/QoS-throttled dev box can drop an order of magnitude (a fixed 120
+    // frames flaked exactly that way), and this gate is about the pipeline
+    // producing draws at all, not about how fast the box is today.
     let mut max_draws = 0u32;
-    for _ in 0..120 {
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(90) {
         w.update(&zero, 0.016);
         w.build_frame(&mut f, &mut draws, &mut shadow, &mut props, 0.0);
         if f.draw_count > max_draws {
             max_draws = f.draw_count;
+            break; // first draw proves the async gen->mesh->upload path works
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
 
     assert!(
         max_draws > 0,
-        "async worker pool meshed chunks into the draw list (got {max_draws} draws)"
+        "async worker pool meshed chunks into the draw list (got {max_draws} draws, backlog {})",
+        w.debug_stream_backlog()
     );
 }
 

@@ -118,7 +118,30 @@ impl<'c> World<'c> {
         let r = rmin + self.rand01() * (rmax - rmin);
         let cx = Self::wrap_pos_f(self.pos.x + ang.cos() * r);
         let cz = Self::wrap_pos_f(self.pos.z + ang.sin() * r);
-        let gy = self.floor_below(Self::ifloor(cx), self.pos.y as i32 + 3, Self::ifloor(cz));
+        // #232: find a floor the BODY actually fits on. The old first-floor scan
+        // happily returned a cell inside solid rock underground (the hostile
+        // spawned embedded in the cave wall), so descend through solid runs to
+        // an actual air pocket near the player's level before giving up.
+        let sx = Self::ifloor(cx);
+        let sz = Self::ifloor(cz);
+        let top = self.pos.y as i32 + 3;
+        let mut gy = NO_FLOOR;
+        let mut y = top;
+        while y > top - 30 {
+            if !self.collide_solid(sx, y, sz) && !self.collide_solid(sx, y + 1, sz) {
+                let f = self.floor_below(sx, y, sz);
+                if f == NO_FLOOR {
+                    break;
+                }
+                if !self.creature_body_blocked(cx, f, cz, 1.0) {
+                    gy = f;
+                    break;
+                }
+                y = f - 2; // below this pocket's floor: keep descending
+            } else {
+                y -= 1;
+            }
+        }
         if gy == NO_FLOOR {
             return false;
         }
@@ -146,10 +169,6 @@ impl<'c> World<'c> {
             .village_protects(Self::ifloor(cx), Self::ifloor(cz))
             .is_some()
         {
-            return false;
-        }
-        // #232: reject a spawn cell the body would be embedded in.
-        if self.creature_body_blocked(cx, gy, cz, 1.0) {
             return false;
         }
         let mut c = Creature::default();
