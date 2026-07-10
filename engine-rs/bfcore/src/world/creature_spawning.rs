@@ -146,12 +146,16 @@ impl<'c> World<'c> {
         c.yaw = self.rand01() * 6.2831853;
         c.hostile = true;
         c.scale = 1.0;
+        // #200: hostiles are per-biome now, same filter rule as the passive pool
+        // (empty or "any" spawns everywhere; otherwise the biome key must match).
+        let bk = self.biome_key();
         let pool: Vec<CreatureDefX> = self
             .extra
             .map(|x| {
                 x.creatures()
                     .iter()
                     .filter(|d| d.disposition == "hostile")
+                    .filter(|d| d.biome.is_empty() || d.biome == "any" || d.biome == bk)
                     .cloned()
                     .collect()
             })

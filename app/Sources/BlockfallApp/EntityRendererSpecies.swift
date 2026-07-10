@@ -3928,6 +3928,212 @@ extension EntityRenderer {
     //   - already-emissive parts (glowing eyes): add the flash on top so they
     //     pop brighter / whiter for the duration, then settle back.
     @inline(__always)
+    // =========================================================================
+    // KIND 23 — ROCK GOLEM (#199, mountains). Bulky stacked-boulder figure: big
+    // stone torso, smaller boulder head with glowing amber eyes, two heavy arms
+    // that swing with a slow stomp, stub legs, mossy patches tinted by the entity
+    // color so golems vary. Silhouette: a walking pile of rocks.
+    // =========================================================================
+    func drawKind23(enc: MTLRenderCommandEncoder, viewProj: simd_float4x4,
+                    e: bf_entity_draw, pos: SIMD3<Float>, phase: Float,
+                    hash: Float, squash: SIMD3<Float>) {
+        let s = e.scale, sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let tint = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+        let stone  = SIMD3<Float>(0.52, 0.52, 0.55)
+        let dark   = SIMD3<Float>(0.38, 0.38, 0.42)
+        let moss   = SIMD3<Float>(min(1, tint.x * 0.3 + 0.12), min(1, tint.y * 0.5 + 0.30), min(1, tint.z * 0.3 + 0.10))
+        let eyeCol = SIMD3<Float>(3.2, 1.9, 0.3)   // HDR amber, blooms
+        // Heavy stomp: squared sine so steps slam and hold (boss-style, slower).
+        let stompRaw = sin(phase * 2.0)
+        let armSwing = stompRaw * 0.5
+        let bob      = abs(stompRaw) * s * 0.05
+        let legH = s * 0.24, tH = s * 0.62, tW = s * 0.62, tD = s * 0.46
+        let groundY = pos.y
+        let bodyY = groundY + legH + tH * 0.5 + bob
+        let wc = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+        // Legs: stub boulders.
+        for lx in [-tW * 0.28, tW * 0.28] {
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(lx, -tH * 0.5 - legH * 0.5, 0), SIMD3(s * 0.24, legH, s * 0.26)),
+                     rgb: dark, sat: sat)
+        }
+        // Torso boulder + moss patch + shoulder slab.
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(tW, tH, tD)), rgb: stone, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(-tW * 0.18, tH * 0.18, tD * 0.42), SIMD3(tW * 0.4, tH * 0.3, s * 0.06)),
+                 rgb: moss, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(0, tH * 0.42, 0), SIMD3(tW * 1.18, tH * 0.18, tD * 1.05)),
+                 rgb: dark, sat: sat)
+        // Arms: heavy slabs swinging opposite.
+        for (sx, ang) in [(-tW * 0.72, armSwing), (tW * 0.72, -armSwing)] {
+            let m = EntityRenderer.trans(wc) * R
+                * EntityRenderer.trans(SIMD3(sx, tH * 0.34, 0))
+                * EntityRenderer.rotX(ang)
+                * EntityRenderer.trans(SIMD3(0, -tH * 0.36, 0))
+                * EntityRenderer.scaleM(SIMD3(s * 0.22, tH * 0.72, s * 0.26))
+            drawCube(enc: enc, viewProj: viewProj, model: m, rgb: stone, sat: sat)
+        }
+        // Head boulder + brow + glowing eyes.
+        let hY = tH * 0.5 + s * 0.20
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, hY, 0), SIMD3(s * 0.38, s * 0.34, s * 0.36)), rgb: stone, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, hY + s * 0.12, s * 0.10), SIMD3(s * 0.42, s * 0.08, s * 0.26)), rgb: dark, sat: sat)
+        for ex in [-s * 0.10, s * 0.10] {
+            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, hY + s * 0.02, s * 0.185), SIMD3(s * 0.07, s * 0.06, s * 0.02)), rgb: eyeCol, sat: -1.0)
+        }
+    }
+
+    // =========================================================================
+    // KIND 24 — SAND SCORPION (#199, desert). Low wide body, two front claws that
+    // pinch, a three-segment tail arcing up to a stinger ball, scuttling stub
+    // legs. Goofy-not-gory: big friendly eyes, rounded claws.
+    // =========================================================================
+    func drawKind24(enc: MTLRenderCommandEncoder, viewProj: simd_float4x4,
+                    e: bf_entity_draw, pos: SIMD3<Float>, phase: Float,
+                    hash: Float, squash: SIMD3<Float>) {
+        let s = e.scale, sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let tint = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+        let shell = SIMD3<Float>(min(1, tint.x * 0.4 + 0.45), min(1, tint.y * 0.4 + 0.32), min(1, tint.z * 0.3 + 0.14))
+        let darkSh = shell * 0.68
+        let eyeCol = SIMD3<Float>(0.06, 0.05, 0.06)
+        let scuttle = sin(phase * 7.0)
+        let pinch   = (sin(phase * 2.6 + hash) * 0.5 + 0.5) * 0.35
+        let bH = s * 0.22, bW = s * 0.52, bD = s * 0.62
+        let legH = s * 0.10
+        let groundY = pos.y
+        let wc = SIMD3<Float>(pos.x, groundY + legH + bH * 0.5, pos.z)
+        let R = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+        // Body + head plate.
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bD)), rgb: shell, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, bH * 0.18, bD * 0.42), SIMD3(bW * 0.6, bH * 0.9, bD * 0.28)), rgb: darkSh, sat: sat)
+        // Eyes on the head plate front.
+        for ex in [-bW * 0.14, bW * 0.14] {
+            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, bH * 0.28, bD * 0.57), SIMD3(s * 0.07, s * 0.07, s * 0.02)), rgb: SIMD3(0.95, 0.95, 0.98), sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, bH * 0.27, bD * 0.585), SIMD3(s * 0.035, s * 0.04, s * 0.015)), rgb: eyeCol, sat: sat)
+        }
+        // Scuttling legs: 3 per side, alternate phases.
+        for i in 0..<3 {
+            let lz = bD * (-0.25 + Float(i) * 0.25)
+            let lift = scuttle * (i % 2 == 0 ? 1.0 : -1.0) * s * 0.03
+            for lx in [-bW * 0.62, bW * 0.62] {
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: pw(SIMD3(lx, -bH * 0.5 - legH * 0.5 + lift, lz), SIMD3(s * 0.09, legH, s * 0.09)),
+                         rgb: darkSh, sat: sat)
+            }
+        }
+        // Claws: rounded pincers front-left/right, opening by `pinch`.
+        for cx in [-bW * 0.55, bW * 0.55] {
+            let arm = pw(SIMD3(cx, 0, bD * 0.55), SIMD3(s * 0.13, s * 0.12, s * 0.24))
+            drawCube(enc: enc, viewProj: viewProj, model: arm, rgb: shell, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(cx, s * 0.05 + pinch * s * 0.10, bD * 0.74), SIMD3(s * 0.16, s * 0.08, s * 0.18)),
+                     rgb: darkSh, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(cx, -s * 0.02 - pinch * s * 0.05, bD * 0.74), SIMD3(s * 0.16, s * 0.07, s * 0.18)),
+                     rgb: darkSh, sat: sat)
+        }
+        // Tail: three segments arcing up behind, stinger ball on top.
+        let wag = sin(phase * 2.2 + hash) * 0.08
+        let segs: [(Float, Float, Float)] = [(-bD * 0.55, bH * 0.35, 0.16), (-bD * 0.68, bH * 1.05, 0.14), (-bD * 0.72, bH * 1.75, 0.12)]
+        for (tz, ty, tw) in segs {
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(wag * s, ty, tz), SIMD3(s * tw, s * tw, s * tw * 1.2)),
+                     rgb: shell, sat: sat)
+        }
+        drawCube(enc: enc, viewProj: viewProj,
+                 model: pw(SIMD3(wag * s, bH * 2.35, -bD * 0.66), SIMD3(s * 0.17, s * 0.17, s * 0.17)),
+                 rgb: darkSh, sat: sat)
+    }
+
+    // =========================================================================
+    // KIND 25 — FROST WISP (#199, snowy). A floating glowing ice-blue core with
+    // orbiting crystal shards and a gentle bob. Emissive body blooms at night.
+    // =========================================================================
+    func drawKind25(enc: MTLRenderCommandEncoder, viewProj: simd_float4x4,
+                    e: bf_entity_draw, pos: SIMD3<Float>, phase: Float,
+                    hash: Float, squash: SIMD3<Float>) {
+        let s = e.scale, sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let coreCol = SIMD3<Float>(0.55, 1.4, 2.2)    // HDR icy blue, blooms
+        let shardCol = SIMD3<Float>(0.75, 0.88, 0.98)
+        let eyeCol = SIMD3<Float>(0.05, 0.08, 0.14)
+        let bob = sin(phase * 1.6 + hash) * s * 0.10
+        let groundY = pos.y
+        let wc = SIMD3<Float>(pos.x, groundY + s * 0.72 + bob, pos.z)
+        let R = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+        // Emissive core + soft outer shell.
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(s * 0.34, s * 0.38, s * 0.34)), rgb: coreCol, sat: -1.0)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(s * 0.46, s * 0.30, s * 0.46)), rgb: shardCol, sat: sat)
+        // Dark eyes so it has a face (kid-readable), on the front of the core.
+        for ex in [-s * 0.09, s * 0.09] {
+            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, s * 0.05, s * 0.235), SIMD3(s * 0.05, s * 0.07, s * 0.02)), rgb: eyeCol, sat: sat)
+        }
+        // Three orbiting shards at staggered heights/phases.
+        for k in 0..<3 {
+            let a = phase * 1.2 + Float(k) * 2.094 + hash
+            let r = s * 0.55
+            let sy = sin(phase * 2.0 + Float(k) * 1.7) * s * 0.08
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(cos(a) * r, sy - s * 0.05 + Float(k) * s * 0.10, sin(a) * r), SIMD3(s * 0.09, s * 0.16, s * 0.09)),
+                     rgb: shardCol, sat: sat)
+        }
+    }
+
+    // =========================================================================
+    // KIND 26 — SPORE GNOME (#199, forest). Tiny waddling body under a big red
+    // mushroom cap with white spots; eyes peek out under the brim. Cute-spooky.
+    // =========================================================================
+    func drawKind26(enc: MTLRenderCommandEncoder, viewProj: simd_float4x4,
+                    e: bf_entity_draw, pos: SIMD3<Float>, phase: Float,
+                    hash: Float, squash: SIMD3<Float>) {
+        let s = e.scale, sat = e.sat
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let tint = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+        let capCol  = SIMD3<Float>(min(1, tint.x * 0.5 + 0.45), min(1, tint.y * 0.3 + 0.10), min(1, tint.z * 0.3 + 0.10))
+        let spotCol = SIMD3<Float>(0.96, 0.95, 0.90)
+        let bodyCol = SIMD3<Float>(0.88, 0.82, 0.70)
+        let eyeCol  = SIMD3<Float>(0.07, 0.06, 0.07)
+        let waddle = sin(phase * 6.0) * 0.10
+        let legH = s * 0.10, bW = s * 0.30, bH = s * 0.26
+        let groundY = pos.y
+        let wc = SIMD3<Float>(pos.x, groundY + legH + bH * 0.5, pos.z)
+        let lean = EntityRenderer.rotZ(waddle)
+        let R = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
+        func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * lean * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+        // Stub legs alternate with the waddle.
+        for (lx, lift) in [(-bW * 0.3, waddle), (bW * 0.3, -waddle)] {
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(lx, -bH * 0.5 - legH * 0.5 + lift * s * 0.2, 0), SIMD3(s * 0.09, legH, s * 0.10)),
+                     rgb: bodyCol * 0.7, sat: sat)
+        }
+        // Body + eyes under the brim.
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bW * 0.9)), rgb: bodyCol, sat: sat)
+        for ex in [-bW * 0.22, bW * 0.22] {
+            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, bH * 0.10, bW * 0.46), SIMD3(s * 0.05, s * 0.06, s * 0.02)), rgb: eyeCol, sat: sat)
+        }
+        // Mushroom cap: wide flat slab + dome + white spots.
+        let capY = bH * 0.5 + s * 0.06
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, capY, 0), SIMD3(s * 0.56, s * 0.10, s * 0.56)), rgb: capCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, capY + s * 0.12, 0), SIMD3(s * 0.36, s * 0.16, s * 0.36)), rgb: capCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(s * 0.14, capY + s * 0.06, s * 0.12), SIMD3(s * 0.09, s * 0.03, s * 0.09)), rgb: spotCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(-s * 0.12, capY + s * 0.14, -s * 0.08), SIMD3(s * 0.08, s * 0.03, s * 0.08)), rgb: spotCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(-s * 0.02, capY + s * 0.05, s * 0.20), SIMD3(s * 0.06, s * 0.03, s * 0.06)), rgb: spotCol, sat: sat)
+    }
+
     private func drawCube(enc: MTLRenderCommandEncoder,
                           viewProj: simd_float4x4,
                           model: simd_float4x4,

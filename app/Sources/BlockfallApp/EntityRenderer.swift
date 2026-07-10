@@ -523,6 +523,11 @@ final class EntityRenderer {
             case 19: drawKind19(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             case 20: drawKind20(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             case 21: drawKind21(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            // #199 biome monsters: rock golem, sand scorpion, frost wisp, spore gnome.
+            case 23: drawKind23(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 24: drawKind24(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 25: drawKind25(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 26: drawKind26(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             // kind 22 — DEBRIS FRAGMENT (#170 blockfall): a small tumbling cube
             // chip in the broken block's colour. yaw carries the engine-driven
             // spin phase; scale seeds the size + a fixed per-fragment tilt.

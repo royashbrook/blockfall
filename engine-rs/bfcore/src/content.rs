@@ -945,7 +945,7 @@ mod tests {
     fn extra_loads_creatures_quests() {
         let mut x = ContentExtra::new();
         assert!(x.load(CONTENT));
-        assert_eq!(x.creatures().len(), 29);
+        assert_eq!(x.creatures().len(), 35);   // #199: +6 biome monsters
         assert_eq!(x.quests().len(), 15);
         assert_eq!(x.quests()[0].id, 1);
         assert_eq!(x.quests()[0].title, "First Light");

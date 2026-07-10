@@ -34,5 +34,77 @@
     "biome": "any",
     "spawn_light_max": 3,
     "model": 17
+  },
+  {
+    "id": 31,
+    "name": "rock_golem",
+    "display_name": "Rock Golem",
+    "disposition": "hostile",
+    "max_health": 14,
+    "move_speed": 1.4,
+    "spawn_biomes": ["dim_barrens"],
+    "biome": "mountains",
+    "spawn_light_max": 4,
+    "model": 23
+  },
+  {
+    "id": 32,
+    "name": "sand_scorpion",
+    "display_name": "Sand Scorpion",
+    "disposition": "hostile",
+    "max_health": 7,
+    "move_speed": 3.2,
+    "spawn_biomes": ["dim_barrens"],
+    "biome": "desert",
+    "spawn_light_max": 4,
+    "model": 24
+  },
+  {
+    "id": 33,
+    "name": "frost_wisp",
+    "display_name": "Frost Wisp",
+    "disposition": "hostile",
+    "max_health": 6,
+    "move_speed": 2.4,
+    "spawn_biomes": ["dim_barrens"],
+    "biome": "snowy",
+    "spawn_light_max": 3,
+    "model": 25
+  },
+  {
+    "id": 34,
+    "name": "spore_gnome",
+    "display_name": "Spore Gnome",
+    "disposition": "hostile",
+    "max_health": 8,
+    "move_speed": 2.6,
+    "spawn_biomes": ["dim_barrens"],
+    "biome": "forest",
+    "spawn_light_max": 4,
+    "model": 26
+  },
+  {
+    "id": 35,
+    "name": "bog_blob",
+    "display_name": "Bog Blob",
+    "disposition": "hostile",
+    "max_health": 9,
+    "move_speed": 1.8,
+    "spawn_biomes": ["dim_barrens"],
+    "biome": "swamp",
+    "spawn_light_max": 4,
+    "model": 15
+  },
+  {
+    "id": 36,
+    "name": "dune_ghost",
+    "display_name": "Dune Ghost",
+    "disposition": "hostile",
+    "max_health": 10,
+    "move_speed": 2.5,
+    "spawn_biomes": ["dim_barrens"],
+    "biome": "beach",
+    "spawn_light_max": 3,
+    "model": 17
   }
 ]
