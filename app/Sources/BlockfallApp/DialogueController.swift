@@ -56,8 +56,14 @@ final class DialogueController {
         let period: Float = 32768
         var dx = x - p.x; dx -= period * (dx / period).rounded()
         var dz = z - p.z; dz -= period * (dz / period).rounded()
-        if dx * dx + dz * dz > 5.0 * 5.0 { close() }
+        if dx * dx + dz * dz > 5.0 * 5.0 {
+            NSLog("dlg: walk-away close (moved %.1f blocks)", (dx * dx + dz * dz).squareRoot())
+            close()
+        }
     }
+
+    // #239 probe seam: how many NPC trees loaded (0 = dialogue can never open).
+    var loadedNPCCount: Int { npcs.count }
 
     func load() {
         guard let url = Bundle.main.resourceURL?

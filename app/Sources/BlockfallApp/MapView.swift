@@ -94,10 +94,17 @@ final class MapView: NSView {
                       width: side, height: side)
     }
 
-    // #241: at full zoom-out the map is FIXED in place (the whole torus, world
-    // centre in the middle) and the player arrow travels across it, so you can
-    // watch yourself approach the wrap edge. Zoomed-in views follow the player.
+    // #241: at full zoom-out the map is FIXED in place and the player arrow
+    // travels across it, so you can watch yourself approach the wrap edge.
+    // The fixed view centres on HOME (spawn always sits mid-map, never near
+    // the seam); zoomed-in views follow the player.
     private var anchored: Bool { viewSpan >= period }
+    private var anchorX: Int {
+        markers.first(where: { $0.kind == 0 }).map { Int($0.x) } ?? period / 2
+    }
+    private var anchorZ: Int {
+        markers.first(where: { $0.kind == 0 }).map { Int($0.z) } ?? period / 2
+    }
 
     private func wrapSigned(_ d: Int) -> Int {
         let p = period
@@ -109,8 +116,8 @@ final class MapView: NSView {
     private func mapPoint(x: Int32, z: Int32) -> CGPoint {
         let r = mapRect
         let scale = r.width / CGFloat(viewSpan)
-        let ax = anchored ? period / 2 : Int(playerX.rounded())
-        let az = anchored ? period / 2 : Int(playerZ.rounded())
+        let ax = anchored ? anchorX : Int(playerX.rounded())
+        let az = anchored ? anchorZ : Int(playerZ.rounded())
         let dx = CGFloat(wrapSigned(Int(x) - ax))
         let dz = CGFloat(wrapSigned(Int(z) - az))
         return CGPoint(x: r.midX + dx * scale, y: r.midY - dz * scale)
@@ -126,10 +133,8 @@ final class MapView: NSView {
         let total = cells
         let n = max(2, min(total, viewSpan / cellSize))
         guard total > 0, explored.count >= total * total / 8 else { return nil }
-        let pcx = anchored ? total / 2
-            : ((Int(playerX.rounded()) % period + period) % period) / cellSize
-        let pcz = anchored ? total / 2
-            : ((Int(playerZ.rounded()) % period + period) % period) / cellSize
+        let pcx = ((((anchored ? anchorX : Int(playerX.rounded())) % period) + period) % period) / cellSize
+        let pcz = ((((anchored ? anchorZ : Int(playerZ.rounded())) % period) + period) % period) / cellSize
         var data = [UInt8](repeating: 0, count: n * n * 4)
         // Parchment + dark palettes, with a mild checker so big explored areas
         // still read as a grid of "map squares" (kid-legible scale cue).

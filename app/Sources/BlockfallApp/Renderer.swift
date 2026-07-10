@@ -1082,7 +1082,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         case 7: audio?.play(.pickup)
         case 8: audio?.play(.mine)         // melee hit on a creature
         case 9: audio?.play(.hurt)         // player took damage
-        case 20: onDialogue?(Int(ev.j))    // #82 right-clicked a villager: open dialogue (npc_id = j)
+        case 20:                            // #82 right-clicked a villager: open dialogue (npc_id = j)
+            NSLog("dlg: engine event npc=%d handler=%@", ev.j, onDialogue == nil ? "MISSING" : "set")
+            onDialogue?(Int(ev.j))
         default: break
         }
     }

@@ -268,10 +268,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // #227: explicit donation, INTERACT with arg 1 (must still be facing them).
         dialogue.onDonate = { [weak mtkView] _ in mtkView?.requestDonate() }
         r.onDialogue = { [weak self, weak r] npcId in
-            guard let self = self, let cv = self.window.contentView, !self.dialogue.isOpen else { return }
+            guard let self = self else { NSLog("dlg: no app delegate"); return }
+            guard let cv = self.window.contentView else { NSLog("dlg: no contentView"); return }
+            guard !self.dialogue.isOpen else { NSLog("dlg: already open, ignored"); return }
             self.gameView?.releaseMouse()
             // #240: header carries the clicked villager's full nameplate.
-            self.dialogue.show(npcId: npcId, in: cv, title: r?.lookName)
+            let t = r?.lookName ?? ""
+            NSLog("dlg: opening npc=%d title='%@'", npcId, t)
+            self.dialogue.show(npcId: npcId, in: cv, title: t)
+            NSLog("dlg: after show isOpen=%d", self.dialogue.isOpen ? 1 : 0)
         }
         // #239: walking ~5 blocks away ends the chat naturally.
         r.onPlayerPos = { [weak self] x, z in self?.dialogue.playerMoved(x: x, z: z) }
@@ -1076,6 +1081,54 @@ if CommandLine.arguments.contains("--selftest") {
 if CommandLine.arguments.contains("--rendertest") {
     let ok = runRenderSelfTest()
     exit(ok ? 0 : 1)
+}
+// #239 headless dialogue smoke test: builds the REAL dialogue overlay in an
+// offscreen view (no window is ever shown) and asserts it opens, carries its
+// exit affordances, and closes on walk-away. Catches "interact does nothing"
+// regressions that engine tests can't see, with no display needed.
+if CommandLine.arguments.contains("--dialogueprobe") {
+    _ = NSApplication.shared
+    let parent = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800))
+    let dc = DialogueController()
+    dc.load()
+    print("dialogueprobe: npc trees loaded = \(dc.loadedNPCCount)")
+    guard dc.loadedNPCCount > 0 else {
+        print("dialogueprobe FAIL: village_npcs.json missing or unparseable")
+        exit(1)
+    }
+    var closed = 0
+    dc.onClose = { closed += 1 }
+    dc.show(npcId: 4, in: parent, title: "Pip the Woodcutter")
+    guard dc.isOpen, let ov = parent.subviews.first else {
+        print("dialogueprobe FAIL: overlay did not open")
+        exit(1)
+    }
+    // Panel must exist and carry at least one choice button plus the X.
+    func allButtons(_ v: NSView) -> [NSButton] {
+        v.subviews.flatMap { allButtons($0) } + (v.subviews.compactMap { $0 as? NSButton })
+    }
+    let btns = allButtons(ov)
+    let hasX = btns.contains { $0.attributedTitle.string == "\u{2715}" }
+    print("dialogueprobe: overlay open, buttons = \(btns.count), hasX = \(hasX)")
+    guard btns.count >= 2, hasX else {
+        print("dialogueprobe FAIL: expected choice buttons + X close")
+        exit(1)
+    }
+    // Walk-away: anchor, then move 10 blocks; the chat must close exactly once.
+    dc.playerMoved(x: 100, z: 100)
+    dc.playerMoved(x: 110, z: 100)
+    guard closed == 1, !dc.isOpen else {
+        print("dialogueprobe FAIL: walk-away did not close (closed=\(closed))")
+        exit(1)
+    }
+    // Reopen with no title override: roster name path.
+    dc.show(npcId: 1, in: parent)
+    guard dc.isOpen else {
+        print("dialogueprobe FAIL: reopen failed")
+        exit(1)
+    }
+    print("dialogueprobe OK")
+    exit(0)
 }
 if CommandLine.arguments.contains("--washouttest") {
     let ok = runWashoutTest()
