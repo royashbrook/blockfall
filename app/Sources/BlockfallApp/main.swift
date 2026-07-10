@@ -438,6 +438,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let rdRow = NSStackView(views: [rdLabel, rdSlider])
         rdRow.orientation = .horizontal; rdRow.spacing = 10; rdRow.alignment = .centerY
 
+        // #238 Difficulty: Easy = no bad guys at all, Normal = the usual night
+        // monsters, Hard = lots more of them. Per-world, live + persisted.
+        let diffLabel = NSTextField(labelWithString: "Difficulty")
+        diffLabel.font = .systemFont(ofSize: 24); diffLabel.textColor = .white
+        let diffSeg = NSSegmentedControl(labels: ["Easy", "Normal", "Hard"],
+                                         trackingMode: .selectOne,
+                                         target: self, action: #selector(difficultyChanged(_:)))
+        diffSeg.selectedSegment = Int(renderer?.difficulty ?? 1)
+        let diffRow = NSStackView(views: [diffLabel, diffSeg])
+        diffRow.orientation = .horizontal; diffRow.spacing = 10; diffRow.alignment = .centerY
+
         // ---- Audio toggles (#3: music + ambience on/off, live + persisted) ----
         let auTitle = NSTextField(labelWithString: "Audio")
         auTitle.font = .boldSystemFont(ofSize: 30); auTitle.textColor = .white
@@ -461,7 +472,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Render Distance, and Audio.
         let leftCol = NSStackView(views: [fxTitle, fxStack])
         leftCol.orientation = .vertical; leftCol.spacing = 14; leftCol.alignment = .leading
-        let rightCol = NSStackView(views: [sliderRow, showHUD, rdRow, auTitle, auStack])
+        let rightCol = NSStackView(views: [sliderRow, showHUD, rdRow, diffRow, auTitle, auStack])
         rightCol.orientation = .vertical; rightCol.spacing = 16; rightCol.alignment = .leading
         let optionsStack = NSStackView(views: [leftCol, rightCol])
         optionsStack.orientation = .horizontal; optionsStack.spacing = 48; optionsStack.alignment = .top
@@ -775,6 +786,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let v = Int(s.doubleValue.rounded())
         UserDefaults.standard.set(v, forKey: "gfxRenderDist")
         renderer?.setRenderDistance(v)
+    }
+    @objc private func difficultyChanged(_ s: NSSegmentedControl) {   // #238
+        renderer?.setDifficulty(Int32(max(0, s.selectedSegment)))
     }
     @objc private func musicVolChanged(_ s: NSSlider) {
         UserDefaults.standard.set(s.doubleValue, forKey: "audMusicVol"); audio.setMusicVolume(Float(s.doubleValue))

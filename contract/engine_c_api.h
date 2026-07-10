@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 26u  /* v26: trade offers + execute (#203, append-only) */
+#define BF_ABI_VERSION 27u  /* v27: difficulty setter (#238, append-only) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -676,6 +676,13 @@ typedef struct bf_trade_view {
 
 BF_API bf_result bf_trade_offers(bf_engine e, int32_t npc_id, bf_trade_view* out);
 BF_API uint8_t   bf_trade_execute(bf_engine e, int32_t npc_id, uint32_t idx);
+
+/* ---- #238 (v27): difficulty ------------------------------------------------
+ * 0 easy = no hostiles at all (night, cave and ruin bad guys are neither
+ * spawned nor kept), 1 normal, 2 hard = more frequent night monsters.
+ * Runtime-only: the app persists the pick per world and re-applies it after
+ * bf_world_create/load. Out-of-range values clamp to normal.               */
+BF_API void bf_set_difficulty(bf_engine e, int32_t difficulty);
 
 /* [MAIN][DEBUG] Move the camera/player for deterministic screenshots/perf.
  * The next frame recentres streaming normally. No-op before a world is ready. */

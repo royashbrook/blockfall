@@ -23,6 +23,11 @@ impl<'c> World<'c> {
         if self.mode != bf_game_mode::BF_MODE_SURVIVAL {
             return;
         }
+        // #238 Easy: no bad guys anywhere, ruins included (maintain_creatures
+        // culls any already-spawned defenders).
+        if self.difficulty == 0 {
+            return;
+        }
         self.danger_timer -= dt;
         if self.danger_timer > 0.0 {
             return;

@@ -70,6 +70,7 @@ impl<'c> World<'c> {
             obj_progress: Vec::new(),
             all_quests_done: false,
             quests_completed: 0,
+            difficulty: 1,
             ach_progress: [0; K_ACHIEVEMENT_COUNT],
             ach_done: [false; K_ACHIEVEMENT_COUNT],
             ach_done_count: 0,
@@ -414,6 +415,7 @@ impl<'c> World<'c> {
         self.creature_timer = 0.0;
         self.all_quests_done = false;
         self.quests_completed = 0;
+        self.difficulty = 1; // #238: back to Normal until the app re-applies its saved pick
         self.regions_restored = 0;
         self.start_quest(0);
         self.ensure_clear_spawn();

@@ -1021,6 +1021,19 @@ final class Renderer: NSObject, MTKViewDelegate {
         } else {
             _ = bf_world_load(e)
         }
+        // #238: difficulty is engine-runtime-only; re-apply this world's saved pick.
+        bf_set_difficulty(e, difficulty)
+    }
+
+    // #238 difficulty (0 easy = no bad guys, 1 normal, 2 hard), persisted PER
+    // WORLD so a kid's gentle world stays gentle while a sibling's world is hard.
+    private var difficultyKey: String { "difficulty." + (saveDir as NSString).lastPathComponent }
+    var difficulty: Int32 {
+        Int32(UserDefaults.standard.object(forKey: difficultyKey) as? Int ?? 1)
+    }
+    func setDifficulty(_ d: Int32) {
+        UserDefaults.standard.set(Int(d), forKey: difficultyKey)
+        if let e = engine { bf_set_difficulty(e, d) }
     }
 
     private let discovery = NetDiscovery()

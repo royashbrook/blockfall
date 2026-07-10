@@ -248,6 +248,11 @@ impl<'c> World<'c> {
         true
     }
 
+    /// #238 (v27): 0 easy, 1 normal, 2 hard. Out-of-range clamps to normal.
+    pub fn set_difficulty(&mut self, d: i32) {
+        self.difficulty = if (0..=2).contains(&d) { d } else { 1 };
+    }
+
     pub(super) fn maintain_creatures(&mut self, dt: f32) {
         if self.gen.is_none() || self.store.resident_count() < 20 {
             return;
@@ -274,8 +279,16 @@ impl<'c> World<'c> {
                 self.seed,
             ) - Self::ifloor(self.pos.y))
                 > 6;
-        let monsters_active = (night || dark_cave) && self.quests_completed > 0;
-        if !monsters_active {
+        // #238 difficulty: 0 easy = no bad guys at all, 1 normal = the tuning
+        // below, 2 hard = more monsters, faster. Easy wins over every gate and
+        // also removes ruin hostiles, which are otherwise active around the clock.
+        let easy = self.difficulty == 0;
+        let hard = self.difficulty == 2;
+        let monsters_active =
+            !easy && (night || dark_cave) && self.quests_completed > 0;
+        if easy {
+            self.creatures.retain(|c| !c.hostile);
+        } else if !monsters_active {
             // Cull gated (night/cave) hostiles when the gate is closed, but keep the
             // ruin "danger site" hostiles, which are dangerous around the clock.
             self.creatures.retain(|c| !c.hostile || c.from_ruin);
@@ -298,8 +311,9 @@ impl<'c> World<'c> {
         }
         self.creature_timer = 1.0;
         if monsters_active {
-            self.creature_timer = 2.5;
-            if hostiles < 4 {
+            // Hard: twice the cap, checked more than twice as often.
+            self.creature_timer = if hard { 1.0 } else { 2.5 };
+            if hostiles < if hard { 8 } else { 4 } {
                 self.spawn_hostile(10.0, 22.0);
             }
         } else if ambient < 9 {

@@ -519,6 +519,10 @@ pub struct World<'c> {
     obj_progress: Vec<u32>,
     all_quests_done: bool,
     quests_completed: i32,
+    // #238 difficulty: 0 easy (no hostiles at all), 1 normal, 2 hard (more
+    // frequent night monsters). Runtime-only; the app persists it per world
+    // and re-applies on load via bf_set_difficulty.
+    difficulty: i32,
     ach_progress: [i32; K_ACHIEVEMENT_COUNT],
     ach_done: [bool; K_ACHIEVEMENT_COUNT],
     ach_done_count: i32,

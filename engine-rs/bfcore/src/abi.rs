@@ -35,7 +35,8 @@ use core::ffi::{c_char, c_void};
 /// v23: appended bf_map_marker + bf_map_view + bf_map_query + bf_map_teleport
 ///      (world map + warp totems, #182). Purely additive; no existing struct
 ///      layout changed.
-pub const BF_ABI_VERSION: u32 = 26;
+/// v27: appended bf_set_difficulty (#238). Purely additive.
+pub const BF_ABI_VERSION: u32 = 27;
 
 // ---------------------------------------------------------------------------
 // Primitive types

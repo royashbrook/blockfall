@@ -1130,6 +1130,20 @@ pub unsafe extern "C" fn bf_trade_execute(e: bf_engine, npc_id: i32, idx: u32) -
     if e.world.trade_execute(npc_id, idx) { 1 } else { 0 }
 }
 
+/// #238 (v27): difficulty. 0 easy = no hostiles at all, 1 normal, 2 hard =
+/// more frequent night monsters. Runtime-only; the app persists per world and
+/// re-applies after create/load. Out-of-range values clamp to normal.
+#[no_mangle]
+pub unsafe extern "C" fn bf_set_difficulty(e: bf_engine, difficulty: i32) {
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => return,
+    };
+    if e.world_ready {
+        e.world.set_difficulty(difficulty);
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn bf_debug_set_camera(
     e: bf_engine,

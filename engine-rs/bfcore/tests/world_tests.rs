@@ -1117,6 +1117,59 @@ fn hostiles_spawn_at_night_on_surface() {
     );
 }
 
+// ============================================================================
+// #238 difficulty. Hard raises the night cap above normal's 4; Easy removes
+// every hostile and keeps them gone. Pins the T night phase (0.75), which also
+// guards the #237 fix: that phase must count as night for spawning.
+// ============================================================================
+#[test]
+fn difficulty_hard_spawns_more_easy_removes_all() {
+    let mut content = ContentRegistry::new();
+    assert!(content.load(CONTENT), "content load");
+    let mut w = World::new(Some(TerrainGen::new()));
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_content(&content);
+    w.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    w.init_world(5);
+    w.debug_force_quest_done();
+
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    let (cx, cz) = (200, 200);
+    let surf = worldgen::worldgen_surface_height(cx, cz, 5);
+    w.debug_set_camera(cx as f32 + 0.5, surf as f32 + 2.0, cz as f32 + 0.5, 0.0, 0.0);
+    for _ in 0..30 {
+        w.update(&zero, 0.05);
+    }
+    w.debug_set_day_time(0.75); // the T night pin phase — must gate as night (#237)
+    w.debug_set_camera(cx as f32 + 0.5, surf as f32 + 2.0, cz as f32 + 0.5, 0.0, 0.0);
+
+    // Hard: the cap is 8, so the count must clearly exceed normal's cap of 4.
+    w.set_difficulty(2);
+    let mut i = 0;
+    while i < 3000 && w.debug_hostile_count() <= 4 {
+        w.update(&zero, 0.05);
+        i += 1;
+    }
+    assert!(
+        w.debug_hostile_count() > 4,
+        "hard difficulty spawns past the normal cap (got {}, day_time {})",
+        w.debug_hostile_count(),
+        w.debug_day_time()
+    );
+
+    // Easy: every hostile is culled on the next maintain tick and none return.
+    w.set_difficulty(0);
+    for _ in 0..80 {
+        w.update(&zero, 0.05);
+    }
+    assert_eq!(w.debug_hostile_count(), 0, "easy removes all hostiles");
+    for _ in 0..200 {
+        w.update(&zero, 0.05);
+    }
+    assert_eq!(w.debug_hostile_count(), 0, "easy keeps hostiles gone");
+}
+
 // A ruined structure is a localized "danger site": a hostile or two spawn at it in
 // broad daylight, before any quest is done (independent of the night/quest gate that
 // governs the normal night spawns). Seed 10 has a ruin in plains at (184,76).
