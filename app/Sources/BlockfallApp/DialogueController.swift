@@ -154,7 +154,7 @@ final class DialogueController {
 
     @objc private func tradeClicked(_ sender: NSButton) {
         let npc = currentNpcId
-        close()
+        closeForHandoff()   // #227: no mouse re-grab, the trade panel needs the pointer
         onOpenTrade?(npc)
     }
 
@@ -167,5 +167,11 @@ final class DialogueController {
     func close() {
         overlay?.removeFromSuperview(); overlay = nil
         onClose?()
+    }
+
+    // #227: hand off to another overlay (the trade panel) WITHOUT firing onClose,
+    // which grabs the mouse back and traps the pointer under the new panel.
+    private func closeForHandoff() {
+        overlay?.removeFromSuperview(); overlay = nil
     }
 }

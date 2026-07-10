@@ -34,7 +34,10 @@ final class TradeView: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
     override var acceptsFirstResponder: Bool { true }
-    override func hitTest(_ point: NSPoint) -> NSView? { self }
+    // #227: NO hitTest override. Returning self swallowed every click meant for
+    // the child Trade/Done buttons and trapped the player in the panel; default
+    // hit testing routes clicks to the buttons, and the full-screen dim view
+    // still blocks the game beneath.
     override func keyDown(with e: NSEvent) {
         if e.keyCode == 53 { onClose?() }   // Esc
     }
