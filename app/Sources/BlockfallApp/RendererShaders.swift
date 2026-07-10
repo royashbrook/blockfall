@@ -139,6 +139,25 @@ extension Renderer {
         return world;
     }
 
+    // #230 T-junction weld: the raw k*d^2 drop above is QUADRATIC in xz, but the
+    // rasterizer interpolates a long greedy quad's edge LINEARLY between its two
+    // endpoints. A smaller neighbour quad places a real vertex partway along that
+    // shared edge and samples the true curve there, so the surfaces disagree by
+    // the parabola's sagitta (k*L^2/4, ~0.005 blocks on a 16-run) — a pixel-wide
+    // crack that the cel ink pass reads as a huge depth discontinuity (#219's
+    // dots/dashes). Terrain therefore samples the drop from a per-chunk BILINEAR
+    // patch instead: evaluate the paraboloid only at the chunk's 4 xz corners and
+    // lerp. A bilinear field restricted to any axis-aligned edge IS linear, so
+    // every t-vertex lands exactly on the long edge's interpolated position, and
+    // adjacent chunks agree on shared corners (same world corner, same drop).
+    // Terrain quads are all axis-aligned, so this welds every seam with zero
+    // extra vertices and greedy merging untouched.
+    static float horizonDropAt(float2 cornerXZ, float2 camXZ) {
+        float2 d = cornerXZ - camXZ;
+        d -= BF_HORIZON_PERIOD * rint(d / BF_HORIZON_PERIOD);
+        return BF_HORIZON_K * min(dot(d, d), BF_HORIZON_D2CAP);
+    }
+
     // Vertex output for terrain pass.
     struct VOut {
         float4 position  [[position]];
@@ -892,7 +911,24 @@ extension Renderer {
         VOut o;
         // #180 horizon curvature: rasterize the DROPPED position, but keep worldPos
         // (fog, voxel shadow march, water waves) on the flat world.
-        o.position = u.viewProj * float4(horizonBend(swayedWorld, wu.camPosH), 1.0);
+        // #230: terrain samples the drop from the chunk's bilinear corner patch
+        // (see horizonDropAt) so long greedy edges and their t-vertices agree
+        // exactly — no more hairline cracks for the cel ink to ink (#219).
+        float3 bent = swayedWorld;
+        {
+            float2 c0  = u.chunkOrigin.xz;
+            float2 cam = wu.camPosH.xz;
+            float d00 = horizonDropAt(c0,                      cam);
+            float d10 = horizonDropAt(c0 + float2(16.0,  0.0), cam);
+            float d01 = horizonDropAt(c0 + float2( 0.0, 16.0), cam);
+            float d11 = horizonDropAt(c0 + float2(16.0, 16.0), cam);
+            // Local UNSWAYED fractions: border vertices hit 0/1 exactly, so both
+            // chunks compute the identical corner value and the seam welds shut.
+            float tx = x * (1.0 / 16.0);
+            float tz = z * (1.0 / 16.0);
+            bent.y -= wu.camPosH.w * mix(mix(d00, d10, tx), mix(d01, d11, tx), tz);
+        }
+        o.position = u.viewProj * float4(bent, 1.0);
 
         float3 base = materialColor(uint(p.material));
         o.color    = mix(base, base * float3(1.15, 1.02, 0.8), clamp(blockC - skyC, 0.0, 1.0));
