@@ -478,6 +478,8 @@ fn place_cabin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_
             }
         }
     }
+    // #228: waterside cabins ride a stilted deck too.
+    let floor_h = floor_h.max(SEA_LEVEL + 1);
 
     let cobble = ((h >> 5) & 1) != 0;
     let wall = if cobble { COBBLESTONE } else { OAK_PLANKS };
@@ -858,6 +860,10 @@ fn place_hut<C: Chunk>(cx: i32, cz: i32, hh: u64, seed: u64, chunk: &mut C, wx_m
             }
         }
     }
+    // #228: never sink a home into the sea. A waterside footprint raises the
+    // floor to just above sea level; the per-column fill below then builds plank
+    // stilts from the sea floor up, so the house stands on a deck.
+    floor_h = floor_h.max(SEA_LEVEL + 1);
 
     // Material palette varies per home so a village does not look stamped from one
     // mould: timber, cobble, stone, or birch shells, each with a matching roof.
@@ -1082,7 +1088,13 @@ fn settlement_sites(h: u64, wanted: usize, city: bool) -> ([SettlementSite; SETT
 
 fn settlement_pave<C: Chunk>(chunk: &mut C, wx: i32, wz: i32, seed: u64, wx_min: i32, wy_min: i32, wz_min: i32, b: BlockId) {
     let h = struct_surface(wx, wz, seed);
-    struct_set(chunk, wx, h, wz, wx_min, wy_min, wz_min, b);
+    if h < SEA_LEVEL + 1 {
+        // #228: the road crosses water: lay a plank BOARDWALK at deck height (the
+        // same level waterside homes ride at) instead of paving the sea floor.
+        struct_set(chunk, wx, SEA_LEVEL + 1, wz, wx_min, wy_min, wz_min, OAK_PLANKS);
+    } else {
+        struct_set(chunk, wx, h, wz, wx_min, wy_min, wz_min, b);
+    }
 }
 
 fn place_settlement_road<C: Chunk>(
