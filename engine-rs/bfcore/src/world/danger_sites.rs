@@ -125,6 +125,11 @@ impl<'c> World<'c> {
         if gy == NO_FLOOR {
             return false;
         }
+        // #232: a defender jittered into ruin masonry would spawn embedded; the
+        // 3s danger tick just tries a fresh jitter next round.
+        if self.creature_body_blocked(ox, gy, oz, 1.0) {
+            return false;
+        }
         let mut c = Creature::default();
         c.pos = V3::new(ox, gy as f32, oz);
         c.yaw = self.rand01() * 6.2831853;

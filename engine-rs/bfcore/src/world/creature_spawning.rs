@@ -18,6 +18,13 @@ impl<'c> World<'c> {
         {
             return false;
         }
+        // #232: never spawn a body inside blocks (a hut interior, a wall line) —
+        // a big animal placed there can only stand trapped. The maintain tick
+        // simply retries somewhere else next round.
+        let scale = if boss { 2.0 } else { 0.8 };
+        if self.creature_body_blocked(cx, gy, cz, scale) {
+            return false;
+        }
         let mut c = Creature::default();
         c.pos = V3::new(cx, gy as f32, cz);
         c.yaw = self.rand01() * 6.2831853;
@@ -101,7 +108,7 @@ impl<'c> World<'c> {
             c.shape = (self.creatures.len() % 8) as i32;
             c.hp = if boss { 10 } else { 5 };
         }
-        c.scale = if boss { 2.0 } else { 0.8 };
+        c.scale = scale;
         self.creatures.push(c);
         true
     }
@@ -139,6 +146,10 @@ impl<'c> World<'c> {
             .village_protects(Self::ifloor(cx), Self::ifloor(cz))
             .is_some()
         {
+            return false;
+        }
+        // #232: reject a spawn cell the body would be embedded in.
+        if self.creature_body_blocked(cx, gy, cz, 1.0) {
             return false;
         }
         let mut c = Creature::default();
