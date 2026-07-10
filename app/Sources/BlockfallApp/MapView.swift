@@ -47,7 +47,8 @@ final class MapView: NSView {
     // Zoom: how many world blocks the map square spans. Default shows the
     // player's local region (explored blobs read BIG); zooming out to `period`
     // shows the whole planet. Buttons + scroll wheel; clamped power-of-two.
-    var viewSpan: Int = 4096
+    // #229: remembered across opens (and sessions); clamped power-of-two.
+    var viewSpan: Int = UserDefaults.standard.object(forKey: "mapViewSpan") as? Int ?? 4096
     private let kMinSpan = 1024
     private var zoomInRect: NSRect = .zero
     private var biomeToggleRect: NSRect = .zero   // #224 Biomes on/off chip
@@ -368,6 +369,7 @@ final class MapView: NSView {
         let clamped = max(kMinSpan, min(period, span))
         guard clamped != viewSpan else { return }
         viewSpan = clamped
+        UserDefaults.standard.set(clamped, forKey: "mapViewSpan")   // #229 remember zoom
         selectedMarker = nil
         rebuild()
     }

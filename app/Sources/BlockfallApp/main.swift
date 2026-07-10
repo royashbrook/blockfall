@@ -1290,6 +1290,7 @@ if let idx = CommandLine.arguments.firstIndex(of: "--mapshot"), idx + 1 < Comman
     }
     let path = CommandLine.arguments[idx + 1]
     let base = path.replacingOccurrences(of: ".png", with: "")
+    mv.viewSpan = 4096   // #229: pin the harness shot, ignore persisted zoom
     mapShot(path)
     mv.debugSelectMarker(1)   // Village 1: shows the "Travel to ...?" chip
     mapShot(base + "_confirm.png")
