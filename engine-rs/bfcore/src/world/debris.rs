@@ -118,7 +118,7 @@ impl<'c> World<'c> {
     /// visual chips. Velocities are a pure function of (world seed, block pos).
     pub(super) fn spawn_debris_burst(&mut self, t: IVec3, block: BlockId, item: ItemId) {
         let mut r = DebrisRng::new(self.seed, t);
-        let n = 4 + (r.next01() * 3.0) as usize % 3; // 4..6
+        let n = 6 + (r.next01() * 4.0) as usize % 4; // #176: 6..9, richer burst
         let color = Self::debris_color(block);
         let ctr = V3::new(t.x as f32 + 0.5, t.y as f32 + 0.5, t.z as f32 + 0.5);
         for i in 0..n {
@@ -138,7 +138,16 @@ impl<'c> World<'c> {
                 spin_dir: if r.next01() < 0.5 { -1.0 } else { 1.0 },
                 item: if i == 0 { item } else { 0 },
                 color,
-                scale: 0.20 + r.next01() * 0.12,
+                // #176: wider spread (0.12..0.30) plus an occasional CHUNK (~0.42)
+                // so bursts read as varied rubble, not uniform pebbles. The item
+                // carrier (i == 0) stays mid-size so the collectible reads.
+                scale: if i == 0 {
+                    0.24
+                } else if r.next01() < 0.18 {
+                    0.38 + r.next01() * 0.08
+                } else {
+                    0.12 + r.next01() * 0.18
+                },
                 age: 0.0,
                 settled: false,
                 grounded: false,

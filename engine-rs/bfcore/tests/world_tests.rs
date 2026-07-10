@@ -2233,7 +2233,7 @@ fn debris_burst_on_break() {
     assert_eq!(w.debug_debris_count(), 0, "no debris before the break");
     w.debug_break_block(8, 7, 8);
     let n = w.debug_debris_count();
-    assert!((4..=6).contains(&n), "break burst 4..6 fragments (got {n})");
+    assert!((6..=9).contains(&n), "break burst 6..9 fragments, #176 (got {n})");
     for i in 0..n {
         let (_, vy, _) = w.debug_debris_vel(i);
         assert!(vy > 2.0, "fragment {i} pops upward (vy = {vy})");
