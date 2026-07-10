@@ -27,6 +27,9 @@ final class DialogueController {
     // offer sheet; onOpenTrade swaps the dialogue for the trade panel.
     var hasTrade: ((Int) -> Bool)? = nil
     var onOpenTrade: ((Int) -> Void)? = nil
+    // #227: explicit donation. Set for trade-role villagers; clicking sends the
+    // donate action (the engine validates the held item and toasts the result).
+    var onDonate: ((Int) -> Void)? = nil
     private var currentNpcId: Int = 0
     private var npcs: [DialogueNPC] = []
     private weak var overlay: NSView?
@@ -91,6 +94,21 @@ final class DialogueController {
             rows.append(b)
             _ = i
         }
+        // #227: trade-role villagers (Woodcutter 4, Mason 5, Blacksmith 6) take
+        // building donations, but only when the player ASKS.
+        if [4, 5, 6].contains(currentNpcId), onDonate != nil {
+            let db = NSButton(title: "Donate held items to the village",
+                              target: self, action: #selector(donateClicked(_:)))
+            db.bezelStyle = .regularSquare; db.isBordered = false; db.wantsLayer = true
+            db.layer?.backgroundColor = NSColor(calibratedRed: 0.36, green: 0.46, blue: 0.72, alpha: 1).cgColor
+            db.layer?.cornerRadius = 10
+            db.attributedTitle = NSAttributedString(string: "Donate held items to the village", attributes: [
+                .font: NSFont.boldSystemFont(ofSize: 16), .foregroundColor: NSColor.white])
+            db.translatesAutoresizingMaskIntoConstraints = false
+            db.widthAnchor.constraint(equalToConstant: 460).isActive = true
+            db.heightAnchor.constraint(equalToConstant: 40).isActive = true
+            rows.append(db)
+        }
         // #203: a gold Trade button above Goodbye when this profession trades.
         if hasTrade?(currentNpcId) == true {
             let tb = NSButton(title: "Trade", target: self, action: #selector(tradeClicked(_:)))
@@ -126,6 +144,12 @@ final class DialogueController {
             panel.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
             panel.centerYAnchor.constraint(equalTo: ov.centerYAnchor),
         ])
+    }
+
+    @objc private func donateClicked(_ sender: NSButton) {
+        let npc = currentNpcId
+        close()   // engine toast reports the result on the HUD
+        onDonate?(npc)
     }
 
     @objc private func tradeClicked(_ sender: NSButton) {

@@ -265,6 +265,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // #203: villagers with an offer sheet grow a Trade button in dialogue.
         dialogue.hasTrade = { [weak r] npc in r?.tradeOffers(npcId: Int32(npc)) != nil }
         dialogue.onOpenTrade = { [weak self] npc in self?.openTrade(npcId: Int32(npc)) }
+        // #227: explicit donation, INTERACT with arg 1 (must still be facing them).
+        dialogue.onDonate = { [weak mtkView] _ in mtkView?.requestDonate() }
         r.onDialogue = { [weak self] npcId in
             guard let self = self, let cv = self.window.contentView, !self.dialogue.isOpen else { return }
             self.gameView?.releaseMouse()

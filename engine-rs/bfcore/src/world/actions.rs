@@ -90,8 +90,12 @@ impl<'c> World<'c> {
                 }
                 let idx = self.creature_in_view();
                 if idx >= 0 && self.creatures[idx as usize].model == 20 {
-                    // A VILLAGER: trade-role donation, else open dialogue.
-                    if !self.try_village_donation(idx as usize) {
+                    // #227: interact ALWAYS opens dialogue now. Donation is an
+                    // explicit dialogue button (INTERACT with arg_i == 1), never a
+                    // silent grab of whatever the player happens to be holding.
+                    if a.arg_i == 1 {
+                        let _ = self.try_village_donation(idx as usize);
+                    } else {
                         let pv = self.player_voxel();
                         let npc = self.creatures[idx as usize].npc_id;
                         self.fx(20, pv, npc);
