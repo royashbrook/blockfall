@@ -7,6 +7,7 @@
 // ============================================================================
 import AppKit
 import QuartzCore   // CACurrentMediaTime for the #29 FPS counter
+import simd         // #202 villager chatter pair distances
 import CBlockcore
 
 final class HUDView: NSView {
@@ -349,6 +350,122 @@ final class HUDView: NSView {
         if (had || !list.isEmpty) && hud.inventory_open == 0 && !questLogOpen {
             needsDisplay = true
         }
+    }
+
+    // --- #202: villager chatter, comic speech bubbles over talking pairs -------
+    // The renderer pushes every on-screen villager (stable key + projected head
+    // point) each frame. A tiny state machine picks a nearby PAIR, runs a short
+    // scripted exchange (A speaks, B replies, sometimes one more round), then
+    // cools down and picks a new pair. Bubbles are classic comic style: white
+    // rounded rect, dark outline, a little tail pointing at the speaker's head.
+    struct VillagerMarker {
+        let key: UInt32          // stable per-villager id (from the #201 colour)
+        let screenPt: CGPoint    // projected head point (view points)
+        let worldPos: SIMD3<Float>
+        let dist: Float          // metres from the camera
+    }
+    private var villagers: [VillagerMarker] = []
+    private var chatPair: (a: UInt32, b: UInt32)? = nil
+    private var chatScript: [(who: Int, line: String)] = []   // 0 = a, 1 = b
+    private var chatStep = -1
+    private var chatStepEnds: CFTimeInterval = 0
+    private var chatCooldownUntil: CFTimeInterval = 0
+    private var chatRng = SystemRandomNumberGenerator()
+
+    // Kid-friendly exchanges. Short lines so bubbles stay small and readable.
+    private static let chatScripts: [[(Int, String)]] = [
+        [(0, "Nice day, huh?"), (1, "The best!")],
+        [(0, "I saw a slime!"), (1, "Eek! Where?!"), (0, "It bounced away.")],
+        [(0, "Berry pie later?"), (1, "Save me a slice!")],
+        [(0, "My hut is cozy."), (1, "Mine has a plant!")],
+        [(0, "Race you home!"), (1, "You always win!")],
+        [(0, "The stars are out."), (1, "Make a wish!")],
+        [(0, "I petted a fox."), (1, "So fluffy!")],
+        [(0, "Need more wood."), (1, "Ask the woodcutter!")],
+        [(0, "Heard a ghost..."), (1, "Just the wind!"), (0, "Phew!")],
+        [(0, "New here?"), (1, "Been here forever!")],
+    ]
+
+    func setVillagers(_ list: [VillagerMarker]) {
+        let had = !villagers.isEmpty
+        villagers = list
+        chatterTick()
+        if (had || !list.isEmpty) && hud.inventory_open == 0 && !questLogOpen {
+            needsDisplay = true
+        }
+    }
+
+    private func chatterTick() {
+        let now = CACurrentMediaTime()
+        // Advance or finish an active exchange.
+        if let pair = chatPair {
+            let aVisible = villagers.contains { $0.key == pair.a }
+            let bVisible = villagers.contains { $0.key == pair.b }
+            if !aVisible || !bVisible {
+                chatPair = nil
+                chatCooldownUntil = now + 4
+            } else if now >= chatStepEnds {
+                chatStep += 1
+                if chatStep >= chatScript.count {
+                    chatPair = nil
+                    chatCooldownUntil = now + CFTimeInterval(Int.random(in: 7...14, using: &chatRng))
+                } else {
+                    chatStepEnds = now + 2.8
+                }
+            }
+            return
+        }
+        guard now >= chatCooldownUntil, villagers.count >= 2 else { return }
+        // Pick the closest-together on-screen pair within 7 blocks of each other.
+        var best: (a: VillagerMarker, b: VillagerMarker, d: Float)? = nil
+        for i in 0..<villagers.count {
+            for j in (i + 1)..<villagers.count {
+                let d = simd_length(villagers[i].worldPos - villagers[j].worldPos)
+                if d < 7, best == nil || d < best!.d {
+                    best = (villagers[i], villagers[j], d)
+                }
+            }
+        }
+        guard let pick = best else { return }
+        chatPair = (pick.a.key, pick.b.key)
+        chatScript = HUDView.chatScripts.randomElement(using: &chatRng) ?? HUDView.chatScripts[0]
+        chatStep = 0
+        chatStepEnds = now + 2.8
+    }
+
+    private func drawChatter(in b: NSRect) {
+        guard let pair = chatPair, chatStep >= 0, chatStep < chatScript.count else { return }
+        let (who, line) = chatScript[chatStep]
+        let key = who == 0 ? pair.a : pair.b
+        guard let m = villagers.first(where: { $0.key == key }) else { return }
+        // Comic bubble above the head, clamped on screen.
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: fs(14)),
+            .foregroundColor: NSColor.black,
+        ]
+        let sz = (line as NSString).size(withAttributes: attrs)
+        let padX: CGFloat = fs(10), padY: CGFloat = fs(6)
+        var bubble = NSRect(x: m.screenPt.x - sz.width / 2 - padX,
+                            y: m.screenPt.y + fs(14),
+                            width: sz.width + padX * 2,
+                            height: sz.height + padY * 2)
+        bubble.origin.x = max(6, min(b.maxX - bubble.width - 6, bubble.origin.x))
+        bubble.origin.y = max(6, min(b.maxY - bubble.height - 6, bubble.origin.y))
+        let path = NSBezierPath(roundedRect: bubble, xRadius: fs(9), yRadius: fs(9))
+        // Tail: small triangle from the bubble toward the head point.
+        let tail = NSBezierPath()
+        let tx = max(bubble.minX + 12, min(bubble.maxX - 12, m.screenPt.x))
+        tail.move(to: NSPoint(x: tx - fs(5), y: bubble.minY + 1))
+        tail.line(to: NSPoint(x: m.screenPt.x, y: m.screenPt.y + fs(4)))
+        tail.line(to: NSPoint(x: tx + fs(5), y: bubble.minY + 1))
+        tail.close()
+        NSColor.white.withAlphaComponent(0.96).setFill()
+        path.fill(); tail.fill()
+        NSColor.black.withAlphaComponent(0.85).setStroke()
+        path.lineWidth = fs(1.6); path.stroke()
+        tail.lineWidth = fs(1.4); tail.stroke()
+        (line as NSString).draw(at: NSPoint(x: bubble.minX + padX, y: bubble.minY + padY),
+                                withAttributes: attrs)
     }
 
     // ----- Mouse handling (active only while the inventory is open) -----
@@ -757,6 +874,7 @@ final class HUDView: NSView {
 
         // --- #13: Multiplayer compass (only when other players are connected) ---
         drawPeerCompass(in: b)
+        drawChatter(in: b)   // #202 villager speech bubbles
 
         // Achievement toast (top-center banner) when one was just unlocked.
         let toast = withUnsafeBytes(of: hud.achievement_toast) { raw -> String in

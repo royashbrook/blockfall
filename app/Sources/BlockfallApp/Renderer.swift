@@ -2047,6 +2047,35 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         hud.setPeers(markers)
+
+        // #202 villager chatter: project every on-screen villager head so the HUD
+        // can float comic speech bubbles over talking pairs. The stable per-villager
+        // key is the bit pattern of the per-individual clothing colour (#201), which
+        // never changes as the villager wanders, so a conversation can follow its
+        // two speakers frame to frame. Cheap: only kind 20, only within 24 blocks.
+        var chatter: [HUDView.VillagerMarker] = []
+        for i in 0..<n {
+            let e = ents[i]
+            guard e.kind == 20 else { continue }
+            let wp = SIMD3<Float>(e.position.x, e.position.y, e.position.z)
+            let to = wp - camPos
+            let d = simd_length(to)
+            guard d < 24 else { continue }
+            let head = SIMD3<Float>(wp.x, wp.y + e.scale * 1.55, wp.z)
+            let clip = viewProj * SIMD4<Float>(head.x, head.y, head.z, 1)
+            guard clip.w > 0.0001 else { continue }
+            let ndcX = clip.x / clip.w, ndcY = clip.y / clip.w
+            guard abs(ndcX) <= 1.1 && abs(ndcY) <= 1.1 else { continue }
+            let pt = CGPoint(x: (CGFloat(ndcX) * 0.5 + 0.5) * vw,
+                             y: (CGFloat(ndcY) * 0.5 + 0.5) * vh)
+            var key: UInt32 = 2166136261
+            for comp in [e.color.x, e.color.y, e.color.z] {
+                key = (key ^ comp.bitPattern) &* 16777619
+            }
+            chatter.append(HUDView.VillagerMarker(key: key, screenPt: pt,
+                                                  worldPos: wp, dist: d))
+        }
+        hud.setVillagers(chatter)
     }
 
     // Helper: fullscreen triangle pass with one input + one output texture.
