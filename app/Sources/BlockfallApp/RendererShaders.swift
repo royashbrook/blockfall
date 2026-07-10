@@ -2955,6 +2955,16 @@ extension Renderer {
                 float gap = max(max(abs(lc - lL), abs(lc - lR)),
                                 max(abs(lc - lU), abs(lc - lD)));
                 edge *= smoothstep(0.22, 0.38, gap);
+                // #219 the actual culprit: 1-3px DISTANT SPRIG PROPS. The ink outline
+                // is thicker than the feature, so each far grass sprig collapsed into a
+                // black plus-shaped blob, printing dotted rows along the plant lattice
+                // on open sand. A pixel INSIDE such a sliver sees BOTH its left and
+                // right neighbours far behind it; a pixel on a real silhouette edge
+                // always keeps one near-side neighbour on its own surface. Fade the ink
+                // as the thinner-side background distance grows, so slivers stop
+                // inking while blades, blocks, trunks, and creatures keep their edges.
+                float slim = max(min(lL, lR) - lc, min(lU, lD) - lc);
+                edge *= 1.0 - smoothstep(0.9, 1.8, slim);
                 // Fade the ink in the far haze so the distant render edge does not get a
                 // busy net of lines (keeps the vista readable, matches the terrain fog).
                 float farFade = 1.0 - smoothstep(CEL_FAR * 0.6, CEL_FAR * 0.92, lc);
