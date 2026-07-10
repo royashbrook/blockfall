@@ -250,6 +250,24 @@ final class MapView: NSView {
                 roof.fill()
                 outline(roof)
             }
+        case 3: // CITY (#221): a walled keep, wall slab + two towers + centre roof.
+            let wall = NSRect(x: p.x - s * 1.1, y: p.y - s * 0.7, width: s * 2.2, height: s * 0.7)
+            NSColor(calibratedRed: 0.55, green: 0.56, blue: 0.62, alpha: 1).setFill()
+            NSBezierPath(rect: wall).fill()
+            for tx in [p.x - s * 0.95, p.x + s * 0.95] {
+                let tower = NSRect(x: tx - s * 0.22, y: p.y - s * 0.7, width: s * 0.44, height: s * 1.3)
+                NSColor(calibratedRed: 0.62, green: 0.63, blue: 0.70, alpha: 1).setFill()
+                NSBezierPath(rect: tower).fill()
+                outline(NSBezierPath(rect: tower))
+            }
+            let roof = NSBezierPath()
+            roof.move(to: NSPoint(x: p.x - s * 0.55, y: p.y + s * 0.05))
+            roof.line(to: NSPoint(x: p.x, y: p.y + s * 0.85))
+            roof.line(to: NSPoint(x: p.x + s * 0.55, y: p.y + s * 0.05))
+            roof.close()
+            NSColor(calibratedRed: 0.72, green: 0.32, blue: 0.28, alpha: 1).setFill()
+            roof.fill()
+            outline(roof); outline(NSBezierPath(rect: wall))
         default: // TOTEM: a glowing crystal diamond.
             let d = NSBezierPath()
             d.move(to: NSPoint(x: p.x, y: p.y + s))

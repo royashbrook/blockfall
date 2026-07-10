@@ -201,11 +201,16 @@ impl<'c> World<'c> {
             name: "Home".to_string(),
         });
         for (i, &(ax, az)) in self.visited_villages.iter().enumerate() {
+            // #221: derive village-vs-CITY at marker-build time from worldgen (pure
+            // hash lookup, at most 32 anchors), so the map can show a distinct city
+            // icon with zero persistence or ABI layout change. kind 3 = city.
+            let (styp, _sx, _sz, _sy) = worldgen::worldgen_structure_near(ax, az, self.seed);
+            let is_city = worldgen::worldgen_is_city(styp);
             out.push(MapMarkerInfo {
                 pos: IVec3 { x: ax, y: 0, z: az },
-                kind: 1,
+                kind: if is_city { 3 } else { 1 },
                 id: MARKER_ID_VILLAGE_BASE + i as u32,
-                name: format!("Village {}", i + 1),
+                name: format!("{} {}", if is_city { "City" } else { "Village" }, i + 1),
             });
         }
         for (i, t) in self.totems.iter().enumerate() {

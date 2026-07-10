@@ -1243,8 +1243,8 @@ if let idx = CommandLine.arguments.firstIndex(of: "--mapshot"), idx + 1 < Comman
         MapView.Marker(x: Int32(px), z: Int32(pz), kind: 0, id: 1, name: "Home"),
         MapView.Marker(x: Int32(px + 550), z: Int32(pz - 350), kind: 1, id: 100,
                        name: TownNames.name(x: Int32(px + 550), z: Int32(pz - 350))),
-        MapView.Marker(x: Int32(px - 620), z: Int32(pz - 480), kind: 1, id: 101,
-                       name: TownNames.name(x: Int32(px - 620), z: Int32(pz - 480))),
+        MapView.Marker(x: Int32(px - 620), z: Int32(pz - 480), kind: 3, id: 101,
+                       name: "City of " + TownNames.name(x: Int32(px - 620), z: Int32(pz - 480))),
         MapView.Marker(x: Int32(px + 260), z: Int32(pz + 520), kind: 2, id: 200, name: "Totem 1"),
         MapView.Marker(x: Int32(px + 1500), z: Int32(pz - 1180), kind: 2, id: 201, name: "Totem 2"),
     ]

@@ -289,7 +289,13 @@ final class Renderer: NSObject, MTKViewDelegate {
                 }
                 // #187: villages get a fun kid name derived from their coords
                 // (stable across sessions); home and totems keep the engine label.
-                let name = m.kind == 1 ? TownNames.name(x: m.pos.x, z: m.pos.z) : engineName
+                // #221: settlements get the fun town name; cities read as "City of X".
+                let name: String
+                switch m.kind {
+                case 1: name = TownNames.name(x: m.pos.x, z: m.pos.z)
+                case 3: name = "City of " + TownNames.name(x: m.pos.x, z: m.pos.z)
+                default: name = engineName
+                }
                 markers.append(MapView.Marker(x: m.pos.x, z: m.pos.z,
                                               kind: m.kind, id: m.id, name: name))
             }
