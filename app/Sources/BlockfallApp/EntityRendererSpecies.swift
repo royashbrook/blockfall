@@ -3929,23 +3929,34 @@ extension EntityRenderer {
         let swaySpeed: Float = 1.1
         let armSway   = sin(phase * swaySpeed + hash * 2.0) * 0.16   // soft arm swing
         let leanAngle = sin(phase * swaySpeed * 0.5 + hash) * 0.025  // tiny body lean
-        // #254: role 4/action 3 is the engine-authored woodcutter shift. Three
-        // deterministic chops span the five-second work action; no wall clock or
-        // guessed movement signal drives this pose.
-        let woodcutting = curEntityRole == 4 && curEntityAction == 3
-        let chopT = curEntityActionProgress * .pi * 6.0
-        let chopStroke = 0.5 - 0.5 * cos(chopT)
-        let chopArm = -1.30 + chopStroke * 2.05
+        // #253/#254: the engine-authored work action drives every profession.
+        // Three deterministic tool strokes span a shift; no wall-clock guess is
+        // involved, so stills and motion strips reproduce the same pose.
+        let professionWorking = curEntityAction == 3 && (2...6).contains(curEntityRole)
+        let workT = curEntityActionProgress * .pi * 6.0
+        let workStroke = 0.5 - 0.5 * cos(workT)
+        let workSweep = sin(workT)
+        let workArms: (Float, Float, Float) = {
+            switch curEntityRole {
+            case 2: return (-0.62 + workSweep * 0.32, -0.48 - workSweep * 0.32, 0.15) // saw
+            case 3: return (-0.40 + workSweep * 0.18, -0.64 - workSweep * 0.22, 0.10) // stir
+            case 4: return ((-1.30 + workStroke * 2.05) * 0.92,
+                            -1.30 + workStroke * 2.05, 0.12 + workStroke * 0.16) // chop
+            case 5: return (-0.42, -0.96 + workStroke * 1.30, 0.13) // stone mallet
+            case 6: return (-0.34, -1.20 + workStroke * 1.72, 0.18) // forge hammer
+            default: return (0, 0, 0)
+            }
+        }()
         // #212 WALK CYCLE. Gate leg/arm swing on the measured ground speed so a moving
         // villager actually STRIDES (no more sliding) and a standing one plants its
         // feet and falls back to the gentle idle sway.
-        let walkAmt = woodcutting ? 0 : min(1.0, curGaitSpeed / 1.3)
+        let walkAmt = professionWorking ? 0 : min(1.0, curGaitSpeed / 1.3)
         let strideWave = sin(phase)
         let easedStride = strideWave * (0.78 + 0.22 * abs(strideWave))
         let stride  = easedStride * 0.90 * walkAmt
-        let armAngL = woodcutting ? chopArm * 0.92
+        let armAngL = professionWorking ? workArms.0
             : armSway * (1 - walkAmt) + (-stride * 1.1) * walkAmt
-        let armAngR = woodcutting ? chopArm
+        let armAngR = professionWorking ? workArms.1
             : -armSway * (1 - walkAmt) + (stride * 1.1) * walkAmt
         let footfall = abs(cos(phase))
         let stepSquash = footfall * footfall * 0.075 * walkAmt
@@ -3953,7 +3964,7 @@ extension EntityRenderer {
         let breatheY   = breatheYOffset(breathPhase, scale: s)
         let eyeBlinkSY = blinkScale(blinkPhase)
         let walkLean   = cos(phase) * 0.055 * walkAmt
-        let workLean: Float = woodcutting ? (0.12 + chopStroke * 0.16) : 0
+        let workLean: Float = professionWorking ? workArms.2 : 0
         let bodyLean   = EntityRenderer.rotZ(leanAngle + walkLean)
             * EntityRenderer.rotX(-walkLean * 0.65 + workLean)
 
@@ -4075,11 +4086,13 @@ extension EntityRenderer {
         }
         let elbowLag = cos(phase - 0.55) * 0.30 * walkAmt
         let idleElbow = sin(phase * 0.7 + hash) * 0.05 * (1 - walkAmt)
-        let elbowL: Float = woodcutting ? -0.22 : elbowLag + idleElbow
-        let elbowR: Float = woodcutting ? -0.12 : -elbowLag - idleElbow
-        let wristL: Float = woodcutting ? 0.10
+        let elbowL: Float = professionWorking ? (curEntityRole == 2 ? -0.42 : -0.22)
+            : elbowLag + idleElbow
+        let elbowR: Float = professionWorking ? (curEntityRole == 3 ? -0.40 : -0.12)
+            : -elbowLag - idleElbow
+        let wristL: Float = professionWorking ? (curEntityRole == 2 ? 0.28 : 0.10)
             : -elbowL * 0.40 + sin(phase - 0.9) * 0.10 * walkAmt
-        let wristR: Float = woodcutting ? 0.05
+        let wristR: Float = professionWorking ? (curEntityRole == 3 ? -0.22 : 0.05)
             : -elbowR * 0.40 - sin(phase - 0.9) * 0.10 * walkAmt
         drawCube(enc: enc, viewProj: viewProj,
                  model: upperArmM(shoulderXL, armAngL),
@@ -4099,11 +4112,11 @@ extension EntityRenderer {
         drawCube(enc: enc, viewProj: viewProj,
                  model: handM(shoulderXR, armAngR, elbowR, wristR),
                  rgb: skinCol, sat: sat, shape: .sphere)
-        if woodcutting {
-            // A real held axe makes the action readable even in a still frame.
-            // It is parented to the right wrist, so the handle and iron head stay
-            // attached throughout the overhead-to-stump chop arc.
-            func axeM(_ y: Float, _ dims: SIMD3<Float>) -> simd_float4x4 {
+        if professionWorking {
+            // Finished held tools make every role readable in a still frame. Two
+            // parts per tool preserve the 29-part villager cap.
+            func toolM(_ offset: SIMD3<Float>, _ dims: SIMD3<Float>,
+                       rotX: Float = 0, rotZ: Float = 0) -> simd_float4x4 {
                 EntityRenderer.trans(wc) * R * bodyLean
                     * EntityRenderer.trans(SIMD3(shoulderXR, shoulderY, 0))
                     * EntityRenderer.rotX(armAngR)
@@ -4111,17 +4124,59 @@ extension EntityRenderer {
                     * EntityRenderer.rotX(elbowR)
                     * EntityRenderer.trans(SIMD3(0, -lowerArmH, 0))
                     * EntityRenderer.rotX(wristR)
-                    * EntityRenderer.trans(SIMD3(0, y, 0))
+                    * EntityRenderer.trans(offset)
+                    * EntityRenderer.rotX(rotX) * EntityRenderer.rotZ(rotZ)
                     * EntityRenderer.scaleM(dims)
             }
             let handleCol = SIMD3<Float>(0.46, 0.27, 0.12)
             let ironCol = SIMD3<Float>(0.48, 0.53, 0.58)
-            drawCube(enc: enc, viewProj: viewProj,
-                     model: axeM(-s * 0.24, SIMD3(s * 0.065, s * 0.52, s * 0.065)),
-                     rgb: handleCol, sat: sat, shape: .cylinder)
-            drawCube(enc: enc, viewProj: viewProj,
-                     model: axeM(-s * 0.52, SIMD3(s * 0.34, s * 0.15, s * 0.10)),
-                     rgb: ironCol, sat: sat)
+            switch curEntityRole {
+            case 2: // builder: broad hand-saw blade and warm handle.
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: toolM(SIMD3(0, -s * 0.14, -s * 0.10),
+                                      SIMD3(s * 0.10, s * 0.12, s * 0.10)),
+                         rgb: handleCol, sat: sat, shape: .sphere)
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: toolM(SIMD3(0, -s * 0.34, -s * 0.18),
+                                      SIMD3(s * 0.08, s * 0.40, s * 0.30), rotX: 0.34),
+                         rgb: ironCol, sat: sat)
+            case 3: // herbalist: pestle and a leafy sprig in the stirring hand.
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: toolM(SIMD3(0, -s * 0.24, 0),
+                                      SIMD3(s * 0.07, s * 0.44, s * 0.07)),
+                         rgb: handleCol, sat: sat, shape: .cylinder)
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: toolM(SIMD3(s * 0.04, -s * 0.48, 0),
+                                      SIMD3(s * 0.16, s * 0.13, s * 0.12)),
+                         rgb: SIMD3<Float>(0.30, 0.62, 0.28), sat: sat, shape: .sphere)
+            case 5: // mason: stout oak mallet with a stone head.
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: toolM(SIMD3(0, -s * 0.24, 0),
+                                      SIMD3(s * 0.075, s * 0.48, s * 0.075)),
+                         rgb: handleCol, sat: sat, shape: .cylinder)
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: toolM(SIMD3(0, -s * 0.50, 0),
+                                      SIMD3(s * 0.32, s * 0.18, s * 0.20)),
+                         rgb: SIMD3<Float>(0.50, 0.51, 0.53), sat: sat)
+            case 6: // blacksmith: long hammer and dark iron head.
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: toolM(SIMD3(0, -s * 0.26, 0),
+                                      SIMD3(s * 0.065, s * 0.52, s * 0.065)),
+                         rgb: handleCol, sat: sat, shape: .cylinder)
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: toolM(SIMD3(0, -s * 0.55, 0),
+                                      SIMD3(s * 0.38, s * 0.17, s * 0.18)),
+                         rgb: SIMD3<Float>(0.28, 0.31, 0.35), sat: sat)
+            default: // woodcutter: embedded-axe silhouette from #254.
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: toolM(SIMD3(0, -s * 0.24, 0),
+                                      SIMD3(s * 0.065, s * 0.52, s * 0.065)),
+                         rgb: handleCol, sat: sat, shape: .cylinder)
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: toolM(SIMD3(0, -s * 0.52, 0),
+                                      SIMD3(s * 0.34, s * 0.15, s * 0.10)),
+                         rgb: ironCol, sat: sat)
+            }
         }
 
         // ---- NECK + HEAD ----
@@ -4233,7 +4288,7 @@ extension EntityRenderer {
 
         switch faceStyle {
         case 1: // alert brows and a small round "o" mouth.
-            if !woodcutting {
+            if !professionWorking {
                 for bx in [-eyeSpread, eyeSpread] {
                     drawCube(enc: enc, viewProj: viewProj,
                              model: hpw(SIMD3(bx, eyeY + hH * 0.18, hBrowZ),
@@ -4246,7 +4301,7 @@ extension EntityRenderer {
                                 SIMD3(s * 0.075, s * 0.095, s * 0.035)),
                      rgb: mouthCol, sat: sat, shape: .sphere)
         case 2: // two freckle clusters and a broad toothy grin.
-            if !woodcutting {
+            if !professionWorking {
                 for fx in [-hW * 0.30, hW * 0.30] {
                     drawCube(enc: enc, viewProj: viewProj,
                              model: hpw(SIMD3(fx, headY - hH * 0.13, hSideFaceZ),
@@ -4263,7 +4318,7 @@ extension EntityRenderer {
                                 SIMD3(hW * 0.26, s * 0.025, s * 0.018)),
                      rgb: scleraCol, sat: sat)
         case 3: // drooping moustache over a shy straight mouth.
-            if !woodcutting {
+            if !professionWorking {
                 for mx in [-s * 0.055, s * 0.055] {
                     drawCube(enc: enc, viewProj: viewProj,
                              model: hpw(SIMD3(mx, headY - hH * 0.19, hFaceZ),
@@ -4276,7 +4331,7 @@ extension EntityRenderer {
                                 SIMD3(hW * 0.25, s * 0.035, s * 0.025)),
                      rgb: mouthCol, sat: sat)
         default: // classic rosy-cheeked smile.
-            if !woodcutting {
+            if !professionWorking {
                 for cx in [-hW * 0.32, hW * 0.32] {
                     drawCube(enc: enc, viewProj: viewProj,
                              model: hpw(SIMD3(cx, headY - hH * 0.14, hSideFaceZ),

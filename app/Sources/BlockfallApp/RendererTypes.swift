@@ -254,6 +254,48 @@ func makeHeldItem(_ itemId: Int) -> [PropCuboidGPU] {
             part(SIMD3(fx + 0.10, fy + 0.62, fz), SIMD3(0.025, 0.07, 0.025), handle),
         ]
     }
+    if itemId >= 98 && itemId <= 101 {                             // finished artisan workstations
+        let stone = SIMD3<Float>(0.52, 0.53, 0.56)
+        let iron = SIMD3<Float>(0.26, 0.28, 0.32)
+        let ember = SIMD3<Float>(1.0, 0.30, 0.05)
+        let green = SIMD3<Float>(0.32, 0.62, 0.28)
+        switch itemId {
+        case 98: // mason slab + dressed block + mallet
+            return [
+                part(SIMD3(fx, fy + 0.20, fz), SIMD3(0.20, 0.045, 0.14), stone),
+                part(SIMD3(fx - 0.13, fy + 0.10, fz), SIMD3(0.035, 0.11, 0.035), stone),
+                part(SIMD3(fx + 0.13, fy + 0.10, fz), SIMD3(0.035, 0.11, 0.035), stone),
+                part(SIMD3(fx, fy + 0.30, fz), SIMD3(0.075, 0.07, 0.07), stone * 1.15),
+                part(SIMD3(fx + 0.10, fy + 0.38, fz), SIMD3(0.025, 0.13, 0.025), wood),
+                part(SIMD3(fx + 0.10, fy + 0.52, fz), SIMD3(0.10, 0.045, 0.055), wood),
+            ]
+        case 99: // anvil + small ember forge
+            return [
+                part(SIMD3(fx, fy + 0.10, fz), SIMD3(0.10, 0.06, 0.09), iron),
+                part(SIMD3(fx, fy + 0.22, fz), SIMD3(0.06, 0.08, 0.06), iron),
+                part(SIMD3(fx, fy + 0.33, fz), SIMD3(0.20, 0.055, 0.09), iron),
+                part(SIMD3(fx - 0.17, fy + 0.12, fz), SIMD3(0.09, 0.10, 0.09), stone * 0.70),
+                part(SIMD3(fx - 0.17, fy + 0.23, fz), SIMD3(0.065, 0.025, 0.065), ember),
+            ]
+        case 100: // herb table + mortar + leafy bundle
+            return [
+                part(SIMD3(fx, fy + 0.20, fz), SIMD3(0.22, 0.035, 0.14), wood),
+                part(SIMD3(fx - 0.14, fy + 0.10, fz), SIMD3(0.025, 0.10, 0.025), wood),
+                part(SIMD3(fx + 0.14, fy + 0.10, fz), SIMD3(0.025, 0.10, 0.025), wood),
+                part(SIMD3(fx, fy + 0.27, fz), SIMD3(0.08, 0.045, 0.08), SIMD3(0.66, 0.39, 0.25)),
+                part(SIMD3(fx + 0.05, fy + 0.38, fz), SIMD3(0.018, 0.12, 0.018), wood),
+                part(SIMD3(fx - 0.13, fy + 0.29, fz), SIMD3(0.07, 0.045, 0.07), green),
+            ]
+        default: // builder trestle, plank and saw
+            return [
+                part(SIMD3(fx, fy + 0.24, fz), SIMD3(0.24, 0.035, 0.10), wood * 1.15),
+                part(SIMD3(fx - 0.13, fy + 0.11, fz), SIMD3(0.035, 0.12, 0.035), wood),
+                part(SIMD3(fx + 0.13, fy + 0.11, fz), SIMD3(0.035, 0.12, 0.035), wood),
+                part(SIMD3(fx, fy + 0.34, fz), SIMD3(0.20, 0.018, 0.06), iron),
+                part(SIMD3(fx + 0.19, fy + 0.38, fz), SIMD3(0.055, 0.055, 0.035), wood),
+            ]
+        }
+    }
     // A held BLOCK shows as a small cube in its own colour, so it reads as that block.
     if let bc = heldBlockColor(itemId) {
         return [ part(SIMD3(fx, fy + 0.18, fz), SIMD3(0.13, 0.13, 0.13), bc) ]

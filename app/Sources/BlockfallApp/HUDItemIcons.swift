@@ -489,6 +489,7 @@ extension HUDView {
         case 93: drawMushroom(in: r, color: base)
         // --- Workstations ---
         case 97: drawChoppingBlock(in: r)
+        case 98, 99, 100, 101: drawArtisanStation(id: id, in: r)
         default: drawBlob(in: r, color: base)                   // graceful fallback
         }
     }
@@ -539,6 +540,96 @@ extension HUDView {
         ]
         strokePoly(blade, iron, width: 1)
         tick(blade[1], blade[2], lighten(iron, 0.45), width: max(1, r.width * 0.025))
+    }
+
+    private func drawArtisanStation(id: bf_item_id, in r: NSRect) {
+        let wood = itemColor(0.52, 0.34, 0.17)
+        let stone = itemColor(0.52, 0.53, 0.56)
+        let iron = itemColor(0.25, 0.27, 0.31)
+        let topY = r.minY + r.height * 0.42
+        switch id {
+        case 98: // Mason: broad stone slab, block, mallet and chisel.
+            let slab = NSRect(x: r.minX + r.width * 0.12, y: topY,
+                              width: r.width * 0.76, height: r.height * 0.20)
+            stone.setFill(); NSBezierPath(roundedRect: slab, xRadius: 3, yRadius: 3).fill()
+            shade(stone, 0.62).setFill()
+            NSBezierPath(rect: NSRect(x: slab.minX + 3, y: r.minY + r.height * 0.13,
+                                      width: r.width * 0.15, height: r.height * 0.30)).fill()
+            NSBezierPath(rect: NSRect(x: slab.maxX - r.width * 0.15 - 3,
+                                      y: r.minY + r.height * 0.13,
+                                      width: r.width * 0.15, height: r.height * 0.30)).fill()
+            let block = NSRect(x: r.midX - r.width * 0.13, y: slab.maxY,
+                               width: r.width * 0.26, height: r.height * 0.20)
+            lighten(stone, 0.16).setFill(); NSBezierPath(rect: block).fill()
+            drawHandle(in: r,
+                       from: NSPoint(x: r.minX + r.width * 0.28, y: slab.maxY + r.height * 0.02),
+                       to: NSPoint(x: r.minX + r.width * 0.55, y: r.maxY - r.height * 0.08),
+                       thickness: max(2, r.width * 0.07))
+            let mallet = NSRect(x: r.minX + r.width * 0.43, y: r.maxY - r.height * 0.18,
+                                width: r.width * 0.28, height: r.height * 0.12)
+            wood.setFill(); NSBezierPath(roundedRect: mallet, xRadius: 2, yRadius: 2).fill()
+            tick(NSPoint(x: block.maxX + r.width * 0.04, y: block.minY),
+                 NSPoint(x: block.maxX + r.width * 0.12, y: block.maxY + r.height * 0.13),
+                 iron, width: max(1, r.width * 0.045))
+        case 99: // Blacksmith: unmistakable anvil over an ember forge.
+            let coals = NSRect(x: r.minX + r.width * 0.16, y: r.minY + r.height * 0.12,
+                               width: r.width * 0.30, height: r.height * 0.24)
+            shade(stone, 0.52).setFill(); NSBezierPath(roundedRect: coals, xRadius: 3, yRadius: 3).fill()
+            fillCircle(NSPoint(x: coals.midX, y: coals.midY), r.width * 0.10,
+                       itemColor(1.0, 0.38, 0.08), outline: nil)
+            let foot = NSRect(x: r.midX - r.width * 0.13, y: r.minY + r.height * 0.13,
+                              width: r.width * 0.26, height: r.height * 0.22)
+            let waist = NSRect(x: r.midX - r.width * 0.09, y: foot.maxY,
+                               width: r.width * 0.18, height: r.height * 0.22)
+            iron.setFill(); NSBezierPath(rect: foot).fill(); NSBezierPath(rect: waist).fill()
+            let anvil = [NSPoint(x: r.minX + r.width * 0.20, y: waist.maxY),
+                         NSPoint(x: r.maxX - r.width * 0.08, y: waist.maxY),
+                         NSPoint(x: r.maxX - r.width * 0.22, y: waist.maxY + r.height * 0.19),
+                         NSPoint(x: r.minX + r.width * 0.14, y: waist.maxY + r.height * 0.15)]
+            strokePoly(anvil, iron, width: 1)
+            tick(anvil[3], anvil[2], lighten(iron, 0.32), width: max(1, r.width * 0.035))
+        case 100: // Herbalist: low table, mortar, bottle and leafy bundle.
+            let top = NSRect(x: r.minX + r.width * 0.10, y: topY,
+                             width: r.width * 0.80, height: r.height * 0.13)
+            wood.setFill(); NSBezierPath(roundedRect: top, xRadius: 2, yRadius: 2).fill()
+            for x in [top.minX + r.width * 0.10, top.maxX - r.width * 0.16] {
+                NSBezierPath(rect: NSRect(x: x, y: r.minY + r.height * 0.12,
+                                          width: r.width * 0.08, height: r.height * 0.32)).fill()
+            }
+            let bowl = NSBezierPath()
+            bowl.move(to: NSPoint(x: r.midX - r.width * 0.17, y: top.maxY + r.height * 0.16))
+            bowl.line(to: NSPoint(x: r.midX + r.width * 0.17, y: top.maxY + r.height * 0.16))
+            bowl.curve(to: NSPoint(x: r.midX, y: top.maxY),
+                       controlPoint1: NSPoint(x: r.midX + r.width * 0.14, y: top.maxY),
+                       controlPoint2: NSPoint(x: r.midX + r.width * 0.06, y: top.maxY))
+            bowl.close(); itemColor(0.66, 0.39, 0.25).setFill(); bowl.fill()
+            tick(NSPoint(x: r.midX, y: top.maxY + r.height * 0.10),
+                 NSPoint(x: r.midX + r.width * 0.15, y: r.maxY - r.height * 0.06),
+                 wood, width: max(2, r.width * 0.07))
+            for dx in [-0.28, 0.28] as [CGFloat] {
+                fillCircle(NSPoint(x: r.midX + r.width * dx, y: top.maxY + r.height * 0.12),
+                           r.width * 0.09, itemColor(0.32, 0.64, 0.28), outline: nil)
+            }
+        default: // Builder: trestles, long plank and toothed hand saw.
+            let plank = NSRect(x: r.minX + r.width * 0.08, y: topY,
+                               width: r.width * 0.84, height: r.height * 0.16)
+            lighten(wood, 0.20).setFill(); NSBezierPath(roundedRect: plank, xRadius: 2, yRadius: 2).fill()
+            for x in [plank.minX + r.width * 0.16, plank.maxX - r.width * 0.20] {
+                tick(NSPoint(x: x - r.width * 0.09, y: r.minY + r.height * 0.12),
+                     NSPoint(x: x + r.width * 0.09, y: plank.minY), wood,
+                     width: max(2, r.width * 0.08))
+                tick(NSPoint(x: x + r.width * 0.09, y: r.minY + r.height * 0.12),
+                     NSPoint(x: x - r.width * 0.09, y: plank.minY), wood,
+                     width: max(2, r.width * 0.08))
+            }
+            let saw = [NSPoint(x: r.minX + r.width * 0.20, y: plank.maxY + r.height * 0.04),
+                       NSPoint(x: r.maxX - r.width * 0.14, y: r.maxY - r.height * 0.10),
+                       NSPoint(x: r.maxX - r.width * 0.22, y: plank.maxY + r.height * 0.01)]
+            strokePoly(saw, iron, width: 1)
+            drawHandle(in: r, from: saw[1],
+                       to: NSPoint(x: r.maxX - r.width * 0.05, y: r.maxY - r.height * 0.02),
+                       thickness: max(2, r.width * 0.08))
+        }
     }
 
     // ----- Tools -----------------------------------------------------------
