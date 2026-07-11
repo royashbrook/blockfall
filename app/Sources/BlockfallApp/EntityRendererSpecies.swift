@@ -1013,7 +1013,7 @@ extension EntityRenderer {
     // Design goals:
     //   — Layered torso: core body + chest plate + belly + shoulder flanges
     //   — Defined limb sections: upper leg (thick) + lower leg (slightly narrower)
-    //   — Mane/crest fringe: row of thick spiky blocks around the head base
+    //   — Mane/crest fringe: row of thick spikes around the head base
     //   — Crown of 3 spires with a ring base (not just floating pillars)
     //   — 5 dorsal spikes (more ridge-like)
     //   — Friendly face: raised brows, big grin, square teeth, glowing HDR amber eyes
@@ -1030,7 +1030,7 @@ extension EntityRenderer {
     // Parts: legs-upper(4) legs-lower(4) body(1) belly(1) chest-plate(1)
     //        shoulder-armor(2) mane-fringe(5) head(1) head-brow-ridge(1)
     //        chin-plate(1) dorsal-spikes(5) crown-base(1) crown-spires(3)
-    //        eyes(2-emissive) face-brows(2) grin(3) teeth(2) = 40 parts
+    //        eyes(2-emissive) face-brows(2) grin(3) teeth(2) = 39 draws
     // =========================================================================
     func drawKind4(enc: MTLRenderCommandEncoder,
                            viewProj: simd_float4x4,
@@ -1055,6 +1055,9 @@ extension EntityRenderer {
 
         let stompSpeed: Float = 1.4
         let legSwing  = sin(phase * stompSpeed) * 0.30
+        // Lower joints trail the heavy stride a fraction, so the segmented legs
+        // flex instead of moving as one rigid stack.
+        let lowerLegSwing = sin(phase * stompSpeed - 0.22) * 0.27
         let stompRaw  = sin(phase * stompSpeed)
         let stomp     = (stompRaw < 0 ? stompRaw * stompRaw : Float(0)) * s * 0.025
 
@@ -1110,22 +1113,23 @@ extension EntityRenderer {
         let hipBR = SIMD3<Float>( bW * 0.36, hipY, -bD * 0.32)
 
         // 4 layered legs (upper + lower each)
-        drawCube(enc: enc, viewProj: viewProj, model: luw(hipFL,  legSwing), rgb: midCol,  sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: luw(hipFR, -legSwing), rgb: midCol,  sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: luw(hipBL, -legSwing), rgb: midCol,  sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: luw(hipBR,  legSwing), rgb: midCol,  sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: llw(hipFL,  legSwing), rgb: darkCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: llw(hipFR, -legSwing), rgb: darkCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: llw(hipBL, -legSwing), rgb: darkCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: llw(hipBR,  legSwing), rgb: darkCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: luw(hipFL,  legSwing), rgb: midCol,  sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: luw(hipFR, -legSwing), rgb: midCol,  sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: luw(hipBL, -legSwing), rgb: midCol,  sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: luw(hipBR,  legSwing), rgb: midCol,  sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: llw(hipFL,  lowerLegSwing), rgb: darkCol, sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: llw(hipFR, -lowerLegSwing), rgb: darkCol, sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: llw(hipBL, -lowerLegSwing), rgb: darkCol, sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: llw(hipBR,  lowerLegSwing), rgb: darkCol, sat: sat, shape: .cylinder)
 
         // Body core
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bD)), rgb: baseCol, sat: sat)
+                 model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bD)), rgb: baseCol, sat: sat,
+                 shape: .sphere)
         // Belly — slightly lighter underside
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, -bH*0.28, bD*0.08), SIMD3(bW*0.76, bH*0.44, bD*0.72)),
-                 rgb: bellyCol, sat: sat)
+                 rgb: bellyCol, sat: sat, shape: .sphere)
         // Chest plate — a raised armored slab on the front-upper body
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, bH*0.22, bD*0.46), SIMD3(bW*0.84, bH*0.48, s*0.08)),
@@ -1134,11 +1138,11 @@ extension EntityRenderer {
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(-bW*0.50 - armorW*0.40, bH*0.28, 0),
                            SIMD3(armorW, armorH, armorD)),
-                 rgb: darkCol, sat: sat)
+                 rgb: darkCol, sat: sat, shape: .sphere)
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3( bW*0.50 + armorW*0.40, bH*0.28, 0),
                            SIMD3(armorW, armorH, armorD)),
-                 rgb: darkCol, sat: sat)
+                 rgb: darkCol, sat: sat, shape: .sphere)
 
         // Dorsal spikes — 5-spike ridge along spine top, quiver, varying heights
         let spikeBaseY = bH * 0.50
@@ -1150,7 +1154,8 @@ extension EntityRenderer {
                 * EntityRenderer.trans(SIMD3(0, spikeBaseY + spkH*0.5, spkZ))
                 * spkTilt
                 * EntityRenderer.scaleM(SIMD3(spkW, spkH, spkD))
-            drawCube(enc: enc, viewProj: viewProj, model: spkModel, rgb: crownCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: spkModel, rgb: crownCol, sat: sat,
+                     shape: .cone)
         }
 
         // ---- HEAD — massive, pushed forward ----
@@ -1158,7 +1163,7 @@ extension EntityRenderer {
         let headZ: Float = bD * 0.50 + hS * 0.40
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, headY, headZ), SIMD3(hS, hS, hS*0.84)),
-                 rgb: baseCol, sat: sat)
+                 rgb: baseCol, sat: sat, shape: .sphere)
         // Brow ridge — a heavy dark ledge above the eye line
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, headY + hS*0.30, headZ + hS*0.42),
@@ -1168,9 +1173,9 @@ extension EntityRenderer {
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, headY - hS*0.44, headZ + hS*0.10),
                            SIMD3(chinW, chinH, chinD)),
-                 rgb: darkCol, sat: sat)
+                 rgb: darkCol, sat: sat, shape: .sphere)
 
-        // MANE/CREST FRINGE — 5 thick spike-blocks ringing the back/sides of head base
+        // MANE/CREST FRINGE — 5 thick spikes ringing the back/sides of head base
         // gives the boss a lion-mane silhouette
         let maneOffsets: [(Float, Float, Float)] = [
             (-hS*0.52, headY, headZ - hS*0.05),   // left side
@@ -1185,7 +1190,8 @@ extension EntityRenderer {
                 * EntityRenderer.trans(SIMD3(mx, my, mz))
                 * maneTilt
                 * EntityRenderer.scaleM(SIMD3(s*0.14, s*0.26, s*0.14))
-            drawCube(enc: enc, viewProj: viewProj, model: maneM, rgb: crownCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: maneM, rgb: crownCol, sat: sat,
+                     shape: .cone)
         }
 
         // ---- FACE ----
@@ -1194,10 +1200,10 @@ extension EntityRenderer {
         let eyeW = s * 0.15; let eyeH = s * 0.15 * eyeBlinkSY; let eyeD = s * 0.05
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(-hS*0.22, headY + hS*0.06, bsFaceZ), SIMD3(eyeW, eyeH, eyeD)),
-                 rgb: eyeGlowCol, sat: -1.0)
+                 rgb: eyeGlowCol, sat: -1.0, shape: .sphere)
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3( hS*0.22, headY + hS*0.06, bsFaceZ), SIMD3(eyeW, eyeH, eyeD)),
-                 rgb: eyeGlowCol, sat: -1.0)
+                 rgb: eyeGlowCol, sat: -1.0, shape: .sphere)
         // Friendly raised brows — angled upward-outward
         let browL = EntityRenderer.trans(wc) * R
             * EntityRenderer.trans(SIMD3(-hS*0.22, headY + hS*0.22, bsFaceZ))
@@ -1236,21 +1242,21 @@ extension EntityRenderer {
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, crownBaseY + crownBaseH*0.5, headZ),
                            SIMD3(crownBaseW, crownBaseH, crownBaseD)),
-                 rgb: midCol, sat: sat)
+                 rgb: midCol, sat: sat, shape: .cylinder)
         // Center spire — tallest, bobs
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, crownBaseY + crownBaseH + crownH*0.60 + crownBob, headZ),
                            SIMD3(crownW, crownH*1.25, crownD)),
-                 rgb: crownCol, sat: sat)
+                 rgb: crownCol, sat: sat, shape: .cone)
         // Flanking spires
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(-hS*0.30, crownBaseY + crownBaseH + crownH*0.50, headZ),
                            SIMD3(crownW, crownH, crownD)),
-                 rgb: crownCol, sat: sat)
+                 rgb: crownCol, sat: sat, shape: .cone)
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3( hS*0.30, crownBaseY + crownBaseH + crownH*0.50, headZ),
                            SIMD3(crownW, crownH, crownD)),
-                 rgb: crownCol, sat: sat)
+                 rgb: crownCol, sat: sat, shape: .cone)
     }
 
     // =========================================================================
@@ -1267,8 +1273,8 @@ extension EntityRenderer {
     // Gait: skittering lurching — fast erratic leg movement, body bobs erratically,
     // arms claw forward and back.
     //
-    // Parts: body(1) chest(1) head(1) mouth-slit(1) EYES(2) back-spikes(5)
-    //        arm-claw-L(2 segs) arm-claw-R(2 segs) legs(4) = 19
+    // Draws: body/belly/rims(4) head/face(11) back-spikes(5)
+    //        arm-claws(4) segmented legs(8) = 32
     // =========================================================================
     func drawKind5(enc: MTLRenderCommandEncoder,
                            viewProj: simd_float4x4,
@@ -1313,6 +1319,7 @@ extension EntityRenderer {
         // Skitter gait: fast chaotic leg flicker
         let skitterSpeed: Float = 5.5
         let legSwingFast  = sin(phase * skitterSpeed) * 0.45
+        let clawLegSwing  = sin(phase * skitterSpeed - 0.18) * 0.40
         // Erratic body lurch: compound two frequencies
         let lurchY = (sin(phase * 3.1) * 0.40 + sin(phase * 7.3 + hash) * 0.25) * s * 0.040
         let lurchX = sin(phase * 4.7 + hash * 2.0) * s * 0.012
@@ -1361,12 +1368,13 @@ extension EntityRenderer {
 
         // Body — hunched (via bodyHunch in pw), dark maroon-purple top
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bD)), rgb: bodyCol, sat: sat)
+                 model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bD)), rgb: bodyCol, sat: sat,
+                 shape: .sphere)
         // Belly / chest wedge — lighter bruise-purple so the underside reads separately
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, -bH * 0.10, bD * 0.32),
                            SIMD3(bW * 0.78, bH * 0.60, bD * 0.30)),
-                 rgb: bellyCol5, sat: sat)
+                 rgb: bellyCol5, sat: sat, shape: .sphere)
         // Faint emissive rim on body sides (very low HDR, just enough to read at night).
         // Two thin slabs on left/right flanks with sat = -1 so they bypass shading.
         let rimCol5 = bodyCol + SIMD3<Float>(0.28, 0.04, 0.22)  // adds a dim purple glow rim
@@ -1384,7 +1392,8 @@ extension EntityRenderer {
             let spkModel = EntityRenderer.trans(wc) * R * bodyHunch
                 * EntityRenderer.trans(SIMD3(0, bH * 0.50 + spkH * 0.5, spkZ))
                 * EntityRenderer.scaleM(SIMD3(spikeW, spkH, spikeD))
-            drawCube(enc: enc, viewProj: viewProj, model: spkModel, rgb: spikeCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: spkModel, rgb: spikeCol, sat: sat,
+                     shape: .cone)
         }
 
         // Head — wide flat, sits low on body (menacing forward thrust)
@@ -1393,7 +1402,7 @@ extension EntityRenderer {
         let headZ: Float = bD * 0.46 + hD * 0.42
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, headY, headZ), SIMD3(hW, hH, hD)),
-                 rgb: bellyCol5, sat: sat)
+                 rgb: bellyCol5, sat: sat, shape: .sphere)
 
         // FACE — NIGHT MONSTER: glowing red eyes (kept), plus ANGRY angled
         // brows pressing down over them and a JAGGED fanged mouth. The face is
@@ -1422,11 +1431,11 @@ extension EntityRenderer {
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(-hW * 0.26, headY + hH * 0.12, mnFaceZ),
                            SIMD3(eyeW, eyeH, eyeD)),
-                 rgb: eyeGlowCol, sat: -1.0)  // emissive red
+                 rgb: eyeGlowCol, sat: -1.0, shape: .sphere)  // emissive red
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3( hW * 0.26, headY + hH * 0.12, mnFaceZ),
                            SIMD3(eyeW, eyeH, eyeD)),
-                 rgb: eyeGlowCol, sat: -1.0)  // emissive red
+                 rgb: eyeGlowCol, sat: -1.0, shape: .sphere)  // emissive red
         // ANGRY BROWS — bone-ivory (match spike color) angled bars pressing inward-down
         // (inner ends low, outer ends high → classic angry "V" scowl).
         // Using spikeCol (bony pale) here so brows contrast against the purple head.
@@ -1463,11 +1472,12 @@ extension EntityRenderer {
             let flClaw = EntityRenderer.trans(wc) * R
                 * EntityRenderer.trans(hipFL)
                 * legSplayAngleL
-                * EntityRenderer.rotX(legSwingFast)
+                * EntityRenderer.rotX(clawLegSwing)
                 * EntityRenderer.trans(SIMD3(0, -upperLegH - (legH - upperLegH) * 0.5, 0))
+                * EntityRenderer.rotZ(.pi)
                 * EntityRenderer.scaleM(SIMD3(legW * 0.80, legH - upperLegH, legD * 0.80))
-            drawCube(enc: enc, viewProj: viewProj, model: flUpper, rgb: limbCol,  sat: sat)
-            drawCube(enc: enc, viewProj: viewProj, model: flClaw,  rgb: clawCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: flUpper, rgb: limbCol,  sat: sat, shape: .cylinder)
+            drawCube(enc: enc, viewProj: viewProj, model: flClaw,  rgb: clawCol, sat: sat, shape: .cone)
             // Front-right
             let hipFR = SIMD3<Float>( bW * 0.44, bH * 0.5 + hipY, bD * 0.30)
             let frUpper = EntityRenderer.trans(wc) * R
@@ -1479,11 +1489,12 @@ extension EntityRenderer {
             let frClaw = EntityRenderer.trans(wc) * R
                 * EntityRenderer.trans(hipFR)
                 * legSplayAngleR
-                * EntityRenderer.rotX(-legSwingFast)
+                * EntityRenderer.rotX(-clawLegSwing)
                 * EntityRenderer.trans(SIMD3(0, -upperLegH - (legH - upperLegH) * 0.5, 0))
+                * EntityRenderer.rotZ(.pi)
                 * EntityRenderer.scaleM(SIMD3(legW * 0.80, legH - upperLegH, legD * 0.80))
-            drawCube(enc: enc, viewProj: viewProj, model: frUpper, rgb: limbCol,  sat: sat)
-            drawCube(enc: enc, viewProj: viewProj, model: frClaw,  rgb: clawCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: frUpper, rgb: limbCol,  sat: sat, shape: .cylinder)
+            drawCube(enc: enc, viewProj: viewProj, model: frClaw,  rgb: clawCol, sat: sat, shape: .cone)
             // Back-left
             let hipBL = SIMD3<Float>(-bW * 0.44, bH * 0.5 + hipY, -bD * 0.28)
             let blUpper = EntityRenderer.trans(wc) * R
@@ -1495,11 +1506,12 @@ extension EntityRenderer {
             let blClaw = EntityRenderer.trans(wc) * R
                 * EntityRenderer.trans(hipBL)
                 * legSplayAngleL
-                * EntityRenderer.rotX(-legSwingFast)
+                * EntityRenderer.rotX(-clawLegSwing)
                 * EntityRenderer.trans(SIMD3(0, -upperLegH - (legH - upperLegH) * 0.5, 0))
+                * EntityRenderer.rotZ(.pi)
                 * EntityRenderer.scaleM(SIMD3(legW * 0.80, legH - upperLegH, legD * 0.80))
-            drawCube(enc: enc, viewProj: viewProj, model: blUpper, rgb: limbCol,  sat: sat)
-            drawCube(enc: enc, viewProj: viewProj, model: blClaw,  rgb: clawCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: blUpper, rgb: limbCol,  sat: sat, shape: .cylinder)
+            drawCube(enc: enc, viewProj: viewProj, model: blClaw,  rgb: clawCol, sat: sat, shape: .cone)
             // Back-right
             let hipBR = SIMD3<Float>( bW * 0.44, bH * 0.5 + hipY, -bD * 0.28)
             let brUpper = EntityRenderer.trans(wc) * R
@@ -1511,11 +1523,12 @@ extension EntityRenderer {
             let brClaw = EntityRenderer.trans(wc) * R
                 * EntityRenderer.trans(hipBR)
                 * legSplayAngleR
-                * EntityRenderer.rotX(legSwingFast)
+                * EntityRenderer.rotX(clawLegSwing)
                 * EntityRenderer.trans(SIMD3(0, -upperLegH - (legH - upperLegH) * 0.5, 0))
+                * EntityRenderer.rotZ(.pi)
                 * EntityRenderer.scaleM(SIMD3(legW * 0.80, legH - upperLegH, legD * 0.80))
-            drawCube(enc: enc, viewProj: viewProj, model: brUpper, rgb: limbCol,  sat: sat)
-            drawCube(enc: enc, viewProj: viewProj, model: brClaw,  rgb: clawCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: brUpper, rgb: limbCol,  sat: sat, shape: .cylinder)
+            drawCube(enc: enc, viewProj: viewProj, model: brClaw,  rgb: clawCol, sat: sat, shape: .cone)
         }
 
         // 2 CLAWED ARMS — jut from upper sides of body, claw forward/back.
@@ -1530,7 +1543,8 @@ extension EntityRenderer {
                 * EntityRenderer.rotX(armSwingF)
                 * EntityRenderer.trans(SIMD3(0, -arm1H * 0.5, 0))
                 * EntityRenderer.scaleM(SIMD3(arm1W, arm1H, arm1D))
-            drawCube(enc: enc, viewProj: viewProj, model: upperArmLModel, rgb: limbCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: upperArmLModel, rgb: limbCol, sat: sat,
+                     shape: .cylinder)
             // Forearm claw — hangs from upper arm tip, extra forward claw angle; bright accent
             let foreArmLModel = EntityRenderer.trans(wc) * R * bodyHunch
                 * EntityRenderer.trans(armShoulderL)
@@ -1539,8 +1553,10 @@ extension EntityRenderer {
                 * EntityRenderer.trans(SIMD3(-arm2W * 0.3, -arm1H, 0))
                 * EntityRenderer.rotX(armSwingB + 0.40)   // claw curls forward
                 * EntityRenderer.trans(SIMD3(0, -arm2H * 0.5, 0))
+                * EntityRenderer.rotZ(.pi)
                 * EntityRenderer.scaleM(SIMD3(arm2W, arm2H, arm2D))
-            drawCube(enc: enc, viewProj: viewProj, model: foreArmLModel, rgb: clawCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: foreArmLModel, rgb: clawCol, sat: sat,
+                     shape: .cone)
 
             // Right arm (mirror)
             let armShoulderR = SIMD3<Float>( bW * 0.48, bH * 0.28, bD * 0.20)
@@ -1550,7 +1566,8 @@ extension EntityRenderer {
                 * EntityRenderer.rotX(armSwingF)
                 * EntityRenderer.trans(SIMD3(0, -arm1H * 0.5, 0))
                 * EntityRenderer.scaleM(SIMD3(arm1W, arm1H, arm1D))
-            drawCube(enc: enc, viewProj: viewProj, model: upperArmRModel, rgb: limbCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: upperArmRModel, rgb: limbCol, sat: sat,
+                     shape: .cylinder)
             let foreArmRModel = EntityRenderer.trans(wc) * R * bodyHunch
                 * EntityRenderer.trans(armShoulderR)
                 * EntityRenderer.rotZ( 0.55)
@@ -1558,8 +1575,10 @@ extension EntityRenderer {
                 * EntityRenderer.trans(SIMD3( arm2W * 0.3, -arm1H, 0))
                 * EntityRenderer.rotX(armSwingB + 0.40)
                 * EntityRenderer.trans(SIMD3(0, -arm2H * 0.5, 0))
+                * EntityRenderer.rotZ(.pi)
                 * EntityRenderer.scaleM(SIMD3(arm2W, arm2H, arm2D))
-            drawCube(enc: enc, viewProj: viewProj, model: foreArmRModel, rgb: clawCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: foreArmRModel, rgb: clawCol, sat: sat,
+                     shape: .cone)
         }
     }
 
@@ -2534,7 +2553,7 @@ extension EntityRenderer {
     //
     // Parts: legs-upper(2) legs-lower(2) feet(2) arms-upper(2) arms-lower(2)
     //        hands(2) torso(1) torso-rim(2) torso-plate(1) neck(1) head(1)
-    //        face-overlay(1) face-trim(2) brow(2) eye-glow(2) mouth(1) teeth(3) = 27 parts
+    //        face-overlay(1) face-trim(2) brow(2) eye-glow(2) mouth(1) teeth(4) = 30 draws
     // =========================================================================
     func drawKind11(enc: MTLRenderCommandEncoder,
                             viewProj: simd_float4x4,
@@ -2581,10 +2600,14 @@ extension EntityRenderer {
         // Leg swing: legs alternate, left leads right by π
         let legSwingL  =  sin(phase * walkSpeed) * 0.38
         let legSwingR  = -sin(phase * walkSpeed) * 0.38   // opposite leg
+        let lowerLegSwingL =  sin(phase * walkSpeed - 0.18) * 0.34
+        let lowerLegSwingR = -sin(phase * walkSpeed - 0.18) * 0.34
         // Arm swing OPPOSITE to same-side leg:
         //   left arm swings back when left leg swings forward → negate legSwingL
         let armSwingL  = -legSwingL * 0.55    // arms swing less than legs
         let armSwingR  = -legSwingR * 0.55
+        let forearmSwingL = -sin(phase * walkSpeed - 0.22) * 0.20
+        let forearmSwingR =  sin(phase * walkSpeed - 0.22) * 0.20
 
         // Whole-body sway (predator stalk): slow sine on rotZ of the whole rig
         let swayAngle  = sin(phase * 0.70 + hash * 1.2) * 0.06
@@ -2662,16 +2685,17 @@ extension EntityRenderer {
 
         // Draw legs: upper in bodyCol (dark teal), lower in slightly lighter faceShadeCol,
         // feet in accentCol (vivid sickly green) for strong ankle contrast.
-        drawCube(enc: enc, viewProj: viewProj, model: ulwH(hipL, legSwingL), rgb: bodyCol,      sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: ulwH(hipR, legSwingR), rgb: bodyCol,      sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: llwH(hipL, legSwingL), rgb: faceShadeCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: llwH(hipR, legSwingR), rgb: faceShadeCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: footW_(hipL, legSwingL), rgb: accentCol,  sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: footW_(hipR, legSwingR), rgb: accentCol,  sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: ulwH(hipL, legSwingL), rgb: bodyCol,      sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: ulwH(hipR, legSwingR), rgb: bodyCol,      sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: llwH(hipL, lowerLegSwingL), rgb: faceShadeCol, sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: llwH(hipR, lowerLegSwingR), rgb: faceShadeCol, sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: footW_(hipL, lowerLegSwingL), rgb: accentCol,  sat: sat, shape: .sphere)
+        drawCube(enc: enc, viewProj: viewProj, model: footW_(hipR, lowerLegSwingR), rgb: accentCol,  sat: sat, shape: .sphere)
 
         // ---- TORSO ----
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(0, 0, 0), SIMD3(tW, tH, tD)), rgb: bodyCol, sat: sat)
+                 model: pw(SIMD3(0, 0, 0), SIMD3(tW, tH, tD)), rgb: bodyCol, sat: sat,
+                 shape: .sphere)
         // Chest plate — noticeably lighter teal slab on front; reads as armored layer.
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, tH * 0.06, tD * 0.50), SIMD3(tpW, tpH, tpD)),
@@ -2718,18 +2742,19 @@ extension EntityRenderer {
         }
 
         // Upper arm: bodyCol (dark teal); forearm: faceShadeCol (a touch lighter); hand: accentCol
-        drawCube(enc: enc, viewProj: viewProj, model: uaFunc(shoulderXL, armSwingL), rgb: bodyCol,      sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: uaFunc(shoulderXR, armSwingR), rgb: bodyCol,      sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: faFunc(shoulderXL, armSwingL), rgb: faceShadeCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: faFunc(shoulderXR, armSwingR), rgb: faceShadeCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: handFunc(shoulderXL, armSwingL), rgb: accentCol,  sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: handFunc(shoulderXR, armSwingR), rgb: accentCol,  sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: uaFunc(shoulderXL, armSwingL), rgb: bodyCol,      sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: uaFunc(shoulderXR, armSwingR), rgb: bodyCol,      sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: faFunc(shoulderXL, forearmSwingL), rgb: faceShadeCol, sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: faFunc(shoulderXR, forearmSwingR), rgb: faceShadeCol, sat: sat, shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: handFunc(shoulderXL, forearmSwingL), rgb: accentCol,  sat: sat, shape: .sphere)
+        drawCube(enc: enc, viewProj: viewProj, model: handFunc(shoulderXR, forearmSwingR), rgb: accentCol,  sat: sat, shape: .sphere)
 
         // ---- NECK + HEAD ----
         // Neck uses faceShadeCol (lighter) so it reads against the darker torso.
         let neckY = tH * 0.50 + nkH * 0.5
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(0, neckY, 0), SIMD3(nkW, nkH, nkD)), rgb: faceShadeCol, sat: sat)
+                 model: pw(SIMD3(0, neckY, 0), SIMD3(nkW, nkH, nkD)), rgb: faceShadeCol, sat: sat,
+                 shape: .cylinder)
 
         let headY: Float = tH * 0.50 + nkH + hH * 0.50
         // Head local Z: face is on the +Z side (forward) so eyes/mouth always
@@ -2739,7 +2764,7 @@ extension EntityRenderer {
         // lighter plane (the "mask look"). We draw the head body then overlay the face.
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, headY, headZ), SIMD3(hW, hH, hD)),
-                 rgb: bodyCol, sat: sat)
+                 rgb: bodyCol, sat: sat, shape: .sphere)
 
         // ---- FACE (all parts placed on the +Z front face of the head) ----
         // hFaceZ is the local Z of the front face of the head block.
@@ -2751,7 +2776,7 @@ extension EntityRenderer {
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, headY + hH * 0.06, hFaceZ - s*0.01),
                            SIMD3(hW * 0.80, hH * 0.62, s * 0.04)),
-                 rgb: faceShadeCol, sat: sat)
+                 rgb: faceShadeCol, sat: sat, shape: .sphere)
         // Accent trim: a thin sickly-green frame around the face patch (above/below eyes)
         // makes the face look like a glowing-framed mask at night.
         drawCube(enc: enc, viewProj: viewProj,
@@ -2771,10 +2796,10 @@ extension EntityRenderer {
         let eyeY = headY + hH * 0.14
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(-hW * 0.24, eyeY, hFaceZ), SIMD3(eyeW, eyeH, eyeD)),
-                 rgb: eyeGlowCol, sat: -1.0)   // emissive → bloom
+                 rgb: eyeGlowCol, sat: -1.0, shape: .sphere)   // emissive → bloom
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3( hW * 0.24, eyeY, hFaceZ), SIMD3(eyeW, eyeH, eyeD)),
-                 rgb: eyeGlowCol, sat: -1.0)   // emissive → bloom
+                 rgb: eyeGlowCol, sat: -1.0, shape: .sphere)   // emissive → bloom
 
         // ANGRY BROWS — two dark bars angled inward-down (inner end lower, outer higher)
         // The classic angry-V scowl, in heavy goblin style.
@@ -2798,7 +2823,7 @@ extension EntityRenderer {
         let grinH  = s * 0.08
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, grinY, hFaceZ), SIMD3(grinW, grinH, s * 0.04)),
-                 rgb: mouthCol, sat: sat)
+                 rgb: mouthCol, sat: sat, shape: .sphere)
         // Irregular jagged teeth — 4 teeth, alternating up/down, uneven widths
         // (some missing) for a gap-toothed goblin grin.
         let toothCol = SIMD3<Float>(0.92, 0.88, 0.78)   // slightly yellowed ivory
@@ -3222,7 +3247,8 @@ extension EntityRenderer {
     // gives a translucent gooey feel, a glossy highlight on top, and two simple
     // dark eyes near the front. Hops in place with a gummy bounce.
     //
-    // Parts: body(1) inner-core(1) highlight(1) eyes(2) mouth(1) = 6
+    // Conceptual parts: body/core/highlight, two eyes, mouth. The layered eye
+    // helper expands each eye to three draws, for 10 renderer draws total.
     // =========================================================================
     func drawKind15(enc: MTLRenderCommandEncoder,
                             viewProj: simd_float4x4,
@@ -3282,29 +3308,32 @@ extension EntityRenderer {
 
         // Outer gel body
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(0, 0, 0), SIMD3(bS, bS, bS)), rgb: gelCol, sat: sat)
+                 model: pw(SIMD3(0, 0, 0), SIMD3(bS, bS, bS)), rgb: gelCol, sat: sat,
+                 shape: .sphere)
         // Inner brighter core (translucent goo read)
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, -bS * 0.10, 0), SIMD3(bS * 0.50, bS * 0.50, bS * 0.50)),
-                 rgb: coreCol, sat: sat)
+                 rgb: coreCol, sat: sat, shape: .sphere)
         // Glossy highlight on the upper-front
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(-bS * 0.18, bS * 0.26, bS * 0.30), SIMD3(bS * 0.20, bS * 0.16, bS * 0.06)),
-                 rgb: highCol, sat: sat)
+                 rgb: highCol, sat: sat, shape: .sphere)
 
         // Two simple eyes near the front
         let faceZ = bS * 0.50
         let eyeW = s * 0.09; let eyeH = s * 0.11 * eyeBlinkSY; let eyeD = s * 0.04
         drawEye(enc: enc, viewProj: viewProj, pw: pw,
                 c: SIMD3(-bS * 0.20, bS * 0.06, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
-                sat: sat, scleraCol: SIMD3<Float>(0.96, 0.96, 0.98), pupilCol: eyeCol)
+                sat: sat, scleraCol: SIMD3<Float>(0.96, 0.96, 0.98), pupilCol: eyeCol,
+                shape: .sphere)
         drawEye(enc: enc, viewProj: viewProj, pw: pw,
                 c: SIMD3( bS * 0.20, bS * 0.06, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
-                sat: sat, scleraCol: SIMD3<Float>(0.96, 0.96, 0.98), pupilCol: eyeCol)
+                sat: sat, scleraCol: SIMD3<Float>(0.96, 0.96, 0.98), pupilCol: eyeCol,
+                shape: .sphere)
         // Little mouth slit
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, -bS * 0.12, faceZ), SIMD3(s * 0.14, s * 0.04, s * 0.03)),
-                 rgb: SIMD3<Float>(0.12, 0.10, 0.12), sat: sat)
+                 rgb: SIMD3<Float>(0.12, 0.10, 0.12), sat: sat, shape: .sphere)
     }
 
     // =========================================================================
@@ -3358,11 +3387,13 @@ extension EntityRenderer {
 
         // Abdomen — round low body
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(0, 0, -abD * 0.10), SIMD3(abW, abH, abD)), rgb: bodyCol, sat: sat)
+                 model: pw(SIMD3(0, 0, -abD * 0.10), SIMD3(abW, abH, abD)), rgb: bodyCol, sat: sat,
+                 shape: .sphere)
         // Head — smaller, in front
         let headZ = abD * 0.50 + hdD * 0.40
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(0, -abH * 0.04, headZ), SIMD3(hdW, hdH, hdD)), rgb: headCol, sat: sat)
+                 model: pw(SIMD3(0, -abH * 0.04, headZ), SIMD3(hdW, hdH, hdD)), rgb: headCol, sat: sat,
+                 shape: .sphere)
 
         // EIGHT legs — 4 per side, each a thigh (out) + shin (down) two-segment.
         // Z positions stagger from front to back; each leg flexes on a phase so
@@ -3383,15 +3414,18 @@ extension EntityRenderer {
                     * EntityRenderer.trans(hip) * yaw * splay
                 let thighModel = thighBase
                     * EntityRenderer.trans(SIMD3(side * thD * 0.5, 0, 0))
-                    * EntityRenderer.scaleM(SIMD3(thD, thH, thW))   // long along X (outward)
-                drawCube(enc: enc, viewProj: viewProj, model: thighModel, rgb: legCol, sat: sat)
+                    * EntityRenderer.rotZ(-side * Float.pi * 0.5)
+                    * EntityRenderer.scaleM(SIMD3(thH, thD, thW))   // cylinder axis points outward
+                drawCube(enc: enc, viewProj: viewProj, model: thighModel, rgb: legCol, sat: sat,
+                         shape: .cylinder)
                 // Shin — drops down from the end of the thigh
                 let shinModel = thighBase
                     * EntityRenderer.trans(SIMD3(side * thD, 0, 0))
                     * EntityRenderer.rotZ(side * -1.1)              // bend downward
                     * EntityRenderer.trans(SIMD3(0, -shH * 0.5, 0))
                     * EntityRenderer.scaleM(SIMD3(shW, shH, shD))
-                drawCube(enc: enc, viewProj: viewProj, model: shinModel, rgb: legCol, sat: sat)
+                drawCube(enc: enc, viewProj: viewProj, model: shinModel, rgb: legCol, sat: sat,
+                         shape: .cylinder)
             }
         }
 
@@ -3403,7 +3437,7 @@ extension EntityRenderer {
         for (ex, ey) in [(-0.16, 0.10), (0.16, 0.10), (-0.08, 0.0), (0.08, 0.0)] as [(Float, Float)] {
             drawCube(enc: enc, viewProj: viewProj,
                      model: pw(SIMD3(hdW * ex, eyeY + hdH * ey, faceZ), SIMD3(er, erH, er * 0.8)),
-                     rgb: eyeCol, sat: sat)
+                     rgb: eyeCol, sat: sat, shape: .sphere)
         }
     }
 
@@ -3465,11 +3499,12 @@ extension EntityRenderer {
 
         // Body — rounded column
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bD)), rgb: bodyCol, sat: sat)
+                 model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bD)), rgb: bodyCol, sat: sat,
+                 shape: .sphere)
         // Rounded top dome (head)
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, bH * 0.46, 0), SIMD3(bW * 0.86, bH * 0.34, bD * 0.86)),
-                 rgb: bodyCol, sat: sat)
+                 rgb: bodyCol, sat: sat, shape: .sphere)
 
         // Wavy tattered bottom — 5 hanging tails of varying length that sway,
         // standing in for legs (the floaty wisp signature)
@@ -3478,11 +3513,14 @@ extension EntityRenderer {
             let fx = (Float(i) / Float(tails - 1)) - 0.5      // -0.5 .. +0.5
             let baseLen: Float = (i % 2 == 0) ? 0.30 : 0.20    // alternate long/short
             let wave = sin(waveT + Float(i) * 1.1) * s * 0.04
+            let tailLag = sin(waveT + Float(i) * 1.1 - 0.35) * 0.12
             let tH = s * baseLen
             let tailModel = EntityRenderer.trans(wc) * R
                 * EntityRenderer.trans(SIMD3(fx * bW * 0.88 + wave, -bH * 0.5 - tH * 0.4, 0))
+                * EntityRenderer.rotZ(Float.pi + tailLag)
                 * EntityRenderer.scaleM(SIMD3(bW * 0.20, tH, bD * 0.70))
-            drawCube(enc: enc, viewProj: viewProj, model: tailModel, rgb: tailCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: tailModel, rgb: tailCol, sat: sat,
+                     shape: .cone)
         }
 
         // Hollow dark eyes
@@ -3491,14 +3529,14 @@ extension EntityRenderer {
         let eyeY = bH * 0.40
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(-bW * 0.22, eyeY, faceZ), SIMD3(eyeW, eyeH, eyeD)),
-                 rgb: eyeCol, sat: sat)
+                 rgb: eyeCol, sat: sat, shape: .sphere)
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3( bW * 0.22, eyeY, faceZ), SIMD3(eyeW, eyeH, eyeD)),
-                 rgb: eyeCol, sat: sat)
+                 rgb: eyeCol, sat: sat, shape: .sphere)
         // Small round "oooh" mouth
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, bH * 0.14, faceZ), SIMD3(s * 0.10, s * 0.12, s * 0.04)),
-                 rgb: eyeCol, sat: sat)
+                 rgb: eyeCol, sat: sat, shape: .sphere)
     }
 
     // =========================================================================
@@ -4284,7 +4322,7 @@ extension EntityRenderer {
         let eyeCol = SIMD3<Float>(3.2, 1.9, 0.3)   // HDR amber, blooms
         // Heavy stomp: squared sine so steps slam and hold (boss-style, slower).
         let stompRaw = sin(phase * 2.0)
-        let armSwing = stompRaw * 0.5
+        let armSwing = sin(phase * 2.0 - 0.20) * 0.5
         let bob      = abs(stompRaw) * s * 0.05
         let legH = s * 0.24, tH = s * 0.62, tW = s * 0.62, tD = s * 0.46
         let groundY = pos.y
@@ -4298,13 +4336,14 @@ extension EntityRenderer {
         for lx in [-tW * 0.28, tW * 0.28] {
             drawCube(enc: enc, viewProj: viewProj,
                      model: pw(SIMD3(lx, -tH * 0.5 - legH * 0.5, 0), SIMD3(s * 0.24, legH, s * 0.26)),
-                     rgb: dark, sat: sat)
+                     rgb: dark, sat: sat, shape: .sphere)
         }
         // Torso boulder + moss patch + shoulder slab.
-        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(tW, tH, tD)), rgb: stone, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(tW, tH, tD)), rgb: stone, sat: sat,
+                 shape: .sphere)
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(-tW * 0.18, tH * 0.18, tD * 0.42), SIMD3(tW * 0.4, tH * 0.3, s * 0.06)),
-                 rgb: moss, sat: sat)
+                 rgb: moss, sat: sat, shape: .sphere)
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, tH * 0.42, 0), SIMD3(tW * 1.18, tH * 0.18, tD * 1.05)),
                  rgb: dark, sat: sat)
@@ -4315,20 +4354,23 @@ extension EntityRenderer {
                 * EntityRenderer.rotX(ang)
                 * EntityRenderer.trans(SIMD3(0, -tH * 0.36, 0))
                 * EntityRenderer.scaleM(SIMD3(s * 0.22, tH * 0.72, s * 0.26))
-            drawCube(enc: enc, viewProj: viewProj, model: m, rgb: stone, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: m, rgb: stone, sat: sat,
+                     shape: .sphere)
         }
         // Head boulder + brow + glowing eyes.
         let hY = tH * 0.5 + s * 0.20
-        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, hY, 0), SIMD3(s * 0.38, s * 0.34, s * 0.36)), rgb: stone, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, hY, 0), SIMD3(s * 0.38, s * 0.34, s * 0.36)), rgb: stone, sat: sat,
+                 shape: .sphere)
         drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, hY + s * 0.12, s * 0.10), SIMD3(s * 0.42, s * 0.08, s * 0.26)), rgb: dark, sat: sat)
         for ex in [-s * 0.10, s * 0.10] {
-            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, hY + s * 0.02, s * 0.185), SIMD3(s * 0.07, s * 0.06, s * 0.02)), rgb: eyeCol, sat: -1.0)
+            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, hY + s * 0.02, s * 0.185), SIMD3(s * 0.07, s * 0.06, s * 0.02)), rgb: eyeCol, sat: -1.0,
+                     shape: .sphere)
         }
     }
 
     // =========================================================================
     // KIND 24 — SAND SCORPION (#199, desert). Low wide body, two front claws that
-    // pinch, a three-segment tail arcing up to a stinger ball, scuttling stub
+    // pinch, a three-segment tail arcing up to a pointed stinger, scuttling stub
     // legs. Goofy-not-gory: big friendly eyes, rounded claws.
     // =========================================================================
     func drawKind24(enc: MTLRenderCommandEncoder, viewProj: simd_float4x4,
@@ -4351,12 +4393,16 @@ extension EntityRenderer {
             EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
         }
         // Body + head plate.
-        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bD)), rgb: shell, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, bH * 0.18, bD * 0.42), SIMD3(bW * 0.6, bH * 0.9, bD * 0.28)), rgb: darkSh, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bD)), rgb: shell, sat: sat,
+                 shape: .sphere)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, bH * 0.18, bD * 0.42), SIMD3(bW * 0.6, bH * 0.9, bD * 0.28)), rgb: darkSh, sat: sat,
+                 shape: .sphere)
         // Eyes on the head plate front.
         for ex in [-bW * 0.14, bW * 0.14] {
-            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, bH * 0.28, bD * 0.57), SIMD3(s * 0.07, s * 0.07, s * 0.02)), rgb: SIMD3(0.95, 0.95, 0.98), sat: sat)
-            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, bH * 0.27, bD * 0.585), SIMD3(s * 0.035, s * 0.04, s * 0.015)), rgb: eyeCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, bH * 0.28, bD * 0.57), SIMD3(s * 0.07, s * 0.07, s * 0.02)), rgb: SIMD3(0.95, 0.95, 0.98), sat: sat,
+                     shape: .sphere)
+            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, bH * 0.27, bD * 0.585), SIMD3(s * 0.035, s * 0.04, s * 0.015)), rgb: eyeCol, sat: sat,
+                     shape: .sphere)
         }
         // Scuttling legs: 3 per side, alternate phases.
         for i in 0..<3 {
@@ -4365,31 +4411,35 @@ extension EntityRenderer {
             for lx in [-bW * 0.62, bW * 0.62] {
                 drawCube(enc: enc, viewProj: viewProj,
                          model: pw(SIMD3(lx, -bH * 0.5 - legH * 0.5 + lift, lz), SIMD3(s * 0.09, legH, s * 0.09)),
-                         rgb: darkSh, sat: sat)
+                         rgb: darkSh, sat: sat, shape: .cylinder)
             }
         }
         // Claws: rounded pincers front-left/right, opening by `pinch`.
         for cx in [-bW * 0.55, bW * 0.55] {
             let arm = pw(SIMD3(cx, 0, bD * 0.55), SIMD3(s * 0.13, s * 0.12, s * 0.24))
-            drawCube(enc: enc, viewProj: viewProj, model: arm, rgb: shell, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: arm, rgb: shell, sat: sat,
+                     shape: .sphere)
             drawCube(enc: enc, viewProj: viewProj,
                      model: pw(SIMD3(cx, s * 0.05 + pinch * s * 0.10, bD * 0.74), SIMD3(s * 0.16, s * 0.08, s * 0.18)),
-                     rgb: darkSh, sat: sat)
+                     rgb: darkSh, sat: sat, shape: .sphere)
             drawCube(enc: enc, viewProj: viewProj,
                      model: pw(SIMD3(cx, -s * 0.02 - pinch * s * 0.05, bD * 0.74), SIMD3(s * 0.16, s * 0.07, s * 0.18)),
-                     rgb: darkSh, sat: sat)
+                     rgb: darkSh, sat: sat, shape: .sphere)
         }
-        // Tail: three segments arcing up behind, stinger ball on top.
-        let wag = sin(phase * 2.2 + hash) * 0.08
+        // Tail: three rounded segments arc up behind to a pointed stinger.
+        let wagPhase = phase * 2.2 + hash
         let segs: [(Float, Float, Float)] = [(-bD * 0.55, bH * 0.35, 0.16), (-bD * 0.68, bH * 1.05, 0.14), (-bD * 0.72, bH * 1.75, 0.12)]
-        for (tz, ty, tw) in segs {
+        for (index, segment) in segs.enumerated() {
+            let (tz, ty, tw) = segment
+            let wag = sin(wagPhase - Float(index) * 0.18) * 0.08
             drawCube(enc: enc, viewProj: viewProj,
                      model: pw(SIMD3(wag * s, ty, tz), SIMD3(s * tw, s * tw, s * tw * 1.2)),
-                     rgb: shell, sat: sat)
+                     rgb: shell, sat: sat, shape: .sphere)
         }
+        let stingerWag = sin(wagPhase - Float(segs.count) * 0.18) * 0.08
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(wag * s, bH * 2.35, -bD * 0.66), SIMD3(s * 0.17, s * 0.17, s * 0.17)),
-                 rgb: darkSh, sat: sat)
+                 model: pw(SIMD3(stingerWag * s, bH * 2.35, -bD * 0.66), SIMD3(s * 0.17, s * 0.17, s * 0.17)),
+                 rgb: darkSh, sat: sat, shape: .cone)
     }
 
     // =========================================================================
@@ -4412,11 +4462,14 @@ extension EntityRenderer {
             EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
         }
         // Emissive core + soft outer shell.
-        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(s * 0.34, s * 0.38, s * 0.34)), rgb: coreCol, sat: -1.0)
-        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(s * 0.46, s * 0.30, s * 0.46)), rgb: shardCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(s * 0.34, s * 0.38, s * 0.34)), rgb: coreCol, sat: -1.0,
+                 shape: .sphere)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(s * 0.46, s * 0.30, s * 0.46)), rgb: shardCol, sat: sat,
+                 shape: .sphere)
         // Dark eyes so it has a face (kid-readable), on the front of the core.
         for ex in [-s * 0.09, s * 0.09] {
-            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, s * 0.05, s * 0.235), SIMD3(s * 0.05, s * 0.07, s * 0.02)), rgb: eyeCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, s * 0.05, s * 0.235), SIMD3(s * 0.05, s * 0.07, s * 0.02)), rgb: eyeCol, sat: sat,
+                     shape: .sphere)
         }
         // Three orbiting shards at staggered heights/phases.
         for k in 0..<3 {
@@ -4425,7 +4478,7 @@ extension EntityRenderer {
             let sy = sin(phase * 2.0 + Float(k) * 1.7) * s * 0.08
             drawCube(enc: enc, viewProj: viewProj,
                      model: pw(SIMD3(cos(a) * r, sy - s * 0.05 + Float(k) * s * 0.10, sin(a) * r), SIMD3(s * 0.09, s * 0.16, s * 0.09)),
-                     rgb: shardCol, sat: sat)
+                     rgb: shardCol, sat: sat, shape: .cone)
         }
     }
 
@@ -4443,7 +4496,9 @@ extension EntityRenderer {
         let spotCol = SIMD3<Float>(0.96, 0.95, 0.90)
         let bodyCol = SIMD3<Float>(0.88, 0.82, 0.70)
         let eyeCol  = SIMD3<Float>(0.07, 0.06, 0.07)
-        let waddle = sin(phase * 6.0) * 0.10
+        let waddlePhase = phase * 6.0
+        let waddle = sin(waddlePhase) * 0.10
+        let capFlop = sin(waddlePhase - 0.30) * 0.05
         let legH = s * 0.10, bW = s * 0.30, bH = s * 0.26
         let groundY = pos.y
         let wc = SIMD3<Float>(pos.x, groundY + legH + bH * 0.5, pos.z)
@@ -4456,20 +4511,34 @@ extension EntityRenderer {
         for (lx, lift) in [(-bW * 0.3, waddle), (bW * 0.3, -waddle)] {
             drawCube(enc: enc, viewProj: viewProj,
                      model: pw(SIMD3(lx, -bH * 0.5 - legH * 0.5 + lift * s * 0.2, 0), SIMD3(s * 0.09, legH, s * 0.10)),
-                     rgb: bodyCol * 0.7, sat: sat)
+                     rgb: bodyCol * 0.7, sat: sat, shape: .cylinder)
         }
         // Body + eyes under the brim.
-        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bW * 0.9)), rgb: bodyCol, sat: sat)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, 0, 0), SIMD3(bW, bH, bW * 0.9)), rgb: bodyCol, sat: sat,
+                 shape: .sphere)
         for ex in [-bW * 0.22, bW * 0.22] {
-            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, bH * 0.10, bW * 0.46), SIMD3(s * 0.05, s * 0.06, s * 0.02)), rgb: eyeCol, sat: sat)
+            drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(ex, bH * 0.10, bW * 0.46), SIMD3(s * 0.05, s * 0.06, s * 0.02)), rgb: eyeCol, sat: sat,
+                     shape: .sphere)
         }
         // Mushroom cap: wide flat slab + dome + white spots.
         let capY = bH * 0.5 + s * 0.06
-        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, capY, 0), SIMD3(s * 0.56, s * 0.10, s * 0.56)), rgb: capCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(0, capY + s * 0.12, 0), SIMD3(s * 0.36, s * 0.16, s * 0.36)), rgb: capCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(s * 0.14, capY + s * 0.06, s * 0.12), SIMD3(s * 0.09, s * 0.03, s * 0.09)), rgb: spotCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(-s * 0.12, capY + s * 0.14, -s * 0.08), SIMD3(s * 0.08, s * 0.03, s * 0.08)), rgb: spotCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: pw(SIMD3(-s * 0.02, capY + s * 0.05, s * 0.20), SIMD3(s * 0.06, s * 0.03, s * 0.06)), rgb: spotCol, sat: sat)
+        func capWorld(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * lean
+                * EntityRenderer.trans(SIMD3(0, capY, 0))
+                * EntityRenderer.rotZ(capFlop)
+                * EntityRenderer.trans(SIMD3(lo.x, lo.y - capY, lo.z))
+                * EntityRenderer.scaleM(d)
+        }
+        drawCube(enc: enc, viewProj: viewProj, model: capWorld(SIMD3(0, capY, 0), SIMD3(s * 0.56, s * 0.10, s * 0.56)), rgb: capCol, sat: sat,
+                 shape: .cylinder)
+        drawCube(enc: enc, viewProj: viewProj, model: capWorld(SIMD3(0, capY + s * 0.12, 0), SIMD3(s * 0.36, s * 0.16, s * 0.36)), rgb: capCol, sat: sat,
+                 shape: .sphere)
+        drawCube(enc: enc, viewProj: viewProj, model: capWorld(SIMD3(s * 0.14, capY + s * 0.06, s * 0.12), SIMD3(s * 0.09, s * 0.03, s * 0.09)), rgb: spotCol, sat: sat,
+                 shape: .sphere)
+        drawCube(enc: enc, viewProj: viewProj, model: capWorld(SIMD3(-s * 0.12, capY + s * 0.14, -s * 0.08), SIMD3(s * 0.08, s * 0.03, s * 0.08)), rgb: spotCol, sat: sat,
+                 shape: .sphere)
+        drawCube(enc: enc, viewProj: viewProj, model: capWorld(SIMD3(-s * 0.02, capY + s * 0.05, s * 0.20), SIMD3(s * 0.06, s * 0.03, s * 0.06)), rgb: spotCol, sat: sat,
+                 shape: .sphere)
     }
 
     private func drawCube(enc: MTLRenderCommandEncoder,
