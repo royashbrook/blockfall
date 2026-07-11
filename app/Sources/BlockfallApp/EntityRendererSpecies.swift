@@ -2642,7 +2642,6 @@ extension EntityRenderer {
         // ---- WORLD CENTRE (at body mid) ----
         let groundY = pos.y
         let bodyY   = groundY + legTotalH + tH * 0.5 + breatheY
-            - (sitting ? s * 0.20 : 0)
         let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
 
         // Fold hit-squash + yaw into R; then bodySway is applied per-part via pw.
@@ -4006,6 +4005,7 @@ extension EntityRenderer {
         // ---- WORLD CENTRE (at torso mid) ----
         let groundY = pos.y
         let bodyY   = groundY + legTotalH + tH * 0.5 + breatheY
+            - (sitting ? s * 0.20 : 0)
         let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
         // A brief ground-pivoted landing squash makes each planted step read
         // without sliding or sinking the feet.
