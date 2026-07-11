@@ -4179,7 +4179,8 @@ extension EntityRenderer {
                           viewProj: simd_float4x4,
                           model: simd_float4x4,
                           rgb: SIMD3<Float>,
-                          sat: Float) {
+                          sat: Float,
+                          shape: EntityPartShape = .box) {
         var outRGB = rgb
         var outSat = sat
         if curFlashAmt > 0.001 {
@@ -4205,8 +4206,9 @@ extension EntityRenderer {
                           vpYCol:  viewProj.columns.1,  // clip-space Y column for the drop
                           originXZ: SIMD4<Float>(curEntityOriginXZ.x, curEntityOriginXZ.y, 0, 0))  // #192
         enc.setVertexBytes(&u, length: MemoryLayout<EUniforms>.stride, index: 1)
-        enc.drawIndexedPrimitives(type: .triangle, indexCount: indexCount,
-                                  indexType: .uint16, indexBuffer: cubeIB, indexBufferOffset: 0)
+        let primitive = bindPartShape(shape, enc: enc)
+        enc.drawIndexedPrimitives(type: .triangle, indexCount: primitive.1,
+                                  indexType: .uint16, indexBuffer: primitive.0, indexBufferOffset: 0)
     }
 
 }

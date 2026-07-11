@@ -264,6 +264,9 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     let noDepthState = device.makeDepthStencilState(descriptor: noDSD)
 
     let entR = EntityRenderer(device: device, colorFormat: .rgba16Float)
+    let entityStress = ProcessInfo.processInfo.environment["BF_ENTITY_STRESS"] == "1"
+    let entityShapeOverride = ProcessInfo.processInfo.environment["BF_ENTITY_SHAPE"]
+        .map { $0.lowercased() }.flatMap(EntityPartShape.init(rawValue:))
 
     // ---- Engine ------------------------------------------------------------
     var cfg = bf_engine_config()
@@ -344,6 +347,9 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     var shadowDrawSamples: [UInt64] = []
     var propSamples: [UInt64] = []
     var indexSamples: [UInt64] = []
+    var entitySamples: [UInt64] = []
+    var entityPartSamples: [UInt64] = []
+    var entityTriangleSamples: [UInt64] = []
     var peakMem = 0.0
     let start = CACurrentMediaTime()
     var lastDt = CACurrentMediaTime()
@@ -357,6 +363,9 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         var shadowDraws: UInt64
         var props: UInt64
         var terrainIndices: UInt64
+        var entities: UInt64
+        var entityPartDraws: UInt64
+        var entityTriangles: UInt64
     }
 
     // #89 diagnosis: lets the yaw-sweep experiment turn the camera WITHOUT walking
@@ -581,6 +590,25 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 voxOrigin:  shadowVol?.voxOrigin ?? .zero,
                 voxDims:    shadowVol?.voxDims ?? .zero,
                 params:     SIMD4<Float>((shadowVol != nil && ProcessInfo.processInfo.environment["BF_NOCHARSHADOW"] != "1") ? 1 : 0, 0, 0, 0))
+            // Shared by the single-creature shot and #250's 32-villager stress
+            // grid. Read the same occupancy volume used by entity shadows so a
+            // deterministic probe sits on real terrain rather than floating.
+            func entitySurfaceY(_ wx: Float, _ wz: Float, eyeY: Float) -> Float {
+                let c = gHarnessShadowCache
+                let (dx, dy, dz) = c.dims
+                if dx <= 0 || c.fine.isEmpty { return eyeY - 1.6 }
+                let bx = Int(floor(wx)) & (dx - 1)
+                let bz = Int(floor(wz)) & (dz - 1)
+                let top = min(dy - 1, Int(floor(eyeY)) - c.originY + 1)
+                var yy = top
+                while yy >= 0 {
+                    if c.fine[(bz * dy + yy) * dx + bx] != 0 {
+                        return Float(yy + 1 + c.originY)
+                    }
+                    yy -= 1
+                }
+                return eyeY - 1.6
+            }
             // #116 deterministic verification: BF_SHOT_TESTCREATURE=<kind> injects ONE creature on
             // the ground directly ahead of the camera (and an extra one offset sideways for a
             // tree-shadow test), replacing the wandering world entities so a shadow shot can be
@@ -602,30 +630,11 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 let fwdH = simd_normalize(SIMD3<Float>(rayDir.x, 0, rayDir.z))
                 let dist = Float(ProcessInfo.processInfo.environment["BF_SHOT_TCDIST"] ?? "3.0") ?? 3.0
                 let baseXZ = camP + fwdH * dist
-                // Find the real ground surface Y at the creature's XZ by reading the same occupancy
-                // grid the renderer marches (gHarnessShadowCache.fine). Search downward from the
-                // camera eye for the highest solid voxel, robust wherever the player landed.
-                func surfaceY(_ wx: Float, _ wz: Float, eyeY: Float) -> Float {
-                    let c = gHarnessShadowCache
-                    let (dx, dy, dz) = c.dims
-                    if dx <= 0 || c.fine.isEmpty { return eyeY - 1.6 }
-                    let bx = Int(floor(wx)) & (dx - 1)
-                    let bz = Int(floor(wz)) & (dz - 1)
-                    let top = min(dy - 1, Int(floor(eyeY)) - c.originY + 1)
-                    var yy = top
-                    while yy >= 0 {
-                        if c.fine[(bz * dy + yy) * dx + bx] != 0 {
-                            return Float(yy + 1 + c.originY)   // top face of the solid voxel
-                        }
-                        yy -= 1
-                    }
-                    return eyeY - 1.6
-                }
                 // Seat on the player's OWN ground column (where the player demonstrably stands) so
                 // the creature never floats/sinks regardless of biome occ quirks: use the player's
                 // foot height. BF_SHOT_TCYBIAS nudges if needed.
-                let playerFoot = surfaceY(camP.x, camP.z, eyeY: camP.y)
-                let aheadSurf  = surfaceY(baseXZ.x, baseXZ.z, eyeY: camP.y)
+                let playerFoot = entitySurfaceY(camP.x, camP.z, eyeY: camP.y)
+                let aheadSurf  = entitySurfaceY(baseXZ.x, baseXZ.z, eyeY: camP.y)
                 // Prefer the forward cell's surface but clamp it to within 1 block of the player's
                 // foot so a mis-read occ column can't strand the creature in the air or underground.
                 let footY = min(playerFoot + 1, max(playerFoot - 1, aheadSurf))
@@ -654,12 +663,50 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 testEnts.withUnsafeBufferPointer { bp in
                     entR.encode(enc, viewProj: viewProj, entities: bp.baseAddress, count: testEnts.count,
                                 shadow: es, occ: shadowVol?.tex, occCoarse: shadowVol?.coarse,
-                                camPosH: horizonCamH)   // #180 entities bend with the terrain
+                                camPosH: horizonCamH, shapeOverride: entityShapeOverride)   // #180 entities bend with the terrain
                 }
                 if ProcessInfo.processInfo.environment["BF_SHOT_ENTDUMP"] == "1" {
                     let mvpTest = viewProj * SIMD4<Float>(baseXZ.x, footY + 0.8, baseXZ.z, 1)
                     lastEntDump += " | clip=(\(mvpTest.x/mvpTest.w),\(mvpTest.y/mvpTest.w),\(mvpTest.z/mvpTest.w)) w=\(mvpTest.w)"
                 }
+            } else if entityStress {
+                // #250: deterministic 8x4 grid of the renderer's heaviest common
+                // model (villager). It exercises 32 entities / ~800 body-part draws
+                // without changing gameplay population or the C ABI.
+                let camP = SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z)
+                let fwdH = simd_normalize(SIMD3<Float>(camFwd.x, 0, camFwd.z))
+                let rightH = simd_normalize(SIMD3<Float>(camRight.x, 0, camRight.z))
+                var stress: [bf_entity_draw] = []
+                stress.reserveCapacity(32)
+                for i in 0..<32 {
+                    let row = i / 8
+                    let col = i % 8
+                    let p = camP + fwdH * (4 + Float(row) * 2.0)
+                        + rightH * ((Float(col) - 3.5) * 1.35)
+                    var ee = bf_entity_draw()
+                    ee.position = bf_vec3(x: p.x, y: entitySurfaceY(p.x, p.z, eyeY: camP.y), z: p.z)
+                    ee.kind = 20
+                    ee.scale = 1.0
+                    ee.sat = 1.0
+                    let tint = Float(i % 8) / 7.0
+                    ee.color = bf_vec3(x: 0.32 + tint * 0.52,
+                                       y: 0.72 - tint * 0.24,
+                                       z: 0.42 + Float((i * 3) % 7) * 0.06)
+                    ee.yaw = atan2(-fwdH.x, -fwdH.z)
+                    stress.append(ee)
+                }
+                stress.withUnsafeBufferPointer { bp in
+                    entR.encode(enc, viewProj: viewProj, entities: bp.baseAddress, count: stress.count,
+                                shadow: es, occ: shadowVol?.tex, occCoarse: shadowVol?.coarse,
+                                camPosH: horizonCamH, shapeOverride: entityShapeOverride)
+                }
+            } else {
+                // The reference scene claims animals; render the frame's real
+                // entity list so its perf metrics and image now actually include them.
+                entR.encode(enc, viewProj: viewProj, entities: f.entities,
+                            count: Int(f.entity_count), shadow: es,
+                            occ: shadowVol?.tex, occCoarse: shadowVol?.coarse,
+                            camPosH: horizonCamH, shapeOverride: entityShapeOverride)
             }
             if ProcessInfo.processInfo.environment["BF_SHOT_ENTDUMP"] == "1",
                ProcessInfo.processInfo.environment["BF_SHOT_TESTCREATURE"] == nil {
@@ -814,7 +861,10 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             draws: UInt64(f.draw_count),
             shadowDraws: UInt64(f.shadow_draw_count),
             props: UInt64(f.prop_instance_count),
-            terrainIndices: terrainIndices)
+            terrainIndices: terrainIndices,
+            entities: UInt64(entR.lastEntityCount),
+            entityPartDraws: UInt64(entR.lastBodyPartDraws),
+            entityTriangles: UInt64(entR.lastBodyTriangles))
     }
 
     // Warm up: stream the world in for ~3 s before measuring.
@@ -885,7 +935,9 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             for _ in 0..<frames { renderOneFrame(yaw: total / Float(frames), forward: noWalk ? 0 : 1.0) }
         }
         for _ in 0..<24  { renderOneFrame(yaw: 0, forward: noWalk ? 0 : 1.0) } // settle
+        let shotStats = renderOneFrame(yaw: 0, forward: noWalk ? 0 : 1.0)
         print("shot: prop instances in final frame = \(lastShotPropN)")
+        print("shot: entities=\(shotStats.entities) body_parts=\(shotStats.entityPartDraws) triangles=\(shotStats.entityTriangles)")
         // #116 diagnostic (env-gated, harmless): dump camera + entity positions so a verification
         // shot can be aimed at a creature. Off unless BF_SHOT_ENTDUMP=1.
         if ProcessInfo.processInfo.environment["BF_SHOT_ENTDUMP"] == "1" { print(lastEntDump) }
@@ -917,6 +969,9 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         shadowDrawSamples.append(s.shadowDraws)
         propSamples.append(s.props)
         indexSamples.append(s.terrainIndices)
+        entitySamples.append(s.entities)
+        entityPartSamples.append(s.entityPartDraws)
+        entityTriangleSamples.append(s.entityTriangles)
         peakMem = max(peakMem, residentFootprintMB())
     }
 
@@ -940,17 +995,21 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     let shadowDrawsMedian = medianU(shadowDrawSamples)
     let propsMedian = medianU(propSamples)
     let indicesMedian = medianU(indexSamples)
+    let entitiesMedian = medianU(entitySamples)
+    let entityPartsMedian = medianU(entityPartSamples)
+    let entityTrianglesMedian = medianU(entityTriangleSamples)
     let regStats = registry.stats()
     let passFps = median >= 60.0 && low1 >= 30.0
     let passMem = peakMem < 10_000.0
-    print(String(format: "PERF: %d frames over %.0fs — median %.1f FPS, 1%%-low %.1f FPS, frame %.2f ms, encode %.2f ms, gpu %.2f ms, draws %llu, indices %llu, peak mem %.0f MB  [%@]",
+    print(String(format: "PERF: %d frames over %.0fs — median %.1f FPS, 1%%-low %.1f FPS, frame %.2f ms, encode %.2f ms, gpu %.2f ms, draws %llu, indices %llu, entities %llu, entity parts %llu, entity tris %llu, peak mem %.0f MB  [%@]",
                  fpsSamples.count, seconds, median, low1, frameMsMedian, encodeMsMedian,
-                 gpuMsMedian, drawsMedian, indicesMedian, peakMem,
+                 gpuMsMedian, drawsMedian, indicesMedian, entitiesMedian, entityPartsMedian,
+                 entityTrianglesMedian, peakMem,
                  (passFps && passMem) ? "PASS (dev box)" : "below gate"))
 
     if let path = jsonPath {
         let json = """
-        { "scene": "ref(rd24 legacy-units, animals, day/night, streaming, shadows+bloom)", "seconds": \(seconds), \
+        { "scene": "\(entityStress ? "entity-stress(32 villagers)" : "ref(rd24 legacy-units, animals, day/night, streaming, shadows+bloom)")", "seconds": \(seconds), \
         "frames": \(fpsSamples.count), "fps_median": \(String(format:"%.1f",median)), \
         "fps_1pct_low": \(String(format:"%.1f",low1)), "peak_mem_mb": \(String(format:"%.0f",peakMem)), \
         "frame_ms_median": \(String(format:"%.3f",frameMsMedian)), \
@@ -959,6 +1018,9 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         "gpu_ms_median": \(String(format:"%.3f",gpuMsMedian)), \
         "draws_median": \(drawsMedian), "shadow_draws_median": \(shadowDrawsMedian), \
         "props_median": \(propsMedian), "terrain_indices_median": \(indicesMedian), \
+        "entities_median": \(entitiesMedian), "entity_part_draws_median": \(entityPartsMedian), \
+        "entity_triangles_median": \(entityTrianglesMedian), \
+        "entity_shape": "\(entityShapeOverride?.rawValue ?? "model")", \
         "live_buffers": \(regStats.liveBuffers), "retired_buffers": \(regStats.retiredBuffers), \
         "reusable_buffers": \(regStats.reusableBuffers), "reusable_bytes": \(regStats.reusableBytes), \
         "new_buffers": \(regStats.newBuffers), "reused_buffers": \(regStats.reusedBuffers), \
@@ -978,6 +1040,9 @@ func runCritterGallery(savePath: String) -> Bool {
     let queue = device.makeCommandQueue()!
     guard let lib = try? device.makeLibrary(source: Renderer.shaderSource, options: nil) else { return false }
     let entR = EntityRenderer(device: device, colorFormat: .rgba16Float)
+    let motionMode = ProcessInfo.processInfo.environment["BF_CRITTER_MOTION"] == "1"
+    let shapeOverride = ProcessInfo.processInfo.environment["BF_ENTITY_SHAPE"]
+        .map { $0.lowercased() }.flatMap(EntityPartShape.init(rawValue:))
     func pipe(_ v: String, _ f: String) -> MTLRenderPipelineState? {
         let d = MTLRenderPipelineDescriptor()
         d.vertexFunction = lib.makeFunction(name: v); d.fragmentFunction = lib.makeFunction(name: f)
@@ -1014,14 +1079,16 @@ func runCritterGallery(savePath: String) -> Bool {
         SIMD3(0.34,0.55,0.30), SIMD3(0.46,0.60,0.28),   // forest greens
         SIMD3(0.34,0.52,0.44), SIMD3(0.44,0.56,0.36),   // swamp teal / olive
     ]
-    let kinds: [UInt32] = villagerMode ? Array(repeating: 20, count: villagerCols.count)
-                                       : [0,1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,23,24,25,26,100]
+    let motionKind = UInt32(ProcessInfo.processInfo.environment["BF_CRITTER_KIND"] ?? "20") ?? 20
+    let kinds: [UInt32] = motionMode ? Array(repeating: motionKind, count: 4)
+        : (villagerMode ? Array(repeating: 20, count: villagerCols.count)
+           : [0,1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,23,24,25,26,100])
     let cols: [SIMD3<Float>] = [
         SIMD3(0.85,0.80,0.74), SIMD3(0.78,0.45,0.28), SIMD3(0.55,0.58,0.62), SIMD3(0.30,0.55,0.35),
         SIMD3(0.90,0.86,0.40), SIMD3(0.40,0.40,0.48), SIMD3(0.72,0.36,0.30), SIMD3(0.95,0.95,0.97)
     ]
     // Two rows so the camera can sit close and the models render large.
-    let perRow = (kinds.count + 1) / 2
+    let perRow = motionMode ? kinds.count : (kinds.count + 1) / 2
     let spacing: Float = 1.7
     var ents: [bf_entity_draw] = []
     for (i, k) in kinds.enumerated() {
@@ -1032,13 +1099,15 @@ func runCritterGallery(savePath: String) -> Bool {
         // #212: in villager mode, vary height per figure to preview the engine's
         // 0.80..1.16 spread (scaled up for the gallery camera).
         e.scale = villagerMode ? (1.05 + Float((i * 3 + 1) % 5) * 0.16) : 1.35
-        let c = villagerMode ? villagerCols[i % villagerCols.count] : cols[i % cols.count]
+        let c = motionMode ? cols[0]
+            : (villagerMode ? villagerCols[i % villagerCols.count] : cols[i % cols.count])
         e.color = bf_vec3(x: c.x, y: c.y, z: c.z)
         ents.append(e)
     }
     let cx = Float(perRow - 1) * spacing * 0.5
     let proj = Renderer.perspective(fovy: 0.62, aspect: Float(W) / Float(H), near: 0.05, far: 300)
-    let eye = SIMD3<Float>(cx, 3.0, Float(perRow) * 1.15 + 3)
+    let eye = motionMode ? SIMD3<Float>(cx, 2.3, 4.8)
+        : SIMD3<Float>(cx, 3.0, Float(perRow) * 1.15 + 3)
     let view = EntityRenderer.rotX(0.22) * EntityRenderer.trans(SIMD3(-eye.x, -eye.y, -eye.z))
     let viewProj = proj * view
 
@@ -1052,9 +1121,32 @@ func runCritterGallery(savePath: String) -> Bool {
     rp.depthAttachment.storeAction = celGallery ? .store : .dontCare   // #130 keep depth for outlines
     if let enc = cmd.makeRenderCommandEncoder(descriptor: rp) {
         enc.setDepthStencilState(depthState)
-        ents.withUnsafeBufferPointer { p in
-            entR.encode(enc, viewProj: viewProj, entities: p.baseAddress, count: ents.count)
+        var totalEntities = 0
+        var totalParts = 0
+        var totalTriangles = 0
+        if motionMode {
+            let phases: [Float] = [0, .pi * 0.5, .pi, .pi * 1.5]
+            for i in ents.indices {
+                withUnsafePointer(to: &ents[i]) { p in
+                    entR.encode(enc, viewProj: viewProj, entities: p, count: 1,
+                                animationTime: phases[i], gaitPhase: phases[i], gaitSpeed: 1.2,
+                                animationHash: 0.25,
+                                shapeOverride: shapeOverride)
+                }
+                totalEntities += entR.lastEntityCount
+                totalParts += entR.lastBodyPartDraws
+                totalTriangles += entR.lastBodyTriangles
+            }
+        } else {
+            ents.withUnsafeBufferPointer { p in
+                entR.encode(enc, viewProj: viewProj, entities: p.baseAddress, count: ents.count,
+                            animationTime: 1.0, shapeOverride: shapeOverride)
+            }
+            totalEntities = entR.lastEntityCount
+            totalParts = entR.lastBodyPartDraws
+            totalTriangles = entR.lastBodyTriangles
         }
+        print("critter metrics: entities=\(totalEntities) body_parts=\(totalParts) triangles=\(totalTriangles)")
         enc.endEncoding()
     }
     let brp = MTLRenderPassDescriptor()
@@ -1086,7 +1178,7 @@ func runCritterGallery(savePath: String) -> Bool {
     }
     cmd.commit(); cmd.waitUntilCompleted()
     writeTexturePNG(output, to: savePath)
-    print("critter gallery: \(ents.count) kinds")
+    print("critter gallery: \(ents.count) \(motionMode ? "motion phases" : "kinds"), shape=\(shapeOverride?.rawValue ?? "model")")
     return true
 }
 

@@ -130,11 +130,30 @@ import simd
 import QuartzCore   // CACurrentMediaTime()
 import CBlockcore
 
+// #250: the same deliberately low-poly primitive vocabulary already proven by
+// the instanced prop renderer. Box remains the default for every existing part;
+// later model passes can opt individual body masses into a rounded shape.
+enum EntityPartShape: String {
+    case box, sphere, cylinder, cone
+}
+
 final class EntityRenderer {
     private let pipeline:   MTLRenderPipelineState
     private let cubeVB:     MTLBuffer
     let cubeIB:     MTLBuffer
     let indexCount: Int
+    private let sphereVB:   MTLBuffer
+    private let cylinderVB: MTLBuffer
+    private let coneVB:     MTLBuffer
+    private let revolvedIB: MTLBuffer
+    private var boundPartShape: EntityPartShape = .box
+    private var partShapeOverride: EntityPartShape?
+
+    // #250 harness counters. Body parts are the individual primitive draws; the
+    // separately-instanced ground-shadow pass is intentionally not included.
+    private(set) var lastEntityCount = 0
+    private(set) var lastBodyPartDraws = 0
+    private(set) var lastBodyTriangles = 0
 
     // #116 ground contact-shadow pass (CAST). A single horizontal quad per entity, GPU-expanded,
     // alpha-blended onto the ground, depth-TESTED (so terrain in front occludes it) but it does NOT
@@ -252,6 +271,109 @@ final class EntityRenderer {
         return (flash, amt, SIMD3<Float>(sxz, sy, sxz))
     }
 
+    // Match RendererShaders.propRevVert: six radial slices, two stacks for the
+    // sphere, and closed caps for cone/cylinder. Vertices are already expanded
+    // into triangle order, so all three shapes share one sequential index buffer.
+    private static func revolvedVertices(_ shape: EntityPartShape) -> [Float] {
+        let slices = 6
+        let stacks = shape == .sphere ? 2 : 1
+        var out: [Float] = []
+        let triangleCorners: [(Float, Float)] = [
+            // CCW from outside, matching the existing cube mesh so the caller's
+            // established back-face culling state remains valid.
+            (0, 0), (1, 1), (1, 0), (0, 0), (0, 1), (1, 1),
+        ]
+        func append(_ p: SIMD3<Float>, _ n: SIMD3<Float>) {
+            out += [p.x, p.y, p.z, n.x, n.y, n.z]
+        }
+        for stack in 0..<stacks {
+            for slice in 0..<slices {
+                for (cx, cy) in triangleCorners {
+                    let a = 2 * Float.pi * (Float(slice) + cx) / Float(slices)
+                    let t = (Float(stack) + cy) / Float(stacks)
+                    let ca = cos(a), sa = sin(a)
+                    let r: Float
+                    let y: Float
+                    let slope: Float
+                    switch shape {
+                    case .sphere:
+                        let phi = Float.pi * t
+                        r = sin(phi) * 0.5
+                        y = -cos(phi) * 0.5
+                        slope = 0
+                    case .cone:
+                        r = (1 - t) * 0.5
+                        y = t - 0.5
+                        slope = 0.5
+                    case .cylinder:
+                        r = 0.5
+                        y = t - 0.5
+                        slope = 0
+                    case .box:
+                        preconditionFailure("box uses the indexed cube mesh")
+                    }
+                    let p = SIMD3<Float>(r * ca, y, r * sa)
+                    let n = shape == .sphere
+                        ? simd_normalize(p + SIMD3<Float>(repeating: 0.00001))
+                        : simd_normalize(SIMD3<Float>(ca, slope, sa))
+                    append(p, n)
+                }
+            }
+        }
+        if shape != .sphere {
+            let caps = shape == .cylinder ? [false, true] : [false]
+            for top in caps {
+                let y: Float = top ? 0.5 : -0.5
+                let n = SIMD3<Float>(0, top ? 1 : -1, 0)
+                for slice in 0..<slices {
+                    let a0 = 2 * Float.pi * Float(slice) / Float(slices)
+                    let a1 = 2 * Float.pi * Float(slice + 1) / Float(slices)
+                    let rim0 = SIMD3<Float>(0.5 * cos(a0), y, 0.5 * sin(a0))
+                    let rim1 = SIMD3<Float>(0.5 * cos(a1), y, 0.5 * sin(a1))
+                    append(.init(0, y, 0), n)
+                    append(top ? rim1 : rim0, n)
+                    append(top ? rim0 : rim1, n)
+                }
+            }
+        }
+        return out
+    }
+
+    // Called by EntityRendererSpecies.drawCube. With no override and no rounded
+    // model parts yet, this is one predictable branch and leaves the cube bound.
+    @inline(__always)
+    func bindPartShape(_ requested: EntityPartShape,
+                       enc: MTLRenderCommandEncoder) -> (MTLBuffer, Int) {
+        let shape = partShapeOverride ?? requested
+        if shape != boundPartShape {
+            let vb: MTLBuffer
+            switch shape {
+            case .box:      vb = cubeVB
+            case .sphere:   vb = sphereVB
+            case .cylinder: vb = cylinderVB
+            case .cone:     vb = coneVB
+            }
+            enc.setVertexBuffer(vb, offset: 0, index: 0)
+            boundPartShape = shape
+        }
+        let count: Int
+        let ib: MTLBuffer
+        switch shape {
+        case .box:
+            count = indexCount
+            ib = cubeIB
+        case .cone:
+            count = 54
+            ib = revolvedIB
+        case .sphere, .cylinder:
+            count = 72
+            ib = revolvedIB
+        }
+        lastBodyPartDraws += 1
+        lastBodyTriangles += count / 3
+        return (ib, count)
+    }
+
     // -----------------------------------------------------------------------
     init(device: MTLDevice, colorFormat: MTLPixelFormat) {
         let lib: MTLLibrary
@@ -289,6 +411,18 @@ final class EntityRenderer {
         cubeVB     = device.makeBuffer(bytes: verts,   length: verts.count   * 4, options: .storageModeShared)!
         cubeIB     = device.makeBuffer(bytes: indices,  length: indices.count * 2, options: .storageModeShared)!
         indexCount = indices.count
+
+        let sphere = EntityRenderer.revolvedVertices(.sphere)
+        let cylinder = EntityRenderer.revolvedVertices(.cylinder)
+        let cone = EntityRenderer.revolvedVertices(.cone)
+        precondition(sphere.count == 72 * 6 && cylinder.count == 72 * 6 && cone.count == 54 * 6)
+        sphereVB = device.makeBuffer(bytes: sphere, length: sphere.count * 4, options: .storageModeShared)!
+        cylinderVB = device.makeBuffer(bytes: cylinder, length: cylinder.count * 4, options: .storageModeShared)!
+        coneVB = device.makeBuffer(bytes: cone, length: cone.count * 4, options: .storageModeShared)!
+        let revolvedIndices = (0..<72).map(UInt16.init)
+        revolvedIB = device.makeBuffer(bytes: revolvedIndices,
+                                       length: revolvedIndices.count * 2,
+                                       options: .storageModeShared)!
 
         // #116 ground contact-shadow pipeline (CAST). Alpha-blended (over) so the dark blob
         // multiplies the ground toward shadow. Depth-tested but NOT depth-writing.
@@ -328,7 +462,17 @@ final class EntityRenderer {
                 shadow:   EntityShadowUniforms = EntityShadowUniforms(),
                 occ:      MTLTexture? = nil,
                 occCoarse: MTLTexture? = nil,
-                camPosH:  SIMD4<Float> = .zero) {   // #180 horizon curvature (default flat)
+                camPosH:  SIMD4<Float> = .zero,
+                animationTime: Float? = nil,
+                gaitPhase: Float? = nil,
+                gaitSpeed: Float? = nil,
+                animationHash: Float? = nil,
+                shapeOverride: EntityPartShape? = nil) {   // #180 horizon curvature (default flat)
+        lastEntityCount = max(0, count)
+        lastBodyPartDraws = 0
+        lastBodyTriangles = 0
+        partShapeOverride = shapeOverride
+        defer { partShapeOverride = nil }
         guard let entities = entities, count > 0 else { return }
         curShadow    = shadow
         curOcc       = occ
@@ -364,17 +508,19 @@ final class EntityRenderer {
         // bound, which would let face parts show through the head from behind (#116 regression).
         enc.setDepthStencilState(bodyDepth)
         enc.setVertexBuffer(cubeVB, offset: 0, index: 0)
+        boundPartShape = .box
         // Bind shadow uniforms + occupancy once for all cubes this encode (RECEIVE pass, Part 1).
         var su = curShadow
         enc.setFragmentBytes(&su, length: MemoryLayout<EntityShadowUniforms>.stride, index: 2)
         if let o = curOcc       { enc.setFragmentTexture(o, index: 0) }
         if let oc = curOccCoarse { enc.setFragmentTexture(oc, index: 1) }
 
-        let t = Float(CACurrentMediaTime())
+        let t = animationTime ?? Float(CACurrentMediaTime())
+        let deterministicHarness = animationTime != nil
 
         // Periodically prune stale history so the dictionary can't grow without
         // bound as creatures spawn/despawn. Cheap: every ~2s.
-        if t - lastPrune > 2.0 {
+        if !deterministicHarness && t - lastPrune > 2.0 {
             lastPrune = t
             hist = hist.filter { t - $0.value.lastSeen < 1.5 }
         }
@@ -382,8 +528,9 @@ final class EntityRenderer {
         // Real seconds since the previous encode, clamped so a long stall (tab away,
         // first frame) can't fling the gait phase forward. Used to convert each
         // entity's position delta into a ground speed.
-        let frameDt: Float = (lastEncodeT < 0) ? (1.0 / 60.0) : min(max(t - lastEncodeT, 1.0 / 240.0), 1.0 / 15.0)
-        lastEncodeT = t
+        let frameDt: Float = deterministicHarness ? (1.0 / 60.0)
+            : ((lastEncodeT < 0) ? (1.0 / 60.0) : min(max(t - lastEncodeT, 1.0 / 240.0), 1.0 / 15.0))
+        if !deterministicHarness { lastEncodeT = t }
 
         for i in 0..<count {
             let e = entities[i]
@@ -397,7 +544,7 @@ final class EntityRenderer {
             curEntityOriginXZ = SIMD2<Float>(posRel.x, posRel.z)
             // Per-entity spatial hash — scatters all animation phases so
             // dozens of creatures never step in sync.
-            let phaseHash = sin(pos.x * 1.3 + pos.z * 2.7)
+            let phaseHash = animationHash ?? sin(pos.x * 1.3 + pos.z * 2.7)
             // Ambient (wall-clock) phase: drives the always-on idle breath pulse so
             // a stopped creature still looks alive even though its legs hold.
             let ambient   = t + phaseHash * 3.14159
@@ -428,8 +575,15 @@ final class EntityRenderer {
                 let idle = sin(ambient * 0.9) * 0.012
                 squash = SIMD3<Float>(1 - idle * 0.5, 1 + idle, 1 - idle * 0.5)
 
-                let key = histKey(pos, e.kind)
-                if var h = hist[key] {
+                if let forcedPhase = gaitPhase {
+                    phase = forcedPhase
+                    curGaitSpeed = gaitSpeed ?? 1.0
+                } else if deterministicHarness {
+                    phase = ambient
+                    curGaitSpeed = gaitSpeed ?? 0
+                } else {
+                    let key = histKey(pos, e.kind)
+                    if var h = hist[key] {
                     // SIGNAL: a sharp drop in scale this frame ≈ damage/recoil.
                     // (See class-level note: swap for an engine field when one
                     // exists — set externalHurt01 and skip this derivation.)
@@ -496,7 +650,8 @@ final class EntityRenderer {
                         }
                     }
                     phase = seed.gait + phaseHash * 3.14159
-                    hist[key] = seed
+                        hist[key] = seed
+                    }
                 }
             }
 
