@@ -204,6 +204,14 @@ impl<'c> World<'c> {
     pub fn debug_villager_count(&self) -> i32 {
         self.creatures.iter().filter(|c| c.model == 20).count() as i32
     }
+    pub fn debug_spawn_villagers_at(&mut self, x: i32, y: i32, z: i32, budget: i32) -> i32 {
+        self.spawn_villager_at(x, y, z, budget)
+    }
+    pub fn debug_villagers_body_clear(&self) -> bool {
+        self.creatures.iter().filter(|c| c.model == 20).all(|c| {
+            !self.creature_body_blocked(c.pos.x, Self::ifloor(c.pos.y + 0.01), c.pos.z, c.scale)
+        })
+    }
     // Exposes the pure profession-assignment policy so tests can verify the chain rules
     // (city = full chain, village = ordered prefix) without driving a full settlement
     // spawn. Returns the npc_id role for the villager at `idx` within the settlement.

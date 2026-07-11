@@ -754,7 +754,6 @@ impl<'c> World<'c> {
             c.model = d.model;
             let vidx = idx_in_settlement;
             c.npc_id = Self::villager_npc_for_index(is_city, idx_in_settlement);
-            idx_in_settlement += 1;
             c.home_x = Self::wrap_block(ax);
             c.home_z = Self::wrap_block(az);
             c.name = d.name.clone();
@@ -794,6 +793,24 @@ impl<'c> World<'c> {
                 .to_string();
             c.color = self.villager_clothing_color(ax, az, vh);
             c.wander = 1.0 + self.rand01() * 2.0;
+            // #243: natural villagers use the same full-body clearance as every other
+            // creature. Keep the resident by relocating nearby when possible; a rejected
+            // candidate must not consume its profession slot.
+            if self.creature_body_blocked(c.pos.x, gy, c.pos.z, c.scale)
+                && !self.creature_unstick(&mut c)
+            {
+                continue;
+            }
+            let feet = Self::ifloor(c.pos.y + 0.01);
+            if self.block_at(IVec3 {
+                x: Self::ifloor(c.pos.x),
+                y: feet + 1,
+                z: Self::ifloor(c.pos.z),
+            }) == WATER
+            {
+                continue;
+            }
+            idx_in_settlement += 1;
             self.creatures.push(c);
             made += 1;
         }

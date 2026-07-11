@@ -785,6 +785,36 @@ fn creature_collision_and_villages() {
     }
 }
 
+#[test]
+fn villagers_never_spawn_with_their_body_inside_blocks() {
+    let mut content = ContentRegistry::new();
+    assert!(content.load(CONTENT), "content load");
+    let mut extra = ContentExtra::new();
+    assert!(extra.load(CONTENT), "extra load");
+    let mut w = World::new(None);
+    w.set_content(&content);
+    w.set_extra(&extra);
+    w.init_world(243);
+    w.generate_test_world();
+
+    // Candidate feet land at y=8. A two-block wall through the random spawn square
+    // catches any scale-aware footprint that overlaps it from an adjacent column.
+    for z in 12..=20 {
+        for y in 8..=9 {
+            w.debug_edit(16, y, z, world::STONE);
+        }
+    }
+    let mut made = 0;
+    for _ in 0..80 {
+        made += w.debug_spawn_villagers_at(16, 8, 16, 2);
+    }
+    assert!(made > 0, "test spawned villagers around the wall");
+    assert!(
+        w.debug_villagers_body_clear(),
+        "villager spawn leaves every full body clear of solid blocks"
+    );
+}
+
 // ============================================================================
 // test_saveload.cpp — save/load round-trip + determinism.
 // ============================================================================
