@@ -172,6 +172,145 @@ mod worldgen_tests {
         assert!(STRUCT_MAX_REACH_XZ >= CITY_LAYOUT_REACH);
     }
 
+    #[test]
+    fn settlement_chopping_block_is_supported_clear_deterministic_and_seam_safe() {
+        fn stamp_yard(
+            ax: i32,
+            az: i32,
+            seed: u64,
+            foundation: BlockId,
+        ) -> std::collections::HashMap<(i32, i32, i32), BlockId> {
+            let (station_x, station_z) = (ax + 4, az + 4);
+            let work_x = station_x - 1;
+            let low_y = struct_surface(station_x, station_z, seed)
+                .min(struct_surface(work_x, station_z, seed));
+            let floor_y = struct_surface(station_x, station_z, seed)
+                .max(struct_surface(work_x, station_z, seed))
+                .max(SEA_LEVEL + 1);
+            let mut cells = std::collections::HashMap::new();
+            for cy in
+                seam_floordiv_pub(low_y, K_CHUNK_DIM)..=seam_floordiv_pub(floor_y + 2, K_CHUNK_DIM)
+            {
+                for cx in seam_floordiv_pub(work_x, K_CHUNK_DIM)
+                    ..=seam_floordiv_pub(station_x, K_CHUNK_DIM)
+                {
+                    let wx_min = cx * K_CHUNK_DIM;
+                    let wy_min = cy * K_CHUNK_DIM;
+                    let wz_min = seam_floordiv_pub(station_z, K_CHUNK_DIM) * K_CHUNK_DIM;
+                    let mut chunk = GridChunk {
+                        wx_min,
+                        wy_min,
+                        wz_min,
+                        cells: std::mem::take(&mut cells),
+                    };
+                    place_settlement_chopping_block(
+                        ax, az, seed, &mut chunk, wx_min, wy_min, wz_min, foundation,
+                    );
+                    cells = chunk.cells;
+                }
+            }
+            cells
+        }
+
+        let seed = SEED;
+        // +4 lands the station exactly on an X/Z chunk corner; its west work cell
+        // remains in the neighbouring X chunk.
+        let anchor = K_CHUNK_DIM - 4;
+        for &(name, typ, h, foundation) in &[
+            ("village", STRUCT_VILLAGE, 0xA11CEu64, COBBLESTONE),
+            ("city", STRUCT_CITY, 0xC17Au64, STONE_BRICK),
+        ] {
+            let cells = stamp_yard(anchor, anchor, seed, foundation);
+            assert_eq!(
+                cells,
+                stamp_yard(anchor, anchor, seed, foundation),
+                "{name}: stamp changed between fresh replays"
+            );
+
+            let (station_x, station_z) = (anchor + 4, anchor + 4);
+            let (work_x, work_z) = (station_x - 1, station_z);
+            let stations: Vec<_> = cells
+                .iter()
+                .filter_map(|(&pos, &b)| (b == CHOPPING_BLOCK).then_some(pos))
+                .collect();
+            assert_eq!(
+                stations.len(),
+                1,
+                "{name}: expected exactly one chopping block"
+            );
+            let (sx, station_y, sz) = stations[0];
+            assert_eq!(
+                (sx, sz),
+                (station_x, station_z),
+                "{name}: wrong yard position"
+            );
+            assert_eq!(
+                station_x % K_CHUNK_DIM,
+                0,
+                "test station must exercise a chunk edge"
+            );
+            assert_eq!(
+                station_z % K_CHUNK_DIM,
+                0,
+                "test station must exercise a chunk edge"
+            );
+            assert!(
+                station_y - 1 >= SEA_LEVEL + 1,
+                "{name}: workstation floor is underwater"
+            );
+            assert_eq!(
+                cells.get(&(station_x, station_y - 1, station_z)),
+                Some(&foundation),
+                "{name}: station has no foundation"
+            );
+            assert_eq!(
+                cells
+                    .get(&(station_x, station_y + 1, station_z))
+                    .copied()
+                    .unwrap_or(AIR),
+                AIR,
+                "{name}: tall station mesh has no overhead clearance"
+            );
+            assert_eq!(
+                cells.get(&(work_x, station_y - 1, work_z)),
+                Some(&foundation),
+                "{name}: work cell has no level floor"
+            );
+            for wy in station_y..=station_y + 1 {
+                assert_eq!(
+                    cells.get(&(work_x, wy, work_z)).copied().unwrap_or(AIR),
+                    AIR,
+                    "{name}: west work cell blocked at y={wy}"
+                );
+            }
+
+            // One owning chunk is enough to prove both settlement builders call
+            // the shared helper; seam behaviour is covered by stamp_yard above.
+            let sd = StructDesc {
+                anchor_wx: anchor,
+                anchor_wz: anchor,
+                typ,
+                cell_hash: h,
+                present: true,
+            };
+            let wx_min = seam_floordiv_pub(station_x, K_CHUNK_DIM) * K_CHUNK_DIM;
+            let wy_min = seam_floordiv_pub(station_y, K_CHUNK_DIM) * K_CHUNK_DIM;
+            let wz_min = seam_floordiv_pub(station_z, K_CHUNK_DIM) * K_CHUNK_DIM;
+            let mut chunk = GridChunk {
+                wx_min,
+                wy_min,
+                wz_min,
+                cells: std::collections::HashMap::new(),
+            };
+            place_structure(&sd, seed, &mut chunk, wx_min, wy_min, wz_min);
+            assert_eq!(
+                chunk.cells.get(&(station_x, station_y, station_z)),
+                Some(&CHOPPING_BLOCK),
+                "{name}: settlement builder did not emit the workstation"
+            );
+        }
+    }
+
     // The world is varied (the biome map is not collapsed to one type). #181:
     // biomes are latitude-banded now (warm equator at z = 0, cold pole at
     // z = W/2), so a scan that only looks near the origin sees the warm set.

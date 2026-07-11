@@ -915,18 +915,25 @@ mod tests {
     // then 53 to 54 when trodden_snow (id 54) was added for snow footprints (#117); it is the
     // compressed-snow state a walker leaves in the snow blanket (#118 made snow a thin overlay),
     // then 54 to 55 (items 60 to 61, recipes 34 to 35) when warp_totem (block 55, item 94,
-    // warp_totem_recipe) was added for the world map + warp travel (#182).
+    // warp_totem_recipe) was added for the world map + warp travel (#182), and 55 to 56
+    // when chopping_block (block 56, item 97) became the first physical workstation (#245).
     #[test]
     fn loads_with_cpp_parity_counts() {
         let mut reg = ContentRegistry::new();
         assert!(reg.load(CONTENT));
-        assert_eq!(reg.block_count(), 55);
-        assert_eq!(reg.item_count(), 63);   // #177 magnet_charm, #203 coin
-        assert_eq!(reg.recipe_count(), 36);  // #177 magnet_charm_craft
+        assert_eq!(reg.block_count(), 56);
+        assert_eq!(reg.item_count(), 64); // #177 magnet_charm, #203 coin, #245 chopping block
+        assert_eq!(reg.recipe_count(), 36); // #177 magnet_charm_craft
         let oak = reg.block_by_name("oak_log").expect("oak_log");
         assert_eq!((oak.id, oak.drop_item), (21, 12));
         let dirt_item = reg.item_by_name("dirt").expect("dirt item");
         assert_eq!(dirt_item.places_block, 2);
+        let chopping = reg.block_by_name("chopping_block").expect("chopping block");
+        assert_eq!((chopping.id, chopping.drop_item), (56, 97));
+        let chopping_item = reg
+            .item_by_name("chopping_block")
+            .expect("chopping block item");
+        assert_eq!((chopping_item.id, chopping_item.places_block), (97, 56));
         let pick = reg.item_by_name("wood_pickaxe").expect("wood_pickaxe");
         assert_eq!(
             (pick.tool_tier, pick.tool_kind, pick.tool_durability),

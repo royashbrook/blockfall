@@ -413,7 +413,7 @@ extension HUDView {
     }
 
     // ===== Procedural item icons ============================================
-    // Each item id (50..93) maps to a small recognizable silhouette drawn with
+    // Each non-block item maps to a small recognizable silhouette drawn with
     // Core Graphics / NSBezierPath — no art assets. Helpers stay cheap (a few
     // bezier ops) because these draw several times per frame. The view is
     // non-flipped, so +y is UP throughout.
@@ -462,7 +462,7 @@ extension HUDView {
         if let o = outline { o.setStroke(); p.lineWidth = width; p.stroke() }
     }
 
-    // Dispatch an id (50..93) to its dedicated icon helper.
+    // Dispatch a non-block item id to its dedicated icon helper.
     private func drawItemIcon(id: bf_item_id, in r: NSRect, base: NSColor) {
         switch id {
         // --- Tools: shape by type, head colour by tier ---
@@ -487,8 +487,58 @@ extension HUDView {
         case 91: drawStewBowl(in: r, color: base)
         case 92: drawCakeSlice(in: r, color: base)
         case 93: drawMushroom(in: r, color: base)
+        // --- Workstations ---
+        case 97: drawChoppingBlock(in: r)
         default: drawBlob(in: r, color: base)                   // graceful fallback
         }
+    }
+
+    private func drawChoppingBlock(in r: NSRect) {
+        let bark = itemColor(0.47, 0.31, 0.16)
+        let cutWood = itemColor(0.74, 0.53, 0.28)
+        let iron = itemColor(0.30, 0.32, 0.36)
+        let stump = NSRect(x: r.minX + r.width * 0.19,
+                           y: r.minY + r.height * 0.14,
+                           width: r.width * 0.56,
+                           height: r.height * 0.37)
+
+        let body = NSBezierPath(roundedRect: stump, xRadius: r.width * 0.08,
+                                yRadius: r.width * 0.08)
+        bark.setFill(); body.fill()
+        NSColor.black.withAlphaComponent(0.4).setStroke(); body.lineWidth = 1; body.stroke()
+        for x in [0.32, 0.48, 0.64] as [CGFloat] {
+            tick(NSPoint(x: r.minX + r.width * x, y: stump.minY + r.height * 0.04),
+                 NSPoint(x: r.minX + r.width * (x + 0.02), y: stump.maxY - r.height * 0.05),
+                 shade(bark, 0.72), width: max(1, r.width * 0.025))
+        }
+
+        let top = NSRect(x: stump.minX, y: stump.maxY - r.height * 0.09,
+                         width: stump.width, height: r.height * 0.18)
+        let topPath = NSBezierPath(ovalIn: top)
+        cutWood.setFill(); topPath.fill()
+        shade(bark, 0.7).setStroke(); topPath.lineWidth = 1; topPath.stroke()
+        let ring = NSBezierPath(ovalIn: top.insetBy(dx: top.width * 0.19,
+                                                    dy: top.height * 0.24))
+        shade(cutWood, 0.75).setStroke(); ring.lineWidth = 1; ring.stroke()
+        let crack = NSBezierPath(); crack.lineCapStyle = .round
+        crack.move(to: NSPoint(x: top.midX, y: top.midY))
+        crack.line(to: NSPoint(x: top.midX - r.width * 0.11, y: top.midY + r.height * 0.04))
+        crack.move(to: NSPoint(x: top.midX, y: top.midY))
+        crack.line(to: NSPoint(x: top.midX + r.width * 0.08, y: top.midY - r.height * 0.05))
+        shade(bark, 0.55).setStroke(); crack.lineWidth = max(1, r.width * 0.035); crack.stroke()
+
+        let bite = NSPoint(x: top.midX + r.width * 0.04, y: top.midY + r.height * 0.02)
+        let handleEnd = NSPoint(x: r.maxX - r.width * 0.12, y: r.maxY - r.height * 0.10)
+        drawHandle(in: r, from: bite, to: handleEnd, thickness: max(2, r.width * 0.10))
+        let blade = [
+            NSPoint(x: bite.x - r.width * 0.02, y: bite.y + r.height * 0.12),
+            NSPoint(x: bite.x - r.width * 0.28, y: bite.y + r.height * 0.13),
+            NSPoint(x: bite.x - r.width * 0.30, y: bite.y - r.height * 0.05),
+            NSPoint(x: bite.x - r.width * 0.12, y: bite.y - r.height * 0.10),
+            NSPoint(x: bite.x + r.width * 0.04, y: bite.y - r.height * 0.02),
+        ]
+        strokePoly(blade, iron, width: 1)
+        tick(blade[1], blade[2], lighten(iron, 0.45), width: max(1, r.width * 0.025))
     }
 
     // ----- Tools -----------------------------------------------------------

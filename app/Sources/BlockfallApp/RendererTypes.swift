@@ -239,6 +239,21 @@ func makeHeldItem(_ itemId: Int) -> [PropCuboidGPU] {
             part(SIMD3(fx, fy + 0.22, fz), SIMD3(0.09, 0.05, 0.09), SIMD3(0.80, 0.20, 0.18)),
         ]
     }
+    if itemId == 97 {                                              // chopping block: stump + embedded axe
+        let bark = SIMD3<Float>(0.47, 0.31, 0.16)
+        let cutWood = SIMD3<Float>(0.74, 0.53, 0.28)
+        let handle = SIMD3<Float>(0.62, 0.44, 0.23)
+        let iron = SIMD3<Float>(0.30, 0.32, 0.36)
+        return [
+            part(SIMD3(fx,        fy + 0.16, fz), SIMD3(0.12, 0.11, 0.12),  bark),
+            part(SIMD3(fx,        fy + 0.29, fz), SIMD3(0.14, 0.025, 0.14), cutWood),
+            part(SIMD3(fx - 0.07, fy + 0.37, fz), SIMD3(0.075, 0.08, 0.03), iron),
+            part(SIMD3(fx + 0.01, fy + 0.37, fz), SIMD3(0.035, 0.05, 0.04), iron),
+            part(SIMD3(fx + 0.02, fy + 0.42, fz), SIMD3(0.025, 0.07, 0.025), handle),
+            part(SIMD3(fx + 0.06, fy + 0.52, fz), SIMD3(0.025, 0.07, 0.025), handle),
+            part(SIMD3(fx + 0.10, fy + 0.62, fz), SIMD3(0.025, 0.07, 0.025), handle),
+        ]
+    }
     // A held BLOCK shows as a small cube in its own colour, so it reads as that block.
     if let bc = heldBlockColor(itemId) {
         return [ part(SIMD3(fx, fy + 0.18, fz), SIMD3(0.13, 0.13, 0.13), bc) ]

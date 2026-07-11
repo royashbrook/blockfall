@@ -30,5 +30,6 @@
   { "id": 29, "name": "flower_red", "display_name": "Red Flower", "max_stack": 64, "places_block": "flower_red" },
   { "id": 30, "name": "flower_yellow", "display_name": "Yellow Flower", "max_stack": 64, "places_block": "flower_yellow" },
   { "id": 31, "name": "color_crystal", "display_name": "Color Crystal Block", "max_stack": 64, "places_block": "color_crystal" },
-  { "id": 94, "name": "warp_totem", "display_name": "Warp Totem", "max_stack": 4, "places_block": "warp_totem" }
+  { "id": 94, "name": "warp_totem", "display_name": "Warp Totem", "max_stack": 4, "places_block": "warp_totem" },
+  { "id": 97, "name": "chopping_block", "display_name": "Chopping Block", "max_stack": 1, "places_block": "chopping_block" }
 ]

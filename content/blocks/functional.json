@@ -143,6 +143,19 @@
     }
   },
   {
+    "id": 56,
+    "name": "chopping_block",
+    "display_name": "Chopping Block",
+    "hardness": 8,
+    "required_tier": 0,
+    "preferred_tool": "axe",
+    "textures": {
+      "top": "oak_log_top",
+      "side": "oak_log_side",
+      "bottom": "oak_log_top"
+    }
+  },
+  {
     "id": 52,
     "name": "bed",
     "display_name": "Bed",

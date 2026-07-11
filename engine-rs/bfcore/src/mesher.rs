@@ -516,6 +516,7 @@ fn is_glass(id: BlockId) -> bool {
 const DOOR_CLOSED: BlockId = 33;
 const DOOR_OPEN: BlockId = 50;
 const BED: BlockId = 52;
+const CHOPPING_BLOCK: BlockId = 56;
 const MISSING_BELOW_OCCLUDER: BlockId = 1;
 #[inline]
 fn is_door(id: BlockId) -> bool {
@@ -525,6 +526,11 @@ fn is_door(id: BlockId) -> bool {
 #[inline]
 fn is_bed(id: BlockId) -> bool {
     id == BED
+}
+
+#[inline]
+fn is_chopping_block(id: BlockId) -> bool {
+    id == CHOPPING_BLOCK
 }
 
 // #118 snow overlay: snow is a thin BLANKET on top of the surface block, not a solid
@@ -539,9 +545,9 @@ fn is_snow_overlay(id: BlockId) -> bool {
     id == SNOW_LAYER || id == TRODDEN_SNOW
 }
 
-// A cell is OPAQUE if it is non-air, not water (9), not glass, not a door/bed, not a
-// snow overlay, not a prop. Beds are low custom furniture, so neighbouring cubes keep
-// their faces and sunlight passes through the unused space above the mattress.
+// A cell is OPAQUE if it is non-air, not water (9), not glass, not custom furniture,
+// not a snow overlay, not a prop. Beds and chopping blocks are shaped meshes, so
+// neighbouring cubes keep their faces instead of treating the whole cell as filled.
 #[inline]
 fn is_opaque(id: BlockId) -> bool {
     id != 0
@@ -549,6 +555,7 @@ fn is_opaque(id: BlockId) -> bool {
         && !is_glass(id)
         && !is_door(id)
         && !is_bed(id)
+        && !is_chopping_block(id)
         && !is_snow_overlay(id)
         && !is_prop(id)
 }
@@ -559,8 +566,8 @@ fn is_waterlogged(id: BlockId) -> bool {
     id == 43 || id == 46
 }
 
-// Is this block id an AO-occluder? Air(0), water(9), glass, doors, beds, snow overlay,
-// and props do not occlude.
+// Is this block id an AO-occluder? Air(0), water(9), glass, doors, shaped furniture,
+// snow overlay, and props do not occlude.
 #[inline]
 fn is_occluder(id: BlockId) -> bool {
     id != 0
@@ -568,6 +575,7 @@ fn is_occluder(id: BlockId) -> bool {
         && !is_glass(id)
         && !is_door(id)
         && !is_bed(id)
+        && !is_chopping_block(id)
         && !is_snow_overlay(id)
         && !is_prop(id)
 }
@@ -1157,6 +1165,48 @@ fn emit_bed(
             BedAxis::X => (lo, hi, wlo, whi),
             BedAxis::Z => (wlo, whi, lo, hi),
         };
+        if !emit_cuboid_16(bx, by, bz, xlo, xhi, ylo, yhi, zlo, zhi, mat, sky, blk, buf) {
+            return false;
+        }
+    }
+    true
+}
+
+// Finished west-facing woodcutter workstation: a buttressed oak stump and ringed
+// cut face, two split log halves, then an iron axe embedded near the centre. The
+// broad blade faces the west work cell while the stepped handle cants south so its
+// silhouette stays readable head-on. Every point stays inside Y=0..16 because
+// placement and collision own exactly this one voxel.
+fn emit_chopping_block(bx: i32, by: i32, bz: i32, sky: u8, blk: u8, buf: &mut MeshBuffers) -> bool {
+    const CUBOIDS: usize = 13;
+    if buf.vtx_cap - buf.vtx.len() < CUBOIDS * 24 * VERTEX_SIZE
+        || buf.idx_cap - buf.idx.len() < CUBOIDS * 36 * INDEX_SIZE
+    {
+        return false;
+    }
+
+    const OAK_PLANKS: BlockId = 4;
+    const OAK_LOG: BlockId = 21;
+    const IRON: BlockId = 53;
+
+    // (x low/high, y low/high, z low/high, material), in cell-local sixteenths.
+    let pieces = [
+        (3, 13, 0, 7, 3, 13, OAK_LOG),       // stump core
+        (1, 5, 0, 3, 6, 10, OAK_LOG),        // west root
+        (11, 15, 0, 3, 6, 10, OAK_LOG),      // east root
+        (6, 10, 0, 3, 1, 5, OAK_LOG),        // north root
+        (6, 10, 0, 3, 11, 15, OAK_LOG),      // south root
+        (3, 13, 7, 8, 3, 13, OAK_LOG),       // ringed cut face
+        (4, 7, 8, 11, 3, 11, OAK_LOG),       // split log half
+        (9, 12, 8, 10, 5, 13, OAK_LOG),      // lower split half
+        (5, 7, 10, 14, 1, 7, IRON),          // broad embedded cutting edge
+        (7, 10, 11, 14, 6, 10, IRON),        // axe eye
+        (8, 10, 12, 14, 8, 10, OAK_PLANKS),  // handle, low
+        (8, 10, 13, 15, 9, 11, OAK_PLANKS),  // handle, middle
+        (8, 10, 14, 16, 11, 13, OAK_PLANKS), // handle, south/high
+    ];
+
+    for &(xlo, xhi, ylo, yhi, zlo, zhi, mat) in &pieces {
         if !emit_cuboid_16(bx, by, bz, xlo, xhi, ylo, yhi, zlo, zhi, mat, sky, blk, buf) {
             return false;
         }
@@ -1877,6 +1927,18 @@ impl GreedyMesher {
                 for z in 0..KCHUNK_DIM {
                     let here = chunk_get(chunk_opt, x, y, z);
 
+                    // #245 chopping block: persistent chunk geometry, not a distance-
+                    // culled prop and never the generic id-56 cube.
+                    if is_chopping_block(here) {
+                        let wsky = chunk.sky_light(x as usize, y as usize, z as usize);
+                        let wblk = chunk.block_light(x as usize, y as usize, z as usize);
+                        if !emit_chopping_block(x, y, z, wsky, wblk, &mut buf) {
+                            buf.full = true;
+                            return finalize(buf, false);
+                        }
+                        continue;
+                    }
+
                     // #244 beds: two stateless BED cells become one finished furniture
                     // mesh. The low X/Z endpoint owns both cells, preventing duplicate
                     // geometry and the internal full-block seam. An orphan still draws
@@ -2291,6 +2353,61 @@ mod tests {
         assert!(
             right_res.empty,
             "the high chunk half must not emit a duplicate bed"
+        );
+    }
+
+    #[test]
+    fn chopping_block_is_a_finished_west_facing_custom_mesh() {
+        assert!(!is_opaque(CHOPPING_BLOCK));
+        assert!(!is_occluder(CHOPPING_BLOCK));
+
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(8, 8, 8, CHOPPING_BLOCK);
+        store.chunks.insert(ChunkCoord::default(), ch);
+
+        let (res, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+        let verts = decode_position_and_mat(&vtx);
+        assert_eq!(res.index_count, 13 * 36, "13 closed detail cuboids");
+        assert_eq!(res.vertex_bytes, 13 * 24 * VERTEX_SIZE as u32);
+        assert_eq!(verts.len(), 13 * 24);
+        assert_eq!(verts.iter().filter(|(_, m)| *m == 21).count(), 8 * 24);
+        assert_eq!(verts.iter().filter(|(_, m)| *m == 4).count(), 3 * 24);
+        assert_eq!(verts.iter().filter(|(_, m)| *m == 53).count(), 2 * 24);
+        assert!(
+            verts.iter().all(|(_, m)| *m != CHOPPING_BLOCK),
+            "id 56 dispatches only real wood/iron materials, never a generic cube"
+        );
+
+        let bounds = |axis: usize| {
+            verts
+                .iter()
+                .map(|(p, _)| p[axis])
+                .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)))
+        };
+        let (xmin, xmax) = bounds(0);
+        let (ymin, ymax) = bounds(1);
+        let (zmin, zmax) = bounds(2);
+        assert!((xmin - 8.0625).abs() < 1e-4 && (xmax - 8.9375).abs() < 1e-4);
+        assert!((zmin - 8.0625).abs() < 1e-4 && (zmax - 8.9375).abs() < 1e-4);
+        assert!((ymin - 8.0).abs() < 1e-4, "stump roots sit on the floor");
+        assert!(
+            (ymax - 9.0).abs() < 1e-4,
+            "raised handle reaches the cell top without entering the unowned voxel above"
+        );
+
+        let high_handle: Vec<_> = verts
+            .iter()
+            .filter(|(p, m)| *m == 4 && p[1] > 8.98)
+            .collect();
+        assert!(!high_handle.is_empty());
+        assert!(
+            high_handle.iter().all(|(p, _)| p[2] >= 8.625),
+            "handle cants south so the axe reads from the west work cell"
+        );
+        assert!(
+            verts.iter().any(|(p, m)| *m == 53 && p[1] < 9.0),
+            "iron blade is embedded down in the split log"
         );
     }
 

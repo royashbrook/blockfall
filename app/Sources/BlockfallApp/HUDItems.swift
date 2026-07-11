@@ -70,6 +70,7 @@ private let kItemTable: [UInt16: ItemInfo] = [
     93: .init(name: "Mushroom",      color: itemColor(0.78, 0.36, 0.32)),
     95: .init(name: "Magnet Charm",  color: itemColor(0.75, 0.55, 0.95)),
     96: .init(name: "Gold Coin",     color: itemColor(0.95, 0.80, 0.25)),
+    97: .init(name: "Chopping Block",color: itemColor(0.47, 0.31, 0.16)),
 ]
 func itemName(_ id: UInt16) -> String { kItemTable[id]?.name ?? "Item \(id)" }
 func itemChipColor(_ id: UInt16) -> NSColor { kItemTable[id]?.color ?? NSColor(hue: CGFloat(id % 12)/12, saturation: 0.6, brightness: 0.9, alpha: 1) }
@@ -146,6 +147,8 @@ func itemDescription(id: UInt16) -> String {
     case 91: return "Hearty mushroom stew. Fills you up and heals a good chunk of health."
     case 92: return "Yummy honey cake. A tasty treat that restores lots of health."
     case 93: return "A wild mushroom. Eat it or use it to cook a stew!"
+    // Workstations
+    case 97: return "A sturdy stump with an axe, ready for a woodcutter to get to work."
     default: return "A useful item. Try crafting with it or placing it in the world!"
     }
 }

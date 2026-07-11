@@ -3,8 +3,8 @@
 //!
 //! Sky light falls straight down at 15 through air until an opaque block (hard shadow),
 //! then spreads horizontally at -1 per step. Block light BFS-spreads from emitters.
-//! Glass and thin props/furniture (including trunks, doors, and beds) pass light;
-//! leaves stay opaque.
+//! Glass and thin props/furniture (including trunks, doors, beds, and workstations)
+//! pass light; leaves stay opaque.
 //!
 //! Where C++ uses raw pointers to read neighbours while writing the target chunk, this
 //! port gathers every read (target blocks, old light, neighbour boundary light, column
@@ -34,7 +34,13 @@ pub fn light_snow_overlay(b: BlockId) -> bool {
     b == 12 || b == 54
 }
 pub fn light_opaque(b: BlockId) -> bool {
-    b != 0 && b != 9 && b != 52 && !light_glass(b) && !light_plant(b) && !light_snow_overlay(b)
+    b != 0
+        && b != 9
+        && b != 52
+        && b != 56
+        && !light_glass(b)
+        && !light_plant(b)
+        && !light_snow_overlay(b)
 }
 pub fn light_emit(b: BlockId) -> u8 {
     match b {
@@ -360,6 +366,28 @@ mod tests {
             ch.sky_light(8, 7, 8),
             15,
             "low furniture must not cast a full-cube shadow"
+        );
+    }
+
+    #[test]
+    fn chopping_block_is_sky_light_pass_through() {
+        let mut store = ChunkStore::new();
+        let cc = ChunkCoord { x: 0, y: 0, z: 0 };
+        let mut ch = PaletteChunk::new(cc, 0);
+        ch.set(8, 8, 8, 56);
+        store.insert(ch);
+
+        light_chunk(&mut store, cc);
+        let ch = store.get(cc).unwrap();
+        assert_eq!(
+            ch.sky_light(8, 8, 8),
+            15,
+            "custom workstation mesh reads light from its cell"
+        );
+        assert_eq!(
+            ch.sky_light(8, 7, 8),
+            15,
+            "shaped workstation must not cast a full-cube shadow"
         );
     }
 }

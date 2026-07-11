@@ -451,6 +451,31 @@ fn struct_set<C: Chunk>(chunk: &mut C, wx: i32, wy: i32, wz: i32, wx_min: i32, w
     true
 }
 
+// Structure writes deliberately do not clear existing solids when passed AIR.
+// This scoped companion is only for guaranteed body-clear spaces such as the
+// chopping block's work cell and overhead silhouette.
+fn struct_clear<C: Chunk>(
+    chunk: &mut C,
+    wx: i32,
+    wy: i32,
+    wz: i32,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+) -> bool {
+    if wx < wx_min || wx > wx_min + K_CHUNK_DIM - 1 {
+        return false;
+    }
+    if wy < wy_min || wy > wy_min + K_CHUNK_DIM - 1 {
+        return false;
+    }
+    if wz < wz_min || wz > wz_min + K_CHUNK_DIM - 1 {
+        return false;
+    }
+    chunk.set(wx - wx_min, wy - wy_min, wz - wz_min, AIR);
+    true
+}
+
 fn struct_fill_col<C: Chunk>(chunk: &mut C, wx: i32, wz: i32, top_wy: i32, seed: u64, wx_min: i32, wy_min: i32, wz_min: i32, b: BlockId) {
     let col_h = struct_surface(wx, wz, seed);
     let mut wy = col_h + 1;
@@ -1156,6 +1181,55 @@ fn place_settlement_building<C: Chunk>(
     }
 }
 
+// Finished woodcutter workstation at the south-east edge of the central yard.
+// The offset is outside both plazas but inside the empty gap before generated
+// building sites. The west cell faces the yard and stays level, supported, and
+// two blocks clear for a standing worker.
+fn place_settlement_chopping_block<C: Chunk>(
+    ax: i32,
+    az: i32,
+    seed: u64,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+    foundation: BlockId,
+) {
+    let (station_x, station_z) = (ax + 4, az + 4);
+    let (work_x, work_z) = (station_x - 1, station_z);
+    let floor_y = struct_surface(station_x, station_z, seed)
+        .max(struct_surface(work_x, work_z, seed))
+        .max(SEA_LEVEL + 1);
+
+    for (wx, wz) in [(station_x, station_z), (work_x, work_z)] {
+        struct_fill_col(
+            chunk, wx, wz, floor_y, seed, wx_min, wy_min, wz_min, foundation,
+        );
+        struct_set(chunk, wx, floor_y, wz, wx_min, wy_min, wz_min, foundation);
+    }
+    struct_set(
+        chunk,
+        station_x,
+        floor_y + 1,
+        station_z,
+        wx_min,
+        wy_min,
+        wz_min,
+        CHOPPING_BLOCK,
+    );
+    struct_clear(
+        chunk,
+        station_x,
+        floor_y + 2,
+        station_z,
+        wx_min,
+        wy_min,
+        wz_min,
+    );
+    struct_clear(chunk, work_x, floor_y + 1, work_z, wx_min, wy_min, wz_min);
+    struct_clear(chunk, work_x, floor_y + 2, work_z, wx_min, wy_min, wz_min);
+}
+
 fn place_village<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
     for dz in -1..=1 {
         for dx in -1..=1 {
@@ -1175,6 +1249,7 @@ fn place_village<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, w
         let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x2545F4914F6CDD1D).wrapping_add(71)));
         place_settlement_building(ax, az, *site, hh, seed, chunk, wx_min, wy_min, wz_min);
     }
+    place_settlement_chopping_block(ax, az, seed, chunk, wx_min, wy_min, wz_min, COBBLESTONE);
 
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
@@ -1478,6 +1553,7 @@ fn place_city<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
         let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(131)));
         place_settlement_building(ax, az, *site, hh, seed, chunk, wx_min, wy_min, wz_min);
     }
+    place_settlement_chopping_block(ax, az, seed, chunk, wx_min, wy_min, wz_min, STONE_BRICK);
 
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
