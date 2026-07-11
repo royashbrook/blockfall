@@ -379,10 +379,17 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         let frameStart = CACurrentMediaTime()
         frameIdx += 1; registry.currentFrame = frameIdx
         registry.collect()
-        yawAccum += yaw
+        // #250 entity A/B must measure the same view. A frame-count-driven orbit
+        // makes the faster variant rotate and travel farther during an equal-time
+        // run, changing streamed terrain as well as entity shape cost. Freeze the
+        // camera only for the dedicated 32-villager stress scene.
+        let appliedYaw: Float = entityStress ? 0 : yaw
+        let appliedForward: Float = entityStress ? 0 : forward
+        yawAccum += appliedYaw
         let now = CACurrentMediaTime(); let dt = now - lastDt; lastDt = now
-        // Keep the player slowly orbiting so chunks stream continuously (worst case).
-        var input = bf_frame_input(); input.move_forward = forward; input.look_yaw_delta = yaw
+        // The normal reference keeps orbiting so chunks stream continuously; the
+        // dedicated entity stress comparison stays on the fixed view above.
+        var input = bf_frame_input(); input.move_forward = appliedForward; input.look_yaw_delta = appliedYaw
         input.look_pitch_delta = pitch   // #52 shot mode tilts down to frame ground props
         let engineStart = CACurrentMediaTime()
         _ = bf_frame_begin(e, &input, dt)
