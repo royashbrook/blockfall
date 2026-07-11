@@ -1436,11 +1436,27 @@ fn place_tall_tower<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C
 
     // 3x3 hollow shaft of stone brick from base+2 up to top_y.
     for wy in (base_h + 2)..=top_y {
+        let level = wy - base_h;
+        let accent_i = level / 5;
+        let accent_corner = (accent_i + ((h >> 12) & 3) as i32) & 3;
         for dz in -1..=1 {
             for dx in -1..=1 {
                 let wall = dx == -1 || dx == 1 || dz == -1 || dz == 1;
                 if wall {
-                    struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
+                    // One corner accent every five levels breaks the blank shaft
+                    // without turning the intact tower into a ruin.
+                    let corner = match accent_corner {
+                        0 => (-1, -1),
+                        1 => (1, -1),
+                        2 => (1, 1),
+                        _ => (-1, 1),
+                    };
+                    let b = if level % 5 == 0 && (dx, dz) == corner {
+                        if accent_i & 1 == 0 { MOSSY_STONE } else { STONE_RUBBLE }
+                    } else {
+                        STONE_BRICK
+                    };
+                    struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, b);
                 } else {
                     // Hollow interior; carve to air so the tower is enterable.
                     struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, AIR);
@@ -1468,7 +1484,7 @@ fn place_tall_tower<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C
             struct_set(chunk, ax + dx, top_y + 1, az + dz, wx_min, wy_min, wz_min, COBBLESTONE);
             let corner = dx != 0 && dz != 0;
             if corner {
-                struct_set(chunk, ax + dx, top_y + 2, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
+                struct_set(chunk, ax + dx, top_y + 2, az + dz, wx_min, wy_min, wz_min, STONE_RUBBLE);
             }
         }
     }
@@ -1657,6 +1673,26 @@ fn place_ruin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
                 struct_set(chunk, ax + dx, base_h + wy, az + dz, wx_min, wy_min, wz_min, b);
             }
         }
+    }
+
+    // A guaranteed readable south entrance: two clear floor-to-head cells under a
+    // chipped two-piece lintel, with taller flanking buttresses. Clear everything
+    // above the lintel so the random wall pass cannot bury this silhouette.
+    for dx in [-1, 0] {
+        for wy in 1..=2 {
+            struct_clear(chunk, ax + dx, base_h + wy, az - r, wx_min, wy_min, wz_min);
+        }
+        struct_set(chunk, ax + dx, base_h + 3, az - r, wx_min, wy_min, wz_min, STONE_RUBBLE);
+        for wy in 4..=(wall_h + 2) {
+            struct_clear(chunk, ax + dx, base_h + wy, az - r, wx_min, wy_min, wz_min);
+        }
+    }
+    for (dx, lower) in [(-2, COBBLESTONE), (1, MOSSY_STONE)] {
+        for wy in 1..=3 {
+            let b = if wy == 2 { STONE_BRICK } else { lower };
+            struct_set(chunk, ax + dx, base_h + wy, az - r, wx_min, wy_min, wz_min, b);
+        }
+        struct_set(chunk, ax + dx, base_h + 4, az - r, wx_min, wy_min, wz_min, STONE_RUBBLE);
     }
 
     // A broken inner stub: a couple of standing pillars and toppled rubble.

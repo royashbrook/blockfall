@@ -1210,11 +1210,20 @@ mod worldgen_tests {
                 "{name}: expected sparse shaped detail, found {} cells",
                 rubble.len()
             );
+            let base_h = (-4..=4)
+                .flat_map(|dz| (-4..=4).map(move |dx| struct_surface(sd.anchor_wx + dx, sd.anchor_wz + dz, seed)))
+                .max()
+                .unwrap();
             assert!(
                 rubble.iter().all(|&(x, y, z)| {
-                    cells.get(&(x, y - 1, z)).copied().unwrap_or(AIR) != AIR
+                    let below = cells.get(&(x, y - 1, z)).copied().unwrap_or(AIR) != AIR;
+                    let ruin_arch = typ == STRUCT_RUIN
+                        && z == sd.anchor_wz - 4
+                        && (x == sd.anchor_wx - 1 || x == sd.anchor_wx)
+                        && y == base_h + 3;
+                    below || ruin_arch
                 }),
-                "{name}: every shaped cap/pile must have a solid block below"
+                "{name}: every shaped cap/pile must have vertical or arch support"
             );
             let heights: std::collections::HashSet<_> = rubble.iter().map(|&(_, y, _)| y).collect();
             assert!(heights.len() >= 2, "{name}: rubble skyline stayed flat");
@@ -1224,7 +1233,76 @@ mod worldgen_tests {
                 .filter(|&&b| cells.values().any(|&cell| cell == b))
                 .count();
             assert_eq!(stone_palette, 3, "{name}: weathered stone texture collapsed");
+
+            if typ == STRUCT_RUIN {
+                let at = |dx: i32, dy: i32| {
+                    cells
+                        .get(&(sd.anchor_wx + dx, base_h + dy, sd.anchor_wz - 4))
+                        .copied()
+                        .unwrap_or(AIR)
+                };
+                for dx in [-1, 0] {
+                    assert_eq!(at(dx, 1), AIR, "ruin doorway foot blocked");
+                    assert_eq!(at(dx, 2), AIR, "ruin doorway head blocked");
+                    assert_eq!(at(dx, 3), STONE_RUBBLE, "ruin chipped arch missing");
+                    assert_eq!(at(dx, 4), AIR, "random wall buried the ruin arch");
+                }
+                for dx in [-2, 1] {
+                    assert_ne!(at(dx, 1), AIR, "ruin buttress base missing");
+                    assert_ne!(at(dx, 3), AIR, "ruin buttress shaft missing");
+                    assert_eq!(at(dx, 4), STONE_RUBBLE, "ruin buttress cap missing");
+                }
+            }
         }
+    }
+
+    #[test]
+    fn tall_tower_has_restrained_weathered_shaft_and_shaped_crown() {
+        let seed = 11u64;
+        let sd = StructDesc {
+            anchor_wx: 15,
+            anchor_wz: -17,
+            typ: STRUCT_TALL_TOWER,
+            cell_hash: fmix64(seed ^ 0x2477A11),
+            present: true,
+        };
+        let cells = stamp_structure_order(&sd, seed, false);
+        assert_eq!(cells, stamp_structure_order(&sd, seed, true));
+
+        let base_h = (-2..=2)
+            .flat_map(|dz| (-2..=2).map(move |dx| struct_surface(sd.anchor_wx + dx, sd.anchor_wz + dz, seed)))
+            .max()
+            .unwrap();
+        let shaft_h = 13 + ((sd.cell_hash >> 4) % 7) as i32;
+        let top_y = base_h + shaft_h;
+        for (dx, dz) in [(-1, -1), (1, -1), (-1, 1), (1, 1)] {
+            assert_eq!(
+                cells.get(&(sd.anchor_wx + dx, top_y + 2, sd.anchor_wz + dz)),
+                Some(&STONE_RUBBLE),
+                "tower corner crown lost its shaped cap"
+            );
+        }
+        let shaft_rubble = cells
+            .iter()
+            .filter(|&(&(x, y, z), &b)| {
+                b == STONE_RUBBLE
+                    && y <= top_y
+                    && (x - sd.anchor_wx).abs() <= 1
+                    && (z - sd.anchor_wz).abs() <= 1
+            })
+            .count();
+        let shaft_moss = cells
+            .iter()
+            .filter(|&(&(x, y, z), &b)| {
+                b == MOSSY_STONE
+                    && y >= base_h + 2
+                    && y <= top_y
+                    && (x - sd.anchor_wx).abs() <= 1
+                    && (z - sd.anchor_wz).abs() <= 1
+            })
+            .count();
+        assert!((1..=3).contains(&shaft_rubble), "tower rubble accents are not restrained");
+        assert!((1..=2).contains(&shaft_moss), "tower weathering is missing or noisy");
     }
 
     // floordiv helper available to tests (mirrors the private seam_floordiv).
