@@ -515,10 +515,16 @@ fn is_glass(id: BlockId) -> bool {
 // swings to the side. Drawn by emit_door, never cube-meshed.
 const DOOR_CLOSED: BlockId = 33;
 const DOOR_OPEN: BlockId = 50;
+const BED: BlockId = 52;
 const MISSING_BELOW_OCCLUDER: BlockId = 1;
 #[inline]
 fn is_door(id: BlockId) -> bool {
     id == DOOR_CLOSED || id == DOOR_OPEN
+}
+
+#[inline]
+fn is_bed(id: BlockId) -> bool {
+    id == BED
 }
 
 // #118 snow overlay: snow is a thin BLANKET on top of the surface block, not a solid
@@ -533,11 +539,18 @@ fn is_snow_overlay(id: BlockId) -> bool {
     id == SNOW_LAYER || id == TRODDEN_SNOW
 }
 
-// A cell is OPAQUE if it is non-air, not water (9), not glass, not a door, not a snow
-// overlay, not a prop.
+// A cell is OPAQUE if it is non-air, not water (9), not glass, not a door/bed, not a
+// snow overlay, not a prop. Beds are low custom furniture, so neighbouring cubes keep
+// their faces and sunlight passes through the unused space above the mattress.
 #[inline]
 fn is_opaque(id: BlockId) -> bool {
-    id != 0 && id != 9 && !is_glass(id) && !is_door(id) && !is_snow_overlay(id) && !is_prop(id)
+    id != 0
+        && id != 9
+        && !is_glass(id)
+        && !is_door(id)
+        && !is_bed(id)
+        && !is_snow_overlay(id)
+        && !is_prop(id)
 }
 
 // Waterlogged props (reed 43, lily pad 46): the cell still renders as water.
@@ -546,11 +559,17 @@ fn is_waterlogged(id: BlockId) -> bool {
     id == 43 || id == 46
 }
 
-// Is this block id an AO-occluder? Air(0), water(9), glass, doors, snow overlay, props
-// do not occlude.
+// Is this block id an AO-occluder? Air(0), water(9), glass, doors, beds, snow overlay,
+// and props do not occlude.
 #[inline]
 fn is_occluder(id: BlockId) -> bool {
-    id != 0 && id != 9 && !is_glass(id) && !is_door(id) && !is_snow_overlay(id) && !is_prop(id)
+    id != 0
+        && id != 9
+        && !is_glass(id)
+        && !is_door(id)
+        && !is_bed(id)
+        && !is_snow_overlay(id)
+        && !is_prop(id)
 }
 
 // Sample a block at an arbitrary world offset from (x,y,z) in chunk cc.
@@ -637,6 +656,59 @@ fn sample_block_known<S: ChunkStore>(
     store
         .get(nc)
         .map(|nb| nb.get(nx as usize, ny as usize, nz as usize))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BedAxis {
+    X,
+    Z,
+}
+
+// A generated bed is two identical BED cells, so its cardinal neighbour supplies the
+// missing orientation/state. The lower world X/Z cell owns the pair and emits both
+// halves, including when the second cell crosses a chunk seam.
+fn bed_pair_axis<S: ChunkStore>(
+    current_chunk: Option<&S::Chunk>,
+    cc: ChunkCoord,
+    store: &S,
+    x: i32,
+    y: i32,
+    z: i32,
+) -> Option<(BedAxis, bool)> {
+    if is_bed(sample_block(current_chunk, cc, store, x - 1, y, z)) {
+        Some((BedAxis::X, false))
+    } else if is_bed(sample_block(current_chunk, cc, store, x + 1, y, z)) {
+        Some((BedAxis::X, true))
+    } else if is_bed(sample_block(current_chunk, cc, store, x, y, z - 1)) {
+        Some((BedAxis::Z, false))
+    } else if is_bed(sample_block(current_chunk, cc, store, x, y, z + 1)) {
+        Some((BedAxis::Z, true))
+    } else {
+        None
+    }
+}
+
+// Prefer the endpoint backed against a wall for the headboard. If neither endpoint
+// (or both endpoints) touches opaque structure, the low-coordinate end wins so the
+// result remains deterministic without adding persistent block state.
+#[allow(clippy::too_many_arguments)]
+fn bed_head_at_low<S: ChunkStore>(
+    current_chunk: Option<&S::Chunk>,
+    cc: ChunkCoord,
+    store: &S,
+    x: i32,
+    y: i32,
+    z: i32,
+    axis: BedAxis,
+    length_cells: i32,
+) -> bool {
+    let (low_x, low_z, high_x, high_z) = match axis {
+        BedAxis::X => (x - 1, z, x + length_cells, z),
+        BedAxis::Z => (x, z - 1, x, z + length_cells),
+    };
+    let low_wall = is_opaque(sample_block(current_chunk, cc, store, low_x, y, low_z));
+    let high_wall = is_opaque(sample_block(current_chunk, cc, store, high_x, y, high_z));
+    low_wall || !high_wall
 }
 
 fn door_mesh_rotated<S: ChunkStore>(
@@ -940,6 +1012,155 @@ fn emit_quad(
         buf.write_index(i);
     }
 
+    true
+}
+
+// Closed axis-aligned cuboid in cell-local sixteenths. Bounds may span 0..32 so one
+// owner cell can emit a complete two-block furnishing, even across a chunk boundary.
+// The packed position splits every bound into an integer cell step plus a 4-bit frac.
+#[allow(clippy::too_many_arguments)]
+fn emit_cuboid_16(
+    bx: i32,
+    by: i32,
+    bz: i32,
+    xlo: u32,
+    xhi: u32,
+    ylo: u32,
+    yhi: u32,
+    zlo: u32,
+    zhi: u32,
+    mat: BlockId,
+    sky: u8,
+    blk: u8,
+    buf: &mut MeshBuffers,
+) -> bool {
+    debug_assert!(xlo < xhi && ylo < yhi && zlo < zhi);
+    debug_assert!(xhi <= 32 && yhi <= 32 && zhi <= 32);
+    if buf.vtx_cap - buf.vtx.len() < 24 * VERTEX_SIZE
+        || buf.idx_cap - buf.idx.len() < 36 * INDEX_SIZE
+    {
+        return false;
+    }
+
+    const AO: u32 = 3;
+    let (x, y, z) = (bx as u32, by as u32, bz as u32);
+    let vert = |fx: u32, fy: u32, fz: u32, normal: u32, u: u32, v: u32| -> BFVertex {
+        let px = x + (fx >> 4);
+        let py = y + (fy >> 4);
+        let pz = z + (fz >> 4);
+        BFVertex {
+            pos_packed: bf_pack_pos(px, py, pz, fx & 0xF, fy & 0xF, fz & 0xF),
+            normal_uv: bf_pack_normal_uv(normal, AO, u, v),
+            material_id: mat,
+            sky_light: sky,
+            block_light: blk,
+            reserved: bf_pack_pos_hi(px, py, pz),
+        }
+    };
+
+    buf.quad(
+        &vert(xhi, ylo, zlo, BF_NX_POS, 0, 0),
+        &vert(xhi, yhi, zlo, BF_NX_POS, 0, 1),
+        &vert(xhi, yhi, zhi, BF_NX_POS, 1, 1),
+        &vert(xhi, ylo, zhi, BF_NX_POS, 1, 0),
+    );
+    buf.quad(
+        &vert(xlo, ylo, zhi, BF_NX_NEG, 0, 0),
+        &vert(xlo, yhi, zhi, BF_NX_NEG, 0, 1),
+        &vert(xlo, yhi, zlo, BF_NX_NEG, 1, 1),
+        &vert(xlo, ylo, zlo, BF_NX_NEG, 1, 0),
+    );
+    buf.quad(
+        &vert(xhi, ylo, zhi, BF_NZ_POS, 0, 0),
+        &vert(xhi, yhi, zhi, BF_NZ_POS, 0, 1),
+        &vert(xlo, yhi, zhi, BF_NZ_POS, 1, 1),
+        &vert(xlo, ylo, zhi, BF_NZ_POS, 1, 0),
+    );
+    buf.quad(
+        &vert(xlo, ylo, zlo, BF_NZ_NEG, 0, 0),
+        &vert(xlo, yhi, zlo, BF_NZ_NEG, 0, 1),
+        &vert(xhi, yhi, zlo, BF_NZ_NEG, 1, 1),
+        &vert(xhi, ylo, zlo, BF_NZ_NEG, 1, 0),
+    );
+    buf.quad(
+        &vert(xhi, yhi, zlo, BF_NY_POS, 0, 0),
+        &vert(xlo, yhi, zlo, BF_NY_POS, 1, 0),
+        &vert(xlo, yhi, zhi, BF_NY_POS, 1, 1),
+        &vert(xhi, yhi, zhi, BF_NY_POS, 0, 1),
+    );
+    buf.quad(
+        &vert(xlo, ylo, zlo, BF_NY_NEG, 0, 0),
+        &vert(xhi, ylo, zlo, BF_NY_NEG, 1, 0),
+        &vert(xhi, ylo, zhi, BF_NY_NEG, 1, 1),
+        &vert(xlo, ylo, zhi, BF_NY_NEG, 0, 1),
+    );
+    true
+}
+
+// A finished bed is one coherent piece of furniture: oak rails/legs/headboard,
+// a raised wool mattress and pillow, and a thin red quilt. `length` is 16 for a
+// malformed/orphan cell and 32 for the normal generated two-cell bed.
+#[allow(clippy::too_many_arguments)]
+fn emit_bed(
+    bx: i32,
+    by: i32,
+    bz: i32,
+    axis: BedAxis,
+    length: u32,
+    head_at_low: bool,
+    sky: u8,
+    blk: u8,
+    buf: &mut MeshBuffers,
+) -> bool {
+    const CUBOIDS: usize = 12;
+    if buf.vtx_cap - buf.vtx.len() < CUBOIDS * 24 * VERTEX_SIZE
+        || buf.idx_cap - buf.idx.len() < CUBOIDS * 36 * INDEX_SIZE
+    {
+        return false;
+    }
+
+    const OAK: BlockId = 4;
+    const WOOL: BlockId = 28;
+    debug_assert!(length == 16 || length == 32);
+
+    let (head_lo, head_hi, pillow_lo, pillow_hi, quilt_lo, quilt_hi) = if head_at_low {
+        (1, 3, 3, 8, 8, length - 3)
+    } else {
+        (
+            length - 3,
+            length - 1,
+            length - 8,
+            length - 3,
+            3,
+            length - 8,
+        )
+    };
+
+    // (length low/high, width low/high, height low/high, material)
+    let pieces = [
+        (1, length - 1, 1, 3, 3, 6, OAK),
+        (1, length - 1, 13, 15, 3, 6, OAK),
+        (1, 3, 3, 13, 3, 6, OAK),
+        (length - 3, length - 1, 3, 13, 3, 6, OAK),
+        (1, 4, 1, 4, 0, 3, OAK),
+        (1, 4, 12, 15, 0, 3, OAK),
+        (length - 4, length - 1, 1, 4, 0, 3, OAK),
+        (length - 4, length - 1, 12, 15, 0, 3, OAK),
+        (head_lo, head_hi, 1, 15, 6, 15, OAK),
+        (3, length - 3, 3, 13, 6, 10, WOOL),
+        (pillow_lo, pillow_hi, 4, 12, 10, 13, WOOL),
+        (quilt_lo, quilt_hi, 3, 13, 10, 11, BED),
+    ];
+
+    for &(lo, hi, wlo, whi, ylo, yhi, mat) in &pieces {
+        let (xlo, xhi, zlo, zhi) = match axis {
+            BedAxis::X => (lo, hi, wlo, whi),
+            BedAxis::Z => (wlo, whi, lo, hi),
+        };
+        if !emit_cuboid_16(bx, by, bz, xlo, xhi, ylo, yhi, zlo, zhi, mat, sky, blk, buf) {
+            return false;
+        }
+    }
     true
 }
 
@@ -1656,6 +1877,36 @@ impl GreedyMesher {
                 for z in 0..KCHUNK_DIM {
                     let here = chunk_get(chunk_opt, x, y, z);
 
+                    // #244 beds: two stateless BED cells become one finished furniture
+                    // mesh. The low X/Z endpoint owns both cells, preventing duplicate
+                    // geometry and the internal full-block seam. An orphan still draws
+                    // a compact standalone bed instead of disappearing or reverting to
+                    // the old featureless cube.
+                    if is_bed(here) {
+                        let (axis, length, head_at_low) =
+                            match bed_pair_axis(chunk_opt, c, store, x, y, z) {
+                                Some((_axis, false)) => continue,
+                                Some((axis, true)) => {
+                                    let head =
+                                        bed_head_at_low(chunk_opt, c, store, x, y, z, axis, 2);
+                                    (axis, 32, head)
+                                }
+                                None => {
+                                    let axis = BedAxis::X;
+                                    let head =
+                                        bed_head_at_low(chunk_opt, c, store, x, y, z, axis, 1);
+                                    (axis, 16, head)
+                                }
+                            };
+                        let bsky = chunk.sky_light(x as usize, y as usize, z as usize);
+                        let bblk = chunk.block_light(x as usize, y as usize, z as usize);
+                        if !emit_bed(x, y, z, axis, length, head_at_low, bsky, bblk, &mut buf) {
+                            buf.full = true;
+                            return finalize(buf, false);
+                        }
+                        continue;
+                    }
+
                     // #69 doors: thin slab geometry, not a prop or a cube.
                     if is_door(here) {
                         let dsky = chunk.sky_light(x as usize, y as usize, z as usize);
@@ -1905,6 +2156,142 @@ mod tests {
             out.push((y + fy / 16.0, mat));
         }
         out
+    }
+
+    fn decode_position_and_mat(vtx: &[u8]) -> Vec<([f32; 3], u16)> {
+        vtx.chunks_exact(16)
+            .map(|ch| {
+                let pos = u32::from_le_bytes([ch[0], ch[1], ch[2], ch[3]]);
+                let reserved = u32::from_le_bytes([ch[12], ch[13], ch[14], ch[15]]);
+                let x = (pos & 0x3F) | ((reserved & 1) << 6);
+                let y = ((pos >> 6) & 0x3F) | (((reserved >> 1) & 1) << 6);
+                let z = ((pos >> 12) & 0x3F) | (((reserved >> 2) & 1) << 6);
+                let fx = (pos >> 18) & 0xF;
+                let fy = (pos >> 22) & 0xF;
+                let fz = (pos >> 26) & 0xF;
+                let mat = u16::from_le_bytes([ch[8], ch[9]]);
+                (
+                    [
+                        x as f32 + fx as f32 / 16.0,
+                        y as f32 + fy as f32 / 16.0,
+                        z as f32 + fz as f32 / 16.0,
+                    ],
+                    mat,
+                )
+            })
+            .collect()
+    }
+
+    fn bed_vertices(vtx: &[u8]) -> Vec<([f32; 3], u16)> {
+        decode_position_and_mat(vtx)
+            .into_iter()
+            .filter(|&(_, mat)| mat == 4 || mat == 28 || mat == BED)
+            .collect()
+    }
+
+    #[test]
+    fn paired_bed_x_is_one_low_finished_furniture_mesh() {
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(7, 8, 8, BED);
+        ch.set(8, 8, 8, BED);
+        store.chunks.insert(ChunkCoord::default(), ch);
+
+        let (res, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+        assert_eq!(
+            res.index_count,
+            12 * 36,
+            "the low endpoint emits 12 cuboids once"
+        );
+        let bed = bed_vertices(&vtx);
+        assert_eq!(bed.len(), 12 * 24);
+        assert_eq!(bed.iter().filter(|(_, m)| *m == 4).count(), 9 * 24);
+        assert_eq!(bed.iter().filter(|(_, m)| *m == 28).count(), 2 * 24);
+        assert_eq!(bed.iter().filter(|(_, m)| *m == BED).count(), 24);
+
+        let bounds = |axis: usize| {
+            bed.iter()
+                .map(|(p, _)| p[axis])
+                .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)))
+        };
+        let (xmin, xmax) = bounds(0);
+        let (ymin, ymax) = bounds(1);
+        let (zmin, zmax) = bounds(2);
+        assert!(xmax - xmin > 1.8 && zmax - zmin < 1.0, "bed runs along X");
+        assert!((ymin - 8.0).abs() < 1e-4, "legs reach the floor");
+        assert!(ymax > 8.8 && ymax < 9.0, "headboard is tall but not a cube");
+        assert!(
+            bed.iter()
+                .filter(|(p, m)| *m == 4 && p[1] > 8.8)
+                .all(|(p, _)| p[0] < 7.25),
+            "with equal outer endpoints, the low X end owns the headboard"
+        );
+        assert!(
+            bed.iter()
+                .filter(|(_, m)| *m == BED)
+                .all(|(p, _)| p[1] < 9.0),
+            "material 52 is a thin quilt, never either old full BED cube"
+        );
+    }
+
+    #[test]
+    fn paired_bed_z_rotates_and_puts_headboard_against_wall() {
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(8, 8, 7, BED);
+        ch.set(8, 8, 8, BED);
+        ch.set(8, 8, 9, 1); // only the high-Z outer endpoint touches a wall
+        store.chunks.insert(ChunkCoord::default(), ch);
+
+        let (_, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+        let bed = bed_vertices(&vtx);
+        assert_eq!(
+            bed.len(),
+            12 * 24,
+            "the wall must not duplicate either bed half"
+        );
+        let bounds = |axis: usize| {
+            bed.iter()
+                .map(|(p, _)| p[axis])
+                .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)))
+        };
+        let (xmin, xmax) = bounds(0);
+        let (zmin, zmax) = bounds(2);
+        assert!(zmax - zmin > 1.8 && xmax - xmin < 1.0, "bed runs along Z");
+        assert!(
+            bed.iter()
+                .filter(|(p, m)| *m == 4 && p[1] > 8.8)
+                .all(|(p, _)| p[2] > 8.75),
+            "the opaque high-Z endpoint selects the high-Z headboard"
+        );
+    }
+
+    #[test]
+    fn paired_bed_across_x_chunk_seam_is_emitted_by_low_owner() {
+        let mut store = TestStore::new();
+        let left_cc = ChunkCoord::default();
+        let right_cc = ChunkCoord { x: 1, y: 0, z: 0 };
+        let mut left = TestChunk::new();
+        let mut right = TestChunk::new();
+        left.set(15, 8, 8, BED);
+        right.set(0, 8, 8, BED);
+        store.chunks.insert(left_cc, left);
+        store.chunks.insert(right_cc, right);
+
+        let (left_res, left_vtx, _) = GreedyMesher::new().mesh(left_cc, &store, false);
+        assert_eq!(left_res.index_count, 12 * 36);
+        let bed = bed_vertices(&left_vtx);
+        let xmax = bed.iter().map(|(p, _)| p[0]).fold(f32::MIN, f32::max);
+        assert!(
+            xmax > 16.9,
+            "0..32 cuboid span crosses into the neighbour chunk"
+        );
+
+        let (right_res, _, _) = GreedyMesher::new().mesh(right_cc, &store, false);
+        assert!(
+            right_res.empty,
+            "the high chunk half must not emit a duplicate bed"
+        );
     }
 
     // #118 snow overlay: a snow_layer (12) block sitting directly on grass (1) must mesh

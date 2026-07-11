@@ -297,6 +297,7 @@ extension Renderer {
             case 33u: return float3(0.66, 0.46, 0.24);   // oak door: medium wood
             case 34u: return float3(0.52, 0.95, 0.98);   // beacon: glowing cyan
             case 35u: return float3(0.80, 0.66, 1.00);   // crystal lamp: soft lilac
+            case 52u: return float3(0.78, 0.20, 0.25);   // bed quilt: warm storybook red
             case 53u: return float3(0.30, 0.32, 0.36);   // iron gate (#95): dark cool iron
             // ---- DECOR accents: kept vivid and saturated ------------------------------
             case 36u: return float3(0.96, 0.20, 0.20);   // red flower
@@ -606,6 +607,19 @@ extension Renderer {
             float sheen = noise2(uv * 3.5 + float2(vH * 2.0, 1.3));
             float bri   = 1.0 + (sheen - 0.5) * 0.06;
             return float3(clamp(bri, 0.94, 1.06));
+        }
+
+        // ---- BED QUILT (52) --------------------------------------------------
+        // Broad stitched squares keep the blanket readable as soft fabric instead
+        // of another noisy terrain block. Geometry supplies the mattress and folds.
+        if (matID == 52u) {
+            float2 q       = uv * 4.0;
+            float2 cell    = fract(q);
+            float edge     = min(min(cell.x, 1.0 - cell.x), min(cell.y, 1.0 - cell.y));
+            float interior = smoothstep(0.02, 0.09, edge);
+            float checker  = fmod(floor(q.x) + floor(q.y), 2.0);
+            float bri      = mix(0.82, 1.0, interior) * mix(0.94, 1.06, checker);
+            return float3(bri, bri * 0.98, bri * 1.02);
         }
 
         // ---- CRAFTING TABLE (30) -----------------------------------------------
