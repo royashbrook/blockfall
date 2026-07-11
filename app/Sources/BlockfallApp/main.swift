@@ -1379,6 +1379,8 @@ if let idx = CommandLine.arguments.firstIndex(of: "--mapshot"), idx + 1 < Comman
     mapShot(base + "_confirm.png")
     mv.debugSelectMarker(-1)
     mv.viewSpan = period
+    // #241: keep HOME centred at planet zoom while the player sits elsewhere.
+    mv.playerX = Float(px + 6000); mv.playerZ = Float(pz - 5000)
     mapShot(base + "_planet.png")
     // #187 also render the corner minimap with the same sample data (over a green
     // backdrop so the translucent disc reads) for review without the live app.
