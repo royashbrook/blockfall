@@ -116,7 +116,6 @@ fn struct_footprint_reach(typ: i32) -> i32 {
         _ => 0,
     }
 }
-
 // Extra clearance, beyond the structure footprint, that must stay tree free. Chosen
 // to clear a typical canopy (CANOPY_MAX_REACH_XZ = 4) plus a block of breathing room
 // so leaves never brush a wall or roof. A tree is excluded when its root falls within
@@ -1480,7 +1479,19 @@ fn place_tall_tower<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
 
-// A small keep / castle: a square stone-brick curtain wall (9x9 footprint, half
+#[inline]
+fn weathered_keep_stone(h: u64, dx: i32, dz: i32, level: i32) -> BlockId {
+    let salt = (dx as u32 as u64)
+        ^ ((dz as u32 as u64) << 21)
+        ^ ((level as u32 as u64) << 42);
+    match fmix64(h ^ salt) % 13 {
+        0 => MOSSY_STONE,
+        1 | 2 => COBBLESTONE,
+        _ => STONE_BRICK,
+    }
+}
+
+// A small keep / castle: a square weathered-stone curtain wall (9x9 footprint, half
 // extent 4) with a corner turret on each corner, a gated south wall, and a small
 // inner hall. Max XZ half-extent is 4.
 fn place_keep<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
@@ -1519,11 +1530,13 @@ fn place_keep<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
                 if gate && wy <= base_h + 2 {
                     continue; // gate opening
                 }
-                struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
+                let b = weathered_keep_stone(h, dx, dz, wy - base_h);
+                struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, b);
             }
-            // Crenellation row on the wall top (skip every other cell).
+            // Shaped, chipped crenellations break the full-cube skyline while keeping
+            // the broad solid collision cell expected of a defensive wall.
             if !corner && ((dx + dz) & 1) == 0 {
-                struct_set(chunk, ax + dx, wall_top + 1, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
+                struct_set(chunk, ax + dx, wall_top + 1, az + dz, wx_min, wy_min, wz_min, STONE_RUBBLE);
             }
         }
     }
@@ -1532,9 +1545,10 @@ fn place_keep<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
     let turret = [[-r, -r], [r, -r], [-r, r], [r, r]];
     for t in turret.iter() {
         for wy in (base_h + 1)..=(wall_top + 2) {
-            struct_set(chunk, ax + t[0], wy, az + t[1], wx_min, wy_min, wz_min, STONE_BRICK);
+            let b = weathered_keep_stone(h, t[0], t[1], wy - base_h);
+            struct_set(chunk, ax + t[0], wy, az + t[1], wx_min, wy_min, wz_min, b);
         }
-        struct_set(chunk, ax + t[0], wall_top + 3, az + t[1], wx_min, wy_min, wz_min, COBBLESTONE);
+        struct_set(chunk, ax + t[0], wall_top + 3, az + t[1], wx_min, wy_min, wz_min, STONE_RUBBLE);
     }
 
     // Inner hall: a 3x3 room at the keep center with a door and a roof.
@@ -1550,7 +1564,8 @@ fn place_keep<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
                     if is_door && wy <= base_h + 2 {
                         struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, OAK_DOOR);
                     } else {
-                        struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
+                        let b = weathered_keep_stone(h ^ 0x48414C4C, dx, dz, wy - base_h);
+                        struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, b);
                     }
                 }
             }
@@ -1598,10 +1613,17 @@ fn place_ruin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
             // Fill from this column's terrain up to just below the levelled floor.
             struct_fill_col(chunk, ax + dx, az + dz, base_h - 1, seed, wx_min, wy_min, wz_min, COBBLESTONE);
             let fh = fmix64(h ^ (((dx + 9) * 131 + (dz + 9) * 17) as u64));
-            if (fh & 0x7) == 0 {
+            let supports_structure = dx.abs() == r
+                || dz.abs() == r
+                || matches!((dx, dz), (-2, 2) | (2, -2) | (1, 1) | (-3, -2) | (3, 1) | (-1, 3));
+            if (fh & 0x7) == 0 && !supports_structure {
                 continue; // a hole in the floor surface (foundation below remains)
             }
-            let b = if fh & 0x10 != 0 { MOSSY_STONE } else { COBBLESTONE };
+            let b = match (fh >> 4) % 7 {
+                0 => STONE_BRICK,
+                1 | 2 => MOSSY_STONE,
+                _ => COBBLESTONE,
+            };
             struct_set(chunk, ax + dx, base_h, az + dz, wx_min, wy_min, wz_min, b);
         }
     }
@@ -1623,7 +1645,15 @@ fn place_ruin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
             // Corners stand a touch taller (broken turret stubs).
             let rise = if corner { (rise + 2).min(wall_h + 2) } else { rise };
             for wy in 1..=rise {
-                let b = if (wh >> (wy as u32 + 4)) & 1 != 0 { MOSSY_STONE } else { STONE_BRICK };
+                let b = if wy == rise {
+                    STONE_RUBBLE
+                } else {
+                    match (wh >> (wy as u32 + 4)) % 5 {
+                        0 => MOSSY_STONE,
+                        1 => COBBLESTONE,
+                        _ => STONE_BRICK,
+                    }
+                };
                 struct_set(chunk, ax + dx, base_h + wy, az + dz, wx_min, wy_min, wz_min, b);
             }
         }
@@ -1635,9 +1665,22 @@ fn place_ruin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
         let ph = fmix64(h ^ ((i as u64).wrapping_mul(0x9E37).wrapping_add(5)));
         let ph_top = base_h + 1 + (ph % 4) as i32;
         for wy in (base_h + 1)..=ph_top {
-            let b = if (ph >> (wy as u32)) & 1 != 0 { MOSSY_STONE } else { STONE_BRICK };
+            let b = if wy == ph_top {
+                STONE_RUBBLE
+            } else if (ph >> ((wy - base_h) as u32)) & 1 != 0 {
+                MOSSY_STONE
+            } else {
+                STONE_BRICK
+            };
             struct_set(chunk, ax + p[0], wy, az + p[1], wx_min, wy_min, wz_min, b);
         }
+    }
+
+    // Three substantial collapsed piles interrupt the square footprint without
+    // filling the courtyard. They sit on guaranteed floor cells and use persistent
+    // shaped chunk geometry, not distance-culled pebble props.
+    for p in [[-3, -2], [3, 1], [-1, 3]] {
+        struct_set(chunk, ax + p[0], base_h + 1, az + p[1], wx_min, wy_min, wz_min, STONE_RUBBLE);
     }
 
     // Overgrowth + a hint of treasure inside the ruin.

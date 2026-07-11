@@ -115,6 +115,14 @@ fn snow_overlay_does_not_collide() {
     let _ = w;
 }
 
+// #247 rubble nearly fills its cell (the mesher leaves only chipped edge gaps), so
+// it deliberately keeps ordinary full-cell collision. Ruin piles and battlements
+// therefore never invite the player into visible masonry or create a hidden fall.
+#[test]
+fn stone_rubble_keeps_solid_collision() {
+    assert!(World::solid_block(57));
+}
+
 // Always-day (mode 1) pins day_time to the representative daytime phase and
 // holds it there across ticks; the sun never drifts toward night.
 #[test]

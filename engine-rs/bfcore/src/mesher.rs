@@ -518,6 +518,7 @@ const DOOR_OPEN: BlockId = 50;
 const WOOD_BEAM: BlockId = 51;
 const BED: BlockId = 52;
 const CHOPPING_BLOCK: BlockId = 56;
+const STONE_RUBBLE: BlockId = 57;
 const MISSING_BELOW_OCCLUDER: BlockId = 1;
 #[inline]
 fn is_door(id: BlockId) -> bool {
@@ -537,6 +538,11 @@ fn is_bed(id: BlockId) -> bool {
 #[inline]
 fn is_chopping_block(id: BlockId) -> bool {
     id == CHOPPING_BLOCK
+}
+
+#[inline]
+fn is_stone_rubble(id: BlockId) -> bool {
+    id == STONE_RUBBLE
 }
 
 // #118 snow overlay: snow is a thin BLANKET on top of the surface block, not a solid
@@ -563,6 +569,7 @@ fn is_opaque(id: BlockId) -> bool {
         && !is_wood_beam(id)
         && !is_bed(id)
         && !is_chopping_block(id)
+        && !is_stone_rubble(id)
         && !is_snow_overlay(id)
         && !is_prop(id)
 }
@@ -584,6 +591,7 @@ fn is_occluder(id: BlockId) -> bool {
         && !is_wood_beam(id)
         && !is_bed(id)
         && !is_chopping_block(id)
+        && !is_stone_rubble(id)
         && !is_snow_overlay(id)
         && !is_prop(id)
 }
@@ -1172,6 +1180,52 @@ fn emit_wood_beam(
     emit_cuboid_16(
         bx, by, bz, xlo, xhi, ylo, yhi, zlo, zhi, OAK_LOG, sky, blk, buf,
     )
+}
+
+// One broad, solid-collision rubble cell rendered as four visibly separate stone
+// masses. It reaches almost to every voxel edge/top so collision stays honest, but
+// the stepped silhouette and mixed real materials stop wall crowns reading as cubes.
+// Two coordinate-derived mirror bits vary neighbouring profiles without block state.
+fn emit_stone_rubble(
+    bx: i32,
+    by: i32,
+    bz: i32,
+    variant: u32,
+    sky: u8,
+    blk: u8,
+    buf: &mut MeshBuffers,
+) -> bool {
+    const CUBOIDS: usize = 4;
+    if buf.vtx_cap - buf.vtx.len() < CUBOIDS * 24 * VERTEX_SIZE
+        || buf.idx_cap - buf.idx.len() < CUBOIDS * 36 * INDEX_SIZE
+    {
+        return false;
+    }
+
+    const COBBLE: BlockId = 10;
+    const BRICK: BlockId = 8;
+    const MOSS: BlockId = 29;
+    let pieces = [
+        (1, 15, 0, 4, 1, 15, COBBLE),
+        (1, 8, 4, 11, 2, 10, BRICK),
+        (8, 15, 4, 9, 6, 14, MOSS),
+        (4, 9, 9, 15, 2, 7, BRICK),
+    ];
+    let mirror = |lo: u32, hi: u32, flip: bool| {
+        if flip {
+            (16 - hi, 16 - lo)
+        } else {
+            (lo, hi)
+        }
+    };
+    for &(xlo, xhi, ylo, yhi, zlo, zhi, mat) in &pieces {
+        let (xlo, xhi) = mirror(xlo, xhi, variant & 1 != 0);
+        let (zlo, zhi) = mirror(zlo, zhi, variant & 2 != 0);
+        if !emit_cuboid_16(bx, by, bz, xlo, xhi, ylo, yhi, zlo, zhi, mat, sky, blk, buf) {
+            return false;
+        }
+    }
+    true
 }
 
 // A finished bed is one coherent piece of furniture: oak rails/legs/headboard,
@@ -1996,6 +2050,23 @@ impl GreedyMesher {
                 for z in 0..KCHUNK_DIM {
                     let here = chunk_get(chunk_opt, x, y, z);
 
+                    // #247 broken masonry: persistent shaped chunk geometry. Sparse
+                    // generated cells make this cheap; coordinate mirroring keeps
+                    // neighbouring wall crowns from repeating one Lego silhouette.
+                    if is_stone_rubble(here) {
+                        let wx = c.x.wrapping_mul(KCHUNK_DIM).wrapping_add(x);
+                        let wz = c.z.wrapping_mul(KCHUNK_DIM).wrapping_add(z);
+                        let variant = (wx as u32).wrapping_mul(0x9E37_79B9)
+                            ^ (wz as u32).wrapping_mul(0x85EB_CA6B);
+                        let sky = chunk.sky_light(x as usize, y as usize, z as usize);
+                        let blk = chunk.block_light(x as usize, y as usize, z as usize);
+                        if !emit_stone_rubble(x, y, z, variant, sky, blk, &mut buf) {
+                            buf.full = true;
+                            return finalize(buf, false);
+                        }
+                        continue;
+                    }
+
                     // #246 structural beams: persistent shaped chunk geometry. Axis
                     // comes from neighbouring beam cells, not extra block state.
                     if is_wood_beam(here) {
@@ -2408,6 +2479,47 @@ mod tests {
             .iter()
             .chain(&right_verts)
             .all(|(_, mat)| *mat == 21));
+    }
+
+    #[test]
+    fn stone_rubble_is_persistent_mixed_material_broken_geometry() {
+        assert!(!is_opaque(STONE_RUBBLE));
+        assert!(!is_occluder(STONE_RUBBLE));
+        assert!(!is_prop(STONE_RUBBLE), "rubble must not distance-cull");
+
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(8, 8, 8, STONE_RUBBLE);
+        store.chunks.insert(ChunkCoord::default(), ch);
+
+        let (res, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+        let verts = decode_position_and_mat(&vtx);
+        assert_eq!(res.index_count, 4 * 36, "four closed stone masses");
+        assert_eq!(verts.len(), 4 * 24);
+        assert_eq!(verts.iter().filter(|(_, m)| *m == 10).count(), 24);
+        assert_eq!(verts.iter().filter(|(_, m)| *m == 8).count(), 2 * 24);
+        assert_eq!(verts.iter().filter(|(_, m)| *m == 29).count(), 24);
+        assert!(
+            verts.iter().all(|(_, m)| *m != STONE_RUBBLE),
+            "id 57 dispatches real stone materials, never a generic cube"
+        );
+
+        let bounds = |axis: usize| {
+            verts
+                .iter()
+                .map(|(p, _)| p[axis])
+                .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)))
+        };
+        let (xmin, xmax) = bounds(0);
+        let (ymin, ymax) = bounds(1);
+        let (zmin, zmax) = bounds(2);
+        assert_eq!((xmin, xmax), (8.0625, 8.9375));
+        assert_eq!((zmin, zmax), (8.0625, 8.9375));
+        assert_eq!((ymin, ymax), (8.0, 8.9375));
+        assert!(
+            verts.iter().any(|(p, _)| p[1] < 8.3) && verts.iter().any(|(p, _)| p[1] > 8.9),
+            "broad base and chipped high shard keep collision visually legible"
+        );
     }
 
     #[test]

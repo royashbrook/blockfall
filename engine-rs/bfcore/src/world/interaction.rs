@@ -25,7 +25,7 @@ impl<'c> World<'c> {
     // Sound class for break audio.
     pub(super) fn sound_class_for(b: BlockId) -> i32 {
         match b {
-            3 | 8 | 10 | 15 | 29 => 1,
+            3 | 8 | 10 | 15 | 29 | 57 => 1,
             21 | 22 | 4 | 23 | 30 | 31 | 33 | 51 | 56 => 2,
             1 | 2 | 14 | 16 | 12 | 54 => 3,
             6 | 11 => 4,
@@ -38,7 +38,7 @@ impl<'c> World<'c> {
 
     pub(super) fn footstep_class(b: BlockId) -> i32 {
         match b {
-            3 | 8 | 10 | 29 => 1,
+            3 | 8 | 10 | 29 | 57 => 1,
             6 => 2,
             12 | 13 | 54 => 3,
             4 | 23 | 21 | 22 | 49 | 51 | 33 | 56 => 4,

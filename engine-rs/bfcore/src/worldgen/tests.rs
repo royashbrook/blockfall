@@ -1135,12 +1135,17 @@ mod worldgen_tests {
 
     // Stamp one structure into a global cell map by sweeping every chunk window
     // (x,z and the full vertical span) that its reach can touch.
-    fn stamp_structure(sd: &StructDesc, seed: u64) -> std::collections::HashMap<(i32, i32, i32), BlockId> {
+    fn stamp_structure_order(
+        sd: &StructDesc,
+        seed: u64,
+        reverse: bool,
+    ) -> std::collections::HashMap<(i32, i32, i32), BlockId> {
         let mut cells: std::collections::HashMap<(i32, i32, i32), BlockId> = std::collections::HashMap::new();
-        let cx0 = seam_floordiv_pub(sd.anchor_wx - STRUCT_MAX_REACH_XZ, K_CHUNK_DIM);
-        let cx1 = seam_floordiv_pub(sd.anchor_wx + STRUCT_MAX_REACH_XZ, K_CHUNK_DIM);
-        let cz0 = seam_floordiv_pub(sd.anchor_wz - STRUCT_MAX_REACH_XZ, K_CHUNK_DIM);
-        let cz1 = seam_floordiv_pub(sd.anchor_wz + STRUCT_MAX_REACH_XZ, K_CHUNK_DIM);
+        let reach = struct_footprint_reach(sd.typ);
+        let cx0 = seam_floordiv_pub(sd.anchor_wx - reach, K_CHUNK_DIM);
+        let cx1 = seam_floordiv_pub(sd.anchor_wx + reach, K_CHUNK_DIM);
+        let cz0 = seam_floordiv_pub(sd.anchor_wz - reach, K_CHUNK_DIM);
+        let cz1 = seam_floordiv_pub(sd.anchor_wz + reach, K_CHUNK_DIM);
         // Vertical: structures rise well above terrain; cover a generous band of
         // chunk layers around the anchor surface.
         let base = struct_surface(sd.anchor_wx, sd.anchor_wz, seed);
@@ -1148,23 +1153,78 @@ mod worldgen_tests {
         // crown above. Towers rise ~19, foundations fill at most a footprint spread.
         let cy0 = seam_floordiv_pub(base - 24, K_CHUNK_DIM);
         let cy1 = seam_floordiv_pub(base + 28, K_CHUNK_DIM);
+        let mut windows = Vec::new();
         for cy in cy0..=cy1 {
             for cz in cz0..=cz1 {
                 for cx in cx0..=cx1 {
-                    let (wx_min, wy_min, wz_min) =
-                        (cx * K_CHUNK_DIM, cy * K_CHUNK_DIM, cz * K_CHUNK_DIM);
-                    let mut g = GridChunk {
-                        wx_min,
-                        wy_min,
-                        wz_min,
-                        cells: std::mem::take(&mut cells),
-                    };
-                    place_structure(sd, seed, &mut g, wx_min, wy_min, wz_min);
-                    cells = g.cells;
+                    windows.push((cx, cy, cz));
                 }
             }
         }
+        if reverse {
+            windows.reverse();
+        }
+        for (cx, cy, cz) in windows {
+            let (wx_min, wy_min, wz_min) =
+                (cx * K_CHUNK_DIM, cy * K_CHUNK_DIM, cz * K_CHUNK_DIM);
+            let mut g = GridChunk {
+                wx_min,
+                wy_min,
+                wz_min,
+                cells: std::mem::take(&mut cells),
+            };
+            place_structure(sd, seed, &mut g, wx_min, wy_min, wz_min);
+            cells = g.cells;
+        }
         cells
+    }
+
+    fn stamp_structure(sd: &StructDesc, seed: u64) -> std::collections::HashMap<(i32, i32, i32), BlockId> {
+        stamp_structure_order(sd, seed, false)
+    }
+
+    #[test]
+    fn keeps_and_ruins_have_supported_shaped_stone_profiles() {
+        for &(name, typ, minimum) in &[("keep", STRUCT_KEEP, 16usize), ("ruin", STRUCT_RUIN, 10usize)] {
+            let seed = 11u64;
+            let sd = StructDesc {
+                anchor_wx: 15,
+                anchor_wz: -17,
+                typ,
+                cell_hash: fmix64(seed ^ typ as u64 ^ 0x247),
+                present: true,
+            };
+            let cells = stamp_structure_order(&sd, seed, false);
+            assert_eq!(
+                cells,
+                stamp_structure_order(&sd, seed, true),
+                "{name}: detail changed with chunk generation order"
+            );
+
+            let rubble: Vec<_> = cells
+                .iter()
+                .filter_map(|(&p, &b)| (b == STONE_RUBBLE).then_some(p))
+                .collect();
+            assert!(
+                (minimum..=48).contains(&rubble.len()),
+                "{name}: expected sparse shaped detail, found {} cells",
+                rubble.len()
+            );
+            assert!(
+                rubble.iter().all(|&(x, y, z)| {
+                    cells.get(&(x, y - 1, z)).copied().unwrap_or(AIR) != AIR
+                }),
+                "{name}: every shaped cap/pile must have a solid block below"
+            );
+            let heights: std::collections::HashSet<_> = rubble.iter().map(|&(_, y, _)| y).collect();
+            assert!(heights.len() >= 2, "{name}: rubble skyline stayed flat");
+
+            let stone_palette = [STONE_BRICK, COBBLESTONE, MOSSY_STONE]
+                .iter()
+                .filter(|&&b| cells.values().any(|&cell| cell == b))
+                .count();
+            assert_eq!(stone_palette, 3, "{name}: weathered stone texture collapsed");
+        }
     }
 
     // floordiv helper available to tests (mirrors the private seam_floordiv).

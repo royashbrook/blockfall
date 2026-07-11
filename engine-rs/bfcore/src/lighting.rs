@@ -4,7 +4,7 @@
 //! Sky light falls straight down at 15 through air until an opaque block (hard shadow),
 //! then spreads horizontally at -1 per step. Block light BFS-spreads from emitters.
 //! Glass and thin props/furniture/trim (including trunks, doors, beams, beds, and
-//! workstations) pass light; leaves stay opaque.
+//! workstations and broken-stone profiles) pass light; leaves stay opaque.
 //!
 //! Where C++ uses raw pointers to read neighbours while writing the target chunk, this
 //! port gathers every read (target blocks, old light, neighbour boundary light, column
@@ -39,6 +39,7 @@ pub fn light_opaque(b: BlockId) -> bool {
         && b != 51
         && b != 52
         && b != 56
+        && b != 57
         && !light_glass(b)
         && !light_plant(b)
         && !light_snow_overlay(b)
@@ -411,6 +412,24 @@ mod tests {
             ch.sky_light(8, 7, 8),
             15,
             "shaped workstation must not cast a full-cube shadow"
+        );
+    }
+
+    #[test]
+    fn stone_rubble_is_sky_light_pass_through() {
+        let mut store = ChunkStore::new();
+        let cc = ChunkCoord { x: 0, y: 0, z: 0 };
+        let mut ch = PaletteChunk::new(cc, 0);
+        ch.set(8, 8, 8, 57);
+        store.insert(ch);
+
+        light_chunk(&mut store, cc);
+        let ch = store.get(cc).unwrap();
+        assert_eq!(ch.sky_light(8, 8, 8), 15, "rubble mesh reads cell light");
+        assert_eq!(
+            ch.sky_light(8, 7, 8),
+            15,
+            "broken profile must not cast a full-cube light shadow"
         );
     }
 }

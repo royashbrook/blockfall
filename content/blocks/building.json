@@ -182,5 +182,18 @@
     "textures": {
       "all": "iron_bars"
     }
+  },
+  {
+    "id": 57,
+    "name": "stone_rubble",
+    "display_name": "Stone Rubble",
+    "hardness": 18,
+    "required_tier": 1,
+    "preferred_tool": "pickaxe",
+    "drop_item": "cobblestone",
+    "transparent": true,
+    "textures": {
+      "all": "cobblestone"
+    }
   }
 ]

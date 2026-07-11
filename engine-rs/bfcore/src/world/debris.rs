@@ -109,6 +109,7 @@ impl<'c> World<'c> {
             48 => V3::new(0.18, 0.42, 0.24),      // pine needles
             49 => V3::new(0.40, 0.25, 0.15),      // pine log
             56 => V3::new(0.47, 0.31, 0.16),      // chopping block: oak stump
+            57 => V3::new(0.46, 0.48, 0.45),      // shaped mixed stone rubble
             _ => V3::new(0.60, 0.60, 0.60),
         }
     }
