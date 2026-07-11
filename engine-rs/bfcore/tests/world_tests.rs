@@ -3187,7 +3187,7 @@ fn hyperspeed_is_100x_and_creative_only() {
     w.set_mode(bf_game_mode::BF_MODE_CREATIVE);
     w.init_world(seed);
 
-    let mut dist = |w: &mut World, hyper: bool| -> f32 {
+    let dist = |w: &mut World, hyper: bool| -> f32 {
         let mut a: bf_action = unsafe { std::mem::zeroed() };
         a.kind = bf_action_kind::BF_ACT_SET_HYPERSPEED;
         a.arg_i = if hyper { 1 } else { 0 };
