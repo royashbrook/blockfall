@@ -54,8 +54,12 @@ impl<'c> World<'c> {
         if table.is_empty() || self.content.is_none() {
             return;
         }
+        let coin_stock = self.caravan_coin_stock_available();
         let mut n = 0usize;
         for &(give, gc, get, tc) in table.iter().take(out.offers.len()) {
+            if give == "coin" && coin_stock == Some(false) {
+                continue;
+            }
             let gi = self.item_id_by_name(give);
             let ti = self.item_id_by_name(get);
             if gi == 0 || ti == 0 {
@@ -79,6 +83,7 @@ impl<'c> World<'c> {
             return false;
         }
         let o = view.offers[idx as usize];
+        let coin_buy = o.give_item == self.item_id_by_name("coin");
         let Some(inv) = self.inv.as_mut() else { return false };
         if inv.count_item(o.give_item) < o.give_count {
             return false;
@@ -96,6 +101,10 @@ impl<'c> World<'c> {
             }
             let _ = inv.add(ItemStack { item: o.give_item, count: o.give_count, durability: 0xFFFF });
             return false;
+        }
+        if coin_buy {
+            let consumed = self.consume_caravan_coin_stock();
+            debug_assert!(consumed);
         }
         let pv = self.player_voxel();
         self.fx(5, pv, 0); // little sparkle: the trade landed

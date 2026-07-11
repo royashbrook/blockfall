@@ -6,6 +6,12 @@ const ROAD_BOARDWALK: BlockId = 4;
 const SETTLEMENT_CORE_R: i32 = 8;
 const SETTLEMENT_GATE_R: i32 = 9;
 const SETTLEMENT_ROUTE_ZONE_R: i32 = 56;
+const CARAVAN_FP: u32 = 256;
+const CARAVAN_SPEED_FP: u64 = 384; // 1.5 road cells / second
+const CARAVAN_TIME_HZ: u64 = 1_000_000;
+const CARAVAN_ACTIVE_RADIUS: f32 = 128.0;
+const CARAVAN_STOCK_BATCH: u8 = 3;
+const CARAVAN_STOCK_MAX: u8 = 12;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RoadRoute {
@@ -16,6 +22,22 @@ pub(super) struct RoadRoute {
     to: (i32, i32),
     tier: u8,
     profile: Vec<i32>,
+    caravan_progress: u32,
+    caravan_time_remainder: u32,
+    caravan_forward: bool,
+    stock_from: u8,
+    stock_to: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CaravanRouteState {
+    pub(super) from: (i32, i32),
+    pub(super) to: (i32, i32),
+    pub(super) progress: u32,
+    pub(super) time_remainder: u32,
+    pub(super) forward: bool,
+    pub(super) stock_from: u8,
+    pub(super) stock_to: u8,
 }
 
 fn round_div(n: i64, d: i64) -> i32 {
@@ -229,7 +251,172 @@ impl RoadRoute {
             to,
             tier: tier.clamp(2, 3),
             profile,
+            caravan_progress: 0,
+            caravan_time_remainder: 0,
+            caravan_forward: true,
+            stock_from: CARAVAN_STOCK_BATCH,
+            stock_to: CARAVAN_STOCK_BATCH,
         }
+    }
+
+    fn route_key(&self) -> Option<((i32, i32), (i32, i32))> {
+        let a = self.settlement_from?;
+        let b = self.settlement_to?;
+        let a = (
+            a.0.rem_euclid(worldgen::WORLD_PERIOD),
+            a.1.rem_euclid(worldgen::WORLD_PERIOD),
+        );
+        let b = (
+            b.0.rem_euclid(worldgen::WORLD_PERIOD),
+            b.1.rem_euclid(worldgen::WORLD_PERIOD),
+        );
+        Some(if a <= b { (a, b) } else { (b, a) })
+    }
+
+    fn caravan_max_progress(&self) -> u32 {
+        self.profile.len().saturating_sub(1) as u32 * CARAVAN_FP
+    }
+
+    fn caravan_state(&self) -> Option<CaravanRouteState> {
+        let (from, to) = self.route_key()?;
+        Some(CaravanRouteState {
+            from,
+            to,
+            progress: self.caravan_progress.min(self.caravan_max_progress()),
+            time_remainder: self.caravan_time_remainder.min(CARAVAN_TIME_HZ as u32 - 1),
+            forward: self.caravan_forward,
+            stock_from: self.stock_from.min(CARAVAN_STOCK_MAX),
+            stock_to: self.stock_to.min(CARAVAN_STOCK_MAX),
+        })
+    }
+
+    fn restore_caravan_state(&mut self, state: CaravanRouteState) -> bool {
+        if self.route_key() != Some((state.from, state.to)) {
+            return false;
+        }
+        self.caravan_progress = state.progress.min(self.caravan_max_progress());
+        self.caravan_time_remainder = state.time_remainder.min(CARAVAN_TIME_HZ as u32 - 1);
+        self.caravan_forward = state.forward;
+        self.stock_from = state.stock_from.min(CARAVAN_STOCK_MAX);
+        self.stock_to = state.stock_to.min(CARAVAN_STOCK_MAX);
+        true
+    }
+
+    fn advance_caravan(&mut self, dt: f32) {
+        let max = self.caravan_max_progress();
+        if max == 0 || !dt.is_finite() || dt <= 0.0 {
+            return;
+        }
+        let ticks = (dt.min(0.1) as f64 * CARAVAN_TIME_HZ as f64).round() as u64;
+        let scaled = ticks * CARAVAN_SPEED_FP + self.caravan_time_remainder as u64;
+        let mut step = (scaled / CARAVAN_TIME_HZ) as u32;
+        self.caravan_time_remainder = (scaled % CARAVAN_TIME_HZ) as u32;
+        while step > 0 {
+            if self.caravan_forward {
+                let room = max.saturating_sub(self.caravan_progress);
+                if step < room {
+                    self.caravan_progress += step;
+                    break;
+                }
+                self.caravan_progress = max;
+                step -= room;
+                self.caravan_forward = false;
+                self.stock_to = self
+                    .stock_to
+                    .saturating_add(CARAVAN_STOCK_BATCH)
+                    .min(CARAVAN_STOCK_MAX);
+            } else {
+                let room = self.caravan_progress;
+                if step < room {
+                    self.caravan_progress -= step;
+                    break;
+                }
+                self.caravan_progress = 0;
+                step -= room;
+                self.caravan_forward = true;
+                self.stock_from = self
+                    .stock_from
+                    .saturating_add(CARAVAN_STOCK_BATCH)
+                    .min(CARAVAN_STOCK_MAX);
+            }
+        }
+    }
+
+    /// Interpolated feet position/yaw plus the discrete road cell that must be
+    /// resident and intact before the physical caravan may be shown.
+    fn caravan_pose(&self) -> Option<(f32, f32, f32, f32, IVec3)> {
+        if self.profile.len() < 2 {
+            return None;
+        }
+        let progress = self.caravan_progress.min(self.caravan_max_progress());
+        let i = (progress / CARAVAN_FP) as usize;
+        let next = (i + 1).min(self.profile.len() - 1);
+        let t = (progress % CARAVAN_FP) as f32 / CARAVAN_FP as f32;
+        let a = self.profile_point(i)?;
+        let b = self.profile_point(next)?;
+        let x = a.0 as f32 + 0.5 + (b.0 - a.0) as f32 * t;
+        let y = a.2 as f32 + (b.2 - a.2) as f32 * t + 1.0;
+        let z = a.1 as f32 + 0.5 + (b.1 - a.1) as f32 * t;
+        let heading_i = if self.caravan_forward {
+            (i + 1).min(self.profile.len() - 1)
+        } else if t > 0.0 {
+            i
+        } else {
+            i.saturating_sub(1)
+        };
+        let heading = self.profile_point(heading_i)?;
+        let mut dx = heading.0 as f32 + 0.5 - x;
+        let mut dz = heading.1 as f32 + 0.5 - z;
+        if dx.abs() + dz.abs() < 0.001 {
+            dx = if self.caravan_forward {
+                b.0 - a.0
+            } else {
+                a.0 - b.0
+            } as f32;
+            dz = if self.caravan_forward {
+                b.1 - a.1
+            } else {
+                a.1 - b.1
+            } as f32;
+        }
+        let road = if t < 0.5 { a } else { b };
+        Some((
+            x.rem_euclid(worldgen::WORLD_PERIOD as f32),
+            y,
+            z.rem_euclid(worldgen::WORLD_PERIOD as f32),
+            dx.atan2(dz),
+            IVec3 {
+                x: road.0.rem_euclid(worldgen::WORLD_PERIOD),
+                y: road.2,
+                z: road.1.rem_euclid(worldgen::WORLD_PERIOD),
+            },
+        ))
+    }
+
+    fn distance_squared_to(&self, px: f32, pz: f32) -> f32 {
+        fn segment_distance_squared(p: (f32, f32), a: (i32, i32), b: (i32, i32)) -> f32 {
+            let ax = a.0 as f32;
+            let az = a.1 as f32;
+            let vx = (b.0 - a.0) as f32;
+            let vz = (b.1 - a.1) as f32;
+            let len2 = vx * vx + vz * vz;
+            let t = if len2 > 0.0 {
+                (((p.0 - ax) * vx + (p.1 - az) * vz) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let dx = p.0 - (ax + vx * t);
+            let dz = p.1 - (az + vz * t);
+            dx * dx + dz * dz
+        }
+
+        let w = worldgen::WORLD_PERIOD as f32;
+        let p = (
+            self.from.0 as f32 + (px - self.from.0 as f32 + w * 0.5).rem_euclid(w) - w * 0.5,
+            self.from.1 as f32 + (pz - self.from.1 as f32 + w * 0.5).rem_euclid(w) - w * 0.5,
+        );
+        segment_distance_squared(p, self.from, self.via)
+            .min(segment_distance_squared(p, self.via, self.to))
     }
 
     fn centerline_index(&self, p: (i32, i32)) -> Option<usize> {
@@ -321,6 +508,11 @@ impl RoadRoute {
 
 impl<'c> World<'c> {
     pub(super) fn rebuild_road_routes(&mut self) {
+        let old_states: Vec<CaravanRouteState> = self
+            .road_routes
+            .iter()
+            .filter_map(RoadRoute::caravan_state)
+            .collect();
         let mut developed = std::collections::BTreeMap::<(i32, i32), u8>::new();
         for &anchor in self.villages.keys() {
             let tier = self.effective_village_tier(anchor.0, anchor.1);
@@ -360,10 +552,222 @@ impl<'c> World<'c> {
                 .and_modify(|old| *old = (*old).max(tier))
                 .or_insert(tier);
         }
-        self.road_routes = links
+        let mut routes: Vec<RoadRoute> = links
             .into_iter()
             .map(|((from, to), tier)| RoadRoute::new(from, to, tier, self.seed))
             .collect();
+        for route in &mut routes {
+            if let Some(key) = route.route_key() {
+                if let Some(state) = old_states
+                    .iter()
+                    .copied()
+                    .find(|state| (state.from, state.to) == key)
+                {
+                    route.restore_caravan_state(state);
+                }
+            }
+        }
+        self.road_routes = routes;
+    }
+
+    pub(super) fn caravan_route_states(&self) -> Vec<CaravanRouteState> {
+        self.road_routes
+            .iter()
+            .filter_map(RoadRoute::caravan_state)
+            .collect()
+    }
+
+    pub(super) fn restore_caravan_route_state(&mut self, state: CaravanRouteState) {
+        if let Some(route) = self
+            .road_routes
+            .iter_mut()
+            .find(|route| route.route_key() == Some((state.from, state.to)))
+        {
+            route.restore_caravan_state(state);
+        }
+    }
+
+    fn caravan_road_intact(&self, route: &RoadRoute, road: IVec3) -> bool {
+        let cc = Self::to_chunk(road);
+        if !self.store.is_resident(cc) {
+            return false;
+        }
+        // Crossings use the strongest overlapping route, matching chunk
+        // generation. A tier-2 caravan must accept tier-3 cobble under its wheels.
+        let expected = self.debug_road_material_at(road.x, road.z);
+        let actual = self.block_at(road);
+        let endpoint_gate = [0, route.profile.len().saturating_sub(1)]
+            .into_iter()
+            .filter_map(|index| route.profile_point(index))
+            .any(|(x, z, y)| {
+                x.rem_euclid(worldgen::WORLD_PERIOD) == road.x
+                    && z.rem_euclid(worldgen::WORLD_PERIOD) == road.z
+                    && y == road.y
+            });
+        (expected != AIR && actual == expected)
+            // Finished settlement gates use stone brick beneath the road
+            // centerline. The exact gate cell remains valid when an unrelated
+            // edit makes its containing chunk persistent.
+            || (endpoint_gate && actual == BRICK)
+    }
+
+    fn nearby_route_index(&self) -> Option<usize> {
+        let mut best: Option<(f32, usize)> = None;
+        for (index, route) in self.road_routes.iter().enumerate() {
+            let d2 = route.distance_squared_to(self.pos.x, self.pos.z);
+            if d2 > CARAVAN_ACTIVE_RADIUS * CARAVAN_ACTIVE_RADIUS {
+                continue;
+            }
+            if best
+                .map(|old| d2.total_cmp(&old.0).then(index.cmp(&old.1)).is_lt())
+                .unwrap_or(true)
+            {
+                best = Some((d2, index));
+            }
+        }
+        best.map(|(_, index)| index)
+    }
+
+    fn visible_caravan_index(&self) -> Option<usize> {
+        let index = self.nearby_route_index()?;
+        let route = &self.road_routes[index];
+        let (x, _y, z, _yaw, road) = route.caravan_pose()?;
+        let dx = Self::wrap_signed_f(x - self.pos.x);
+        let dz = Self::wrap_signed_f(z - self.pos.z);
+        let d2 = dx * dx + dz * dz;
+        (d2 <= CARAVAN_ACTIVE_RADIUS * CARAVAN_ACTIVE_RADIUS
+            && self.caravan_road_intact(route, road))
+        .then_some(index)
+    }
+
+    pub(super) fn update_route_caravan(&mut self, dt: f32) {
+        if let Some(index) = self.nearby_route_index() {
+            self.road_routes[index].advance_caravan(dt);
+        }
+    }
+
+    pub(super) fn caravan_draw(&self, cam_pos: V3) -> Option<bf_entity_draw> {
+        let route = self.road_routes.get(self.visible_caravan_index()?)?;
+        let (x, y, z, yaw, road) = route.caravan_pose()?;
+        Some(bf_entity_draw {
+            position: bf_vec3 {
+                x: cam_pos.x + Self::wrap_signed_f(x - cam_pos.x),
+                y,
+                z: cam_pos.z + Self::wrap_signed_f(z - cam_pos.z),
+            },
+            yaw,
+            color: bf_vec3 {
+                x: 0.82,
+                y: 0.64,
+                z: 0.42,
+            },
+            scale: 1.0,
+            kind: 27,
+            sat: self.region_sat(Self::to_chunk(road)),
+            _pad: 0,
+        })
+    }
+
+    fn caravan_stock_endpoint_near_player(&self) -> Option<(i32, i32)> {
+        let px = Self::ifloor(self.pos.x);
+        let pz = Self::ifloor(self.pos.z);
+        let mut best: Option<(i64, i32, i32)> = None;
+        for route in &self.road_routes {
+            let Some(state) = route.caravan_state() else {
+                continue;
+            };
+            for endpoint in [state.from, state.to] {
+                let dx = Self::wrap_signed_block(endpoint.0 - px) as i64;
+                let dz = Self::wrap_signed_block(endpoint.1 - pz) as i64;
+                let d2 = dx * dx + dz * dz;
+                if d2 > 64 * 64 {
+                    continue;
+                }
+                let key = (d2, endpoint.0, endpoint.1);
+                if best.map(|old| key < old).unwrap_or(true) {
+                    best = Some(key);
+                }
+            }
+        }
+        best.map(|(_, x, z)| (x, z))
+    }
+
+    pub(super) fn caravan_coin_stock_available(&self) -> Option<bool> {
+        let endpoint = self.caravan_stock_endpoint_near_player()?;
+        Some(self.road_routes.iter().any(|route| {
+            route
+                .route_key()
+                .map(|(from, to)| {
+                    (from == endpoint && route.stock_from > 0)
+                        || (to == endpoint && route.stock_to > 0)
+                })
+                .unwrap_or(false)
+        }))
+    }
+
+    pub(super) fn consume_caravan_coin_stock(&mut self) -> bool {
+        let Some(endpoint) = self.caravan_stock_endpoint_near_player() else {
+            return true;
+        };
+        for route in &mut self.road_routes {
+            let Some((from, to)) = route.route_key() else {
+                continue;
+            };
+            let stock = if from == endpoint {
+                &mut route.stock_from
+            } else if to == endpoint {
+                &mut route.stock_to
+            } else {
+                continue;
+            };
+            if *stock > 0 {
+                *stock -= 1;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn debug_caravan_state(&self, route: usize) -> Option<(u32, bool, u8, u8)> {
+        let route = self.road_routes.get(route)?;
+        Some((
+            route.caravan_progress,
+            route.caravan_forward,
+            route.stock_from,
+            route.stock_to,
+        ))
+    }
+
+    pub fn debug_caravan_endpoints(&self, route: usize) -> Option<(i32, i32, i32, i32)> {
+        let state = self.road_routes.get(route)?.caravan_state()?;
+        Some((state.from.0, state.from.1, state.to.0, state.to.1))
+    }
+
+    pub fn debug_set_caravan_state(
+        &mut self,
+        route: usize,
+        progress: u32,
+        forward: bool,
+        stock_from: u8,
+        stock_to: u8,
+    ) -> bool {
+        let Some(route) = self.road_routes.get_mut(route) else {
+            return false;
+        };
+        route.caravan_progress = progress.min(route.caravan_max_progress());
+        route.caravan_time_remainder = 0;
+        route.caravan_forward = forward;
+        route.stock_from = stock_from.min(CARAVAN_STOCK_MAX);
+        route.stock_to = stock_to.min(CARAVAN_STOCK_MAX);
+        true
+    }
+
+    pub fn debug_caravan_tick(&mut self, dt: f32) {
+        self.update_route_caravan(dt);
+    }
+
+    pub fn debug_caravan_visible(&self) -> bool {
+        self.visible_caravan_index().is_some()
     }
 
     fn natural_road_surface(block: BlockId) -> bool {
@@ -571,6 +975,219 @@ impl<'c> World<'c> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn install_caravan_cell(world: &mut World<'_>, route: usize) -> ChunkCoord {
+        let road = world.road_routes[route].caravan_pose().unwrap().4;
+        let tier = world.road_routes[route].tier;
+        let (_, wet) = worldgen::worldgen_road_surface(road.x, road.z, world.seed);
+        let block = if wet {
+            ROAD_BOARDWALK
+        } else if tier >= 3 {
+            ROAD_COBBLE
+        } else {
+            ROAD_GRAVEL
+        };
+        let cc = World::to_chunk(road);
+        world.store.get_or_create(cc).set(
+            World::mod16(road.x) as usize,
+            World::mod16(road.y) as usize,
+            World::mod16(road.z) as usize,
+            block,
+        );
+        cc
+    }
+
+    #[test]
+    fn caravan_progress_reverses_and_delivers_deterministically() {
+        let mut a = RoadRoute::from_geometry((0, 0), (8, 0), (16, 0), 3, 1);
+        a.caravan_progress = a.caravan_max_progress() - 10;
+        a.stock_to = CARAVAN_STOCK_MAX - 1;
+        let mut b = a.clone();
+        a.advance_caravan(0.1);
+        b.advance_caravan(0.1);
+        assert_eq!(a, b);
+        assert!(!a.caravan_forward);
+        assert_eq!(
+            a.stock_to, CARAVAN_STOCK_MAX,
+            "delivery stock stays bounded"
+        );
+        assert!(a.caravan_progress < a.caravan_max_progress());
+    }
+
+    #[test]
+    fn caravan_progress_is_frame_partition_independent() {
+        let mut coarse = RoadRoute::from_geometry((0, 0), (64, 0), (128, 0), 2, 1);
+        let mut fine = coarse.clone();
+        for _ in 0..10 {
+            coarse.advance_caravan(0.1);
+        }
+        for _ in 0..100 {
+            fine.advance_caravan(0.01);
+        }
+        assert_eq!(
+            coarse, fine,
+            "one elapsed second has one fixed-point result"
+        );
+    }
+
+    #[test]
+    fn reverse_fractional_heading_targets_the_current_sample() {
+        let mut route = RoadRoute::from_geometry((0, 0), (8, 0), (8, 8), 2, 1);
+        route.caravan_progress = 8 * CARAVAN_FP + CARAVAN_FP / 2;
+        route.caravan_forward = false;
+        let yaw = route.caravan_pose().unwrap().3;
+        assert!((yaw.abs() - std::f32::consts::PI).abs() < 0.001);
+    }
+
+    #[test]
+    fn rebuild_preserves_caravan_progress_direction_and_stock() {
+        let mut world = World::new(Some(TerrainGen::new()));
+        world.seed = 11;
+        world.rebuild_road_routes();
+        assert!(world.debug_set_caravan_state(0, 777, false, 1, 9));
+        let before = world.debug_caravan_state(0).unwrap();
+        let endpoints = world.debug_caravan_endpoints(0).unwrap();
+        world.rebuild_road_routes();
+        let route = (0..world.debug_road_route_count())
+            .find(|&i| world.debug_caravan_endpoints(i) == Some(endpoints))
+            .unwrap();
+        assert_eq!(world.debug_caravan_state(route), Some(before));
+    }
+
+    #[test]
+    fn exactly_one_nearby_intact_route_runs_and_bad_road_hides() {
+        let mut world = World::new(None);
+        world.seed = 77;
+        world.road_routes.push(RoadRoute::from_geometry(
+            (200, 200),
+            (208, 200),
+            (216, 200),
+            2,
+            world.seed,
+        ));
+        world.road_routes.push(RoadRoute::from_geometry(
+            (200, 232),
+            (208, 232),
+            (216, 232),
+            2,
+            world.seed,
+        ));
+        let first_cc = install_caravan_cell(&mut world, 0);
+        install_caravan_cell(&mut world, 1);
+        let first = world.road_routes[0].caravan_pose().unwrap();
+        world.pos = V3::new(first.0, first.1 + 2.0, first.2);
+        world.debug_caravan_tick(0.1);
+        assert!(world.road_routes[0].caravan_progress > 0);
+        assert_eq!(world.road_routes[1].caravan_progress, 0);
+
+        world.store.evict(first_cc);
+        assert_eq!(world.nearby_route_index(), Some(0));
+        assert!(
+            !world.debug_caravan_visible(),
+            "a loaded cart on the frozen second route is not drawn"
+        );
+        install_caravan_cell(&mut world, 0);
+
+        world.road_routes.truncate(1);
+        world.store.evict(first_cc);
+        assert!(!world.debug_caravan_visible(), "unloaded road hides");
+        install_caravan_cell(&mut world, 0);
+        let road = world.road_routes[0].caravan_pose().unwrap().4;
+        world.debug_edit(road.x, road.y, road.z, GLOW);
+        assert!(!world.debug_caravan_visible(), "edited road hides");
+        world.debug_edit(road.x, road.y, road.z, AIR);
+        assert!(!world.debug_caravan_visible(), "missing road hides");
+    }
+
+    #[test]
+    fn nearby_route_runs_with_its_cart_far_offscreen() {
+        let mut world = World::new(None);
+        world.road_routes.push(RoadRoute::from_geometry(
+            (200, 200),
+            (400, 200),
+            (600, 200),
+            2,
+            1,
+        ));
+        world.pos = V3::new(500.5, 40.0, 200.5);
+        assert!(!world.debug_caravan_visible());
+        world.debug_caravan_tick(0.1);
+        assert!(world.road_routes[0].caravan_progress > 0);
+    }
+
+    #[test]
+    fn shared_endpoint_uses_stock_from_any_arriving_route() {
+        let mut world = World::new(None);
+        world
+            .road_routes
+            .push(RoadRoute::new((100, 100), (200, 100), 2, 7));
+        world
+            .road_routes
+            .push(RoadRoute::new((100, 100), (100, 200), 2, 7));
+        for route in &mut world.road_routes {
+            route.stock_from = 0;
+            route.stock_to = 0;
+        }
+        world.road_routes[1].stock_from = 2;
+        world.pos = V3::new(100.5, 40.0, 100.5);
+        assert_eq!(world.caravan_coin_stock_available(), Some(true));
+        assert!(world.consume_caravan_coin_stock());
+        assert_eq!(world.road_routes[0].stock_from, 0);
+        assert_eq!(world.road_routes[1].stock_from, 1);
+    }
+
+    #[test]
+    fn caravan_accepts_stronger_crossing_but_not_protected_brick() {
+        let seed = 77;
+        let (low, high) = (0..128)
+            .flat_map(|z| (0..128).map(move |x| (x * 16 + 8, z * 16 + 8)))
+            .filter(|&(x, z)| !worldgen::worldgen_structure_footprint(x, z, seed))
+            .find_map(|(x, z)| {
+                let low = RoadRoute::from_geometry((x - 8, z), (x, z), (x + 8, z), 2, seed);
+                let high = RoadRoute::from_geometry((x, z - 8), (x, z), (x, z + 8), 3, seed);
+                (low.profile[8] == high.profile[8]).then_some((low, high))
+            })
+            .expect("a clear level route crossing");
+        let mut world = World::new(None);
+        world.seed = seed;
+        world.road_routes = vec![low, high];
+        world.road_routes[0].caravan_progress = 8 * CARAVAN_FP;
+        let road = world.road_routes[0].caravan_pose().unwrap().4;
+        let cc = World::to_chunk(road);
+        world.store.get_or_create(cc).set(
+            World::mod16(road.x) as usize,
+            World::mod16(road.y) as usize,
+            World::mod16(road.z) as usize,
+            ROAD_COBBLE,
+        );
+        assert_eq!(world.debug_road_material_at(road.x, road.z), ROAD_COBBLE);
+        assert!(world.caravan_road_intact(&world.road_routes[0], road));
+
+        let (x, z) = (0..128)
+            .flat_map(|z| (0..128).map(move |x| (x * 16 + 8, z * 16 + 8)))
+            .find(|&(x, z)| worldgen::worldgen_structure_footprint(x, z, seed))
+            .expect("a protected structure footprint");
+        let mut blocked = World::new(None);
+        blocked.seed = seed;
+        blocked.road_routes.push(RoadRoute::from_geometry(
+            (x - 8, z),
+            (x, z),
+            (x + 8, z),
+            2,
+            seed,
+        ));
+        blocked.road_routes[0].caravan_progress = 8 * CARAVAN_FP;
+        let road = blocked.road_routes[0].caravan_pose().unwrap().4;
+        let cc = World::to_chunk(road);
+        blocked.store.get_or_create(cc).set(
+            World::mod16(road.x) as usize,
+            World::mod16(road.y) as usize,
+            World::mod16(road.z) as usize,
+            BRICK,
+        );
+        assert_eq!(blocked.debug_road_material_at(road.x, road.z), AIR);
+        assert!(!blocked.caravan_road_intact(&blocked.road_routes[0], road));
+    }
 
     #[test]
     fn raster_widths_are_one_then_three_blocks() {

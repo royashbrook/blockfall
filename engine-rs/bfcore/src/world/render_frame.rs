@@ -428,6 +428,13 @@ impl<'c> World<'c> {
             });
             self.entity_role_actions.push(bf_entity_role_action::default());
         }
+        // #258 nearby-only caravan. The engine owns route travel/state; kind 27
+        // reuses the app's finished merchant-cart model without joining creature AI.
+        if let Some(caravan) = self.caravan_draw(cam_pos) {
+            self.entities.push(caravan);
+            self.entity_role_actions
+                .push(bf_entity_role_action::default());
+        }
         for a in &self.remote_avatars {
             // #179: co-op peers render at their nearest image too.
             let mut a = *a;

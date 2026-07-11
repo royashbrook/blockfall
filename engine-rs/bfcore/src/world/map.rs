@@ -1,3 +1,4 @@
+use super::roads::CaravanRouteState;
 use super::*;
 
 // #182 world map + warp totems (phase 4 of #173, the torus payoff).
@@ -389,6 +390,23 @@ impl<'c> World<'c> {
             buf.extend_from_slice(&ax.to_le_bytes());
             buf.extend_from_slice(&az.to_le_bytes());
         }
+        // #258 append-only trade state. Old readers stop after village anchors;
+        // new readers recognize BFT1 and ignore a missing/truncated trailer.
+        let caravans = self.caravan_route_states();
+        buf.extend_from_slice(b"BFT1");
+        buf.extend_from_slice(&(caravans.len() as u32).to_le_bytes());
+        for state in caravans {
+            buf.extend_from_slice(&state.from.0.to_le_bytes());
+            buf.extend_from_slice(&state.from.1.to_le_bytes());
+            buf.extend_from_slice(&state.to.0.to_le_bytes());
+            buf.extend_from_slice(&state.to.1.to_le_bytes());
+            buf.extend_from_slice(&state.progress.to_le_bytes());
+            buf.extend_from_slice(&state.time_remainder.to_le_bytes());
+            buf.push(if state.forward { 1 } else { 0 });
+            buf.push(state.stock_from);
+            buf.push(state.stock_to);
+            buf.push(0);
+        }
         let path = format!("{}/map.dat", dir);
         let mut f = match std::fs::File::create(&path) {
             Ok(f) => f,
@@ -402,6 +420,10 @@ impl<'c> World<'c> {
         self.totems.clear();
         self.visited_villages.clear();
         self.totem_next = 0;
+        // Routes are derived from the save being loaded. Do not let the normal
+        // rebuild-preservation path leak live caravan state into an old save
+        // that has no BFT1 trailer (or only a truncated one).
+        self.road_routes.clear();
         let bytes = match std::fs::read(format!("{}/map.dat", dir)) {
             Ok(b) => b,
             Err(_) => return,
@@ -441,6 +463,52 @@ impl<'c> World<'c> {
                 self.visited_villages
                     .push((Self::wrap_block(ax), Self::wrap_block(az)));
             }
+        }
+        self.rebuild_road_routes();
+        if r.take(4) != Some(b"BFT1") {
+            return;
+        }
+        let count = r.u32().unwrap_or(0).min(256);
+        for _ in 0..count {
+            let row = (
+                r.i32(),
+                r.i32(),
+                r.i32(),
+                r.i32(),
+                r.u32(),
+                r.u32(),
+                r.u8(),
+                r.u8(),
+                r.u8(),
+                r.u8(),
+            );
+            let (
+                Some(fx),
+                Some(fz),
+                Some(tx),
+                Some(tz),
+                Some(progress),
+                Some(time_remainder),
+                Some(direction),
+                Some(stock_from),
+                Some(stock_to),
+                Some(_reserved),
+            ) = row
+            else {
+                break;
+            };
+            let from = (Self::wrap_block(fx), Self::wrap_block(fz));
+            let to = (Self::wrap_block(tx), Self::wrap_block(tz));
+            let (from, to) = if from <= to { (from, to) } else { (to, from) };
+            self.restore_caravan_route_state(CaravanRouteState {
+                from,
+                to,
+                progress,
+                time_remainder,
+                forward: direction != 0,
+                stock_from,
+                stock_to,
+            });
         }
     }
 }

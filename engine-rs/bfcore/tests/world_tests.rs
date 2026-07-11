@@ -2884,6 +2884,72 @@ fn road_routes_rebuild_from_saved_tiers_without_a_road_file() {
 }
 
 #[test]
+fn nearby_caravan_advances_and_joins_the_render_sidecar() {
+    let (mut w, _) = village_world(11);
+    assert!(
+        w.debug_road_route_count() > 0,
+        "HOME city has a trade route"
+    );
+    let (x, z, y) = w
+        .debug_road_sample(0, 0)
+        .expect("caravan starts at a road gate");
+    let _ = w.debug_generate_chunk_at(x, y, z);
+    assert_ne!(w.debug_block_at(x, y, z), world::AIR);
+    w.debug_set_camera(x as f32 + 0.5, y as f32 + 3.0, z as f32 + 0.5, 0.0, 0.0);
+    assert!(w.debug_caravan_visible());
+
+    let before = w.debug_caravan_state(0).unwrap().0;
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    w.update(&zero, 0.1);
+    assert!(
+        w.debug_caravan_state(0).unwrap().0 > before,
+        "the normal world update advances the nearby physical route"
+    );
+
+    let mut frame = empty_frame();
+    let mut draws = Vec::new();
+    let mut shadows = Vec::new();
+    let mut props = Vec::new();
+    w.build_frame(&mut frame, &mut draws, &mut shadows, &mut props, 0.0);
+    let entities =
+        unsafe { std::slice::from_raw_parts(frame.entities, frame.entity_count as usize) };
+    let caravan_indices: Vec<usize> = entities
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entity)| (entity.kind == 27).then_some(index))
+        .collect();
+    assert_eq!(
+        caravan_indices.len(),
+        1,
+        "exactly one merchant cart is drawn"
+    );
+    let sidecar = w.entity_role_actions();
+    assert_eq!(
+        sidecar.len(),
+        entities.len(),
+        "v28 sidecar remains index-aligned"
+    );
+    let action = sidecar[caravan_indices[0]];
+    assert_eq!((action.role, action.action, action.progress), (0, 0, 0.0));
+
+    w.debug_set_camera(
+        (x + 256).rem_euclid(worldgen::WORLD_PERIOD) as f32 + 0.5,
+        y as f32 + 3.0,
+        z as f32 + 0.5,
+        0.0,
+        0.0,
+    );
+    assert!(
+        !w.debug_caravan_visible(),
+        "the physical cart is nearby-only"
+    );
+    w.build_frame(&mut frame, &mut draws, &mut shadows, &mut props, 0.0);
+    let entities =
+        unsafe { std::slice::from_raw_parts(frame.entities, frame.entity_count as usize) };
+    assert!(entities.iter().all(|entity| entity.kind != 27));
+}
+
+#[test]
 fn village_wall_marks_protected_interior() {
     let (mut w, (ax, az)) = village_world(11);
     // Before any donation, nothing is protected.

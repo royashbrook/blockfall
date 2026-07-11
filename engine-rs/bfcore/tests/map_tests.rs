@@ -329,6 +329,96 @@ fn map_dat_roundtrip() {
 }
 
 #[test]
+fn caravan_trailer_roundtrips_and_old_or_truncated_maps_are_safe() {
+    let mut content = ContentRegistry::new();
+    content.load(CONTENT);
+    let dir = std::env::temp_dir().join(format!("bf_caravan_rt_{}", std::process::id()));
+    let dir = dir.to_string_lossy().to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let mut world = make_world(&content, 11);
+    assert!(world.debug_set_caravan_state(0, 777, false, 1, 9));
+    world.debug_caravan_tick(0.01);
+    let expected = world.debug_caravan_state(0).unwrap();
+    assert!(world.save(&dir));
+    let map_path = format!("{dir}/map.dat");
+    let full = std::fs::read(&map_path).unwrap();
+    let trailer = full
+        .windows(4)
+        .rposition(|window| window == b"BFT1")
+        .expect("BFT1 trailer");
+
+    let mut loaded = World::new(Some(TerrainGen::new()));
+    loaded.debug_set_sync_streaming(true);
+    loaded.set_content(&content);
+    assert!(loaded.load(&dir));
+    assert_eq!(loaded.debug_caravan_state(0), Some(expected));
+    world.debug_caravan_tick(0.001);
+    loaded.debug_caravan_tick(0.001);
+    assert_eq!(
+        loaded.debug_caravan_state(0),
+        world.debug_caravan_state(0),
+        "the fixed-time remainder survives save/load"
+    );
+
+    std::fs::write(&map_path, &full[..trailer]).unwrap();
+    assert!(loaded.debug_set_caravan_state(0, 999, false, 0, 0));
+    assert!(loaded.load(&dir));
+    assert_eq!(loaded.debug_caravan_state(0), Some((0, true, 3, 3)));
+
+    std::fs::write(&map_path, &full[..trailer + 18]).unwrap();
+    assert!(loaded.debug_set_caravan_state(0, 555, false, 0, 0));
+    assert!(loaded.load(&dir));
+    assert_eq!(loaded.debug_caravan_state(0), Some((0, true, 3, 3)));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn endpoint_stock_gates_and_is_consumed_by_coin_buy_offers() {
+    let mut content = ContentRegistry::new();
+    content.load(CONTENT);
+    let mut world = make_world(&content, 11);
+    let (fx, fz, _, _) = world.debug_caravan_endpoints(0).unwrap();
+    world.debug_set_camera(fx as f32 + 0.5, 20.0, fz as f32 + 0.5, 0.0, 0.0);
+    assert!(world.debug_set_caravan_state(0, 0, true, 0, 0));
+
+    let mut offers = bf_trade_view::default();
+    world.trade_offers(4, &mut offers);
+    assert_eq!(
+        offers.offer_count, 1,
+        "sell offer remains when caravan stock is empty"
+    );
+
+    assert!(world.debug_set_caravan_state(0, 0, true, 2, 0));
+    world.trade_offers(4, &mut offers);
+    assert_eq!(
+        offers.offer_count, 3,
+        "delivery stock enables both coin-buy offers"
+    );
+    let coin = world.debug_item_id("coin");
+    world.debug_clear_inventory();
+    assert!(
+        !world.trade_execute(4, 1),
+        "short payment refuses the purchase"
+    );
+    assert_eq!(
+        world.debug_caravan_state(0).unwrap().2,
+        2,
+        "a failed purchase consumes no delivery stock"
+    );
+    world.debug_give(coin, 2);
+    assert!(world.trade_execute(4, 1));
+    assert!(world.trade_execute(4, 1));
+    assert_eq!(world.debug_caravan_state(0).unwrap().2, 0);
+    world.trade_offers(4, &mut offers);
+    assert_eq!(
+        offers.offer_count, 1,
+        "buy offers hide after the last batch sells"
+    );
+}
+
+#[test]
 fn teleport_lands_on_surface_never_in_solid() {
     let mut content = ContentRegistry::new();
     content.load(CONTENT);

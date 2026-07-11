@@ -217,6 +217,9 @@ impl<'c> World<'c> {
         }
         self.stream_tick();
         self.maybe_expand_stream_radius();
+        // #258: only the nearest loaded, intact road runs a physical caravan.
+        // Far routes stay abstract and cost no creature/pathfinding work.
+        self.update_route_caravan(dtf);
 
         self.raycast_target();
         if self.mining && self.has_target {
