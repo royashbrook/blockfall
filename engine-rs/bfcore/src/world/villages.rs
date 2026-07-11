@@ -421,32 +421,32 @@ impl<'c> World<'c> {
         let mut changed = false;
         let wx = cc.x * KCHUNK_DIM + KCHUNK_DIM / 2;
         let wz = cc.z * KCHUNK_DIM + KCHUNK_DIM / 2;
-        let mut settlements: Vec<(i32, i32)> = self
+        // The procedural City already stamps its complete civic core, stations,
+        // shops, and props in worldgen. This frame-thread overlay is only for
+        // player-promoted villages recorded in `villages`; scanning procedural
+        // structure cells for every streamed chunk added several milliseconds to
+        // every frame around HOME while redundantly drawing the same City twice.
+        let settlements: Vec<(i32, i32, u8)> = self
             .villages
-            .keys()
-            .copied()
-            .filter(|&(ax, az)| {
-                Self::wrap_signed_block(ax - wx).abs() <= 28
+            .iter()
+            .filter_map(|(&(ax, az), state)| {
+                let tier = state.tier.min(3);
+                (tier >= 2
+                    && Self::wrap_signed_block(ax - wx).abs() <= 28
                     && Self::wrap_signed_block(az - wz).abs() <= 28
+                )
+                    .then_some((ax, az, tier))
             })
             .collect();
-        // Settlement anchors are spaced farther apart than one growth footprint,
-        // so one centre query covers every city that can touch this chunk.
-        if let Some((typ, ax, az)) = worldgen::worldgen_settlement_near(wx, wz, 28, self.seed) {
-            if worldgen::worldgen_is_city(typ) && !settlements.contains(&(ax, az)) {
-                settlements.push((ax, az));
-            }
-        }
 
-        for (ax, az) in settlements {
-            match self.settlement_class_at(ax, az) {
-                SettlementClass::Village => {}
-                SettlementClass::Town => {
+        for (ax, az, tier) in settlements {
+            match tier {
+                2 => {
                     changed |= self.apply_artisan_shop(cc, chunk, ax, az, -4, 4, 58, 24);
                     changed |= self.apply_artisan_shop(cc, chunk, ax, az, -4, -4, 59, 8);
                     changed |= self.apply_artisan_shop(cc, chunk, ax, az, 6, 6, 61, 4);
                 }
-                SettlementClass::City => {
+                _ => {
                     changed |= self.apply_artisan_shop(cc, chunk, ax, az, -4, 4, 58, 24);
                     changed |= self.apply_artisan_shop(cc, chunk, ax, az, -4, -4, 59, 8);
                     changed |= self.apply_artisan_shop(cc, chunk, ax, az, 6, 6, 61, 4);

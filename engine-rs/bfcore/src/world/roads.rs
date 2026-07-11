@@ -482,11 +482,17 @@ impl RoadRoute {
         let x0 = self.from.0 + nearest_delta(x0_canonical - self.from.0);
         let z0 = self.from.1 + nearest_delta(z0_canonical - self.from.1);
         let pad = if self.tier >= 3 { 1 } else { 0 };
-        let min_x = self.from.0.min(self.via.0).min(self.to.0) - pad;
-        let max_x = self.from.0.max(self.via.0).max(self.to.0) + pad;
-        let min_z = self.from.1.min(self.via.1).min(self.to.1) - pad;
-        let max_z = self.from.1.max(self.via.1).max(self.to.1) + pad;
-        x0 <= max_x && x0 + KCHUNK_DIM - 1 >= min_x && z0 <= max_z && z0 + KCHUNK_DIM - 1 >= min_z
+        let touches_segment = |a: (i32, i32), b: (i32, i32)| {
+            let min_x = a.0.min(b.0) - pad;
+            let max_x = a.0.max(b.0) + pad;
+            let min_z = a.1.min(b.1) - pad;
+            let max_z = a.1.max(b.1) + pad;
+            x0 <= max_x
+                && x0 + KCHUNK_DIM - 1 >= min_x
+                && z0 <= max_z
+                && z0 + KCHUNK_DIM - 1 >= min_z
+        };
+        touches_segment(self.from, self.via) || touches_segment(self.via, self.to)
     }
 
     fn affected_chunk_columns(&self, out: &mut HashSet<(i32, i32)>) {
@@ -809,11 +815,10 @@ impl<'c> World<'c> {
                 let wz = wz0 + lz;
                 let Some((tier, profile_y, center_distance)) = relevant
                     .iter()
-                    .filter(|route| !route.protected_at(wx, wz, self.seed))
                     .filter_map(|route| {
-                        route
-                            .profile_match_at(wx, wz)
-                            .map(|(y, distance)| (route.tier, y, distance))
+                        let (y, distance) = route.profile_match_at(wx, wz)?;
+                        (!route.protected_at(wx, wz, self.seed))
+                            .then_some((route.tier, y, distance))
                     })
                     .max_by(|a, b| a.0.cmp(&b.0).then_with(|| b.2.cmp(&a.2)))
                 else {
@@ -1259,6 +1264,18 @@ mod tests {
             assert_eq!(sy, worldgen::worldgen_road_surface(sx, sz, seed).0);
             assert_eq!(ey, worldgen::worldgen_road_surface(ex, ez, seed).0);
         }
+    }
+
+    #[test]
+    fn l_route_chunk_culling_follows_segments_not_the_filled_bounding_box() {
+        let route = RoadRoute::from_geometry((0, 0), (96, 0), (96, 96), 3, 11);
+        let chunk = |x: i32, z: i32| ChunkCoord { x, y: 0, z };
+        assert!(route.may_touch_chunk(chunk(2, 0)), "horizontal leg");
+        assert!(route.may_touch_chunk(chunk(6, 3)), "vertical leg");
+        assert!(
+            !route.may_touch_chunk(chunk(3, 3)),
+            "the empty middle of the L is not road"
+        );
     }
 
     #[test]
