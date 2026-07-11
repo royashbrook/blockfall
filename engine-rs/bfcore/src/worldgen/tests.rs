@@ -1427,11 +1427,18 @@ mod worldgen_tests {
             .unwrap();
         let shaft_h = 13 + ((sd.cell_hash >> 4) % 7) as i32;
         let top_y = base_h + shaft_h;
-        for (dx, dz) in [(-1, -1), (1, -1), (-1, 1), (1, 1)] {
+        for (dx, dz) in [(-2, -2), (2, -2), (-2, 2), (2, 2)] {
             assert_eq!(
                 cells.get(&(sd.anchor_wx + dx, top_y + 2, sd.anchor_wz + dz)),
                 Some(&STONE_RUBBLE),
                 "tower corner crown lost its shaped cap"
+            );
+        }
+        for (dx, dz) in [(-2, 0), (2, 0), (0, -2), (0, 2)] {
+            assert_eq!(
+                cells.get(&(sd.anchor_wx + dx, base_h + 4, sd.anchor_wz + dz)),
+                Some(&STONE_RUBBLE),
+                "tower buttress lost its shaped cap"
             );
         }
         let shaft_rubble = cells

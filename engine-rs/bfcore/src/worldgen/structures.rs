@@ -1517,21 +1517,48 @@ fn place_tall_tower<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C
     struct_set(chunk, ax, base_h + 2, az - 1, wx_min, wy_min, wz_min, OAK_DOOR);
     struct_set(chunk, ax, base_h + 3, az - 1, wx_min, wy_min, wz_min, OAK_DOOR);
 
-    // Slit windows partway up.
+    // Four tapered buttresses give the lower tower a grounded, non-box silhouette.
+    // Their rubble caps use the custom broken-stone mesh, so the transition back to
+    // the narrow shaft is visibly shaped instead of another stack of full cubes.
+    for (dx, dz) in [(-2, 0), (2, 0), (0, -2), (0, 2)] {
+        struct_set(chunk, ax + dx, base_h + 2, az + dz, wx_min, wy_min, wz_min, COBBLESTONE);
+        struct_set(chunk, ax + dx, base_h + 3, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
+        struct_set(chunk, ax + dx, base_h + 4, az + dz, wx_min, wy_min, wz_min, STONE_RUBBLE);
+    }
+
+    // Small rubble corbels repeat up the shaft without turning the intact tower
+    // into a bulky solid column or a noisy ruin.
+    let mut band_y = base_h + 7;
+    while band_y <= top_y - 2 {
+        for (dx, dz) in [(-2, 0), (2, 0), (0, -2), (0, 2)] {
+            struct_set(chunk, ax + dx, band_y, az + dz, wx_min, wy_min, wz_min, STONE_RUBBLE);
+        }
+        band_y += 6;
+    }
+
+    // Staggered slit windows break all four faces rather than leaving two long,
+    // uninterrupted stone slabs.
+    let low = base_h + 2 + shaft_h / 3;
     let mid = base_h + 2 + shaft_h / 2;
+    let high = base_h + 2 + (shaft_h * 2) / 3;
+    struct_set(chunk, ax, low, az - 1, wx_min, wy_min, wz_min, GLASS_PANE);
+    struct_set(chunk, ax, high, az + 1, wx_min, wy_min, wz_min, GLASS_PANE);
     struct_set(chunk, ax + 1, mid, az, wx_min, wy_min, wz_min, GLASS_PANE);
     struct_set(chunk, ax - 1, mid, az, wx_min, wy_min, wz_min, GLASS_PANE);
 
-    // Crenellated crown: a ring of cobble one above the top, alternating merlons.
-    for dz in -1..=1 {
-        for dx in -1..=1 {
-            let rim = dx == -1 || dx == 1 || dz == -1 || dz == 1;
+    // Crenellated crown: a wider 5x5 cobble rim overhangs the shaft, with an
+    // irregular mix of full and shaped merlons. The one-block projection makes the
+    // top read from the ground instead of continuing the same rectangular shaft.
+    for dz in -2..=2 {
+        for dx in -2..=2 {
+            let rim = dx == -2 || dx == 2 || dz == -2 || dz == 2;
             if !rim {
                 continue;
             }
             struct_set(chunk, ax + dx, top_y + 1, az + dz, wx_min, wy_min, wz_min, COBBLESTONE);
-            let corner = dx != 0 && dz != 0;
-            if corner {
+            let corner = dx.abs() == 2 && dz.abs() == 2;
+            let cardinal = (dx == 0 && dz.abs() == 2) || (dz == 0 && dx.abs() == 2);
+            if corner || cardinal {
                 struct_set(chunk, ax + dx, top_y + 2, az + dz, wx_min, wy_min, wz_min, STONE_RUBBLE);
             }
         }
