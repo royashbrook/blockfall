@@ -387,6 +387,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         let engineStart = CACurrentMediaTime()
         _ = bf_frame_begin(e, &input, dt)
         var f = bf_render_frame(); _ = bf_frame_acquire_render(e, &f)
+        var entityRoles = bf_entity_role_action_view()
+        _ = bf_entity_role_actions(e, &entityRoles)
         let engineMs = (CACurrentMediaTime() - engineStart) * 1000.0
         var terrainIndices: UInt64 = 0
         if let draws = f.draws {
@@ -657,13 +659,23 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 // Main creature dead ahead; a second one to the side (for the tree-shade test the
                 // caller frames separately), keep it to one for a clean flat-ground shot.
                 let testEnts = [mkEnt(baseXZ.x, baseXZ.z)]
+                var testRole = bf_entity_role_action()
+                if ProcessInfo.processInfo.environment["BF_SHOT_VILLAGER_WORK"] == "1" {
+                    testRole.role = 4
+                    testRole.action = 3
+                    testRole.progress = Float(ProcessInfo.processInfo.environment["BF_SHOT_WORK_PROGRESS"] ?? "0.55") ?? 0.55
+                }
+                let testRoles = [testRole]
                 if ProcessInfo.processInfo.environment["BF_SHOT_ENTDUMP"] == "1" {
                     lastEntDump = "TESTCREATURE cam=(\(camP.x),\(camP.y),\(camP.z)) fwdH=(\(fwdH.x),\(fwdH.z)) creature=(\(baseXZ.x),\(footY),\(baseXZ.z)) kind=\(kind)"
                 }
                 testEnts.withUnsafeBufferPointer { bp in
-                    entR.encode(enc, viewProj: viewProj, entities: bp.baseAddress, count: testEnts.count,
-                                shadow: es, occ: shadowVol?.tex, occCoarse: shadowVol?.coarse,
-                                camPosH: horizonCamH, shapeOverride: entityShapeOverride)   // #180 entities bend with the terrain
+                    testRoles.withUnsafeBufferPointer { rp in
+                        entR.encode(enc, viewProj: viewProj, entities: bp.baseAddress, count: testEnts.count,
+                                    shadow: es, occ: shadowVol?.tex, occCoarse: shadowVol?.coarse,
+                                    camPosH: horizonCamH, shapeOverride: entityShapeOverride,
+                                    roleActions: rp.baseAddress, roleActionCount: testRoles.count)   // #254 work-pose probe
+                    }
                 }
                 if ProcessInfo.processInfo.environment["BF_SHOT_ENTDUMP"] == "1" {
                     let mvpTest = viewProj * SIMD4<Float>(baseXZ.x, footY + 0.8, baseXZ.z, 1)
@@ -706,7 +718,9 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 entR.encode(enc, viewProj: viewProj, entities: f.entities,
                             count: Int(f.entity_count), shadow: es,
                             occ: shadowVol?.tex, occCoarse: shadowVol?.coarse,
-                            camPosH: horizonCamH, shapeOverride: entityShapeOverride)
+                            camPosH: horizonCamH, shapeOverride: entityShapeOverride,
+                            roleActions: entityRoles.entries,
+                            roleActionCount: Int(entityRoles.count))
             }
             if ProcessInfo.processInfo.environment["BF_SHOT_ENTDUMP"] == "1",
                ProcessInfo.processInfo.environment["BF_SHOT_TESTCREATURE"] == nil {

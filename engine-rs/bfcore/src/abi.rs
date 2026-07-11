@@ -1,7 +1,7 @@
 //! Blockfall engine C ABI, ported to Rust #[repr(C)].
 //!
 //! This is a faithful, byte-for-byte port of `contract/engine_c_api.h` (the
-//! frozen C ABI, BF_ABI_VERSION 18). Every typedef, enum, and struct here
+//! frozen C ABI, currently BF_ABI_VERSION 28). Every typedef, enum, and struct here
 //! mirrors the C declaration: same field names, same types, same order. The
 //! layout must match the C structs exactly so the Swift app reads the same
 //! bytes whether the engine is the C++ core or this Rust port.
@@ -23,7 +23,7 @@ use core::ffi::{c_char, c_void};
 // ABI version
 // ---------------------------------------------------------------------------
 
-/// Bumped on ANY breaking change to the header. v20.
+/// Bumped on ANY contract change to the header.
 /// v18: appended BF_ACT_SET_TIME_MODE (no struct layout change; append-only).
 /// v19: appended bf_shadow_volume + bf_world_shadow_volume (world-space voxel
 ///      sun shadows). No existing struct layout changed; purely additive.
@@ -36,7 +36,9 @@ use core::ffi::{c_char, c_void};
 ///      (world map + warp totems, #182). Purely additive; no existing struct
 ///      layout changed.
 /// v27: appended bf_set_difficulty (#238). Purely additive.
-pub const BF_ABI_VERSION: u32 = 27;
+/// v28: appended bf_entity_role_actions + its borrowed role/action sidecar
+///      (#254). bf_entity_draw remains frozen at 44 bytes.
+pub const BF_ABI_VERSION: u32 = 28;
 
 // ---------------------------------------------------------------------------
 // Primitive types
@@ -234,6 +236,38 @@ pub struct bf_entity_draw {
     pub kind: u32,
     pub sat: f32,
     pub _pad: u32,
+}
+
+/// #254 (v28): profession and current routine action for one render entity.
+/// Entries are index-aligned with bf_render_frame.entities. Zero means the
+/// entity has no profession/routine metadata.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct bf_entity_role_action {
+    pub role: u32,
+    pub action: u32,
+    pub progress: f32,
+    pub _pad: u32,
+}
+
+/// Borrowed view of the current frame's role/action sidecar. The pointer stays
+/// valid through bf_frame_end, matching bf_render_frame's borrowed arrays.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct bf_entity_role_action_view {
+    pub entries: *const bf_entity_role_action,
+    pub count: u32,
+    pub _pad: u32,
+}
+
+impl Default for bf_entity_role_action_view {
+    fn default() -> Self {
+        Self {
+            entries: core::ptr::null(),
+            count: 0,
+            _pad: 0,
+        }
+    }
 }
 
 /// One decorative prop drawn as a detailed small-cuboid toy model (#51).
@@ -590,6 +624,8 @@ mod parity {
         assert_eq!(size_of::<bf_draw_item>(), 64, "bf_draw_item");
         assert_eq!(size_of::<bf_region_dim>(), 20, "bf_region_dim");
         assert_eq!(size_of::<bf_entity_draw>(), 44, "bf_entity_draw");
+        assert_eq!(size_of::<bf_entity_role_action>(), 16, "bf_entity_role_action");
+        assert_eq!(size_of::<bf_entity_role_action_view>(), 16, "bf_entity_role_action_view");
         assert_eq!(size_of::<bf_prop_instance>(), 24, "bf_prop_instance");
         assert_eq!(size_of::<bf_camera>(), 188, "bf_camera");
         assert_eq!(size_of::<bf_hud_slot>(), 8, "bf_hud_slot");
@@ -740,6 +776,19 @@ mod parity {
         assert_eq!(offset_of!(bf_entity_draw, kind), 32);
         assert_eq!(offset_of!(bf_entity_draw, sat), 36);
         assert_eq!(offset_of!(bf_entity_draw, _pad), 40);
+    }
+
+    #[test]
+    fn entity_role_action_offsets() {
+        assert_eq!(align_of::<bf_entity_role_action>(), 4);
+        assert_eq!(offset_of!(bf_entity_role_action, role), 0);
+        assert_eq!(offset_of!(bf_entity_role_action, action), 4);
+        assert_eq!(offset_of!(bf_entity_role_action, progress), 8);
+        assert_eq!(offset_of!(bf_entity_role_action, _pad), 12);
+        assert_eq!(align_of::<bf_entity_role_action_view>(), 8);
+        assert_eq!(offset_of!(bf_entity_role_action_view, entries), 0);
+        assert_eq!(offset_of!(bf_entity_role_action_view, count), 8);
+        assert_eq!(offset_of!(bf_entity_role_action_view, _pad), 12);
     }
 
     #[test]

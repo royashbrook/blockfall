@@ -490,6 +490,40 @@ pub unsafe extern "C" fn bf_frame_acquire_render(
     bf_result::BF_OK
 }
 
+/// #254 (v28): borrow the role/action sidecar aligned with the currently
+/// acquired frame's entity array. No existing render struct changes layout.
+#[no_mangle]
+pub unsafe extern "C" fn bf_entity_role_actions(
+    e: bf_engine,
+    out: *mut bf_entity_role_action_view,
+) -> bf_result {
+    let e = match engine_ref(e) {
+        Some(e) => e,
+        None => {
+            set_err("null engine");
+            return bf_result::BF_ERR_BAD_ARG;
+        }
+    };
+    if out.is_null() {
+        set_err("null arg");
+        return bf_result::BF_ERR_BAD_ARG;
+    }
+    if !e.world_ready || !e.borrowed {
+        unsafe { *out = bf_entity_role_action_view::default() };
+        set_err("render frame not acquired");
+        return bf_result::BF_ERR_NOT_READY;
+    }
+    let entries = e.world.entity_role_actions();
+    unsafe {
+        *out = bf_entity_role_action_view {
+            entries: if entries.is_empty() { core::ptr::null() } else { entries.as_ptr() },
+            count: entries.len() as u32,
+            _pad: 0,
+        };
+    }
+    bf_result::BF_OK
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn bf_frame_end(e: bf_engine) {
     if let Some(e) = engine_mut(e) {

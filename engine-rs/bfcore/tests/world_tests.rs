@@ -1705,6 +1705,143 @@ fn villager_home_is_a_real_building() {
     );
 }
 
+// #254 routine fixture: flat supported ground, the finished #245 station at
+// home+(4,4), and the player far enough away not to push the worker.
+fn woodcutter_routine_world(with_station: bool, blocked_work_cell: bool) -> (World<'static>, i32) {
+    let content: &'static ContentRegistry = {
+        let mut c = ContentRegistry::new();
+        assert!(c.load(CONTENT));
+        Box::leak(Box::new(c))
+    };
+    let mut w = World::new(None);
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_content(content);
+    w.generate_test_world();
+    w.debug_set_camera(14.5, 12.0, 14.5, 0.0, 0.0);
+    if with_station {
+        w.debug_edit(8, 8, 8, 56); // home (4,4), station +4/+4
+    }
+    if blocked_work_cell {
+        w.debug_edit(7, 8, 8, world::GLOW); // west work cell must stay body-clear
+    }
+    let worker = w.debug_spawn_villager_role(4, 4, 4);
+    w.debug_set_creature_pos(worker, 4.5, 8.0, 4.5);
+    (w, worker)
+}
+
+#[test]
+fn woodcutter_walks_to_station_works_and_returns_home() {
+    let (mut w, worker) = woodcutter_routine_world(true, false);
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    assert_eq!(w.debug_villager_routine_action(worker), 1, "shift starts idle");
+
+    let mut sequence = vec![1u32];
+    for _ in 0..600 {
+        w.update(&zero, 0.05);
+        let action = w.debug_villager_routine_action(worker);
+        if sequence.last().copied() != Some(action) {
+            sequence.push(action);
+        }
+        if action == 3 {
+            break;
+        }
+    }
+    assert_eq!(&sequence[..3], &[1, 2, 3], "idle -> station travel -> work");
+    let (x, y, z) = w.debug_creature_pos(worker);
+    assert!((x - 7.5).abs() < 0.06 && (y - 8.0).abs() < 0.06 && (z - 8.5).abs() < 0.06,
+            "worker occupies the west work cell: ({x:.2},{y:.2},{z:.2})");
+
+    // The additive v28 sidecar is aligned with the frozen draw list and exposes
+    // role/action/progress without changing bf_entity_draw's 44-byte layout.
+    for _ in 0..10 {
+        w.update(&zero, 0.05);
+    }
+    let mut frame = empty_frame();
+    let mut draws = Vec::new();
+    let mut shadows = Vec::new();
+    let mut props = Vec::new();
+    w.build_frame(&mut frame, &mut draws, &mut shadows, &mut props, 0.0);
+    let roles = w.entity_role_actions();
+    assert_eq!(roles.len(), frame.entity_count as usize, "sidecar stays index-aligned");
+    assert_eq!((roles[0].role, roles[0].action), (4, 3));
+    assert!(roles[0].progress > 0.05 && roles[0].progress < 1.0,
+            "work phase advances deterministically: {}", roles[0].progress);
+
+    // Removing the station during the shift cancels work immediately and sends
+    // the villager to a clear home cell instead of leaving stale movement behind.
+    // #248's city core places tall civic lamps on the four cardinal home
+    // offsets. They must not be mistaken for a walkable roof on return.
+    for (lx, lz) in [(2, 4), (4, 2), (6, 4), (4, 6)] {
+        for ly in 8..=10 {
+            w.debug_edit(lx, ly, lz, world::GLOW);
+        }
+    }
+    w.debug_edit(8, 8, 8, world::AIR);
+    w.update(&zero, 0.05);
+    assert_eq!(w.debug_villager_routine_action(worker), 4, "removed station -> return home");
+    for _ in 0..500 {
+        w.update(&zero, 0.05);
+        if w.debug_villager_routine_action(worker) == 1 {
+            break;
+        }
+    }
+    assert_eq!(w.debug_villager_routine_action(worker), 1, "return completes at idle");
+    let (hx, hy, hz) = w.debug_creature_pos(worker);
+    assert!((hx - 4.5).hypot(hz - 4.5) <= 3.1, "returned beside home: ({hx:.2},{hz:.2})");
+    assert!(hy < 9.0, "return target stays on the plaza, not a civic lamp roof: y={hy}");
+}
+
+#[test]
+fn woodcutter_missing_blocked_and_unreachable_station_falls_back() {
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    for (with_station, blocked) in [(false, false), (true, true)] {
+        let (mut w, worker) = woodcutter_routine_world(with_station, blocked);
+        let mut saw_work_or_travel = false;
+        for _ in 0..180 {
+            w.update(&zero, 0.05);
+            saw_work_or_travel |= matches!(w.debug_villager_routine_action(worker), 2 | 3);
+        }
+        assert!(!saw_work_or_travel, "missing/blocked station never starts a false shift");
+        assert_ne!(w.debug_villager_routine_action(worker), 3);
+    }
+
+    // Real path failure: seal the worker inside a three-block-high ring while the
+    // station and its work cell remain valid. The bounded pathfinder returns no
+    // route, routine movement cancels, and generic wander never fights it.
+    let (mut w, worker) = woodcutter_routine_world(true, false);
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            if dx == 0 && dz == 0 { continue; }
+            for y in 8..=10 {
+                w.debug_edit(4 + dx, y, 4 + dz, world::GLOW);
+            }
+        }
+    }
+    let start = w.debug_creature_pos(worker);
+    for _ in 0..180 {
+        w.update(&zero, 0.05);
+    }
+    let end = w.debug_creature_pos(worker);
+    assert_ne!(w.debug_villager_routine_action(worker), 3, "unreachable station never works");
+    assert_eq!(w.debug_creature_path_len(worker), 0, "failed routine leaves no stale path");
+    assert!((end.0 - start.0).hypot(end.2 - start.2) < 0.1,
+            "one controller holds position after failure: start={start:?} end={end:?}");
+}
+
+#[test]
+fn woodcutter_station_goal_uses_nearest_torus_image() {
+    let period = worldgen::WORLD_PERIOD;
+    let (gx, gz) = World::debug_villager_nearest_goal(
+        period as f32 - 1.5,
+        100.5,
+        1,
+        104,
+    );
+    assert_eq!((gx, gz), (period + 1, 104));
+    assert_eq!(gx - (period - 2), 3, "station across seam is three blocks ahead, not a world away");
+}
+
 // ============================================================================
 // Natural movement (#131) — creatures CLIMB a 1-block step smoothly (over a few
 // ticks) instead of teleporting their Y up a whole block in a single tick, and a

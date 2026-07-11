@@ -76,6 +76,241 @@ impl<'c> World<'c> {
         c.ai.on_blocked(turn);
     }
 
+    // #254: the first profession routine is deliberately tied to #245's one
+    // physical workstation contract: station at home+(4,4), clear work cell one
+    // block west. The Y scan runs only when a shift starts; the result is cached
+    // and then validated each tick so removal/old saves fail safely.
+    fn woodcutter_station(&self, c: &Creature, scan: bool) -> Option<(i32, i32, i32, i32)> {
+        const CHOPPING_BLOCK: BlockId = 56;
+        let sx = Self::wrap_block(c.home_x + 4);
+        let sz = Self::wrap_block(c.home_z + 4);
+        let wx = Self::wrap_block(sx - 1);
+        let sy = if scan {
+            (WORLD_Y_MIN_BLOCK..=WORLD_Y_MAX_BLOCK)
+                .rev()
+                .find(|&y| self.block_at(IVec3 { x: sx, y, z: sz }) == CHOPPING_BLOCK)?
+        } else {
+            c.routine.station_y
+        };
+        if sy == NO_FLOOR
+            || self.block_at(IVec3 { x: sx, y: sy, z: sz }) != CHOPPING_BLOCK
+            || !self.collide_solid(wx, sy - 1, sz)
+            || self.creature_body_blocked(wx as f32 + 0.5, sy, sz as f32 + 0.5, c.scale)
+        {
+            return None;
+        }
+        Some((sx, sy, wx, sz))
+    }
+
+    // Pick a real clear home cell, not the settlement marker block at the exact
+    // anchor. Fixed candidate order keeps the result deterministic.
+    fn villager_home_cell(&self, c: &Creature) -> Option<(i32, i32, i32)> {
+        const CANDIDATES: [(i32, i32); 12] = [
+            (2, 2),
+            (2, -2),
+            (-2, 2),
+            (-2, -2),
+            (-2, 0),
+            (0, -2),
+            (2, 0),
+            (0, 2),
+            (-3, 0),
+            (0, -3),
+            (3, 0),
+            (0, 3),
+        ];
+        for (dx, dz) in CANDIDATES {
+            let x = Self::wrap_block(c.home_x + dx);
+            let z = Self::wrap_block(c.home_z + dz);
+            // Search upward from terrain for the first supported body-clear cell.
+            // A top-down floor query can mistake a civic lamp/awning roof for home.
+            let base = if self.gen.is_some() {
+                worldgen::worldgen_surface_height(x, z, self.seed)
+            } else {
+                self.floor_below(x, WORLD_Y_MAX_BLOCK + 1, z) - 1
+            };
+            for y in (base + 1)..=(base + 3) {
+                if self.collide_solid(x, y - 1, z)
+                    && !self.creature_body_blocked(
+                        x as f32 + 0.5,
+                        y,
+                        z as f32 + 0.5,
+                        c.scale,
+                    )
+                {
+                    return Some((x, y, z));
+                }
+            }
+        }
+        None
+    }
+
+    #[inline]
+    pub(super) fn villager_nearest_goal(cx: f32, cz: f32, gx: i32, gz: i32) -> (i32, i32) {
+        let bx = Self::ifloor(cx);
+        let bz = Self::ifloor(cz);
+        (
+            bx + Self::wrap_signed_block(gx - bx),
+            bz + Self::wrap_signed_block(gz - bz),
+        )
+    }
+
+    fn set_villager_routine(c: &mut Creature, state: VillagerRoutineState, timer: f32) {
+        c.routine.state = state;
+        c.routine.timer = timer;
+        c.ai.path.clear();
+        c.ai.path_idx = 0;
+        c.ai.repath_cd = 0;
+    }
+
+    fn villager_return_decision(&self, c: &mut Creature) -> crate::creature_ai::Decision {
+        use crate::creature_ai::Decision;
+        let Some((hx, hy, hz)) = self.villager_home_cell(c) else {
+            Self::set_villager_routine(c, VillagerRoutineState::Idle, VILLAGER_IDLE_SECONDS);
+            return Decision { desired_heading: c.ai.heading, speed_frac: 0.0, path_goal: None };
+        };
+        let dx = Self::wrap_signed_f(hx as f32 + 0.5 - c.pos.x);
+        let dz = Self::wrap_signed_f(hz as f32 + 0.5 - c.pos.z);
+        if dx * dx + dz * dz <= 0.45 * 0.45 || c.routine.timer <= 0.0 {
+            if dx * dx + dz * dz <= 0.45 * 0.45 {
+                c.pos.x = Self::wrap_pos_f(hx as f32 + 0.5);
+                c.pos.y = hy as f32;
+                c.pos.z = Self::wrap_pos_f(hz as f32 + 0.5);
+            }
+            Self::set_villager_routine(c, VillagerRoutineState::Idle, VILLAGER_IDLE_SECONDS);
+            return Decision { desired_heading: c.ai.heading, speed_frac: 0.0, path_goal: None };
+        }
+        Decision {
+            desired_heading: dx.atan2(dz),
+            speed_frac: 0.85,
+            path_goal: Some(Self::villager_nearest_goal(c.pos.x, c.pos.z, hx, hz)),
+        }
+    }
+
+    fn woodcutter_routine_decision(
+        &self,
+        c: &mut Creature,
+        dt: f32,
+    ) -> crate::creature_ai::Decision {
+        use crate::creature_ai::Decision;
+        c.routine.timer -= dt;
+        match c.routine.state {
+            VillagerRoutineState::Idle => {
+                if c.routine.timer > 0.0 {
+                    return Decision { desired_heading: c.ai.heading, speed_frac: 0.0, path_goal: None };
+                }
+                if let Some((_sx, sy, wx, wz)) = self.woodcutter_station(c, true) {
+                    c.routine.station_y = sy;
+                    Self::set_villager_routine(
+                        c,
+                        VillagerRoutineState::TravelToStation,
+                        VILLAGER_TRAVEL_SECONDS,
+                    );
+                    let (gx, gz) = Self::villager_nearest_goal(c.pos.x, c.pos.z, wx, wz);
+                    let dx = gx as f32 + 0.5 - c.pos.x;
+                    let dz = gz as f32 + 0.5 - c.pos.z;
+                    Decision {
+                        desired_heading: dx.atan2(dz),
+                        speed_frac: 0.85,
+                        path_goal: Some((gx, gz)),
+                    }
+                } else {
+                    Self::set_villager_routine(
+                        c,
+                        VillagerRoutineState::ReturnHome,
+                        VILLAGER_RETURN_SECONDS,
+                    );
+                    self.villager_return_decision(c)
+                }
+            }
+            VillagerRoutineState::TravelToStation => {
+                let Some((sx, sy, wx, wz)) = self.woodcutter_station(c, false) else {
+                    Self::set_villager_routine(
+                        c,
+                        VillagerRoutineState::ReturnHome,
+                        VILLAGER_RETURN_SECONDS,
+                    );
+                    return self.villager_return_decision(c);
+                };
+                if c.routine.timer <= 0.0 {
+                    Self::set_villager_routine(
+                        c,
+                        VillagerRoutineState::ReturnHome,
+                        VILLAGER_RETURN_SECONDS,
+                    );
+                    return self.villager_return_decision(c);
+                }
+                let dx = Self::wrap_signed_f(wx as f32 + 0.5 - c.pos.x);
+                let dz = Self::wrap_signed_f(wz as f32 + 0.5 - c.pos.z);
+                if dx * dx + dz * dz <= 0.55 * 0.55 {
+                    c.pos.x = Self::wrap_pos_f(wx as f32 + 0.5);
+                    c.pos.y = sy as f32;
+                    c.pos.z = Self::wrap_pos_f(wz as f32 + 0.5);
+                    let face = Self::wrap_signed_f(sx as f32 + 0.5 - c.pos.x)
+                        .atan2(Self::wrap_signed_f(wz as f32 + 0.5 - c.pos.z));
+                    c.ai.heading = face;
+                    c.ai.speed = 0.0;
+                    c.yaw = face;
+                    Self::set_villager_routine(
+                        c,
+                        VillagerRoutineState::Work,
+                        VILLAGER_WORK_SECONDS,
+                    );
+                    return Decision { desired_heading: face, speed_frac: 0.0, path_goal: None };
+                }
+                let (gx, gz) = Self::villager_nearest_goal(c.pos.x, c.pos.z, wx, wz);
+                Decision {
+                    desired_heading: dx.atan2(dz),
+                    speed_frac: 0.85,
+                    path_goal: Some((gx, gz)),
+                }
+            }
+            VillagerRoutineState::Work => {
+                let Some((sx, sy, wx, wz)) = self.woodcutter_station(c, false) else {
+                    Self::set_villager_routine(
+                        c,
+                        VillagerRoutineState::ReturnHome,
+                        VILLAGER_RETURN_SECONDS,
+                    );
+                    return self.villager_return_decision(c);
+                };
+                if c.routine.timer <= 0.0 {
+                    Self::set_villager_routine(
+                        c,
+                        VillagerRoutineState::ReturnHome,
+                        VILLAGER_RETURN_SECONDS,
+                    );
+                    return self.villager_return_decision(c);
+                }
+                c.pos.x = Self::wrap_pos_f(wx as f32 + 0.5);
+                c.pos.y = sy as f32;
+                c.pos.z = Self::wrap_pos_f(wz as f32 + 0.5);
+                let face = Self::wrap_signed_f(sx as f32 + 0.5 - c.pos.x)
+                    .atan2(Self::wrap_signed_f(wz as f32 + 0.5 - c.pos.z));
+                c.ai.heading = face;
+                c.ai.speed = 0.0;
+                Decision { desired_heading: face, speed_frac: 0.0, path_goal: None }
+            }
+            VillagerRoutineState::ReturnHome => self.villager_return_decision(c),
+        }
+    }
+
+    fn villager_routine_path_failed(c: &mut Creature) {
+        match c.routine.state {
+            VillagerRoutineState::TravelToStation => Self::set_villager_routine(
+                c,
+                VillagerRoutineState::ReturnHome,
+                VILLAGER_RETURN_SECONDS,
+            ),
+            VillagerRoutineState::ReturnHome => Self::set_villager_routine(
+                c,
+                VillagerRoutineState::Idle,
+                VILLAGER_IDLE_SECONDS,
+            ),
+            _ => {}
+        }
+    }
+
     pub(super) fn update_creatures(&mut self, dt: f32) {
         // Smooth step-up tuning. A creature blocked by a ledge it can stand on climbs
         // its Y up at CLIMB_SPEED blocks/sec (a clamber that reads over a few ticks at
@@ -184,12 +419,18 @@ impl<'c> World<'c> {
             // deterministic with the rest of the sim. The world's rng is the seed.
             c.ai.tick_repath();
             let mut seed = self.rng;
-            let dec = cai::decide(
-                &mut c.ai, eff_temper, c.pos.x, c.pos.z, ppx, ppz, xzd, dt, &mut seed,
-            );
+            let routine_driven = c.model == 20 && c.npc_id == 4;
+            let dec = if routine_driven {
+                self.woodcutter_routine_decision(&mut c, dt)
+            } else {
+                cai::decide(
+                    &mut c.ai, eff_temper, c.pos.x, c.pos.z, ppx, ppz, xzd, dt, &mut seed,
+                )
+            };
             self.rng = seed;
             // Seeking hostiles path around obstacles with throttled, bounded A*.
             let mut desired_heading = dec.desired_heading;
+            let mut routine_path_failed = false;
             if let Some(goal) = dec.path_goal {
                 if c.ai.needs_repath(goal) {
                     let sy = Self::ifloor(c.pos.y);
@@ -201,13 +442,21 @@ impl<'c> World<'c> {
                         goal.0,
                         goal.1,
                     );
+                    let dx = goal.0 as f32 + 0.5 - c.pos.x;
+                    let dz = goal.1 as f32 + 0.5 - c.pos.z;
+                    routine_path_failed = routine_driven
+                        && path.is_empty()
+                        && dx * dx + dz * dz > 0.55 * 0.55;
                     c.ai.set_path(path);
                 }
-                if let Some(h) = c.ai.follow_heading(c.pos.x, c.pos.z) {
+                if routine_path_failed {
+                    Self::villager_routine_path_failed(&mut c);
+                } else if let Some(h) = c.ai.follow_heading(c.pos.x, c.pos.z) {
                     desired_heading = h;
                 } else {
-                    // Path exhausted but not yet in melee range: steer straight in.
-                    desired_heading = to_player.x.atan2(to_player.z);
+                    // Path exhausted but not yet at the goal: steer straight in.
+                    desired_heading = (goal.0 as f32 + 0.5 - c.pos.x)
+                        .atan2(goal.1 as f32 + 0.5 - c.pos.z);
                 }
             } else {
                 c.ai.path.clear();
@@ -215,7 +464,7 @@ impl<'c> World<'c> {
             // Smooth turn + accel toward the decision, then apply the displacement
             // through the existing collision/climb code. step_locomotion never snaps
             // heading or velocity, so creatures rotate and ramp instead of flipping.
-            let target_speed = c.speed * dec.speed_frac;
+            let target_speed = if routine_path_failed { 0.0 } else { c.speed * dec.speed_frac };
             let (mdx, mdz, new_heading, new_speed) =
                 cai::step_locomotion(&c.ai, desired_heading, target_speed, dt);
             c.ai.heading = new_heading;

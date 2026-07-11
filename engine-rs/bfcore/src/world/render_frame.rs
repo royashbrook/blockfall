@@ -299,6 +299,7 @@ impl<'c> World<'c> {
 
         // Creatures.
         self.entities.clear();
+        self.entity_role_actions.clear();
         const KANIMAL_KIND: [u32; 8] = [0, 1, 2, 3, 7, 8, 9, 10];
         for cr in &self.creatures {
             let mut col = if cr.friendly {
@@ -349,6 +350,16 @@ impl<'c> World<'c> {
                 sat,
                 _pad: 0,
             });
+            self.entity_role_actions.push(if cr.model == 20 {
+                bf_entity_role_action {
+                    role: cr.npc_id.max(0) as u32,
+                    action: if cr.npc_id == 4 { cr.routine.state.action() } else { 0 },
+                    progress: if cr.npc_id == 4 { cr.routine.progress() } else { 0.0 },
+                    _pad: 0,
+                }
+            } else {
+                bf_entity_role_action::default()
+            });
         }
         for fb in &self.falling {
             let sat = self.region_sat(Self::to_chunk(IVec3 {
@@ -373,6 +384,7 @@ impl<'c> World<'c> {
                 sat,
                 _pad: 0,
             });
+            self.entity_role_actions.push(bf_entity_role_action::default());
         }
         // #170 debris fragments: kind 22 cube chips. yaw carries the tumble
         // phase and color the block colour (same convention as kind 6); scale
@@ -400,6 +412,7 @@ impl<'c> World<'c> {
                 sat,
                 _pad: 0,
             });
+            self.entity_role_actions.push(bf_entity_role_action::default());
         }
         for a in &self.remote_avatars {
             // #179: co-op peers render at their nearest image too.
@@ -407,11 +420,18 @@ impl<'c> World<'c> {
             a.position.x = cam_pos.x + Self::wrap_signed_f(a.position.x - cam_pos.x);
             a.position.z = cam_pos.z + Self::wrap_signed_f(a.position.z - cam_pos.z);
             self.entities.push(a);
+            self.entity_role_actions.push(bf_entity_role_action::default());
         }
+        debug_assert_eq!(self.entities.len(), self.entity_role_actions.len());
         out.entities = self.entities.as_ptr();
         out.entity_count = self.entities.len() as u32;
 
         self.fill_hud(&mut out.hud);
+    }
+
+    /// #254 v28: borrowed, index-aligned metadata for the latest render frame.
+    pub fn entity_role_actions(&self) -> &[bf_entity_role_action] {
+        &self.entity_role_actions
     }
 
     // strncpy(dst, src, dst.len()-1): copy bytes, always NUL-terminate, truncate.

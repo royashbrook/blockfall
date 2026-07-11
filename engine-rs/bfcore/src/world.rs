@@ -322,7 +322,60 @@ struct Creature {
     // behaviour state machine, and the throttled A* path. Logic lives in
     // creature_ai.rs; this is just the per creature data riding along.
     ai: creature_ai::CreatureAi,
+    // #254 deterministic profession routine. This is transient like every other
+    // creature field: villagers are repopulated after load, so old saves need no
+    // migration and a missing workstation simply falls back to home.
+    routine: VillagerRoutine,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VillagerRoutineState {
+    Idle,
+    TravelToStation,
+    Work,
+    ReturnHome,
+}
+
+impl VillagerRoutineState {
+    fn action(self) -> u32 {
+        match self {
+            VillagerRoutineState::Idle => 1,
+            VillagerRoutineState::TravelToStation => 2,
+            VillagerRoutineState::Work => 3,
+            VillagerRoutineState::ReturnHome => 4,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct VillagerRoutine {
+    state: VillagerRoutineState,
+    timer: f32,
+    station_y: i32,
+}
+
+impl Default for VillagerRoutine {
+    fn default() -> Self {
+        Self {
+            state: VillagerRoutineState::Idle,
+            timer: VILLAGER_IDLE_SECONDS,
+            station_y: NO_FLOOR,
+        }
+    }
+}
+
+impl VillagerRoutine {
+    fn progress(&self) -> f32 {
+        let total = match self.state {
+            VillagerRoutineState::Idle => VILLAGER_IDLE_SECONDS,
+            VillagerRoutineState::TravelToStation => VILLAGER_TRAVEL_SECONDS,
+            VillagerRoutineState::Work => VILLAGER_WORK_SECONDS,
+            VillagerRoutineState::ReturnHome => VILLAGER_RETURN_SECONDS,
+        };
+        (1.0 - self.timer / total).clamp(0.0, 1.0)
+    }
+}
+
 impl Default for Creature {
     fn default() -> Creature {
         Creature {
@@ -351,6 +404,7 @@ impl Default for Creature {
             name: String::new(),
             given: String::new(),
             ai: creature_ai::CreatureAi::default(),
+            routine: VillagerRoutine::default(),
         }
     }
 }
@@ -423,6 +477,10 @@ const CY_MAX: i32 = floor_div_const(WORLD_Y_MAX_BLOCK, KCHUNK_DIM);
 const GEN_BUDGET: i32 = 6;
 const MESH_BUDGET: usize = 12;
 const NO_FLOOR: i32 = -1000000;
+const VILLAGER_IDLE_SECONDS: f32 = 3.0;
+const VILLAGER_TRAVEL_SECONDS: f32 = 24.0;
+const VILLAGER_WORK_SECONDS: f32 = 5.0;
+const VILLAGER_RETURN_SECONDS: f32 = 18.0;
 
 const fn floor_div_const(a: i32, b: i32) -> i32 {
     let q = a / b;
@@ -495,6 +553,8 @@ pub struct World<'c> {
     // never persisted). See world/debris.rs.
     debris: Vec<Debris>,
     entities: Vec<bf_entity_draw>,
+    // #254 ABI v28 sidecar, index-aligned with `entities` for the current frame.
+    entity_role_actions: Vec<bf_entity_role_action>,
     creature_timer: f32,
     villager_timer: f32,
     danger_timer: f32,

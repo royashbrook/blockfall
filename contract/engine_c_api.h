@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 27u  /* v27: difficulty setter (#238, append-only) */
+#define BF_ABI_VERSION 28u  /* v28: entity role/action sidecar (#254) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -230,6 +230,22 @@ typedef struct bf_entity_draw {
     uint32_t _pad;
 } bf_entity_draw;
 
+/* #254 (v28): profession + deterministic routine action, index-aligned with
+ * bf_render_frame.entities. role/action 0 means no metadata. The draw struct
+ * above remains frozen at 44 bytes. action: 1 idle, 2 travel, 3 work, 4 home. */
+typedef struct bf_entity_role_action {
+    uint32_t role;
+    uint32_t action;
+    float    progress;       /* 0..1 within the current action */
+    uint32_t _pad;
+} bf_entity_role_action;
+
+typedef struct bf_entity_role_action_view {
+    const bf_entity_role_action* entries;
+    uint32_t                     count;
+    uint32_t                     _pad;
+} bf_entity_role_action_view;
+
 /* One decorative prop the renderer draws as a detailed small-cuboid toy model
  * (#51 sub-voxel detail). The engine emits one per prop block in view; the
  * renderer looks `type` up in its model table and builds the geometry. */
@@ -360,6 +376,9 @@ BF_API bf_result bf_frame_begin(bf_engine e, const bf_frame_input* in, double re
 /* [MAIN] Fill `out` with a borrowed view of this frame's render data.
  * Pointers inside remain valid until bf_frame_end(). DO NOT free.           */
 BF_API bf_result bf_frame_acquire_render(bf_engine e, bf_render_frame* out);
+/* [MAIN] Borrow the v28 role/action array for the acquired frame. The entry at
+ * i describes frame.entities[i]; valid until bf_frame_end. */
+BF_API bf_result bf_entity_role_actions(bf_engine e, bf_entity_role_action_view* out);
 
 /* Fill `out` (capacity `cap`) with the FULL quest progression list and return the
  * total quest count (may exceed cap; only min(count,cap) are written). Powers the

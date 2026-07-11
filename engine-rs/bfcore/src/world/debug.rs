@@ -120,6 +120,11 @@ impl<'c> World<'c> {
         let c = &self.creatures[i as usize];
         (c.pos.x, c.pos.y, c.pos.z)
     }
+    pub fn debug_set_creature_pos(&mut self, i: i32, x: f32, y: f32, z: f32) {
+        if i >= 0 && i < self.creatures.len() as i32 {
+            self.creatures[i as usize].pos = Self::wrap_v3_xz(V3::new(x, y, z));
+        }
+    }
     // Spawn a plain wandering creature at a precise position + heading and return its
     // index. Used by the locomotion tests to place a creature against a known step.
     // The wander timer is set high so the creature keeps its given yaw (it walks
@@ -178,6 +183,28 @@ impl<'c> World<'c> {
         c.pos = V3::new(ax as f32, surf as f32, az as f32);
         self.creatures.push(c);
         (self.creatures.len() - 1) as i32
+    }
+    pub fn debug_villager_routine_action(&self, i: i32) -> u32 {
+        if i < 0 {
+            return 0;
+        }
+        self.creatures
+            .get(i as usize)
+            .filter(|c| c.model == 20 && c.npc_id == 4)
+            .map(|c| c.routine.state.action())
+            .unwrap_or(0)
+    }
+    pub fn debug_creature_path_len(&self, i: i32) -> usize {
+        if i < 0 {
+            return 0;
+        }
+        self.creatures
+            .get(i as usize)
+            .map(|c| c.ai.path.len().saturating_sub(c.ai.path_idx))
+            .unwrap_or(0)
+    }
+    pub fn debug_villager_nearest_goal(cx: f32, cz: f32, gx: i32, gz: i32) -> (i32, i32) {
+        Self::villager_nearest_goal(cx, cz, gx, gz)
     }
     // Run a donation against a villager index (the player must hold the item already).
     pub fn debug_try_donation(&mut self, idx: i32) -> bool {

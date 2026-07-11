@@ -234,6 +234,11 @@ final class EntityRenderer {
     // #212: smoothed ground speed of the entity being drawn, so a drawKind can gate
     // a walk cycle (legs swing while moving, plant while idle). Set per entity below.
     var curGaitSpeed: Float = 0
+    // #254 v28: role/action metadata for the entity currently being drawn. This
+    // comes from the additive sidecar, never from bf_entity_draw's frozen bytes.
+    var curEntityRole: UInt32 = 0
+    var curEntityAction: UInt32 = 0
+    var curEntityActionProgress: Float = 0
 
     /// Quantize (pos, kind) into a stable-ish key so a creature maps to the same
     /// history bucket across frames despite small movement. 0.5-unit cells.
@@ -467,7 +472,9 @@ final class EntityRenderer {
                 gaitPhase: Float? = nil,
                 gaitSpeed: Float? = nil,
                 animationHash: Float? = nil,
-                shapeOverride: EntityPartShape? = nil) {   // #180 horizon curvature (default flat)
+                shapeOverride: EntityPartShape? = nil,
+                roleActions: UnsafePointer<bf_entity_role_action>? = nil,
+                roleActionCount: Int = 0) {   // #180 horizon curvature (default flat)
         lastEntityCount = max(0, count)
         lastBodyPartDraws = 0
         lastBodyTriangles = 0
@@ -534,6 +541,17 @@ final class EntityRenderer {
 
         for i in 0..<count {
             let e = entities[i]
+            let bodyPartsBefore = lastBodyPartDraws
+            if let roleActions, i < roleActionCount {
+                let a = roleActions[i]
+                curEntityRole = a.role
+                curEntityAction = a.action
+                curEntityActionProgress = max(0, min(1, a.progress))
+            } else {
+                curEntityRole = 0
+                curEntityAction = 0
+                curEntityActionProgress = 0
+            }
             let pos = SIMD3<Float>(e.position.x, e.position.y, e.position.z)
             // #192: camera-relative position for all part matrices (see vpRel above).
             // Gait history / phase hashing below stay on the ABSOLUTE position so the
@@ -694,9 +712,16 @@ final class EntityRenderer {
             case 100: drawKind20(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             default: drawKind0(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             }
+            if e.kind == 20 && curEntityRole == 4 && curEntityAction == 3 {
+                assert(lastBodyPartDraws - bodyPartsBefore <= 29,
+                       "woodcutter work pose exceeded the #257 villager part cap")
+            }
             // Clear so kind 6 (and the next iter before it sets) never inherit.
             curFlash    = .zero
             curFlashAmt = 0
+            curEntityRole = 0
+            curEntityAction = 0
+            curEntityActionProgress = 0
         }
     }
 

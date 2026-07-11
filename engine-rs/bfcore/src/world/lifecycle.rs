@@ -53,6 +53,7 @@ impl<'c> World<'c> {
             falling: Vec::new(),
             debris: Vec::new(),
             entities: Vec::new(),
+            entity_role_actions: Vec::new(),
             creature_timer: 0.0,
             villager_timer: 0.0,
             danger_timer: 0.0,

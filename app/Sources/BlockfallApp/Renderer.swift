@@ -1170,6 +1170,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         // 2) acquire render
         var frame = bf_render_frame()
         _ = bf_frame_acquire_render(e, &frame)
+        var entityRoles = bf_entity_role_action_view()
+        _ = bf_entity_role_actions(e, &entityRoles)
 
         // Snapshot the buffer registry AFTER acquire: this frame's update/remesh
         // (inside frame_begin/acquire) may have allocated brand-new mesh buffers,
@@ -1496,7 +1498,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             entityRenderer.encode(enc, viewProj: viewProj, entities: frame.entities,
                                   count: Int(frame.entity_count), shadow: es,
                                   occ: shadowVolTex, occCoarse: shadowVolCoarseTex,
-                                  camPosH: horizonCamH)   // #180 entities bend with the terrain
+                                  camPosH: horizonCamH,
+                                  roleActions: entityRoles.entries,
+                                  roleActionCount: Int(entityRoles.count))   // #254 v28 work pose
             particles.update(Float(dt))
             particles.encode(enc, viewProj: viewProj)
 
