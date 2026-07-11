@@ -1705,9 +1705,21 @@ fn villager_home_is_a_real_building() {
     );
 }
 
-// #254 routine fixture: flat supported ground, the finished #245 station at
-// home+(4,4), and the player far enough away not to push the worker.
-fn woodcutter_routine_world(with_station: bool, blocked_work_cell: bool) -> (World<'static>, i32) {
+const ARTISAN_STATIONS: [(i32, i32, i32, u16); 5] = [
+    (2, 6, 6, 61),
+    (3, 4, -4, 60),
+    (4, 4, 4, 56),
+    (5, -4, 4, 58),
+    (6, -4, -4, 59),
+];
+
+// #253 routine fixture: flat supported ground, one role's real station at its
+// canonical settlement offset, and the player far enough away not to push work.
+fn artisan_routine_world(
+    role: i32,
+    with_station: bool,
+    blocked_work_cell: bool,
+) -> (World<'static>, i32) {
     let content: &'static ContentRegistry = {
         let mut c = ContentRegistry::new();
         assert!(c.load(CONTENT));
@@ -1718,21 +1730,99 @@ fn woodcutter_routine_world(with_station: bool, blocked_work_cell: bool) -> (Wor
     w.set_allocator(allocator());
     w.set_content(content);
     w.generate_test_world();
-    w.debug_set_camera(14.5, 12.0, 14.5, 0.0, 0.0);
+    w.debug_set_camera(0.5, 12.0, 0.5, 0.0, 0.0);
+    let &(_, dx, dz, station) = ARTISAN_STATIONS
+        .iter()
+        .find(|&&(candidate, _, _, _)| candidate == role)
+        .expect("artisan role");
+    let (sx, sz) = (8 + dx, 8 + dz);
     if with_station {
-        w.debug_edit(8, 8, 8, 56); // home (4,4), station +4/+4
+        w.debug_edit(sx, 8, sz, station);
     }
     if blocked_work_cell {
-        w.debug_edit(7, 8, 8, world::GLOW); // west work cell must stay body-clear
+        w.debug_edit(sx - 1, 8, sz, world::GLOW); // west work cell must stay body-clear
     }
-    let worker = w.debug_spawn_villager_role(4, 4, 4);
-    w.debug_set_creature_pos(worker, 4.5, 8.0, 4.5);
+    let worker = w.debug_spawn_villager_role(8, 8, role);
+    w.debug_set_creature_pos(worker, 8.5, 8.0, 8.5);
     (w, worker)
 }
 
 #[test]
+fn every_artisan_role_uses_its_station_and_reports_a_full_shift() {
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    for &(role, dx, dz, station) in &ARTISAN_STATIONS {
+        let (mut w, worker) = artisan_routine_world(role, true, false);
+        let mut sequence = vec![1u32];
+        for _ in 0..600 {
+            w.update(&zero, 0.05);
+            let action = w.debug_villager_routine_action(worker);
+            if sequence.last().copied() != Some(action) {
+                sequence.push(action);
+            }
+            if action == 3 {
+                break;
+            }
+        }
+        assert!(sequence.len() >= 3, "role {role} never reached work: {sequence:?}");
+        assert_eq!(
+            &sequence[..3],
+            &[1, 2, 3],
+            "role {role} shift order; pos={:?} path={} station={}/{} work_floor={} work_body={}",
+            w.debug_creature_pos(worker),
+            w.debug_creature_path_len(worker),
+            w.debug_block_at(8 + dx, 8, 8 + dz),
+            station,
+            w.debug_block_at(7 + dx, 7, 8 + dz),
+            w.debug_block_at(7 + dx, 8, 8 + dz),
+        );
+        let (x, y, z) = w.debug_creature_pos(worker);
+        let (want_x, want_z) = ((8 + dx) as f32 - 0.5, (8 + dz) as f32 + 0.5);
+        assert!(
+            (x - want_x).abs() < 0.06 && (y - 8.0).abs() < 0.06 && (z - want_z).abs() < 0.06,
+            "role {role} used the wrong west work cell: ({x:.2},{y:.2},{z:.2})"
+        );
+
+        for _ in 0..10 {
+            w.update(&zero, 0.05);
+        }
+        let mut frame = empty_frame();
+        let mut draws = Vec::new();
+        let mut shadows = Vec::new();
+        let mut props = Vec::new();
+        w.build_frame(&mut frame, &mut draws, &mut shadows, &mut props, 0.0);
+        let actions = w.entity_role_actions();
+        assert_eq!(actions.len(), frame.entity_count as usize);
+        let action = actions
+            .iter()
+            .find(|entry| entry.role == role as u32)
+            .expect("artisan sidecar entry");
+        assert_eq!(action.action, 3, "role {role} sidecar must show work");
+        assert!((0.05..1.0).contains(&action.progress));
+
+        for _ in 0..160 {
+            w.update(&zero, 0.05);
+            if w.debug_villager_routine_action(worker) == 4 {
+                break;
+            }
+        }
+        assert_eq!(
+            w.debug_villager_routine_action(worker),
+            4,
+            "role {role} did not naturally enter return"
+        );
+        for _ in 0..500 {
+            w.update(&zero, 0.05);
+            if w.debug_villager_routine_action(worker) == 1 {
+                break;
+            }
+        }
+        assert_eq!(w.debug_villager_routine_action(worker), 1, "role {role} did not return home");
+    }
+}
+
+#[test]
 fn woodcutter_walks_to_station_works_and_returns_home() {
-    let (mut w, worker) = woodcutter_routine_world(true, false);
+    let (mut w, worker) = artisan_routine_world(4, true, false);
     let zero: bf_frame_input = unsafe { std::mem::zeroed() };
     assert_eq!(w.debug_villager_routine_action(worker), 1, "shift starts idle");
 
@@ -1749,7 +1839,7 @@ fn woodcutter_walks_to_station_works_and_returns_home() {
     }
     assert_eq!(&sequence[..3], &[1, 2, 3], "idle -> station travel -> work");
     let (x, y, z) = w.debug_creature_pos(worker);
-    assert!((x - 7.5).abs() < 0.06 && (y - 8.0).abs() < 0.06 && (z - 8.5).abs() < 0.06,
+    assert!((x - 11.5).abs() < 0.06 && (y - 8.0).abs() < 0.06 && (z - 12.5).abs() < 0.06,
             "worker occupies the west work cell: ({x:.2},{y:.2},{z:.2})");
 
     // The additive v28 sidecar is aligned with the frozen draw list and exposes
@@ -1772,12 +1862,12 @@ fn woodcutter_walks_to_station_works_and_returns_home() {
     // the villager to a clear home cell instead of leaving stale movement behind.
     // #248's city core places tall civic lamps on the four cardinal home
     // offsets. They must not be mistaken for a walkable roof on return.
-    for (lx, lz) in [(2, 4), (4, 2), (6, 4), (4, 6)] {
+    for (lx, lz) in [(6, 8), (8, 6), (10, 8), (8, 10)] {
         for ly in 8..=10 {
             w.debug_edit(lx, ly, lz, world::GLOW);
         }
     }
-    w.debug_edit(8, 8, 8, world::AIR);
+    w.debug_edit(12, 8, 12, world::AIR);
     w.update(&zero, 0.05);
     assert_eq!(w.debug_villager_routine_action(worker), 4, "removed station -> return home");
     for _ in 0..500 {
@@ -1788,7 +1878,7 @@ fn woodcutter_walks_to_station_works_and_returns_home() {
     }
     assert_eq!(w.debug_villager_routine_action(worker), 1, "return completes at idle");
     let (hx, hy, hz) = w.debug_creature_pos(worker);
-    assert!((hx - 4.5).hypot(hz - 4.5) <= 3.1, "returned beside home: ({hx:.2},{hz:.2})");
+    assert!((hx - 8.5).hypot(hz - 8.5) <= 3.1, "returned beside home: ({hx:.2},{hz:.2})");
     assert!(hy < 9.0, "return target stays on the plaza, not a civic lamp roof: y={hy}");
 }
 
@@ -1796,7 +1886,7 @@ fn woodcutter_walks_to_station_works_and_returns_home() {
 fn woodcutter_missing_blocked_and_unreachable_station_falls_back() {
     let zero: bf_frame_input = unsafe { std::mem::zeroed() };
     for (with_station, blocked) in [(false, false), (true, true)] {
-        let (mut w, worker) = woodcutter_routine_world(with_station, blocked);
+        let (mut w, worker) = artisan_routine_world(4, with_station, blocked);
         let mut saw_work_or_travel = false;
         for _ in 0..180 {
             w.update(&zero, 0.05);
@@ -1809,12 +1899,12 @@ fn woodcutter_missing_blocked_and_unreachable_station_falls_back() {
     // Real path failure: seal the worker inside a three-block-high ring while the
     // station and its work cell remain valid. The bounded pathfinder returns no
     // route, routine movement cancels, and generic wander never fights it.
-    let (mut w, worker) = woodcutter_routine_world(true, false);
+    let (mut w, worker) = artisan_routine_world(4, true, false);
     for dz in -1..=1 {
         for dx in -1..=1 {
             if dx == 0 && dz == 0 { continue; }
             for y in 8..=10 {
-                w.debug_edit(4 + dx, y, 4 + dz, world::GLOW);
+                w.debug_edit(8 + dx, y, 8 + dz, world::GLOW);
             }
         }
     }

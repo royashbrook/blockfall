@@ -76,24 +76,35 @@ impl<'c> World<'c> {
         c.ai.on_blocked(turn);
     }
 
-    // #254: the first profession routine is deliberately tied to #245's one
-    // physical workstation contract: station at home+(4,4), clear work cell one
-    // block west. The Y scan runs only when a shift starts; the result is cached
-    // and then validated each tick so removal/old saves fail safely.
-    fn woodcutter_station(&self, c: &Creature, scan: bool) -> Option<(i32, i32, i32, i32)> {
-        const CHOPPING_BLOCK: BlockId = 56;
-        let sx = Self::wrap_block(c.home_x + 4);
-        let sz = Self::wrap_block(c.home_z + 4);
+    // #253: every visible artisan routine uses the same physical contract: one
+    // role-owned station at a canonical home offset and a clear work cell west.
+    // The Y scan runs only when a shift starts; cached validation makes removed
+    // blocks and old saves without stations fall back safely.
+    fn profession_station_spec(npc_id: i32) -> Option<(i32, i32, BlockId)> {
+        match npc_id {
+            2 => Some((6, 6, 61)),   // builder sawbench
+            3 => Some((4, -4, 60)),  // herbalist table
+            4 => Some((4, 4, 56)),   // woodcutter chopping block
+            5 => Some((-4, 4, 58)),  // mason bench
+            6 => Some((-4, -4, 59)), // blacksmith forge
+            _ => None,
+        }
+    }
+
+    fn profession_station(&self, c: &Creature, scan: bool) -> Option<(i32, i32, i32, i32)> {
+        let (dx, dz, station_block) = Self::profession_station_spec(c.npc_id)?;
+        let sx = Self::wrap_block(c.home_x + dx);
+        let sz = Self::wrap_block(c.home_z + dz);
         let wx = Self::wrap_block(sx - 1);
         let sy = if scan {
             (WORLD_Y_MIN_BLOCK..=WORLD_Y_MAX_BLOCK)
                 .rev()
-                .find(|&y| self.block_at(IVec3 { x: sx, y, z: sz }) == CHOPPING_BLOCK)?
+                .find(|&y| self.block_at(IVec3 { x: sx, y, z: sz }) == station_block)?
         } else {
             c.routine.station_y
         };
         if sy == NO_FLOOR
-            || self.block_at(IVec3 { x: sx, y: sy, z: sz }) != CHOPPING_BLOCK
+            || self.block_at(IVec3 { x: sx, y: sy, z: sz }) != station_block
             || !self.collide_solid(wx, sy - 1, sz)
             || self.creature_body_blocked(wx as f32 + 0.5, sy, sz as f32 + 0.5, c.scale)
         {
@@ -187,7 +198,7 @@ impl<'c> World<'c> {
         }
     }
 
-    fn woodcutter_routine_decision(
+    fn profession_routine_decision(
         &self,
         c: &mut Creature,
         dt: f32,
@@ -199,7 +210,7 @@ impl<'c> World<'c> {
                 if c.routine.timer > 0.0 {
                     return Decision { desired_heading: c.ai.heading, speed_frac: 0.0, path_goal: None };
                 }
-                if let Some((_sx, sy, wx, wz)) = self.woodcutter_station(c, true) {
+                if let Some((_sx, sy, wx, wz)) = self.profession_station(c, true) {
                     c.routine.station_y = sy;
                     Self::set_villager_routine(
                         c,
@@ -224,7 +235,7 @@ impl<'c> World<'c> {
                 }
             }
             VillagerRoutineState::TravelToStation => {
-                let Some((sx, sy, wx, wz)) = self.woodcutter_station(c, false) else {
+                let Some((sx, sy, wx, wz)) = self.profession_station(c, false) else {
                     Self::set_villager_routine(
                         c,
                         VillagerRoutineState::ReturnHome,
@@ -232,20 +243,17 @@ impl<'c> World<'c> {
                     );
                     return self.villager_return_decision(c);
                 };
-                if c.routine.timer <= 0.0 {
-                    Self::set_villager_routine(
-                        c,
-                        VillagerRoutineState::ReturnHome,
-                        VILLAGER_RETURN_SECONDS,
-                    );
-                    return self.villager_return_decision(c);
-                }
                 let dx = Self::wrap_signed_f(wx as f32 + 0.5 - c.pos.x);
                 let dz = Self::wrap_signed_f(wz as f32 + 0.5 - c.pos.z);
-                if dx * dx + dz * dz <= 0.55 * 0.55 {
+                // The path ends beside a solid station. Accept the worker once its
+                // body is within the clear work cell, then snap to the authored pose;
+                // a tighter point threshold could time out while skirting the block.
+                if dx * dx + dz * dz <= 0.75 * 0.75 {
                     c.pos.x = Self::wrap_pos_f(wx as f32 + 0.5);
                     c.pos.y = sy as f32;
                     c.pos.z = Self::wrap_pos_f(wz as f32 + 0.5);
+                    c.vy = 0.0;
+                    c.climb = 0.0;
                     let face = Self::wrap_signed_f(sx as f32 + 0.5 - c.pos.x)
                         .atan2(Self::wrap_signed_f(wz as f32 + 0.5 - c.pos.z));
                     c.ai.heading = face;
@@ -258,6 +266,14 @@ impl<'c> World<'c> {
                     );
                     return Decision { desired_heading: face, speed_frac: 0.0, path_goal: None };
                 }
+                if c.routine.timer <= 0.0 {
+                    Self::set_villager_routine(
+                        c,
+                        VillagerRoutineState::ReturnHome,
+                        VILLAGER_RETURN_SECONDS,
+                    );
+                    return self.villager_return_decision(c);
+                }
                 let (gx, gz) = Self::villager_nearest_goal(c.pos.x, c.pos.z, wx, wz);
                 Decision {
                     desired_heading: dx.atan2(dz),
@@ -266,7 +282,7 @@ impl<'c> World<'c> {
                 }
             }
             VillagerRoutineState::Work => {
-                let Some((sx, sy, wx, wz)) = self.woodcutter_station(c, false) else {
+                let Some((sx, sy, wx, wz)) = self.profession_station(c, false) else {
                     Self::set_villager_routine(
                         c,
                         VillagerRoutineState::ReturnHome,
@@ -285,6 +301,8 @@ impl<'c> World<'c> {
                 c.pos.x = Self::wrap_pos_f(wx as f32 + 0.5);
                 c.pos.y = sy as f32;
                 c.pos.z = Self::wrap_pos_f(wz as f32 + 0.5);
+                c.vy = 0.0;
+                c.climb = 0.0;
                 let face = Self::wrap_signed_f(sx as f32 + 0.5 - c.pos.x)
                     .atan2(Self::wrap_signed_f(wz as f32 + 0.5 - c.pos.z));
                 c.ai.heading = face;
@@ -419,9 +437,9 @@ impl<'c> World<'c> {
             // deterministic with the rest of the sim. The world's rng is the seed.
             c.ai.tick_repath();
             let mut seed = self.rng;
-            let routine_driven = c.model == 20 && c.npc_id == 4;
+            let routine_driven = c.model == 20 && Self::profession_station_spec(c.npc_id).is_some();
             let dec = if routine_driven {
-                self.woodcutter_routine_decision(&mut c, dt)
+                self.profession_routine_decision(&mut c, dt)
             } else {
                 cai::decide(
                     &mut c.ai, eff_temper, c.pos.x, c.pos.z, ppx, ppz, xzd, dt, &mut seed,
@@ -688,5 +706,21 @@ impl<'c> World<'c> {
                 self.creatures[i].pos.z = Self::wrap_pos_f(cz);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod profession_station_tests {
+    use super::*;
+
+    #[test]
+    fn artisan_roles_select_their_canonical_physical_station() {
+        assert_eq!(World::<'static>::profession_station_spec(2), Some((6, 6, 61)));
+        assert_eq!(World::<'static>::profession_station_spec(3), Some((4, -4, 60)));
+        assert_eq!(World::<'static>::profession_station_spec(4), Some((4, 4, 56)));
+        assert_eq!(World::<'static>::profession_station_spec(5), Some((-4, 4, 58)));
+        assert_eq!(World::<'static>::profession_station_spec(6), Some((-4, -4, 59)));
+        assert_eq!(World::<'static>::profession_station_spec(1), None);
+        assert_eq!(World::<'static>::profession_station_spec(7), None);
     }
 }

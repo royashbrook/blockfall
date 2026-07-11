@@ -519,6 +519,10 @@ const WOOD_BEAM: BlockId = 51;
 const BED: BlockId = 52;
 const CHOPPING_BLOCK: BlockId = 56;
 const STONE_RUBBLE: BlockId = 57;
+const MASON_BENCH: BlockId = 58;
+const BLACKSMITH_FORGE: BlockId = 59;
+const HERBALIST_TABLE: BlockId = 60;
+const BUILDER_SAWBENCH: BlockId = 61;
 const MISSING_BELOW_OCCLUDER: BlockId = 1;
 #[inline]
 fn is_door(id: BlockId) -> bool {
@@ -538,6 +542,11 @@ fn is_bed(id: BlockId) -> bool {
 #[inline]
 fn is_chopping_block(id: BlockId) -> bool {
     id == CHOPPING_BLOCK
+}
+
+#[inline]
+fn is_artisan_workstation(id: BlockId) -> bool {
+    (MASON_BENCH..=BUILDER_SAWBENCH).contains(&id)
 }
 
 #[inline]
@@ -569,6 +578,7 @@ fn is_opaque(id: BlockId) -> bool {
         && !is_wood_beam(id)
         && !is_bed(id)
         && !is_chopping_block(id)
+        && !is_artisan_workstation(id)
         && !is_stone_rubble(id)
         && !is_snow_overlay(id)
         && !is_prop(id)
@@ -591,6 +601,7 @@ fn is_occluder(id: BlockId) -> bool {
         && !is_wood_beam(id)
         && !is_bed(id)
         && !is_chopping_block(id)
+        && !is_artisan_workstation(id)
         && !is_stone_rubble(id)
         && !is_snow_overlay(id)
         && !is_prop(id)
@@ -1330,6 +1341,101 @@ fn emit_chopping_block(bx: i32, by: i32, bz: i32, sky: u8, blk: u8, buf: &mut Me
     ];
 
     for &(xlo, xhi, ylo, yhi, zlo, zhi, mat) in &pieces {
+        if !emit_cuboid_16(bx, by, bz, xlo, xhi, ylo, yhi, zlo, zhi, mat, sky, blk, buf) {
+            return false;
+        }
+    }
+    true
+}
+
+type WorkstationPiece = (u32, u32, u32, u32, u32, u32, BlockId);
+
+// Four finished west-facing artisan stations. They share only the cuboid emitter:
+// each silhouette is authored from real world materials and stays wholly inside its
+// one owned voxel, so persistence and collision remain ordinary block truth.
+fn emit_artisan_workstation(
+    id: BlockId,
+    bx: i32,
+    by: i32,
+    bz: i32,
+    sky: u8,
+    blk: u8,
+    buf: &mut MeshBuffers,
+) -> bool {
+    const MASON: &[WorkstationPiece] = &[
+        (3, 6, 0, 6, 3, 6, 10),
+        (3, 6, 0, 6, 10, 13, 10),
+        (10, 13, 0, 6, 3, 6, 10),
+        (10, 13, 0, 6, 10, 13, 10),
+        (2, 14, 6, 8, 2, 14, 8),
+        (8, 13, 8, 12, 3, 8, 3),
+        (9, 14, 8, 11, 9, 14, 10),
+        (2, 8, 8, 9, 11, 12, 53),
+        (3, 7, 10, 12, 3, 6, 53),
+        (5, 7, 8, 11, 5, 11, 4),
+        (3, 8, 8, 9, 7, 11, 14),
+    ];
+    const BLACKSMITH: &[WorkstationPiece] = &[
+        (7, 15, 0, 7, 2, 14, 8),
+        (7, 15, 7, 10, 2, 4, 10),
+        (7, 15, 7, 10, 12, 14, 10),
+        (13, 15, 7, 14, 4, 12, 10),
+        (9, 13, 7, 8, 4, 12, 7),
+        (10, 12, 8, 9, 6, 8, 15),
+        (9, 11, 8, 9, 9, 11, 15),
+        (3, 7, 0, 6, 6, 10, 10),
+        (2, 8, 5, 7, 5, 11, 53),
+        (3, 7, 7, 9, 6, 10, 53),
+        (1, 9, 9, 12, 4, 12, 53),
+        (0, 3, 10, 11, 6, 10, 53),
+        (7, 9, 10, 12, 3, 8, 53),
+    ];
+    const HERBALIST: &[WorkstationPiece] = &[
+        (3, 6, 0, 7, 3, 6, 21),
+        (3, 6, 0, 7, 10, 13, 21),
+        (11, 14, 0, 7, 3, 6, 21),
+        (11, 14, 0, 7, 10, 13, 21),
+        (3, 14, 3, 5, 3, 13, 4),
+        (2, 15, 7, 9, 2, 14, 4),
+        (4, 7, 9, 13, 4, 7, 14),
+        (10, 13, 9, 12, 9, 12, 14),
+        (4, 7, 9, 10, 9, 12, 14),
+        (5, 6, 10, 15, 10, 11, 5),
+        (9, 12, 9, 10, 3, 6, 14),
+        (10, 11, 10, 14, 4, 5, 36),
+        (13, 15, 9, 16, 2, 4, 21),
+        (12, 14, 12, 15, 4, 7, 37),
+    ];
+    const BUILDER: &[WorkstationPiece] = &[
+        (3, 6, 0, 7, 3, 6, 21),
+        (3, 6, 0, 7, 10, 13, 21),
+        (10, 13, 0, 7, 3, 6, 21),
+        (10, 13, 0, 7, 10, 13, 21),
+        (2, 14, 4, 6, 3, 5, 21),
+        (2, 14, 4, 6, 11, 13, 21),
+        (2, 15, 7, 10, 5, 11, 4),
+        (4, 15, 10, 12, 6, 10, 21),
+        (1, 3, 9, 15, 4, 12, 53),
+        (1, 4, 14, 16, 6, 10, 4),
+        (1, 3, 8, 10, 4, 6, 53),
+        (1, 3, 8, 10, 7, 9, 53),
+        (1, 3, 8, 10, 10, 12, 53),
+        (9, 14, 12, 13, 4, 6, 53),
+    ];
+
+    let pieces = match id {
+        MASON_BENCH => MASON,
+        BLACKSMITH_FORGE => BLACKSMITH,
+        HERBALIST_TABLE => HERBALIST,
+        BUILDER_SAWBENCH => BUILDER,
+        _ => return false,
+    };
+    if buf.vtx_cap - buf.vtx.len() < pieces.len() * 24 * VERTEX_SIZE
+        || buf.idx_cap - buf.idx.len() < pieces.len() * 36 * INDEX_SIZE
+    {
+        return false;
+    }
+    for &(xlo, xhi, ylo, yhi, zlo, zhi, mat) in pieces {
         if !emit_cuboid_16(bx, by, bz, xlo, xhi, ylo, yhi, zlo, zhi, mat, sky, blk, buf) {
             return false;
         }
@@ -2092,6 +2198,18 @@ impl GreedyMesher {
                         continue;
                     }
 
+                    // #253 artisan stations: persistent, full-detail chunk geometry.
+                    // Their authored real-material pieces replace the generic cube.
+                    if is_artisan_workstation(here) {
+                        let wsky = chunk.sky_light(x as usize, y as usize, z as usize);
+                        let wblk = chunk.block_light(x as usize, y as usize, z as usize);
+                        if !emit_artisan_workstation(here, x, y, z, wsky, wblk, &mut buf) {
+                            buf.full = true;
+                            return finalize(buf, false);
+                        }
+                        continue;
+                    }
+
                     // #244 beds: two stateless BED cells become one finished furniture
                     // mesh. The low X/Z endpoint owns both cells, preventing duplicate
                     // geometry and the internal full-block seam. An orphan still draws
@@ -2680,6 +2798,68 @@ mod tests {
             verts.iter().any(|(p, m)| *m == 53 && p[1] < 9.0),
             "iron blade is embedded down in the split log"
         );
+    }
+
+    #[test]
+    fn artisan_workstations_have_distinct_finished_material_silhouettes_and_safe_caps() {
+        let cases: &[(BlockId, u32, &[BlockId])] = &[
+            (MASON_BENCH, 11, &[3, 4, 8, 10, 14, 53]),
+            (BLACKSMITH_FORGE, 13, &[7, 8, 10, 15, 53]),
+            (HERBALIST_TABLE, 14, &[4, 5, 14, 21, 36, 37]),
+            (BUILDER_SAWBENCH, 14, &[4, 21, 53]),
+        ];
+        for &(id, cuboids, expected_materials) in cases {
+            assert!(!is_opaque(id));
+            assert!(!is_occluder(id));
+            assert!(!is_prop(id), "station {id} must not distance-cull");
+
+            let mut store = TestStore::new();
+            let mut ch = TestChunk::new();
+            ch.set(8, 8, 8, id);
+            store.chunks.insert(ChunkCoord::default(), ch);
+
+            let (res, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+            let verts = decode_position_and_mat(&vtx);
+            assert_eq!(res.index_count, cuboids * 36, "station {id} cuboid budget");
+            assert_eq!(res.vertex_bytes, cuboids * 24 * VERTEX_SIZE as u32);
+            assert!(
+                verts.iter().all(|(_, mat)| *mat != id),
+                "station {id} leaked its placeholder material"
+            );
+            let materials: std::collections::HashSet<_> =
+                verts.iter().map(|(_, mat)| *mat).collect();
+            for material in expected_materials {
+                assert!(
+                    materials.contains(material),
+                    "station {id} missing material {material}"
+                );
+            }
+            let bounds = |axis: usize| {
+                verts
+                    .iter()
+                    .map(|(p, _)| p[axis])
+                    .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)))
+            };
+            let (xmin, xmax) = bounds(0);
+            let (ymin, ymax) = bounds(1);
+            let (zmin, zmax) = bounds(2);
+            assert!(xmin >= 8.0 && xmax <= 9.0, "station {id} escaped its X voxel");
+            assert!(
+                (ymin - 8.0).abs() < 1e-4 && ymax <= 9.0,
+                "station {id} lost floor contact or headroom"
+            );
+            assert!(zmin >= 8.0 && zmax <= 9.0, "station {id} escaped its Z voxel");
+
+            let mut short = MeshBuffers::new(
+                cuboids as usize * 24 * VERTEX_SIZE - 1,
+                cuboids as usize * 36 * INDEX_SIZE,
+            );
+            assert!(!emit_artisan_workstation(id, 0, 0, 0, 15, 0, &mut short));
+            assert!(
+                short.vtx.is_empty() && short.idx.is_empty(),
+                "station {id} partially emitted past cap"
+            );
+        }
     }
 
     // #118 snow overlay: a snow_layer (12) block sitting directly on grass (1) must mesh

@@ -917,13 +917,14 @@ mod tests {
     // then 54 to 55 (items 60 to 61, recipes 34 to 35) when warp_totem (block 55, item 94,
     // warp_totem_recipe) was added for the world map + warp travel (#182), and 55 to 56
     // when chopping_block (block 56, item 97) became the first physical workstation (#245),
-    // then 56 to 57 for generated, shaped stone_rubble (#247; drops existing cobblestone).
+    // then 56 to 57 for generated, shaped stone_rubble (#247; drops existing cobblestone),
+    // then 57 to 61 (items 64 to 68) for the four finished artisan stations (#253).
     #[test]
     fn loads_with_cpp_parity_counts() {
         let mut reg = ContentRegistry::new();
         assert!(reg.load(CONTENT));
-        assert_eq!(reg.block_count(), 57);
-        assert_eq!(reg.item_count(), 64); // #177 magnet_charm, #203 coin, #245 chopping block
+        assert_eq!(reg.block_count(), 61);
+        assert_eq!(reg.item_count(), 68); // #177 charm, #203 coin, #245/#253 workstations
         assert_eq!(reg.recipe_count(), 36); // #177 magnet_charm_craft
         let oak = reg.block_by_name("oak_log").expect("oak_log");
         assert_eq!((oak.id, oak.drop_item), (21, 12));
@@ -937,6 +938,18 @@ mod tests {
         assert_eq!((chopping_item.id, chopping_item.places_block), (97, 56));
         let rubble = reg.block_by_name("stone_rubble").expect("stone rubble");
         assert_eq!((rubble.id, rubble.drop_item), (57, 4));
+        for &(name, block, item) in &[
+            ("mason_bench", 58, 98),
+            ("blacksmith_forge", 59, 99),
+            ("herbalist_table", 60, 100),
+            ("builder_sawbench", 61, 101),
+        ] {
+            let b = reg.block_by_name(name).unwrap();
+            let i = reg.item_by_name(name).unwrap();
+            assert_eq!((b.id, b.drop_item), (block, item));
+            assert_eq!((i.id, i.places_block, i.max_stack), (item, block, 1));
+        }
+        assert_eq!(reg.block_by_id(59).unwrap().light_emit, 9);
         let pick = reg.item_by_name("wood_pickaxe").expect("wood_pickaxe");
         assert_eq!(
             (pick.tool_tier, pick.tool_kind, pick.tool_durability),

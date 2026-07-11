@@ -208,7 +208,7 @@ impl<'c> World<'c> {
         }
         self.creatures
             .get(i as usize)
-            .filter(|c| c.model == 20 && c.npc_id == 4)
+            .filter(|c| c.model == 20 && (2..=6).contains(&c.npc_id))
             .map(|c| c.routine.state.action())
             .unwrap_or(0)
     }

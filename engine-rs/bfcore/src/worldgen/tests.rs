@@ -203,8 +203,9 @@ mod worldgen_tests {
                         wz_min,
                         cells: std::mem::take(&mut cells),
                     };
-                    place_settlement_chopping_block(
-                        ax, az, seed, &mut chunk, wx_min, wy_min, wz_min, foundation,
+                    place_settlement_workstation(
+                        ax, az, 4, 4, CHOPPING_BLOCK, seed,
+                        &mut chunk, wx_min, wy_min, wz_min, foundation,
                     );
                     cells = chunk.cells;
                 }
@@ -309,6 +310,57 @@ mod worldgen_tests {
                 "{name}: settlement builder did not emit the workstation"
             );
         }
+    }
+
+    #[test]
+    fn settlements_place_every_artisan_station_once_with_a_clear_west_work_cell() {
+        let seed = SEED;
+        let anchor = K_CHUNK_DIM - 4;
+        for &(name, typ, hash, foundation) in &[
+            ("village", STRUCT_VILLAGE, 0xA11CEu64, COBBLESTONE),
+            ("city", STRUCT_CITY, 0xC17Au64, STONE_BRICK),
+        ] {
+            let sd = StructDesc {
+                anchor_wx: anchor,
+                anchor_wz: anchor,
+                typ,
+                cell_hash: hash,
+                present: true,
+            };
+            let cells = stamp_structure_order(&sd, seed, false);
+            assert_eq!(
+                cells,
+                stamp_structure_order(&sd, seed, true),
+                "{name}: artisan yard changed with chunk order"
+            );
+
+            for &(dx, dz, block) in &SETTLEMENT_WORKSTATIONS {
+                let found: Vec<_> = cells
+                    .iter()
+                    .filter_map(|(&pos, &b)| (b == block).then_some(pos))
+                    .collect();
+                assert_eq!(found.len(), 1, "{name}: expected one station {block}");
+                let (sx, sy, sz) = found[0];
+                assert_eq!((sx, sz), (anchor + dx, anchor + dz));
+                assert!(sy - 1 >= SEA_LEVEL + 1, "{name}: station {block} underwater");
+                assert_eq!(cells.get(&(sx, sy - 1, sz)), Some(&foundation));
+                assert_eq!(
+                    cells.get(&(sx, sy + 1, sz)).copied().unwrap_or(AIR),
+                    AIR,
+                    "{name}: station {block} has no headroom"
+                );
+                let work_x = sx - 1;
+                assert_eq!(cells.get(&(work_x, sy - 1, sz)), Some(&foundation));
+                for wy in sy..=sy + 1 {
+                    assert_eq!(
+                        cells.get(&(work_x, wy, sz)).copied().unwrap_or(AIR),
+                        AIR,
+                        "{name}: station {block} work cell blocked at y={wy}"
+                    );
+                }
+            }
+        }
+        assert_eq!(anchor + 4, K_CHUNK_DIM, "fixture must cross an X/Z chunk seam");
     }
 
     // The world is varied (the biome map is not collapsed to one type). #181:

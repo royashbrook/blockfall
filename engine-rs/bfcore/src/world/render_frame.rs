@@ -351,10 +351,11 @@ impl<'c> World<'c> {
                 _pad: 0,
             });
             self.entity_role_actions.push(if cr.model == 20 {
+                let artisan = (2..=6).contains(&cr.npc_id);
                 bf_entity_role_action {
                     role: cr.npc_id.max(0) as u32,
-                    action: if cr.npc_id == 4 { cr.routine.state.action() } else { 0 },
-                    progress: if cr.npc_id == 4 { cr.routine.progress() } else { 0.0 },
+                    action: if artisan { cr.routine.state.action() } else { 0 },
+                    progress: if artisan { cr.routine.progress() } else { 0.0 },
                     _pad: 0,
                 }
             } else {

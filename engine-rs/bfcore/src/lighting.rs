@@ -40,6 +40,7 @@ pub fn light_opaque(b: BlockId) -> bool {
         && b != 52
         && b != 56
         && b != 57
+        && !(58..=61).contains(&b)
         && !light_glass(b)
         && !light_plant(b)
         && !light_snow_overlay(b)
@@ -51,6 +52,7 @@ pub fn light_emit(b: BlockId) -> u8 {
         34 => 15, // beacon_block
         35 => 15, // crystal_lamp
         40 => 8,  // color_crystal
+        59 => 9,  // blacksmith_forge embers
         _ => 0,
     }
 }
@@ -413,6 +415,23 @@ mod tests {
             15,
             "shaped workstation must not cast a full-cube shadow"
         );
+    }
+
+    #[test]
+    fn artisan_workstations_pass_sky_and_forge_emits() {
+        for id in 58..=61 {
+            let mut store = ChunkStore::new();
+            let cc = ChunkCoord { x: 0, y: 0, z: 0 };
+            let mut ch = PaletteChunk::new(cc, 0);
+            ch.set(8, 8, 8, id);
+            store.insert(ch);
+
+            light_chunk(&mut store, cc);
+            let ch = store.get(cc).unwrap();
+            assert_eq!(ch.sky_light(8, 8, 8), 15, "station {id} reads cell light");
+            assert_eq!(ch.sky_light(8, 7, 8), 15, "station {id} cast a cube shadow");
+            assert_eq!(ch.block_light(8, 8, 8), if id == 59 { 9 } else { 0 });
+        }
     }
 
     #[test]

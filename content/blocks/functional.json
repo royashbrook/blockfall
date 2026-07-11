@@ -167,5 +167,63 @@
       "side": "oak_log_side",
       "bottom": "oak_planks"
     }
+  },
+  {
+    "id": 58,
+    "name": "mason_bench",
+    "display_name": "Mason Bench",
+    "hardness": 18,
+    "required_tier": 1,
+    "preferred_tool": "pickaxe",
+    "drop_item": "mason_bench",
+    "transparent": true,
+    "textures": {
+      "all": "cobblestone"
+    }
+  },
+  {
+    "id": 59,
+    "name": "blacksmith_forge",
+    "display_name": "Blacksmith Forge",
+    "hardness": 24,
+    "required_tier": 1,
+    "preferred_tool": "pickaxe",
+    "drop_item": "blacksmith_forge",
+    "light_emit": 9,
+    "light_color": [
+      255,
+      126,
+      48
+    ],
+    "transparent": true,
+    "textures": {
+      "all": "stone_brick"
+    }
+  },
+  {
+    "id": 60,
+    "name": "herbalist_table",
+    "display_name": "Herbalist Table",
+    "hardness": 6,
+    "required_tier": 0,
+    "preferred_tool": "axe",
+    "drop_item": "herbalist_table",
+    "transparent": true,
+    "textures": {
+      "all": "oak_planks"
+    }
+  },
+  {
+    "id": 61,
+    "name": "builder_sawbench",
+    "display_name": "Builder Sawbench",
+    "hardness": 8,
+    "required_tier": 0,
+    "preferred_tool": "axe",
+    "drop_item": "builder_sawbench",
+    "transparent": true,
+    "textures": {
+      "all": "oak_planks"
+    }
   }
 ]
