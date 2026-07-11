@@ -375,7 +375,12 @@ func runWashoutTest() -> Bool {
     alloc.user = Unmanaged.passUnretained(registry).toOpaque()
     alloc.alloc = allocTrampoline; alloc.free_ = freeTrampoline
     _ = bf_set_gpu_allocator(e, &alloc)
-    _ = bf_world_new(e, 1)
+    // Keep this renderer-only yaw sweep on an open, deterministic field. Since
+    // new worlds now start inside an intentionally asymmetric City, using spawn
+    // made the mean-luma guard measure buildings versus open sky instead of a
+    // direction-dependent shader washout.
+    _ = bf_world_new(e, 10)
+    bf_debug_set_camera(e, 170, 13, 62, Float.pi, -0.12)
 
     let W = 320, H = 240, HW = W/2, HH = H/2
     func makeTex(_ fmt: MTLPixelFormat, _ w: Int, _ h: Int, _ usage: MTLTextureUsage, _ shared: Bool) -> MTLTexture {
@@ -460,7 +465,8 @@ func runWashoutTest() -> Bool {
         let toward = SIMD3<Float>(cos(E), sin(E), 0)     // direction toward the sun
         let sd = -toward                                  // sun_dir: from sun into scene
         let lookP = min(E, 18 * Float.pi / 180)           // pitch up toward the sun a bit
-        var scMinLuma = 2.0, scMaxLuma = 0.0              // mean-luma spread across yaws
+        var scMinLuma = 2.0, scMaxLuma = 0.0              // diagnostic spread across yaws
+        var towardLuma = 0.0, awayLuma = 0.0              // exact sun-facing/opposite pair
         for yi in 0..<yawSteps {
             let phi = 2 * Float.pi * Float(yi) / Float(yawSteps)
             let fwd = normalize(SIMD3<Float>(cos(phi) * cos(lookP), sin(lookP), sin(phi) * cos(lookP)))
@@ -492,7 +498,12 @@ func runWashoutTest() -> Bool {
                     camFwd:   SIMD4<Float>(fwd.x, fwd.y, fwd.z, 0))
                 enc.setVertexBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
                 enc.setFragmentBytes(&su, length: MemoryLayout<SkyUniforms>.stride, index: 0)
+                // Isolate the sun/sky exposure regression in deterministic clear
+                // weather. Directionally lit cloud coverage is intentionally
+                // asymmetric and otherwise overwhelms this yaw-delta metric.
                 var wuSky = WaterUniforms(wallClockSecs: 0, underwater: 0)
+                wuSky.cloudsOn = 0
+                wuSky.weatherPack = 0
                 enc.setFragmentBytes(&wuSky, length: MemoryLayout<WaterUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
@@ -569,6 +580,7 @@ func runWashoutTest() -> Bool {
             if meanLuma > scMaxLuma { scMaxLuma = meanLuma }
             // yaw≈0 faces the sun; yaw≈π faces away (reference).
             if yi == 0 {
+                towardLuma = meanLuma
                 print(String(format: "  %@: sun-facing washed %.1f%%", label, frac*100))
                 if ProcessInfo.processInfo.environment["WASH_SAVE"] != nil {
                     var rgba = [UInt8](repeating: 255, count: W*H*4)
@@ -584,12 +596,20 @@ func runWashoutTest() -> Bool {
                     }
                 }
             }
-            if yi == yawSteps/2 { awayWash = max(awayWash, frac) }
+            if yi == yawSteps/2 {
+                awayLuma = meanLuma
+                awayWash = max(awayWash, frac)
+            }
             if frac > worstWash { worstWash = frac; worstAt = "\(label)@yaw\(Int(phi*180/Float.pi))°" }
         }
-        let delta = scMaxLuma - scMinLuma
-        print(String(format: "    %@: mean-luma yaw range %.1f%%..%.1f%% (Δ %.1f%%)",
-                     label, scMinLuma*100, scMaxLuma*100, delta*100))
+        // Gate the symptom the test names: turning toward the sun must not lift
+        // the whole exposure relative to the exact opposite view. The previous
+        // max-minus-min over all 24 headings instead failed on ordinary asymmetric
+        // terrain and low-sun directional lighting at unrelated yaws.
+        let delta = max(0, towardLuma - awayLuma)
+        print(String(format: "    %@: mean-luma range %.1f%%..%.1f%%; toward %.1f%% vs away %.1f%% (Δ %.1f%%)",
+                     label, scMinLuma*100, scMaxLuma*100,
+                     towardLuma*100, awayLuma*100, delta*100))
         if delta > maxLumaDelta { maxLumaDelta = delta; maxLumaDeltaAt = label }
     }
     // #33 cave-darkness: when the eye is underground (camFwd.w = 1), the sky must be
