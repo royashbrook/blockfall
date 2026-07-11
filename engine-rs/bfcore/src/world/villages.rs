@@ -17,6 +17,9 @@ impl<'c> World<'c> {
     const WALL_STONE: BlockId = 8; // stone_brick
     const IRON_GATE: BlockId = 53; // iron_bars
     const LAMP: BlockId = 35; // crystal_lamp
+    const VILLAGER_GLOBAL_CAP: i32 = 6;
+    const VILLAGE_VILLAGERS: i32 = 3;
+    const CITY_VILLAGERS: i32 = 6;
 
     pub fn village_view_nearest(&self) -> Option<(i32, i32, u8, i32, i32, i32, i32)> {
         let px = Self::ifloor(self.pos.x);
@@ -594,54 +597,45 @@ impl<'c> World<'c> {
             return;
         }
         self.villager_timer = 2.0;
-        const KVCAP: i32 = 6;
-        let mut have = self.creatures.iter().filter(|c| c.model == 20).count() as i32;
-        if have >= KVCAP {
-            return;
-        }
         let px = Self::ifloor(self.pos.x);
         let pz = Self::ifloor(self.pos.z);
-        let mut dz = -128;
-        while dz <= 128 {
-            let mut dx = -128;
-            while dx <= 128 {
-                if have >= KVCAP {
-                    return;
-                }
-                let (typ, ax, az, ay) =
-                    worldgen::worldgen_structure_near(px + dx, pz + dz, self.seed);
-                if typ == 0 {
-                    dx += 64;
-                    continue;
-                }
-                let ddx = Self::wrap_signed_f(ax as f32 - self.pos.x);
-                let ddz = Self::wrap_signed_f(az as f32 - self.pos.z);
-                if ddx * ddx + ddz * ddz > 80.0 * 80.0 {
-                    dx += 64;
-                    continue;
-                }
-                if !self.store.is_resident(Self::to_chunk(IVec3 {
-                    x: ax,
-                    y: ay,
-                    z: az,
-                })) {
-                    dx += 64;
-                    continue;
-                }
-                let present = self.creatures.iter().any(|c| {
-                    c.model == 20
-                        && Self::wrap_signed_f(c.pos.x - ax as f32).abs() < 10.0
-                        && Self::wrap_signed_f(c.pos.z - az as f32).abs() < 10.0
-                });
-                if present {
-                    dx += 64;
-                    continue;
-                }
-                have += self.spawn_villager_at(ax, ay, az, KVCAP - have);
-                dx += 64;
-            }
-            dz += 64;
+        let Some((typ, ax, az)) =
+            worldgen::worldgen_settlement_near(px, pz, 80, self.seed)
+        else {
+            return;
+        };
+        let ay = worldgen::worldgen_surface_height(ax, az, self.seed);
+        if !self.store.is_resident(Self::to_chunk(IVec3 {
+            x: ax,
+            y: ay,
+            z: az,
+        })) {
+            return;
         }
+
+        let budget = self.villager_roster_budget(worldgen::worldgen_is_city(typ), ax, az);
+        if budget > 0 {
+            self.spawn_villager_at(ax, ay, az, budget);
+        }
+    }
+
+    fn villager_roster_budget(&self, is_city: bool, ax: i32, az: i32) -> i32 {
+        let ax = Self::wrap_block(ax);
+        let az = Self::wrap_block(az);
+        let have = self.creatures.iter().filter(|c| c.model == 20).count() as i32;
+        let at_home = self
+            .creatures
+            .iter()
+            .filter(|c| c.model == 20 && c.home_x == ax && c.home_z == az)
+            .count() as i32;
+        let target = if is_city {
+            Self::CITY_VILLAGERS
+        } else {
+            Self::VILLAGE_VILLAGERS
+        };
+        (target - at_home)
+            .min(Self::VILLAGER_GLOBAL_CAP - have)
+            .max(0)
     }
 
     // #240: kid-friendly villager given names, indexed by the stable villager
@@ -857,5 +851,78 @@ impl<'c> World<'c> {
             lit.y + (v - lit.y) * pale,
             lit.z + (v - lit.z) * pale,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn add_residents(w: &mut World<'_>, is_city: bool, ax: i32, az: i32, count: i32) {
+        let start = w
+            .creatures
+            .iter()
+            .filter(|c| {
+                c.model == 20
+                    && c.home_x == World::wrap_block(ax)
+                    && c.home_z == World::wrap_block(az)
+            })
+            .count() as i32;
+        for i in start..(start + count) {
+            let mut c = Creature::default();
+            c.model = 20;
+            c.npc_id = World::villager_npc_for_index(is_city, i);
+            c.home_x = World::wrap_block(ax);
+            c.home_z = World::wrap_block(az);
+            w.creatures.push(c);
+        }
+    }
+
+    #[test]
+    fn roster_budget_fills_city_and_village_once() {
+        let mut city = World::new(None);
+        let seam_home = (-9, -40);
+        assert_eq!(city.villager_roster_budget(true, seam_home.0, seam_home.1), 6);
+        add_residents(&mut city, true, seam_home.0, seam_home.1, 2);
+        assert_eq!(city.villager_roster_budget(true, seam_home.0, seam_home.1), 4);
+        add_residents(&mut city, true, seam_home.0, seam_home.1, 2);
+        assert_eq!(city.villager_roster_budget(true, seam_home.0, seam_home.1), 2);
+        add_residents(&mut city, true, seam_home.0, seam_home.1, 2);
+        assert_eq!(
+            city.villager_roster_budget(
+                true,
+                World::wrap_block(seam_home.0),
+                World::wrap_block(seam_home.1),
+            ),
+            0,
+            "canonical and negative torus anchors are one roster"
+        );
+        assert_eq!(
+            city.creatures.iter().map(|c| c.npc_id).collect::<Vec<_>>(),
+            vec![4, 5, 6, 1, 2, 3],
+            "city fills the complete deterministic profession chain"
+        );
+
+        city.creatures.clear(); // load clears transient residents
+        assert_eq!(
+            city.villager_roster_budget(true, seam_home.0, seam_home.1),
+            6,
+            "a loaded city refills its roster"
+        );
+
+        let mut village = World::new(None);
+        add_residents(&mut village, false, 200, 300, 2);
+        assert_eq!(village.villager_roster_budget(false, 200, 300), 1);
+        add_residents(&mut village, false, 200, 300, 1);
+        assert_eq!(village.villager_roster_budget(false, 200, 300), 0);
+        assert_eq!(
+            village
+                .creatures
+                .iter()
+                .map(|c| c.npc_id)
+                .collect::<Vec<_>>(),
+            vec![4, 1, 5],
+            "village stops at its smaller deterministic prefix"
+        );
     }
 }
