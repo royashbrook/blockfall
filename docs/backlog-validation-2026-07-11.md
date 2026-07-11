@@ -1,0 +1,621 @@
+# Backlog validation guide — 2026-07-11
+
+This guide validates the finished-furniture, detailed-structure, settlement,
+villager-routine, creature-model, road, and caravan backlog completed in the
+July 11 pass.
+
+Changed worldgen layouts only appear in never-generated chunks. Use a new world
+for the main playtest. Existing bed/station/prop block meshes and entity models
+update when an old world reloads/remeshes, so an old save remains useful for the
+save-compatibility checks.
+Before opening an old world, duplicate its folder under
+`~/Library/Application Support/Blockfall/worlds/` and test only the copy;
+opening and saving it with this build upgrades its persisted data.
+
+## What changed
+
+- Beds are one coherent low furniture mesh with legs, rails, quilt, pillow, and
+  headboard instead of two cubes.
+- Settlement homes have pitched roofs, eaves, and inset timber beams.
+- Woodcutters, masons, blacksmiths, herbalists, and builders have finished
+  physical stations, readable held items, and distinct work shifts.
+- Villagers look, gesture, greet, chat in mutual pairs, sit on a communal bench,
+  and sweep with a finished broom prop. Due work shifts take priority.
+- New worlds start at a dry, clear, finished walled City with detailed corner
+  towers, gates, a civic landmark, shops, stations, and six professions.
+- Villages promote visibly to Town and City, gain residents and open shops, and
+  show the correct class in the HUD, minimap, and world map.
+- Developed settlements gain deterministic graded gravel/cobble roads and plank
+  boardwalks. Roads preserve player solids and rebuild from settlement state.
+- One nearby deterministic caravan travels a route, completes deliveries, and
+  changes bounded destination trade stock. Progress and stock survive save/load.
+- Ruins, keeps, and towers have irregular rubble, broken arches, buttresses,
+  weathering, shaped crowns, and restrained material variation.
+- Villagers and the passive/hostile creature rosters use rounded low-poly parts,
+  clearer faces, eased joint lag, and floppy follow-through while retaining their
+  silhouettes and palettes.
+
+## Final automated evidence
+
+Run from the repository root:
+
+```bash
+cd /Users/roy/gh/blockfall
+./ci/check.sh
+./ci/build.sh release
+./build/Blockfall.app/Contents/MacOS/Blockfall --selftest
+python3 tests/content/validate.py
+```
+
+Required signals:
+
+- `✅ check.sh GREEN`
+- `==> built: .../build/Blockfall.app`
+- the fresh release binary reports
+  `OK: swift<->c++ self-test (5 frames, hud populated)`
+- content validation reports all files valid
+- `bf_entity_draw` remains 44 bytes and ABI v28 sidecar parity passes
+- no Rust warnings
+
+The standalone release Rust gate used during development is:
+
+```bash
+cd /Users/roy/gh/blockfall/engine-rs/bfcore
+cargo test --release
+```
+
+Expected suite totals at this feature head:
+
+- library: 151 passed, 6 manual/diagnostic tests ignored
+- co-op: 2 passed
+- map: 12 passed
+- network: 4 passed
+- perf: 0 passed, 1 manual probe ignored
+- world integration: 55 passed
+
+## Fast manual smoke test
+
+Allow 30–45 minutes.
+
+1. Run `./play.sh` and create a fresh world. Use seed `11` if the world screen
+   exposes a seed field.
+2. Confirm spawn is dry and collision-clear inside a walled City. Before spending
+   several minutes in town, look along the nearest City route for the cart starting
+   at its HOME endpoint; if it has already left the 128-block draw radius, wait for
+   its return or use the deterministic caravan gallery below.
+3. Walk one circuit of the City. Check four open gates, four detailed towers,
+   the civic landmark, pitched roofs, open shops, stations, bench, and broom
+   stand. Large surfaces should have beams, trim, material breaks, or shaped
+   profiles rather than reading as plain Lego boxes.
+4. Enter two homes. Each bed should read as one bed, not two blocks. Check legs,
+   headboard, pillow/quilt, low height, and correct orientation against a wall.
+5. Observe villagers for several minutes. Look for work travel and visible tool
+   use, plus look/gesture/greet/chat/sit/sweep actions. Pair chats must face each
+   other and end cleanly.
+6. Press `M`, then zoom all the way out. HOME should be centred in the full-planet
+   view; Town and City use distinct icons. A dashed route appears once at least two
+   developed settlements have been discovered.
+7. Follow a developed road out through a cardinal gate. The protected gate/core is
+   stone brick; beyond it, confirm a graded three-wide cobble City route.
+8. Press `T` until `[ALWAYS NIGHT]` appears (normally twice: auto → day → night).
+   Check forge glow, hostile emissive parts, readable silhouettes, and floppy
+   animation.
+9. Save, leave to the title screen, and reload. Recheck settlement class, stations,
+   props, road, caravan progress, and trade availability.
+10. Press backslash during useful world views. Screenshots land in
+    `~/blockfall-shots/`. Use a macOS screenshot for map/dialogue/trade overlays.
+
+## Detailed fresh-world playtest
+
+### 1. Starter City and building detail
+
+Create a fresh world and inspect before placing or mining anything.
+
+- Spawn must be on dry ground with no collision or suffocation.
+- The perimeter must be continuous except for four readable cardinal gates.
+- Each corner tower needs a shaped roof/crown, timber or carved-stone detail, and
+  a silhouette that differs from a solid rectangular column.
+- The civic landmark must be visible from the central area.
+- Houses need pitched multi-level roofs, one-block eaves, and inset timber beams.
+- Beds need legs, rails, a headboard, quilt and pillow. The cross-chunk ownership
+  edge case is automated by
+  `paired_bed_across_x_chunk_seam_is_emitted_by_low_owner`; orientation is gated by
+  `paired_bed_z_rotates_and_puts_headboard_against_wall`.
+- Open artisan shelters must not be closed box huts. Their posts, roof pitch,
+  station, and clear west work cell should be readable.
+- Confirm these stations are present and visually distinct:
+  - woodcutter chopping block with stump, split logs, and embedded axe
+  - mason bench
+  - blacksmith forge with warm light
+  - herbalist table
+  - builder sawbench
+- Confirm the communal bench has a back/seat/legs and the broom stand has a
+  leaning broom/dustpan silhouette. Neither should look like a placeholder cube.
+- Press `C`, then `E`, and inspect the Creative icons/tooltips for Chopping Block,
+  Mason Bench, Blacksmith Forge, Herbalist Table, Builder Sawbench, Communal Bench,
+  and Broom Stand. Put each in the hotbar: its held silhouette must be authored,
+  not a generic cube. Place and break each once; the correct item should return.
+
+### 2. Villager population, work, and social life
+
+The City should maintain six stable professions: Woodcutter, Elder, Stone Mason,
+Builder, Blacksmith, and Herbalist.
+
+Observe long enough to see:
+
+- Woodcutter walks to the chopping block, faces it, chops, and returns.
+- Mason uses a mallet at the mason bench.
+- Blacksmith hammers at the forge.
+- Herbalist uses a pestle/herb motion.
+- Builder saws at the sawbench.
+- Elder greets other residents.
+- Idle residents look around, gesture, greet, pause face-to-face for pair chat,
+  sit, and sweep.
+- Chat pairing is mutual: one villager must not be claimed by two partners.
+- Villagers remain within the settlement tether and do not freeze permanently.
+- When a profession shift becomes due, the resident stops social activity and
+  goes to work.
+
+Do every non-destructive visual and routine check first. Each failure check below
+edits the world; use a disposable duplicate/new seed-11 world for each one, or
+restore the exact prop/station and blocker in Creative before continuing.
+
+Failure checks:
+
+1. Mine one station while its worker is travelling or working. The worker must
+   cancel safely and return home without a false work pose.
+2. Block a station’s west work cell. The worker must not walk through the block
+   or work from the wrong place.
+3. Mine the bench while a resident is travelling to sit. The sit action and old
+   path must clear.
+4. Block the broom work path. Sweep must cancel without leaving stale movement.
+5. Save/reload after each kind of cancellation. No resident should remain stuck
+   in a missing action.
+
+### 3. Village → Town → City progression
+
+Use a non-HOME Village so the natural starter City does not short-circuit
+donations. This discovery is exploratory in live play; deterministic class and
+persistence coverage comes from the automated tests. Press `C`, then `E`, to use
+the Creative picker for test materials.
+
+1. Visit the Village and open `M`; it should appear as a Village marker.
+2. Select/hold oak logs, right-click the Woodcutter, and click
+   `Donate held items to the village`. Repeat until 124 logs have been accepted;
+   each click accepts at most 8 logs and each wall cell costs 2. The 62-cell
+   palisade completes and HUD reads `Walled Village · Tier 1/3`.
+3. Hold stone, stone brick, or cobblestone; right-click the Stone Mason and use
+   the same donation button until 16 accepted items are donated. HUD changes to
+   `Town · Tier 2/3`; population rises from 3 to 5; Builder and Blacksmith appear;
+   open shops materialize; a one-wide gravel road appears.
+4. Hold raw iron or iron ingots; right-click the Blacksmith and donate 8 accepted
+   items. HUD changes to
+   `City · Tier 3/3`; population rises to 6; Herbalist appears; the route upgrades
+   to a three-wide cobble road.
+5. Open `M` at every tier. Village, Town, and City labels/icons must agree with
+   the HUD and minimap.
+6. Save/reload at Town and again at City. Class, raw donation tier, population,
+   shops, map marker, road material, and offers must remain correct.
+
+The exact future-shop-cell preservation check is automated by
+`artisan_growth_preserves_player_blocks_through_promotion_and_load`; there is no
+stable bounded live-play coordinate before a Village anchor is known.
+
+### 4. Roads and boardwalks
+
+Follow a route from a settlement’s cardinal gate.
+
+- Beyond the protected stone-brick settlement gate/core, a Town route is one block
+  wide and gravel.
+- Beyond the protected stone-brick settlement gate/core, a City route is three
+  blocks wide and cobble.
+- Adjacent centreline heights differ by at most one block.
+- Hills may be cut and valleys filled, but the route needs full two-block
+  headroom and must stay walkable.
+- Water crossings use oak-plank boardwalks. Exact wet-route selection is
+  deterministic but not exposed as a bounded live coordinate; the unit gate is
+  `wet_road_cells_become_boardwalk`.
+- The route takes the short direction across the torus seam. Validate the exact
+  seam geometry with `route_uses_the_short_torus_image_deterministically` and the
+  generated `map_route_seam.png` fixture.
+- It must not overwrite unrelated buildings, ruins, or player solids.
+- A player edit in a road column must survive a tier refresh/reload.
+- No `roads.dat` should be created; road geometry is derived from seed and class.
+
+### 5. Caravan delivery and trade stock
+
+Stay near one developed route. Only one route is actively simulated at a time.
+
+- The cart has a mule, cargo, awning, wheels, and moving legs/wheels.
+- It follows the graded road rather than cutting across terrain.
+- It reverses at endpoints and faces the direction of travel through bends.
+- When the cart itself is outside the nearby draw radius, it disappears cleanly;
+  the selected nearby route can still progress and complete a delivery.
+- Remove several consecutive road cells immediately ahead of the cart; it must hide
+  without a crash or walking through structure masonry. Unloaded-cell safety is
+  automated by `exactly_one_nearby_intact_route_runs_and_bad_road_hides` because
+  unloaded residency is not directly visible in live play.
+
+At a route endpoint:
+
+1. On a fresh HOME endpoint before its first delivery, the local route starts with
+   three units of stock. With no coins, click a visible coin-buy offer; it must fail
+   without removing the offer.
+2. Add more coins than the offer price, fill all 36 slots, and ensure no slot
+   already holds the purchased item. Click again; the full-inventory purchase must
+   fail without removing the offer. Otherwise spending the last coin stack can
+   legitimately free a slot for the purchase.
+3. Free one slot and make exactly three successful coin-buys. Sell offers remain,
+   while all coin-buy offers disappear. This proves both failures left the initial
+   stock untouched.
+4. Follow or wait for a delivery. Settlement spacing makes a one-way leg typically
+   at least five minutes at 1.5 road cells/second; replenishing the endpoint where
+   the cart started can take a full ten-minute round trip. Coin-buy offers return
+   after delivered stock increases, capped by the bounded route stock. Use the
+   deterministic road/map tests when a shorter manual session cannot cover this.
+5. Save/reload mid-route. The visible cart position/direction and trade stock must
+   continue without an obvious reset. Exact fractional timing is covered by
+   `caravan_progress_is_frame_partition_independent` and the BFT1 round-trip test.
+6. Pre-caravan/old/truncated save behavior is automated-only because no legacy
+   fixture ships with the repo. It is covered by
+   `caravan_trailer_roundtrips_and_old_or_truncated_maps_are_safe`, including a
+   reused-World stale-state regression.
+
+### 6. Ruins, keeps, and towers
+
+Seed `10` has a deterministic ruin centred near `(184, 10, 76)`.
+
+- Look from north and south. Walls need chipped height variation, mixed stone/moss,
+  buttresses, an open broken doorway/arch, and irregular low rubble piles.
+- Rubble must be persistent shaped geometry with solid, visually legible collision;
+  it must not become a full invisible cube or disappear at prop distance.
+- Walk through the broken arch and around the site. The damage pass must remain
+  traversable.
+- Confirm the danger marker/defenders still work. Defeat the fixed band; the site
+  clears, grants its reward once, and does not immediately refill while you stay.
+- Keeps and tall towers should use restrained accents rather than noisy decoration:
+  carved caps, a broken/profiled crown, and a few weathered shaft patches. This
+  guide does not promise live coordinates for those sparse procedural structures;
+  deterministic coverage is
+  `keeps_and_ruins_have_supported_shaped_stone_profiles` and
+  `tall_tower_has_restrained_weathered_shaft_and_shaped_crown`.
+
+### 7. Character and creature models
+
+Check villagers first:
+
+- Eight gallery variants retain stable clothing, height, head style, and identity.
+- Faces vary in eye proportions, brows, nose, and mouth without face parts showing
+  through the back of the head.
+- Head/body/limbs are rounded low-poly forms.
+- Walk phases show eased stride, hand/foot follow-through, child-joint lag, and
+  restrained squash; they should feel floppy, not rubbery.
+
+Passive roster to inspect: `0–3, 7–10, 12–14, 18–19, 21`.
+
+Hostile roster to inspect: `4, 5, 11, 15–17, 23–26`.
+
+For each representative species, confirm its original size, palette, face, gait,
+and silhouette still read immediately. At night, emissive eyes/cores must remain
+visible. Slime keeps its existing squash baseline.
+
+The deterministic `--critters` harness below deliberately normalizes non-villager
+scale and cycles toy review colours; `BF_SHOT_TESTCREATURE` also uses a fixed
+review colour/scale. Those fixtures validate geometry, silhouette, pose, part
+budget, and emissive placement. Validate gameplay-authored size and palette from
+live natural spawns.
+
+## Deterministic headless visual checks
+
+After a fresh release build:
+
+```bash
+cd /Users/roy/gh/blockfall
+set -euo pipefail
+OUT="$(mktemp -d /private/tmp/blockfall-backlog-validation.XXXXXX)"
+BIN=./build/Blockfall.app/Contents/MacOS/Blockfall
+echo "visual evidence: $OUT"
+```
+
+This pass generated and inspected the complete 52-file canonical set at
+`/private/tmp/blockfall-backlog-validation.GFpYtJ`. Occluded first attempts were
+replaced, then the City, tower, roof, work, social, rear-view, and night fixtures
+were independently re-audited from the final release binary.
+
+### Map and tier HUD
+
+```bash
+"$BIN" --mapshot "$OUT/map.png"
+"$BIN" --villageshot "$OUT/village-tiers.png"
+```
+
+Mapshot also writes confirmation, planet, route-seam, and minimap fixtures. Check
+the Town/City icons, dashed route, HOME-centred planet view, and seam route drawn
+against chart edges rather than across the world.
+
+### City and ruin
+
+```bash
+BF_SHOT_SEED=11 BF_SHOT_POS="31034,38,88,0.785398,-0.30" \
+  BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
+  BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/city-0.png"
+BF_SHOT_SEED=11 BF_SHOT_POS="31134,38,88,5.497787,-0.30" \
+  BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
+  BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/city-90.png"
+BF_SHOT_SEED=11 BF_SHOT_POS="31134,38,188,3.926991,-0.30" \
+  BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
+  BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/city-180.png"
+BF_SHOT_SEED=11 BF_SHOT_POS="31034,38,188,2.356194,-0.30" \
+  BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
+  BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/city-270.png"
+
+BF_SHOT_SEED=10 BF_SHOT_POS="184,13,58,0,-0.05" \
+  BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 BF_CEL=1 \
+  "$BIN" --shot "$OUT/ruin-north.png"
+BF_SHOT_SEED=10 BF_SHOT_POS="184,13,94,3.14159,-0.05" \
+  BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 BF_CEL=1 \
+  "$BIN" --shot "$OUT/ruin-south.png"
+
+BF_SHOT_SEED=11 BF_SHOT_POS="2928.5,10.2,-5.5,0,0.12" \
+  BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 BF_CEL=1 \
+  "$BIN" --shot "$OUT/keep-profile.png"
+BF_SHOT_SEED=11 BF_SHOT_POS="3931.5,18,-10,0,0.03" \
+  BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
+  BF_SHOT_HELD=0 BF_CEL=1 \
+  "$BIN" --shot "$OUT/tall-tower-profile.png"
+```
+
+### Finished building, bed, station, and communal-prop close-ups
+
+These seed-11 cameras pin safe views in and around the starter City:
+
+```bash
+BF_SHOT_SEED=11 BF_SHOT_POS="31100,19,124,0.7854,-0.08" BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/home-pitched-roof.png"
+BF_SHOT_SEED=11 BF_SHOT_POS="31116.5,14.2,140.5,0.588,-0.44" BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/bed-finished.png"
+BF_SHOT_SEED=11 BF_SHOT_POS="31077.5,15.2,142.5,1.5708,-0.45" BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/station-mason.png"
+BF_SHOT_SEED=11 BF_SHOT_POS="31077.5,14.2,134.5,1.5708,-0.45" BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/station-forge.png"
+BF_SHOT_SEED=11 BF_SHOT_POS="31085.5,15.2,134.5,1.5708,-0.45" BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/station-herbalist.png"
+BF_SHOT_SEED=11 BF_SHOT_POS="31087.5,14.2,144.5,1.5708,-0.45" BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/station-builder.png"
+BF_SHOT_SEED=11 BF_SHOT_POS="31085.5,14.2,142.5,1.5708,-0.45" BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/station-chopping.png"
+BF_SHOT_SEED=11 BF_SHOT_POS="31081.5,15.2,144.5,1.5708,-0.45" BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/prop-bench.png"
+BF_SHOT_SEED=11 BF_SHOT_POS="31081.5,14.2,132.5,1.5708,-0.45" BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/prop-broom.png"
+```
+
+### Full creature gallery and motion strips
+
+```bash
+BF_CEL=1 "$BIN" --critters "$OUT/critters.png"
+BF_VILLAGERS=1 BF_CEL=1 "$BIN" --critters "$OUT/villagers.png"
+BF_ENTITY_SHAPE=box BF_CEL=1 "$BIN" --critters "$OUT/critters-box.png"
+BF_VILLAGERS=1 BF_ENTITY_SHAPE=box BF_CEL=1 \
+  "$BIN" --critters "$OUT/villagers-box.png"
+
+BF_CRITTER_MOTION=1 BF_CRITTER_KIND=20 BF_CEL=1 \
+  "$BIN" --critters "$OUT/villager-motion.png"
+BF_CRITTER_MOTION=1 BF_CRITTER_KIND=10 BF_CEL=1 \
+  "$BIN" --critters "$OUT/passive-deer-motion.png"
+BF_CRITTER_MOTION=1 BF_CRITTER_KIND=5 BF_CEL=1 \
+  "$BIN" --critters "$OUT/hostile-motion.png"
+BF_CRITTER_MOTION=1 BF_CRITTER_KIND=15 BF_CEL=1 \
+  "$BIN" --critters "$OUT/slime-motion.png"
+BF_CRITTER_MOTION=1 BF_CRITTER_KIND=27 BF_CEL=1 \
+  "$BIN" --critters "$OUT/caravan-motion.png"
+```
+
+The full gallery should print `critter gallery: 27 kinds`. Caravan motion should
+report four entities, 128 body-part draws, and no more than 2,600 triangles.
+Compare each default gallery with its `-box` control: the model build should have
+rounded sub-block masses while retaining the same readable species/identity.
+
+Verify villager facial parts do not leak through the back of the rounded head:
+
+```bash
+BF_SHOT_SEED=10 BF_SHOT_POS="170,13,62,3.14159,-0.12" \
+  BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_TESTCREATURE=20 \
+  BF_SHOT_TCFACEAWAY=1 BF_SHOT_TCDIST=5 BF_SHOT_HELD=0 BF_CEL=1 \
+  "$BIN" --shot "$OUT/villager-back.png"
+```
+
+Representative injected passive close-ups and a fixed-view 32-villager visual A/B:
+
+```bash
+BF_SHOT_SEED=10 BF_SHOT_POS="170,13,62,3.14159,-0.12" \
+  BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_TESTCREATURE=10 \
+  BF_SHOT_TOD=0.25 BF_SHOT_TCDIST=4 BF_SHOT_HELD=0 BF_CEL=1 \
+  "$BIN" --shot "$OUT/passive-deer-close.png"
+BF_SHOT_SEED=10 BF_SHOT_POS="170,13,62,3.14159,-0.12" \
+  BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_TESTCREATURE=14 \
+  BF_SHOT_TOD=0.25 BF_SHOT_TCDIST=4 BF_SHOT_HELD=0 BF_CEL=1 \
+  "$BIN" --shot "$OUT/passive-frog-close.png"
+
+BF_ENTITY_STRESS=1 BF_ENTITY_SHAPE=box BF_SHOT_SEED=10 \
+  BF_SHOT_POS="170,13,62,3.14159,-0.12" BF_SHOT_NOWALK=1 \
+  BF_SHOT_PITCH=0 BF_SHOT_HELD=0 BF_CEL=1 \
+  "$BIN" --shot "$OUT/entity-stress-box.png"
+BF_ENTITY_STRESS=1 BF_SHOT_SEED=10 \
+  BF_SHOT_POS="170,13,62,3.14159,-0.12" BF_SHOT_NOWALK=1 \
+  BF_SHOT_PITCH=0 BF_SHOT_HELD=0 BF_CEL=1 \
+  "$BIN" --shot "$OUT/entity-stress-model.png"
+```
+
+These are deterministic review injections, not natural spawns; live play remains
+the palette, authored-scale, AI, and combat gate.
+
+For complete roster coverage, repeat the motion command for every passive and
+hostile kind listed above, changing the output filename for every kind.
+
+### Work and social poses
+
+Work roles: `2 builder`, `3 herbalist`, `4 woodcutter`, `5 mason`, `6 blacksmith`.
+
+```bash
+BF_SHOT_SEED=10 BF_SHOT_POS="170,13,62,3.14159,-0.12" \
+  BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 \
+  BF_SHOT_TESTCREATURE=20 BF_SHOT_TCDIST=4 BF_SHOT_VILLAGER_WORK=1 \
+  BF_SHOT_WORK_ROLE=4 BF_SHOT_WORK_PROGRESS=0.55 BF_CEL=1 \
+  "$BIN" --shot "$OUT/work-woodcutter.png"
+```
+
+Repeat with roles `2–6` and progress `0.15`, `0.55`, and `0.85`, changing the
+output filename for each role/progress pair.
+
+Social actions: `5 look`, `6 gesture`, `7 greet`, `8 chat`, `9 sit`, `10 sweep`.
+
+```bash
+BF_SHOT_SEED=10 BF_SHOT_POS="170,13,62,3.14159,-0.12" \
+  BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 \
+  BF_SHOT_TESTCREATURE=20 BF_SHOT_TCDIST=4 BF_SHOT_SOCIAL_ROLE=1 \
+  BF_SHOT_SOCIAL_ACTION=10 BF_SHOT_SOCIAL_PROGRESS=0.65 BF_CEL=1 \
+  "$BIN" --shot "$OUT/social-sweep.png"
+```
+
+Repeat actions `5–10` at progress `0.20` and `0.65`, changing the output filename
+for each action/progress pair. Action 8 validates the pose; live play validates
+mutual partner selection and facing.
+
+### Night hostile close-ups
+
+```bash
+BF_SHOT_SEED=10 BF_SHOT_POS="170,13,62,3.14159,-0.12" \
+  BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_TESTCREATURE=5 BF_SHOT_TOD=0.75 \
+  BF_SHOT_TCDIST=5 BF_SHOT_HELD=81 BF_SHOT_SWING=0.55 BF_CEL=1 \
+  "$BIN" --shot "$OUT/hostile-5-night-combat.png"
+BF_SHOT_SEED=10 BF_SHOT_POS="170,13,62,3.14159,-0.12" \
+  BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_TESTCREATURE=11 BF_SHOT_TOD=0.75 \
+  BF_SHOT_TCDIST=5 BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/hostile-11-night.png"
+BF_SHOT_SEED=10 BF_SHOT_POS="170,13,62,3.14159,-0.12" \
+  BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_TESTCREATURE=15 BF_SHOT_TOD=0.75 \
+  BF_SHOT_TCDIST=5 BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/slime-night.png"
+```
+
+The first close-up validates combat framing and the held swing only. Natural AI,
+hit response, gameplay scale, and gameplay palette still require live combat.
+
+## Performance comparison
+
+Run from the repository root. Keep `OUT` from the visual-check terminal, or create
+a new evidence directory here:
+
+```bash
+cd /Users/roy/gh/blockfall
+BIN=./build/Blockfall.app/Contents/MacOS/Blockfall
+OUT="${OUT:-$(mktemp -d /private/tmp/blockfall-backlog-perf.XXXXXX)}"
+```
+
+A/B measurements in this session use a 14-core M4 Pro MacBook Pro with 48 GB
+memory on macOS 26.5.2. They catch regressions but do not replace the final M1
+Air sustained gate below.
+Never compare the saved M4 Pro baseline against an M1 or any other machine; collect
+a same-machine baseline instead.
+
+A pre-change 20-second reference run on this machine recorded:
+
+- median: 148.9 FPS
+- 1% low: 38.4 FPS
+- median frame: 6.716 ms
+- median encode: 3.188 ms
+- median GPU: 2.708 ms
+- peak memory: 1,678 MB
+
+The durable saved reference is
+`docs/evidence/backlog-perf-before-2026-07-11.json`. Copy it to the comparator
+path before running the commands below:
+
+```bash
+cp docs/evidence/backlog-perf-before-2026-07-11.json \
+  /private/tmp/blockfall-backlog-before.json
+```
+
+Run the same post-change scene:
+
+```bash
+BF_METAL_PERF_JSON=/private/tmp/blockfall-backlog-after.json \
+BF_PERF_SAVE_DIR=/private/tmp/blockfall-perf-after \
+  "$BIN" --perftest 20
+
+python3 ci/perf_compare.py \
+  /private/tmp/blockfall-backlog-before.json \
+  /private/tmp/blockfall-backlog-after.json
+```
+
+Expected result: `perf compare OK`.
+
+The accepted post-change run from this pass is saved at
+`docs/evidence/backlog-perf-after-2026-07-11.json` and recorded:
+
+- median: 181.8 FPS (`+22.1%`)
+- 1% low: 75.6 FPS (`+96.9%`)
+- median frame: 5.502 ms (`-18.1%`)
+- median engine: 0.920 ms
+- median encode: 1.057 ms
+- median GPU: 3.042 ms (`+12.3%`)
+- peak memory: 1,698 MB; `pass_mem: true`
+
+The same-machine comparator passed. During validation it also caught and drove a
+real fix: natural City growth is no longer redundantly overlaid during streaming,
+and L-shaped roads cull chunks against their two actual segments instead of their
+large filled bounding rectangle.
+
+Then run the deterministic 32-villager stress A/B with the same current binary:
+
+```bash
+BF_ENTITY_STRESS=1 BF_ENTITY_SHAPE=box \
+BF_METAL_PERF_JSON="$OUT/entity-box.json" \
+BF_PERF_SAVE_DIR="$OUT/save-box" "$BIN" --perftest 60
+
+BF_ENTITY_STRESS=1 \
+BF_METAL_PERF_JSON="$OUT/entity-model.json" \
+BF_PERF_SAVE_DIR="$OUT/save-model" "$BIN" --perftest 60
+
+python3 ci/perf_compare.py "$OUT/entity-box.json" "$OUT/entity-model.json"
+```
+
+Required stress signals:
+
+- scene is `entity-stress(32 villagers)`
+- entity count is 32
+- `entity_shape` is `box` in the control JSON and `model` in the candidate JSON
+- body-part and triangle metrics are populated
+- comparator passes: median FPS drop ≤12%, 1% low drop ≤25%, frame-time rise
+  ≤20%, and GPU-time rise ≤30%
+
+The final fixed-camera result is persisted in
+`docs/evidence/entity-stress-box-2026-07-11.json` and
+`docs/evidence/entity-stress-model-2026-07-11.json`:
+
+- box control: 200.2 FPS median, 136.4 FPS 1% low, 4.995 ms frame,
+  2.346 ms GPU, 10,380 entity triangles
+- shaped model: 194.0 FPS median, 134.1 FPS 1% low, 5.156 ms frame,
+  2.429 ms GPU, 20,520 entity triangles
+- delta: median `-3.1%`, 1% low `-1.7%`, frame `+3.2%`, GPU `+3.5%`;
+  `perf compare OK`
+
+The final M1 Air gate is a 10-minute run with median ≥60 FPS, 1% low ≥30 FPS,
+and no sustained memory growth:
+
+```bash
+BF_PERF_CAMERA=32597,23,28441,5.497787,-0.35 \
+BF_PERF_SETTLE=600 BF_METAL_PERF_SECONDS=600 \
+BF_METAL_PERF_JSON="$OUT/m1-final.json" \
+BF_PERF_SAVE_DIR="$OUT/m1-save" ./ci/perf.sh
+
+python3 -m json.tool "$OUT/m1-final.json"
+```
+
+The perf process exits nonzero for the memory cap, but does not enforce the FPS
+threshold. The JSON must explicitly report `seconds: 600`, `pass_fps: true`, and
+`pass_mem: true`. While it runs, record the Blockfall process memory once per
+minute in Activity Monitor; fail the gate if the samples show a continuing upward
+trend rather than settling. The JSON records peak memory only, not that trend.
+
+## Reporting failures
+
+For any visual or play failure, record:
+
+- fresh or old world
+- seed and world position
+- exact action/state (tier, profession, creature kind, time of day)
+- screenshot from `~/blockfall-shots/` or macOS for overlays
+- whether save/reload changes it
+
+Do not reuse already-generated chunks to judge a worldgen change.
