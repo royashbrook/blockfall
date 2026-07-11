@@ -1429,21 +1429,25 @@ fn ruin_danger_site_is_clearable() {
 
     // Stand the player right on the ruin so its chunk streams in and the danger-site
     // pass targets this anchor.
-    w.debug_set_camera(ax as f32 + 0.5, ay as f32 + 8.0, az as f32 + 0.5, 0.0, 0.0);
+    w.debug_set_camera(ax as f32 + 0.5, ay as f32 + 20.0, az as f32 + 0.5, 0.0, 0.0);
 
     // Pump frames until the site has spawned its band of defenders. danger_timer fires
     // every 3s, so 0.5s steps give it room to spawn one per ~6 steps.
     let mut i = 0;
-    while i < 400 && w.debug_ruin_hostile_count() < 2 {
+    while i < 600 && w.debug_ruin_hostile_count() < 3 {
+        // Keep this state-machine harness above melee range. Finished ruin arches
+        // are intentionally traversable, so an unattended player can otherwise die.
+        w.debug_set_camera(ax as f32 + 0.5, ay as f32 + 20.0, az as f32 + 0.5, 0.0, 0.0);
         w.update(&zero, 0.5);
         i += 1;
     }
     let spawned = w.debug_ruin_hostile_count();
-    assert!(spawned >= 2, "ruin spawned its defenders (got {spawned})");
+    assert_eq!(spawned, 3, "ruin spawned its fixed defender band");
 
     // Let it finish arming, then confirm the count is small + fixed (does not grow
     // without bound).
     for _ in 0..40 {
+        w.debug_set_camera(ax as f32 + 0.5, ay as f32 + 20.0, az as f32 + 0.5, 0.0, 0.0);
         w.update(&zero, 0.5);
     }
     let armed = w.debug_ruin_hostile_count();
@@ -1470,8 +1474,10 @@ fn ruin_danger_site_is_clearable() {
     let brick_before = w.debug_item_count(brick);
 
     // Player clears the ruin: kill every defender.
+    // Keep it at the site so the local danger pass can observe the clear.
+    w.debug_set_camera(ax as f32 + 0.5, ay as f32 + 20.0, az as f32 + 0.5, 0.0, 0.0);
     let killed = w.debug_kill_ruin_hostiles();
-    assert!(killed >= 2, "cleared the ruin defenders (removed {killed})");
+    assert_eq!(killed, 3, "cleared the ruin defenders");
     assert_eq!(
         w.debug_ruin_hostile_count(),
         0,
@@ -1482,6 +1488,7 @@ fn ruin_danger_site_is_clearable() {
     // site cleared, and grant the reward. Stay put and keep pumping: the ruin must NOT
     // respawn its defenders, and the reward must land exactly once.
     for _ in 0..120 {
+        w.debug_set_camera(ax as f32 + 0.5, ay as f32 + 20.0, az as f32 + 0.5, 0.0, 0.0);
         w.update(&zero, 0.5);
     }
     assert_eq!(
@@ -1516,6 +1523,7 @@ fn ruin_danger_site_is_clearable() {
 
     // Pump more frames on the cleared site: the reward does not fire again.
     for _ in 0..40 {
+        w.debug_set_camera(ax as f32 + 0.5, ay as f32 + 20.0, az as f32 + 0.5, 0.0, 0.0);
         w.update(&zero, 0.5);
     }
     assert_eq!(

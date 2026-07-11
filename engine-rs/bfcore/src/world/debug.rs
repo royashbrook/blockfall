@@ -3,6 +3,7 @@ use super::*;
 impl<'c> World<'c> {
     pub fn debug_set_camera(&mut self, px: f32, py: f32, pz: f32, yaw: f32, pitch: f32) {
         self.pos = V3::new(px, py, pz);
+        self.vy = 0.0;
         self.yaw = yaw;
         self.pitch = pitch;
     }
