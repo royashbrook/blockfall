@@ -61,6 +61,7 @@ impl<'c> World<'c> {
             chests: HashMap::new(),
             last_chest_open: None,
             villages: HashMap::new(),
+            road_routes: Vec::new(),
             regrow_timer: 3.0,
             rng: 0x1234567,
             regions_restored: 0,
@@ -270,6 +271,8 @@ impl<'c> World<'c> {
     // ---- M2: procedural spawn + streaming --------------------------------
     pub fn init_world(&mut self, seed: u64) {
         self.seed = seed;
+        self.villages.clear();
+        self.road_routes.clear();
         if self.gen.is_none() {
             self.generate_test_world();
             return;

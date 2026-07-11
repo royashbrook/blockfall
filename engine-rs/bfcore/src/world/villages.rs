@@ -428,6 +428,8 @@ impl<'c> World<'c> {
                     let vs = self.village_state_mut(ax, az);
                     vs.tier = 2;
                     vs.progress = 0;
+                    self.rebuild_road_routes();
+                    self.refresh_resident_roads();
                     self.toast(
                         "Mason: cut stone and proud towers! Now Dov can forge the iron gate.",
                     );
@@ -477,6 +479,8 @@ impl<'c> World<'c> {
                     let vs = self.village_state_mut(ax, az);
                     vs.tier = 3;
                     vs.progress = 0;
+                    self.rebuild_road_routes();
+                    self.refresh_resident_roads();
                     self.toast("Blacksmith: iron gate hung, lamps lit! Our town will shine through the night.");
                 } else {
                     self.toast(&format!(

@@ -273,10 +273,15 @@ impl<'c> World<'c> {
             if self.store.is_resident(r.cc) {
                 continue;
             }
-            if r.chunk.is_uniform() && r.chunk.get(0, 0, 0) == AIR {
+            let mut chunk = r.chunk;
+            // Worker generation is seed-only; tier-derived roads use the current
+            // frame-thread settlement state so a promotion racing a job cannot land
+            // a stale chunk.
+            self.apply_roads_to_chunk(r.cc, &mut chunk);
+            if chunk.is_uniform() && chunk.get(0, 0, 0) == AIR {
                 continue;
             }
-            self.store.insert(r.chunk);
+            self.store.insert(chunk);
             self.dirty_chunk_and_resident_neighbours(r.cc);
             self.shadow.refill_cols.insert((r.cc.x, r.cc.z));
         }

@@ -325,6 +325,9 @@ impl<'c> World<'c> {
                 }
             }
         }
+        // #255 road geometry is rebuilt from the seed + tier table; there is no
+        // separate road save format to migrate or corrupt.
+        self.rebuild_road_routes();
         // #182 map progress (explored bits + totems + visited villages).
         // Missing/old saves simply start with an empty map (load_map_dat resets).
         self.load_map_dat(dir);
@@ -342,6 +345,7 @@ impl<'c> World<'c> {
             );
         }
         self.ensure_clear_spawn();
+        self.refresh_resident_roads();
         self.last_center = Self::to_chunk(IVec3 {
             x: Self::ifloor(self.pos.x),
             y: Self::ifloor(self.pos.y),

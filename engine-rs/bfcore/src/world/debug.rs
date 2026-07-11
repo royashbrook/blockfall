@@ -29,6 +29,24 @@ impl<'c> World<'c> {
     pub fn debug_set_sync_streaming(&mut self, s: bool) {
         self.sync_stream = s;
     }
+    /// Generate and insert the chunk containing a voxel through the same synchronous
+    /// path used by stream_tick. Returns false when it was already resident or empty.
+    pub fn debug_generate_chunk_at(&mut self, x: i32, y: i32, z: i32) -> bool {
+        let cc = Self::canon_chunk(Self::to_chunk(IVec3 { x, y, z }));
+        if self.store.is_resident(cc) {
+            return false;
+        }
+        let Some(chunk) = self.gen_chunk(cc) else {
+            return false;
+        };
+        if chunk.is_uniform() && chunk.get(0, 0, 0) == AIR {
+            return false;
+        }
+        self.store.insert(chunk);
+        self.dirty_chunk_and_resident_neighbours(cc);
+        self.shadow.refill_cols.insert((cc.x, cc.z));
+        true
+    }
     pub fn debug_stream_back_is_nearest(&mut self) -> bool {
         self.recompute_stream_set();
         if self.gen_queue.len() < 2 {

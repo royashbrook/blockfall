@@ -2410,6 +2410,164 @@ fn village_tier_persists_round_trip() {
 }
 
 #[test]
+fn developed_roads_stream_upgrade_and_preserve_player_edits() {
+    let (mut w, _) = village_world(11);
+    let (px, _, pz, _) = w.get_player();
+    let (_, ax, az) = worldgen::worldgen_settlement_near(px as i32, pz as i32, 80, 11)
+        .expect("fresh HOME is beside a generated settlement");
+    let (core_y, wet) = worldgen::worldgen_road_surface(ax, az, 11);
+    assert!(!wet, "settlement anchors are dry");
+    let _ = w.debug_generate_chunk_at(ax, core_y, az);
+    let core_before = w.debug_block_at(ax, core_y, az);
+
+    w.debug_set_village_tier(ax, az, 2);
+    assert!(w.debug_road_route_count() > 0, "tier 2 creates a route");
+    assert_eq!(
+        w.debug_road_material_at(ax, az),
+        world::AIR,
+        "the city core is protected from the route overlay"
+    );
+    assert_eq!(
+        w.debug_block_at(ax, core_y, az),
+        core_before,
+        "tier promotion leaves the procedural city core untouched"
+    );
+
+    let first_gate = w.debug_road_sample(0, 0).expect("route starts at a gate");
+    let last_gate = w
+        .debug_road_sample(0, w.debug_road_sample_count(0) - 1)
+        .expect("route ends at a gate");
+    let wrap_delta = |d: i32| {
+        (d + worldgen::WORLD_PERIOD / 2).rem_euclid(worldgen::WORLD_PERIOD)
+            - worldgen::WORLD_PERIOD / 2
+    };
+    let gate_distance = |p: (i32, i32, i32)| {
+        wrap_delta(p.0 - ax)
+            .abs()
+            .max(wrap_delta(p.1 - az).abs())
+    };
+    let (gate_x, gate_z, _) = if gate_distance(first_gate) < gate_distance(last_gate) {
+        first_gate
+    } else {
+        last_gate
+    };
+    assert_eq!(
+        gate_distance((gate_x, gate_z, 0)),
+        9,
+        "regional road begins immediately outside the settlement gate"
+    );
+    assert_ne!(
+        w.debug_road_material_at(gate_x, gate_z),
+        world::AIR,
+        "the broad structure reserve does not leave a 51-block endpoint gap"
+    );
+
+    let count = w.debug_road_sample_count(0);
+    let (road_x, road_z, road_y) = (0..count)
+        .filter_map(|i| w.debug_road_sample(0, i))
+        .find(|&(x, z, _)| {
+            !worldgen::worldgen_structure_footprint(x, z, 11)
+                && !worldgen::worldgen_road_surface(x, z, 11).1
+        })
+        .expect("route reaches dry natural terrain outside protected structures");
+    let (surface_y, _) = worldgen::worldgen_road_surface(road_x, road_z, 11);
+    let _ = w.debug_generate_chunk_at(road_x, surface_y, road_z);
+    let _ = w.debug_generate_chunk_at(road_x, road_y, road_z);
+    assert_eq!(w.debug_road_material_at(road_x, road_z), 11, "tier 2 is gravel");
+    assert_eq!(
+        w.debug_block_at(road_x, road_y, road_z),
+        11,
+        "gravel overlays an actual road cell outside the settlement"
+    );
+
+    w.debug_set_village_tier(ax, az, 3);
+    assert_eq!(w.debug_road_material_at(road_x, road_z), 10, "tier 3 is cobblestone");
+    assert_eq!(
+        w.debug_block_at(road_x, road_y, road_z),
+        10,
+        "resident route upgrades in place"
+    );
+
+    let (far_x, far_z, far_y) = (count / 2..count)
+        .filter_map(|i| w.debug_road_sample(0, i))
+        .find(|&(x, z, _)| {
+            !worldgen::worldgen_structure_footprint(x, z, 11)
+                && (x.div_euclid(32), z.div_euclid(32))
+                    != (road_x.div_euclid(32), road_z.div_euclid(32))
+        })
+        .expect("route has an unstreamed middle cell");
+    let (far_surface, _) = worldgen::worldgen_road_surface(far_x, far_z, 11);
+    let _ = w.debug_generate_chunk_at(far_x, far_surface, far_z);
+    let _ = w.debug_generate_chunk_at(far_x, far_y, far_z);
+    assert_eq!(
+        w.debug_block_at(far_x, far_y, far_z),
+        w.debug_road_material_at(far_x, far_z),
+        "a newly inserted route chunk receives the derived overlay"
+    );
+
+    w.debug_edit(road_x, road_y, road_z, world::BRICK);
+    w.debug_set_village_tier(ax, az, 3);
+    assert_eq!(
+        w.debug_block_at(road_x, road_y, road_z),
+        world::BRICK,
+        "a player-edited vertical chunk column wins over road refresh"
+    );
+}
+
+#[test]
+fn road_routes_rebuild_from_saved_tiers_without_a_road_file() {
+    let dir = std::env::temp_dir().join(format!("bf_road_save_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.to_str().unwrap().to_string();
+    let (ax, az, route_before, road_cell);
+
+    {
+        let (mut w, _) = village_world(42);
+        let (px, _, pz, _) = w.get_player();
+        let (_, sx, sz) = worldgen::worldgen_settlement_near(px as i32, pz as i32, 80, 42)
+            .expect("fresh HOME settlement");
+        ax = sx;
+        az = sz;
+        w.debug_set_village_tier(ax, az, 2);
+        route_before = w.debug_road_route(0).expect("tier creates route");
+        road_cell = (0..w.debug_road_sample_count(0))
+            .filter_map(|i| w.debug_road_sample(0, i))
+            .find(|&(x, z, _)| !worldgen::worldgen_structure_footprint(x, z, 42))
+            .expect("saved route exits the protected settlement footprint");
+        assert!(w.save(&path));
+    }
+
+    assert!(dir.join("villages.dat").exists());
+    assert!(!dir.join("roads.dat").exists(), "roads have no independent save file");
+
+    {
+        let content: &'static ContentRegistry = {
+            let mut c = ContentRegistry::new();
+            assert!(c.load(CONTENT));
+            Box::leak(Box::new(c))
+        };
+        let mut loaded = World::new(Some(TerrainGen::new()));
+        loaded.debug_set_sync_streaming(true);
+        loaded.set_allocator(allocator());
+        loaded.set_content(content);
+        assert!(loaded.load(&path));
+        assert_eq!(loaded.debug_village_tier(ax, az), 2);
+        assert_eq!(loaded.debug_road_route(0), Some(route_before));
+        let (x, z, y) = road_cell;
+        let (surface_y, _) = worldgen::worldgen_road_surface(x, z, 42);
+        let _ = loaded.debug_generate_chunk_at(x, surface_y, z);
+        let _ = loaded.debug_generate_chunk_at(x, y, z);
+        assert_eq!(
+            loaded.debug_block_at(x, y, z),
+            loaded.debug_road_material_at(x, z),
+            "seed plus loaded tier reconstructs the same visible road"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn village_wall_marks_protected_interior() {
     let (mut w, (ax, az)) = village_world(11);
     // Before any donation, nothing is protected.

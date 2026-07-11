@@ -406,6 +406,69 @@ pub fn worldgen_city_near(
     worldgen_settlement_near_kind(wx, wz, radius, seed, true)
 }
 
+/// Deterministic nearest settlement other than `(wx,wz)`, used by the derived
+/// road overlay. The expanding scan stops as soon as no farther cell can win; a
+/// half-torus cap is the finite fallback. Anchors return in the canonical frame.
+pub fn worldgen_settlement_partner(wx: i32, wz: i32, seed: u64) -> Option<(i32, i32, i32)> {
+    let base_x = struct_floordiv(wx, STRUCT_CELL_SIZE);
+    let base_z = struct_floordiv(wz, STRUCT_CELL_SIZE);
+    let source = (wrap_world(wx), wrap_world(wz));
+    let mut best: Option<(i32, i32, i32)> = None;
+    let mut best_key = (i64::MAX, i32::MAX, i32::MAX);
+
+    // Expand by cell rings and stop once the next ring cannot beat the current
+    // distance. The half-torus cap is a true finite fallback, so every developed
+    // settlement gets a partner whenever the world contains another settlement.
+    for ring in 0..=STRUCT_CELL_COUNT / 2 {
+        for dz in -ring..=ring {
+            for dx in -ring..=ring {
+                if dx.abs().max(dz.abs()) != ring {
+                    continue;
+                }
+                let scx = base_x + dx;
+                let scz = base_z + dz;
+                let sd = struct_for_cell(scx, scz, seed);
+                if !sd.present || !struct_is_settlement(sd.typ) {
+                    continue;
+                }
+                let candidate = (wrap_world(sd.anchor_wx), wrap_world(sd.anchor_wz));
+                if candidate == source {
+                    continue;
+                }
+                // struct_for_cell keeps geometry in the caller's unwrapped frame, so this
+                // is already the torus-short delta even when the scan crosses the seam.
+                let dx = (sd.anchor_wx - wx) as i64;
+                let dz = (sd.anchor_wz - wz) as i64;
+                let d2 = dx * dx + dz * dz;
+                let key = (d2, candidate.1, candidate.0);
+                if key < best_key {
+                    best_key = key;
+                    best = Some((sd.typ, candidate.0, candidate.1));
+                }
+            }
+        }
+        // A cell in the next ring is at least this far away along one axis,
+        // even allowing any anchor offset inside both 64-block cells.
+        let next_min = ((ring + 1) * STRUCT_CELL_SIZE - (STRUCT_CELL_SIZE - 1)).max(0) as i64;
+        if best.is_some() && next_min * next_min > best_key.0 {
+            break;
+        }
+    }
+    best
+}
+
+/// Surface block Y for a road, plus whether that cell needs a boardwalk. Roads
+/// replace the land surface; over ocean/river water they sit one block above the
+/// water surface so the path stays dry and walkable.
+pub fn worldgen_road_surface(wx: i32, wz: i32, seed: u64) -> (i32, bool) {
+    let h = surface_height(wx, wz, seed);
+    if h < SEA_LEVEL {
+        (SEA_LEVEL + 1, true)
+    } else {
+        (h, false)
+    }
+}
+
 /// Returns (type, anchor_x, anchor_z, anchor_y). type==0 (STRUCT_NONE) leaves the
 /// other fields unspecified (caller should ignore them), matching the C++ contract
 /// where the out-params are untouched.
