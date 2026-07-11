@@ -515,12 +515,18 @@ fn is_glass(id: BlockId) -> bool {
 // swings to the side. Drawn by emit_door, never cube-meshed.
 const DOOR_CLOSED: BlockId = 33;
 const DOOR_OPEN: BlockId = 50;
+const WOOD_BEAM: BlockId = 51;
 const BED: BlockId = 52;
 const CHOPPING_BLOCK: BlockId = 56;
 const MISSING_BELOW_OCCLUDER: BlockId = 1;
 #[inline]
 fn is_door(id: BlockId) -> bool {
     id == DOOR_CLOSED || id == DOOR_OPEN
+}
+
+#[inline]
+fn is_wood_beam(id: BlockId) -> bool {
+    id == WOOD_BEAM
 }
 
 #[inline]
@@ -545,15 +551,16 @@ fn is_snow_overlay(id: BlockId) -> bool {
     id == SNOW_LAYER || id == TRODDEN_SNOW
 }
 
-// A cell is OPAQUE if it is non-air, not water (9), not glass, not custom furniture,
-// not a snow overlay, not a prop. Beds and chopping blocks are shaped meshes, so
-// neighbouring cubes keep their faces instead of treating the whole cell as filled.
+// A cell is OPAQUE if it is non-air, not water (9), not glass, not custom furniture
+// or timber trim, not a snow overlay, not a prop. Shaped meshes leave space inside
+// their voxel, so neighbouring cubes keep their faces instead of treating it as full.
 #[inline]
 fn is_opaque(id: BlockId) -> bool {
     id != 0
         && id != 9
         && !is_glass(id)
         && !is_door(id)
+        && !is_wood_beam(id)
         && !is_bed(id)
         && !is_chopping_block(id)
         && !is_snow_overlay(id)
@@ -566,14 +573,15 @@ fn is_waterlogged(id: BlockId) -> bool {
     id == 43 || id == 46
 }
 
-// Is this block id an AO-occluder? Air(0), water(9), glass, doors, shaped furniture,
-// snow overlay, and props do not occlude.
+// Is this block id an AO-occluder? Air(0), water(9), glass, doors, shaped timber /
+// furniture, snow overlay, and props do not occlude.
 #[inline]
 fn is_occluder(id: BlockId) -> bool {
     id != 0
         && id != 9
         && !is_glass(id)
         && !is_door(id)
+        && !is_wood_beam(id)
         && !is_bed(id)
         && !is_chopping_block(id)
         && !is_snow_overlay(id)
@@ -670,6 +678,41 @@ fn sample_block_known<S: ChunkStore>(
 enum BedAxis {
     X,
     Z,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BeamAxis {
+    X,
+    Y,
+    Z,
+}
+
+// Beam blocks carry no orientation state. A run supplies it: count the two cardinal
+// neighbours on each axis and point the timber along the strongest run, including
+// across resident chunk seams. Horizontal wins a one-neighbour tie at a post/lintel
+// joint; an isolated beam defaults upright, which is the useful structural fallback.
+fn wood_beam_axis<S: ChunkStore>(
+    current_chunk: Option<&S::Chunk>,
+    cc: ChunkCoord,
+    store: &S,
+    x: i32,
+    y: i32,
+    z: i32,
+) -> BeamAxis {
+    let score_x = is_wood_beam(sample_block(current_chunk, cc, store, x - 1, y, z)) as u8
+        + is_wood_beam(sample_block(current_chunk, cc, store, x + 1, y, z)) as u8;
+    let score_y = is_wood_beam(sample_block(current_chunk, cc, store, x, y - 1, z)) as u8
+        + is_wood_beam(sample_block(current_chunk, cc, store, x, y + 1, z)) as u8;
+    let score_z = is_wood_beam(sample_block(current_chunk, cc, store, x, y, z - 1)) as u8
+        + is_wood_beam(sample_block(current_chunk, cc, store, x, y, z + 1)) as u8;
+
+    if score_x > 0 && score_x >= score_y && score_x >= score_z {
+        BeamAxis::X
+    } else if score_z > 0 && score_z >= score_y {
+        BeamAxis::Z
+    } else {
+        BeamAxis::Y
+    }
 }
 
 // A generated bed is two identical BED cells, so its cardinal neighbour supplies the
@@ -1103,6 +1146,32 @@ fn emit_cuboid_16(
         &vert(xlo, ylo, zhi, BF_NY_NEG, 0, 1),
     );
     true
+}
+
+// One persistent structural timber. It spans its owning voxel along the inferred run
+// axis, but the other two axes are inset to a sturdy 10/16 cross-section. The visible
+// material is the real oak-log material (side grain plus end grain), never id 51's old
+// generic full cube. Adjacent beam cells meet exactly at their shared voxel boundary.
+fn emit_wood_beam(
+    bx: i32,
+    by: i32,
+    bz: i32,
+    axis: BeamAxis,
+    sky: u8,
+    blk: u8,
+    buf: &mut MeshBuffers,
+) -> bool {
+    const INSET: u32 = 3;
+    const OUTSET: u32 = 13;
+    const OAK_LOG: BlockId = 21;
+    let (xlo, xhi, ylo, yhi, zlo, zhi) = match axis {
+        BeamAxis::X => (0, 16, INSET, OUTSET, INSET, OUTSET),
+        BeamAxis::Y => (INSET, OUTSET, 0, 16, INSET, OUTSET),
+        BeamAxis::Z => (INSET, OUTSET, INSET, OUTSET, 0, 16),
+    };
+    emit_cuboid_16(
+        bx, by, bz, xlo, xhi, ylo, yhi, zlo, zhi, OAK_LOG, sky, blk, buf,
+    )
 }
 
 // A finished bed is one coherent piece of furniture: oak rails/legs/headboard,
@@ -1927,6 +1996,19 @@ impl GreedyMesher {
                 for z in 0..KCHUNK_DIM {
                     let here = chunk_get(chunk_opt, x, y, z);
 
+                    // #246 structural beams: persistent shaped chunk geometry. Axis
+                    // comes from neighbouring beam cells, not extra block state.
+                    if is_wood_beam(here) {
+                        let axis = wood_beam_axis(chunk_opt, c, store, x, y, z);
+                        let sky = chunk.sky_light(x as usize, y as usize, z as usize);
+                        let blk = chunk.block_light(x as usize, y as usize, z as usize);
+                        if !emit_wood_beam(x, y, z, axis, sky, blk, &mut buf) {
+                            buf.full = true;
+                            return finalize(buf, false);
+                        }
+                        continue;
+                    }
+
                     // #245 chopping block: persistent chunk geometry, not a distance-
                     // culled prop and never the generic id-56 cube.
                     if is_chopping_block(here) {
@@ -2249,6 +2331,83 @@ mod tests {
             .into_iter()
             .filter(|&(_, mat)| mat == 4 || mat == 28 || mat == BED)
             .collect()
+    }
+
+    #[test]
+    fn wood_beam_is_persistent_inset_oak_along_its_neighbour_run() {
+        assert!(!is_opaque(WOOD_BEAM));
+        assert!(!is_occluder(WOOD_BEAM));
+        assert!(
+            !is_prop(WOOD_BEAM),
+            "structural timber is not distance-culled"
+        );
+
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        for x in 7..=9 {
+            ch.set(x, 8, 8, WOOD_BEAM);
+        }
+        store.chunks.insert(ChunkCoord::default(), ch);
+
+        let (res, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+        let verts = decode_position_and_mat(&vtx);
+        assert_eq!(
+            res.index_count,
+            3 * 36,
+            "each beam cell owns one closed cuboid"
+        );
+        assert_eq!(verts.len(), 3 * 24);
+        assert!(
+            verts.iter().all(|(_, mat)| *mat == 21),
+            "beam geometry uses real oak-log material, never generic id 51"
+        );
+        let bounds = |axis: usize| {
+            verts
+                .iter()
+                .map(|(p, _)| p[axis])
+                .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)))
+        };
+        let (xmin, xmax) = bounds(0);
+        let (ymin, ymax) = bounds(1);
+        let (zmin, zmax) = bounds(2);
+        assert!((xmin - 7.0).abs() < 1e-4 && (xmax - 10.0).abs() < 1e-4);
+        assert!((ymin - 8.1875).abs() < 1e-4 && (ymax - 8.8125).abs() < 1e-4);
+        assert!((zmin - 8.1875).abs() < 1e-4 && (zmax - 8.8125).abs() < 1e-4);
+    }
+
+    #[test]
+    fn wood_beam_axis_and_ownership_cross_an_x_chunk_seam() {
+        let left_cc = ChunkCoord::default();
+        let right_cc = ChunkCoord { x: 1, y: 0, z: 0 };
+        let mut store = TestStore::new();
+        let mut left = TestChunk::new();
+        let mut right = TestChunk::new();
+        left.set(15, 8, 8, WOOD_BEAM);
+        right.set(0, 8, 8, WOOD_BEAM);
+        store.chunks.insert(left_cc, left);
+        store.chunks.insert(right_cc, right);
+
+        let (left_res, left_vtx, _) = GreedyMesher::new().mesh(left_cc, &store, false);
+        let (right_res, right_vtx, _) = GreedyMesher::new().mesh(right_cc, &store, false);
+        assert_eq!(left_res.index_count, 36);
+        assert_eq!(right_res.index_count, 36);
+
+        let left_verts = decode_position_and_mat(&left_vtx);
+        let right_verts = decode_position_and_mat(&right_vtx);
+        let left_x = left_verts
+            .iter()
+            .map(|(p, _)| p[0])
+            .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        let right_x = right_verts
+            .iter()
+            .map(|(p, _)| p[0])
+            .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        assert_eq!(left_x, (15.0, 16.0));
+        assert_eq!(right_x, (0.0, 1.0));
+        assert!(left_verts
+            .iter()
+            .chain(&right_verts)
+            .all(|(_, mat)| *mat == 21));
     }
 
     #[test]

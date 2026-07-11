@@ -1672,6 +1672,17 @@ fn villager_home_is_a_real_building() {
             s.window_blocks
         );
         assert!(
+            s.beam_blocks >= 20,
+            "seed {seed}: home should have a complete timber frame, got {} beam cells",
+            s.beam_blocks
+        );
+        assert!(
+            s.roof_levels >= 4 && s.roof_overhang,
+            "seed {seed}: home should have a pitched roof with eaves (levels={}, overhang={})",
+            s.roof_levels,
+            s.roof_overhang
+        );
+        assert!(
             s.interior_air >= 9,
             "seed {seed}: home interior cavity {} is smaller than a 3x3 standable space",
             s.interior_air

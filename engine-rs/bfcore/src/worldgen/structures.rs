@@ -490,6 +490,58 @@ fn struct_place_marker<C: Chunk>(ax: i32, az: i32, seed: u64, chunk: &mut C, wx_
     struct_set(chunk, ax, h - 1, az, wx_min, wy_min, wz_min, MARKER_BLOCK);
 }
 
+// Stepped pitched roof shared by cabins and villager homes. A one-block eave wraps
+// every side; full wall material closes the two gable ends below the roof skin.
+#[allow(clippy::too_many_arguments)]
+fn place_pitched_roof<C: Chunk>(
+    ax: i32,
+    az: i32,
+    rx: i32,
+    rz: i32,
+    wall_top: i32,
+    ridge_along_x: bool,
+    wall: BlockId,
+    roof: BlockId,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+) {
+    if ridge_along_x {
+        for dz in -(rz + 1)..=(rz + 1) {
+            let ridge_step = rz + 1 - dz.abs();
+            let roof_y = wall_top + 1 + ridge_step;
+            for dx in -(rx + 1)..=(rx + 1) {
+                struct_set(chunk, ax + dx, roof_y, az + dz, wx_min, wy_min, wz_min, roof);
+            }
+        }
+        for dz in -rz..=rz {
+            let ridge_step = rz + 1 - dz.abs();
+            for dx in [-rx, rx] {
+                for wy in (wall_top + 1)..(wall_top + 1 + ridge_step) {
+                    struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, wall);
+                }
+            }
+        }
+    } else {
+        for dx in -(rx + 1)..=(rx + 1) {
+            let ridge_step = rx + 1 - dx.abs();
+            let roof_y = wall_top + 1 + ridge_step;
+            for dz in -(rz + 1)..=(rz + 1) {
+                struct_set(chunk, ax + dx, roof_y, az + dz, wx_min, wy_min, wz_min, roof);
+            }
+        }
+        for dx in -rx..=rx {
+            let ridge_step = rx + 1 - dx.abs();
+            for dz in [-rz, rz] {
+                for wy in (wall_top + 1)..(wall_top + 1 + ridge_step) {
+                    struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, wall);
+                }
+            }
+        }
+    }
+}
+
 fn place_cabin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
     let hx = if (h >> 2) & 1 != 0 { 3 } else { 2 };
     let hz = 2;
@@ -566,23 +618,9 @@ fn place_cabin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_
     }
 
     let roof = if cobble { STONE_BRICK } else { BIRCH_PLANKS };
-    for dz in -(hz + 1)..=(hz + 1) {
-        let adz = if dz < 0 { -dz } else { dz };
-        let ridge_step = hz + 1 - adz;
-        let roof_y = wall_top + 1 + ridge_step;
-        for dx in -(hx + 1)..=(hx + 1) {
-            struct_set(chunk, ax + dx, roof_y, az + dz, wx_min, wy_min, wz_min, roof);
-        }
-    }
-    for dz in -hz..=hz {
-        let adz = if dz < 0 { -dz } else { dz };
-        let ridge_step = hz + 1 - adz;
-        for dx in [-hx, hx] {
-            for wy in (wall_top + 1)..(wall_top + 1 + ridge_step) {
-                struct_set(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min, wall);
-            }
-        }
-    }
+    place_pitched_roof(
+        ax, az, hx, hz, wall_top, true, wall, roof, chunk, wx_min, wy_min, wz_min,
+    );
 
     // Door torch: mount it on the interior face of the door wall, just beside the
     // doorway. The door column is now a solid lintel above floor + 2, so we keep the
@@ -858,16 +896,16 @@ fn place_cairn<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_
 // A villager home: a real little building with an interior you can stand in, not
 // the old empty 3x3 box. The footprint is at least 5x5 (half extent 2) and may be
 // 5x6 or 6x6 for variety, which always leaves an interior cavity of at least 3x3 of
-// air. Each home has a 1 wide door, at least two windows, a flat roof, and basic
-// furniture (a bed plus a light), with the centre floor left open for future chests
-// / crafting tables.
+// air. Each home has a 1 wide door, at least two windows, shaped timber trim, a
+// deterministic pitched roof with eaves, and basic furniture (a bed plus a light),
+// with the centre floor left open for future chests / crafting tables.
 //
 // All blocks go through struct_set / struct_fill_col so a home spanning a chunk
 // border stamps identically into every chunk it touches (seam safe), and every
 // column's foundation fills down to its own terrain so the home sits flush on a
 // slope (no floaters). Everything is derived from (cx, cz, hh) so generation is
-// deterministic per cell. Max XZ half extent is 3 (rx / rz <= 3), well within
-// STRUCT_MAX_REACH_XZ.
+// deterministic per cell. Roof eaves reach at most 4 blocks from the anchor, matching
+// SETTLEMENT_BUILDING_REACH and staying well within STRUCT_MAX_REACH_XZ.
 fn place_hut<C: Chunk>(cx: i32, cz: i32, hh: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
     // Footprint half extents: 2 (5 wide) or 3 (6 wide) on each axis, varied per home.
     let rx = 2 + ((hh >> 5) & 1) as i32; // 2 or 3 -> 5 or 6 wide in X
@@ -958,12 +996,92 @@ fn place_hut<C: Chunk>(cx: i32, cz: i32, hh: u64, seed: u64, chunk: &mut C, wx_m
         }
     }
 
-    // Flat roof one block above the wall top covering the whole footprint.
-    for dz in -rz..=rz {
-        for dx in -rx..=rx {
-            struct_set(chunk, cx + dx, wall_top + 1, cz + dz, wx_min, wy_min, wz_min, roof);
+    // Finished timber frame. Corner posts run the full wall height. The doorway gets
+    // two uprights plus a three-cell lintel; every non-door wall keeps its centre glass
+    // window and gains an upright on each side. These blocks replace only wall cells,
+    // never the door, glass, floor, or interior.
+    for &(dx, dz) in &[(-rx, -rz), (rx, -rz), (-rx, rz), (rx, rz)] {
+        for wy in (floor_h + 1)..=wall_top {
+            struct_set(chunk, cx + dx, wy, cz + dz, wx_min, wy_min, wz_min, WOOD_BEAM);
         }
     }
+
+    match dir {
+        0 | 1 => {
+            let dx = if dir == 0 { rx } else { -rx };
+            for dz in [-1, 1] {
+                for wy in (floor_h + 1)..wall_top {
+                    struct_set(chunk, cx + dx, wy, cz + dz, wx_min, wy_min, wz_min, WOOD_BEAM);
+                }
+            }
+            for dz in -1..=1 {
+                struct_set(chunk, cx + dx, wall_top, cz + dz, wx_min, wy_min, wz_min, WOOD_BEAM);
+            }
+        }
+        _ => {
+            let dz = if dir == 2 { rz } else { -rz };
+            for dx in [-1, 1] {
+                for wy in (floor_h + 1)..wall_top {
+                    struct_set(chunk, cx + dx, wy, cz + dz, wx_min, wy_min, wz_min, WOOD_BEAM);
+                }
+            }
+            for dx in -1..=1 {
+                struct_set(chunk, cx + dx, wall_top, cz + dz, wx_min, wy_min, wz_min, WOOD_BEAM);
+            }
+        }
+    }
+
+    for &(dx, wall_dir) in &[(-rx, 1), (rx, 0)] {
+        if dir == wall_dir {
+            continue;
+        }
+        for dz in [-1, 1] {
+            struct_set(
+                chunk,
+                cx + dx,
+                floor_h + 2,
+                cz + dz,
+                wx_min,
+                wy_min,
+                wz_min,
+                WOOD_BEAM,
+            );
+        }
+    }
+    for &(dz, wall_dir) in &[(-rz, 3), (rz, 2)] {
+        if dir == wall_dir {
+            continue;
+        }
+        for dx in [-1, 1] {
+            struct_set(
+                chunk,
+                cx + dx,
+                floor_h + 2,
+                cz + dz,
+                wx_min,
+                wy_min,
+                wz_min,
+                WOOD_BEAM,
+            );
+        }
+    }
+
+    // Ridge follows the longer wall; square homes use one stable hash bit for variety.
+    let ridge_along_x = if rx == rz { (hh >> 8) & 1 == 0 } else { rx > rz };
+    place_pitched_roof(
+        cx,
+        cz,
+        rx,
+        rz,
+        wall_top,
+        ridge_along_x,
+        wall,
+        roof,
+        chunk,
+        wx_min,
+        wy_min,
+        wz_min,
+    );
 
     // ---- Interior furnishing -------------------------------------------------
     // Place a bed in a back corner (the corner diagonally opposite the door) so it

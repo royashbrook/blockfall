@@ -461,6 +461,13 @@ pub struct VillagerHomeScan {
     /// Footprint width and depth in blocks (the wall-to-wall extent in X and Z).
     pub width: i32,
     pub depth: i32,
+    /// Number of shaped timber cells used for posts and door/window trim.
+    pub beam_blocks: i32,
+    /// Number of occupied Y levels above the wall top. A pitched roof has several;
+    /// the old flat lid had one.
+    pub roof_levels: i32,
+    /// True when the roof reaches exactly one block beyond every wall edge.
+    pub roof_overhang: bool,
     /// Number of door blocks in the walls (a 1 wide door is 2 tall = 2 blocks).
     pub door_blocks: i32,
     /// Number of window (glass pane) blocks in the walls.
@@ -507,6 +514,10 @@ pub fn worldgen_villager_home_scan(seed: u64) -> VillagerHomeScan {
     }
 
     let hh = fmix64((seed ^ 0x484F4D4501u64).wrapping_mul(0x2545F4914F6CDD1D));
+    let wall_rx = 2 + ((hh >> 5) & 1) as i32;
+    let wall_rz = 2 + ((hh >> 6) & 1) as i32;
+    let (wall_min_x, wall_max_x) = (ax - wall_rx, ax + wall_rx);
+    let (wall_min_z, wall_max_z) = (az - wall_rz, az + wall_rz);
 
     // Unbounded grid that satisfies Chunk for one chunk window at a time; replay the
     // stamp over every window the home reaches so we capture the whole footprint.
@@ -559,31 +570,38 @@ pub fn worldgen_villager_home_scan(seed: u64) -> VillagerHomeScan {
     }
 
     // Footprint extent.
-    let mut min_x = i32::MAX;
-    let mut max_x = i32::MIN;
-    let mut min_z = i32::MAX;
-    let mut max_z = i32::MIN;
+    let mut occupied_min_x = i32::MAX;
+    let mut occupied_max_x = i32::MIN;
+    let mut occupied_min_z = i32::MAX;
+    let mut occupied_max_z = i32::MIN;
     let mut door_blocks = 0;
     let mut window_blocks = 0;
     let mut bed_blocks = 0;
+    let mut beam_blocks = 0;
     for (&(wx, _wy, wz), &b) in cells.iter() {
         if b == AIR {
             continue;
         }
-        min_x = min_x.min(wx);
-        max_x = max_x.max(wx);
-        min_z = min_z.min(wz);
-        max_z = max_z.max(wz);
+        occupied_min_x = occupied_min_x.min(wx);
+        occupied_max_x = occupied_max_x.max(wx);
+        occupied_min_z = occupied_min_z.min(wz);
+        occupied_max_z = occupied_max_z.max(wz);
         if b == OAK_DOOR {
             door_blocks += 1;
         } else if b == GLASS_PANE {
             window_blocks += 1;
         } else if b == BED {
             bed_blocks += 1;
+        } else if b == WOOD_BEAM {
+            beam_blocks += 1;
         }
     }
-    let width = if max_x >= min_x { max_x - min_x + 1 } else { 0 };
-    let depth = if max_z >= min_z { max_z - min_z + 1 } else { 0 };
+    let width = wall_max_x - wall_min_x + 1;
+    let depth = wall_max_z - wall_min_z + 1;
+    let roof_overhang = occupied_min_x == wall_min_x - 1
+        && occupied_max_x == wall_max_x + 1
+        && occupied_min_z == wall_min_z - 1
+        && occupied_max_z == wall_max_z + 1;
 
     // Interior cavity (standable space): the cells one block above the floor, strictly
     // inside the wall ring (min/max bounds). The floor surface level is read off the
@@ -600,11 +618,17 @@ pub fn worldgen_villager_home_scan(seed: u64) -> VillagerHomeScan {
             door_low_y = wy;
         }
     }
+    let wall_top = door_low_y.saturating_add(2);
+    let roof_levels = cells
+        .iter()
+        .filter_map(|(&(_wx, wy, _wz), &b)| (b != AIR && wy > wall_top).then_some(wy))
+        .collect::<std::collections::HashSet<_>>()
+        .len() as i32;
     let mut interior_air = 0;
     if door_low_y != i32::MAX {
         let floor_y = door_low_y; // standable layer = door bottom level
-        for wz in (min_z + 1)..max_z {
-            for wx in (min_x + 1)..max_x {
+        for wz in (wall_min_z + 1)..wall_max_z {
+            for wx in (wall_min_x + 1)..wall_max_x {
                 let here = *cells.get(&(wx, floor_y, wz)).unwrap_or(&AIR);
                 // Open interior: air or furniture (bed). Anything else here would be a
                 // wall block, which should not appear in the interior.
@@ -644,6 +668,9 @@ pub fn worldgen_villager_home_scan(seed: u64) -> VillagerHomeScan {
     VillagerHomeScan {
         width,
         depth,
+        beam_blocks,
+        roof_levels,
+        roof_overhang,
         door_blocks,
         window_blocks,
         bed_blocks,
@@ -651,4 +678,3 @@ pub fn worldgen_villager_home_scan(seed: u64) -> VillagerHomeScan {
         on_ground,
     }
 }
-

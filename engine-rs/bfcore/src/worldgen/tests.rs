@@ -1081,14 +1081,48 @@ mod worldgen_tests {
             assert!(s.width >= 5 && s.depth >= 5, "seed {seed}: {}x{} < 5x5", s.width, s.depth);
             assert_eq!(s.door_blocks, 2, "seed {seed}: door opening missing");
             assert!(s.window_blocks >= 2, "seed {seed}: too few windows ({})", s.window_blocks);
+            assert!(
+                s.beam_blocks >= 20,
+                "seed {seed}: timber frame is incomplete ({})",
+                s.beam_blocks
+            );
+            assert!(
+                s.roof_levels >= 4,
+                "seed {seed}: roof is still flat ({})",
+                s.roof_levels
+            );
+            assert!(
+                s.roof_overhang,
+                "seed {seed}: pitched roof is missing its one-block eaves"
+            );
             assert!(s.interior_air >= 9, "seed {seed}: interior cavity {} < 3x3", s.interior_air);
             assert!(s.bed_blocks >= 1, "seed {seed}: no bed");
             assert!(s.on_ground, "seed {seed}: home floats");
             // Determinism: a second scan must be identical.
             let s2 = worldgen_villager_home_scan(seed);
             assert_eq!(
-                (s.width, s.depth, s.door_blocks, s.window_blocks, s.bed_blocks, s.interior_air),
-                (s2.width, s2.depth, s2.door_blocks, s2.window_blocks, s2.bed_blocks, s2.interior_air),
+                (
+                    s.width,
+                    s.depth,
+                    s.beam_blocks,
+                    s.roof_levels,
+                    s.roof_overhang,
+                    s.door_blocks,
+                    s.window_blocks,
+                    s.bed_blocks,
+                    s.interior_air
+                ),
+                (
+                    s2.width,
+                    s2.depth,
+                    s2.beam_blocks,
+                    s2.roof_levels,
+                    s2.roof_overhang,
+                    s2.door_blocks,
+                    s2.window_blocks,
+                    s2.bed_blocks,
+                    s2.interior_air
+                ),
                 "seed {seed}: home scan not deterministic"
             );
         }

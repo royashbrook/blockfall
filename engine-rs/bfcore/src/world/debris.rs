@@ -94,7 +94,7 @@ impl<'c> World<'c> {
             18 => V3::new(0.78, 0.46, 0.26),      // copper ore
             19 => V3::new(0.62, 0.60, 0.55),      // iron ore
             20 => V3::new(0.55, 0.40, 0.82),      // crystal ore
-            21 => V3::new(0.47, 0.31, 0.16),      // oak log
+            21 | 51 => V3::new(0.47, 0.31, 0.16), // oak log / shaped timber
             22 => V3::new(0.83, 0.80, 0.68),      // birch log
             23 => V3::new(0.84, 0.74, 0.52),      // birch planks
             24 => V3::new(0.78, 0.36, 0.26),      // clay brick
