@@ -301,18 +301,23 @@ fn teleport_lands_on_surface_never_in_solid() {
     assert!(!w.map_teleport(201), "missing totem index refused");
 }
 
-// #190: a fresh world spawns HOME beside a settlement, so the game starts in a town.
+// #248: a fresh world spawns HOME beside a city, not the first smaller village.
 #[test]
-fn fresh_spawn_is_at_a_settlement() {
+fn fresh_spawn_is_at_a_city() {
     let mut content = ContentRegistry::new();
     content.load(CONTENT);
     for seed in [11u64, 42, 99, 2026] {
         let w = make_world(&content, seed);
         let (px, _py, pz, _) = w.get_player();
-        let near = bfcore::worldgen::worldgen_settlement_near(px as i32, pz as i32, 48, seed);
+        let near = bfcore::worldgen::worldgen_city_near(px as i32, pz as i32, 48, seed);
         assert!(
             near.is_some(),
-            "seed {seed}: spawn ({px:.0},{pz:.0}) not within 48 blocks of a settlement"
+            "seed {seed}: spawn ({px:.0},{pz:.0}) not within 48 blocks of a city"
         );
+        assert!(
+            bfcore::worldgen::worldgen_surface_height(px as i32, pz as i32, seed) >= 7,
+            "seed {seed}: city HOME is not on dry land"
+        );
+        assert!(!w.debug_player_collides(), "seed {seed}: city spawn is clear");
     }
 }

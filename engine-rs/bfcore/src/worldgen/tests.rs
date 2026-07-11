@@ -992,6 +992,147 @@ mod worldgen_tests {
         }
     }
 
+    fn stamp_city_core_order(
+        ax: i32,
+        az: i32,
+        h: u64,
+        seed: u64,
+        reverse: bool,
+    ) -> std::collections::HashMap<(i32, i32, i32), BlockId> {
+        let reach = CITY_WALL_R + 2; // tower roof eaves
+        let base = struct_surface(ax, az, seed);
+        let mut windows = Vec::new();
+        for cy in seam_floordiv_pub(base - 16, K_CHUNK_DIM)
+            ..=seam_floordiv_pub(base + 16, K_CHUNK_DIM)
+        {
+            for cz in seam_floordiv_pub(az - reach, K_CHUNK_DIM)
+                ..=seam_floordiv_pub(az + reach, K_CHUNK_DIM)
+            {
+                for cx in seam_floordiv_pub(ax - reach, K_CHUNK_DIM)
+                    ..=seam_floordiv_pub(ax + reach, K_CHUNK_DIM)
+                {
+                    windows.push((cx, cy, cz));
+                }
+            }
+        }
+        if reverse {
+            windows.reverse();
+        }
+
+        let mut cells = std::collections::HashMap::new();
+        for (cx, cy, cz) in windows {
+            let (wx_min, wy_min, wz_min) =
+                (cx * K_CHUNK_DIM, cy * K_CHUNK_DIM, cz * K_CHUNK_DIM);
+            let mut g = GridChunk {
+                wx_min,
+                wy_min,
+                wz_min,
+                cells: std::mem::take(&mut cells),
+            };
+            place_city_core(ax, az, h, seed, &mut g, wx_min, wy_min, wz_min);
+            cells = g.cells;
+        }
+        cells
+    }
+
+    #[test]
+    fn city_core_is_finished_clear_and_chunk_order_safe() {
+        let (ax, az) = (15, -17); // every edge/tower crosses a chunk boundary
+        for seed in [11u64, 42, 99] {
+            let h = fmix64(seed ^ 0xC17A248);
+            let cells = stamp_city_core_order(ax, az, h, seed, false);
+            assert_eq!(
+                cells,
+                stamp_city_core_order(ax, az, h, seed, true),
+                "seed {seed}: city core changed with chunk generation order"
+            );
+
+            let at = |wx: i32, wy: i32, wz: i32| {
+                *cells.get(&(wx, wy, wz)).unwrap_or(&AIR)
+            };
+            let base = struct_surface(ax, az, seed);
+
+            // HOME is ax+2,az+2. The civic landmark stays central and leaves a
+            // full two-block player column clear at the promised spawn cell.
+            let spawn_y = struct_surface(ax + 2, az + 2, seed);
+            assert_eq!(at(ax + 2, spawn_y + 1, az + 2), AIR);
+            assert_eq!(at(ax + 2, spawn_y + 2, az + 2), AIR);
+            for wy in (base + 1)..=(base + 5) {
+                assert_eq!(at(ax, wy, az), WOOD_BEAM, "seed {seed}: civic mast gap");
+            }
+            for (dx, dz) in [(-2, 0), (2, 0), (0, -2), (0, 2)] {
+                assert_eq!(
+                    at(ax + dx, base + 5, az + dz),
+                    CRYSTAL_LAMP,
+                    "seed {seed}: civic lantern missing"
+                );
+            }
+
+            // Every cardinal entrance is three cells wide and at least three
+            // blocks clear; roads can pass under the shaped timber lintel.
+            for side in [-1, 1] {
+                let gate_x = ax + side * CITY_WALL_R;
+                for dz in -1..=1 {
+                    let floor = struct_surface(gate_x, az + dz, seed);
+                    for wy in (floor + 1)..=(floor + 3) {
+                        assert_eq!(at(gate_x, wy, az + dz), AIR, "seed {seed}: X gate blocked");
+                    }
+                }
+                let gate_z = az + side * CITY_WALL_R;
+                for dx in -1..=1 {
+                    let floor = struct_surface(ax + dx, gate_z, seed);
+                    for wy in (floor + 1)..=(floor + 3) {
+                        assert_eq!(at(ax + dx, wy, gate_z), AIR, "seed {seed}: Z gate blocked");
+                    }
+                }
+            }
+
+            // Non-gate/non-tower perimeter cells are continuous, while each
+            // corner tower has an open timber upper stage and a pitched roof.
+            for d in -CITY_WALL_R..=CITY_WALL_R {
+                if d.abs() <= 2 || d.abs() >= CITY_WALL_R - 1 {
+                    continue;
+                }
+                for (wx, wz) in [
+                    (ax - CITY_WALL_R, az + d),
+                    (ax + CITY_WALL_R, az + d),
+                    (ax + d, az - CITY_WALL_R),
+                    (ax + d, az + CITY_WALL_R),
+                ] {
+                    let floor = struct_surface(wx, wz, seed);
+                    assert!(
+                        ((floor + 1)..=(floor + 3)).any(|wy| at(wx, wy, wz) != AIR),
+                        "seed {seed}: perimeter gap at {wx},{wz}"
+                    );
+                }
+            }
+            for (sx, sz) in [(-1, -1), (1, -1), (-1, 1), (1, 1)] {
+                let cx = ax + sx * CITY_WALL_R;
+                let cz = az + sz * CITY_WALL_R;
+                let beams = cells
+                    .iter()
+                    .filter(|&(&(wx, _wy, wz), &b)| {
+                        b == WOOD_BEAM && (wx - cx).abs() <= 2 && (wz - cz).abs() <= 2
+                    })
+                    .count();
+                let roof = cells
+                    .iter()
+                    .filter(|&(&(wx, _wy, wz), &b)| {
+                        b == BIRCH_PLANKS && (wx - cx).abs() <= 2 && (wz - cz).abs() <= 2
+                    })
+                    .count();
+                assert!(beams >= 18, "seed {seed}: corner tower lacks timber detail ({beams})");
+                assert_eq!(roof, 25, "seed {seed}: corner tower roof is incomplete");
+            }
+
+            let texture_cells = cells
+                .values()
+                .filter(|&&b| b == MOSSY_STONE || b == COBBLESTONE)
+                .count();
+            assert!(texture_cells >= 8, "seed {seed}: city stone has no texture variation");
+        }
+    }
+
     // Stamp one structure into a global cell map by sweeping every chunk window
     // (x,z and the full vertical span) that its reach can touch.
     fn stamp_structure(sd: &StructDesc, seed: u64) -> std::collections::HashMap<(i32, i32, i32), BlockId> {

@@ -54,8 +54,11 @@ const VILLAGE_LAYOUT_REACH: i32 =
     VILLAGE_SITE_MIN_RADIUS + VILLAGE_SITE_RADIUS_SPAN + SETTLEMENT_SITE_JITTER + SETTLEMENT_BUILDING_REACH;
 const CITY_MIN_BUILDINGS: usize = 12;
 const CITY_MAX_BUILDINGS: usize = SETTLEMENT_MAX_SITES;
-const CITY_SITE_MIN_RADIUS: i32 = 16;
-const CITY_SITE_RADIUS_SPAN: i32 = 28;
+// #248: leave a deliberate civic core between the plaza and the first buildings.
+// The total outer reach stays unchanged (28 + 16 == the old 16 + 28), so chunk
+// stamping cost and STRUCT_MAX_REACH_XZ do not grow.
+const CITY_SITE_MIN_RADIUS: i32 = 28;
+const CITY_SITE_RADIUS_SPAN: i32 = 16;
 const CITY_LAYOUT_REACH: i32 =
     CITY_SITE_MIN_RADIUS + CITY_SITE_RADIUS_SPAN + SETTLEMENT_SITE_JITTER + SETTLEMENT_BUILDING_REACH;
 
@@ -1647,17 +1650,316 @@ fn place_ruin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
 
-// A city: a larger procedural settlement around a paved plaza. Buildings are chosen
-// from the same small kit as villages, but with more sites and a larger radius so two
-// cities do not read as the same fixed ring.
+const CITY_WALL_R: i32 = 9;
+
+#[inline]
+fn city_wall_material(h: u64, dx: i32, dz: i32) -> BlockId {
+    let salt = (dx as u32 as u64) | ((dz as u32 as u64) << 32);
+    match fmix64(h ^ salt) % 7 {
+        0 => MOSSY_STONE,
+        1 => COBBLESTONE,
+        _ => STONE_BRICK,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn place_city_gate_x<C: Chunk>(
+    ax: i32,
+    az: i32,
+    side: i32,
+    seed: u64,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+) {
+    let gate_x = ax + side * CITY_WALL_R;
+    let lintel_y = (-2..=2)
+        .map(|dz| struct_surface(gate_x, az + dz, seed))
+        .max()
+        .unwrap_or(SEA_LEVEL + 1)
+        + 4;
+    for dz in [-2, 2] {
+        let wz = az + dz;
+        let floor = struct_surface(gate_x, wz, seed);
+        for wy in (floor + 1)..=lintel_y {
+            struct_set(chunk, gate_x, wy, wz, wx_min, wy_min, wz_min, WOOD_BEAM);
+        }
+        struct_set(
+            chunk,
+            gate_x,
+            lintel_y + 1,
+            wz,
+            wx_min,
+            wy_min,
+            wz_min,
+            CRYSTAL_LAMP,
+        );
+    }
+    for dz in -2..=2 {
+        struct_set(
+            chunk,
+            gate_x,
+            lintel_y,
+            az + dz,
+            wx_min,
+            wy_min,
+            wz_min,
+            WOOD_BEAM,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn place_city_gate_z<C: Chunk>(
+    ax: i32,
+    az: i32,
+    side: i32,
+    seed: u64,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+) {
+    let gate_z = az + side * CITY_WALL_R;
+    let lintel_y = (-2..=2)
+        .map(|dx| struct_surface(ax + dx, gate_z, seed))
+        .max()
+        .unwrap_or(SEA_LEVEL + 1)
+        + 4;
+    for dx in [-2, 2] {
+        let wx = ax + dx;
+        let floor = struct_surface(wx, gate_z, seed);
+        for wy in (floor + 1)..=lintel_y {
+            struct_set(chunk, wx, wy, gate_z, wx_min, wy_min, wz_min, WOOD_BEAM);
+        }
+        struct_set(
+            chunk,
+            wx,
+            lintel_y + 1,
+            gate_z,
+            wx_min,
+            wy_min,
+            wz_min,
+            CRYSTAL_LAMP,
+        );
+    }
+    for dx in -2..=2 {
+        struct_set(
+            chunk,
+            ax + dx,
+            lintel_y,
+            gate_z,
+            wx_min,
+            wy_min,
+            wz_min,
+            WOOD_BEAM,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn place_city_corner_tower<C: Chunk>(
+    ax: i32,
+    az: i32,
+    sx: i32,
+    sz: i32,
+    h: u64,
+    seed: u64,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+) {
+    let cx = ax + sx * CITY_WALL_R;
+    let cz = az + sz * CITY_WALL_R;
+    let mut deck_y = i32::MIN;
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            deck_y = deck_y.max(struct_surface(cx + dx, cz + dz, seed) + 1);
+        }
+    }
+
+    // A compact stone plinth follows the slope; the upper tower stays open and
+    // uses the shaped timber vocabulary instead of becoming another solid cube.
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let b = city_wall_material(h ^ 0x70A3, sx * 16 + dx, sz * 16 + dz);
+            struct_fill_col(
+                chunk,
+                cx + dx,
+                cz + dz,
+                deck_y,
+                seed,
+                wx_min,
+                wy_min,
+                wz_min,
+                b,
+            );
+        }
+    }
+    for (dx, dz) in [(-1, -1), (1, -1), (-1, 1), (1, 1)] {
+        for wy in (deck_y + 1)..=(deck_y + 4) {
+            struct_set(chunk, cx + dx, wy, cz + dz, wx_min, wy_min, wz_min, WOOD_BEAM);
+        }
+    }
+    for dz in -1i32..=1 {
+        for dx in -1i32..=1 {
+            if dx.abs() == 1 || dz.abs() == 1 {
+                struct_set(
+                    chunk,
+                    cx + dx,
+                    deck_y + 2,
+                    cz + dz,
+                    wx_min,
+                    wy_min,
+                    wz_min,
+                    WOOD_BEAM,
+                );
+            }
+        }
+    }
+    place_pitched_roof(
+        cx,
+        cz,
+        1,
+        1,
+        deck_y + 4,
+        sx == sz,
+        WOOD_BEAM,
+        BIRCH_PLANKS,
+        chunk,
+        wx_min,
+        wy_min,
+        wz_min,
+    );
+    struct_set(
+        chunk,
+        cx,
+        deck_y + 4,
+        cz,
+        wx_min,
+        wy_min,
+        wz_min,
+        CRYSTAL_LAMP,
+    );
+    for wy in (deck_y + 5)..=(deck_y + 6) {
+        struct_set(chunk, cx, wy, cz, wx_min, wy_min, wz_min, WOOD_BEAM);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn place_city_civic_landmark<C: Chunk>(
+    ax: i32,
+    az: i32,
+    seed: u64,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+) {
+    let base_y = struct_surface(ax, az, seed);
+    for (dx, dz, b) in [
+        (0, 0, MOSSY_STONE),
+        (-1, 0, COBBLESTONE),
+        (1, 0, COBBLESTONE),
+        (0, -1, COBBLESTONE),
+        (0, 1, COBBLESTONE),
+    ] {
+        struct_set(chunk, ax + dx, base_y, az + dz, wx_min, wy_min, wz_min, b);
+    }
+    for wy in (base_y + 1)..=(base_y + 5) {
+        struct_set(chunk, ax, wy, az, wx_min, wy_min, wz_min, WOOD_BEAM);
+    }
+    for d in -1..=1 {
+        struct_set(chunk, ax + d, base_y + 5, az, wx_min, wy_min, wz_min, WOOD_BEAM);
+        struct_set(chunk, ax, base_y + 5, az + d, wx_min, wy_min, wz_min, WOOD_BEAM);
+    }
+    for (dx, dz) in [(-2, 0), (2, 0), (0, -2), (0, 2)] {
+        struct_set(
+            chunk,
+            ax + dx,
+            base_y + 5,
+            az + dz,
+            wx_min,
+            wy_min,
+            wz_min,
+            CRYSTAL_LAMP,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn place_city_core<C: Chunk>(
+    ax: i32,
+    az: i32,
+    h: u64,
+    seed: u64,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+) {
+    for dz in -CITY_WALL_R..=CITY_WALL_R {
+        for dx in -CITY_WALL_R..=CITY_WALL_R {
+            if dx.abs() != CITY_WALL_R && dz.abs() != CITY_WALL_R {
+                continue;
+            }
+            let gate = (dx.abs() == CITY_WALL_R && dz.abs() <= 2)
+                || (dz.abs() == CITY_WALL_R && dx.abs() <= 2);
+            let tower = dx.abs() >= CITY_WALL_R - 1 && dz.abs() >= CITY_WALL_R - 1;
+            if gate || tower {
+                continue;
+            }
+            let wx = ax + dx;
+            let wz = az + dz;
+            let floor = struct_surface(wx, wz, seed);
+            let edge_pos = if dx.abs() == CITY_WALL_R { dz } else { dx };
+            if (edge_pos + CITY_WALL_R).rem_euclid(3) == 0 {
+                for wy in (floor + 1)..=(floor + 3) {
+                    struct_set(chunk, wx, wy, wz, wx_min, wy_min, wz_min, WOOD_BEAM);
+                }
+            } else {
+                let b = city_wall_material(h, dx, dz);
+                struct_set(chunk, wx, floor + 1, wz, wx_min, wy_min, wz_min, b);
+                struct_set(chunk, wx, floor + 2, wz, wx_min, wy_min, wz_min, b);
+                if edge_pos.rem_euclid(2) == 0 {
+                    struct_set(
+                        chunk,
+                        wx,
+                        floor + 3,
+                        wz,
+                        wx_min,
+                        wy_min,
+                        wz_min,
+                        STONE_BRICK,
+                    );
+                }
+            }
+        }
+    }
+
+    for side in [-1, 1] {
+        place_city_gate_x(ax, az, side, seed, chunk, wx_min, wy_min, wz_min);
+        place_city_gate_z(ax, az, side, seed, chunk, wx_min, wy_min, wz_min);
+    }
+    for (sx, sz) in [(-1, -1), (1, -1), (-1, 1), (1, 1)] {
+        place_city_corner_tower(
+            ax, az, sx, sz, h, seed, chunk, wx_min, wy_min, wz_min,
+        );
+    }
+    place_city_civic_landmark(ax, az, seed, chunk, wx_min, wy_min, wz_min);
+}
+
+// A city: a finished walled civic core surrounded by a larger procedural settlement.
+// Buildings still come from the village kit, but sit beyond the perimeter so gates,
+// watchtowers, plaza, and landmark always remain readable and walkable.
 fn place_city<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
-    // Paved central plaza, 7x7, with a marker / lamp core.
+    // Paved central plaza, 7x7. The civic mast is stamped after the roads.
     for dz in -3..=3 {
         for dx in -3..=3 {
             let col_h = struct_surface(ax + dx, az + dz, seed);
-            let centre = dx == 0 && dz == 0;
-            let b = if centre { GLOW_BLOCK } else { STONE_BRICK };
-            struct_set(chunk, ax + dx, col_h + if centre { 1 } else { 0 }, az + dz, wx_min, wy_min, wz_min, b);
+            struct_set(chunk, ax + dx, col_h, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
         }
     }
 
@@ -1672,6 +1974,7 @@ fn place_city<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
         place_settlement_building(ax, az, *site, hh, seed, chunk, wx_min, wy_min, wz_min);
     }
     place_settlement_chopping_block(ax, az, seed, chunk, wx_min, wy_min, wz_min, STONE_BRICK);
+    place_city_core(ax, az, h, seed, chunk, wx_min, wy_min, wz_min);
 
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }

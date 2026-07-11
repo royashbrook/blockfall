@@ -351,7 +351,13 @@ pub fn worldgen_biome_at(wx: i32, wz: i32, seed: u64) -> u8 {
 /// discovery. Returns (type, anchor_x, anchor_z) canonical, or None. Distances use the
 /// caller's local frame (the scanned cells are the neighbourhood of wx/wz), so no
 /// seam wrap is needed here.
-pub fn worldgen_settlement_near(wx: i32, wz: i32, radius: i32, seed: u64) -> Option<(i32, i32, i32)> {
+fn worldgen_settlement_near_kind(
+    wx: i32,
+    wz: i32,
+    radius: i32,
+    seed: u64,
+    city_only: bool,
+) -> Option<(i32, i32, i32)> {
     let scx_min = struct_floordiv(wx - radius, STRUCT_CELL_SIZE);
     let scx_max = struct_floordiv(wx + radius, STRUCT_CELL_SIZE);
     let scz_min = struct_floordiv(wz - radius, STRUCT_CELL_SIZE);
@@ -361,7 +367,10 @@ pub fn worldgen_settlement_near(wx: i32, wz: i32, radius: i32, seed: u64) -> Opt
     for scz in scz_min..=scz_max {
         for scx in scx_min..=scx_max {
             let sd = struct_for_cell(scx, scz, seed);
-            if !sd.present || (sd.typ != STRUCT_VILLAGE && sd.typ != STRUCT_CITY) {
+            if !sd.present
+                || (sd.typ != STRUCT_VILLAGE && sd.typ != STRUCT_CITY)
+                || (city_only && sd.typ != STRUCT_CITY)
+            {
                 continue;
             }
             let ddx = (sd.anchor_wx - wx) as i64;
@@ -374,6 +383,27 @@ pub fn worldgen_settlement_near(wx: i32, wz: i32, radius: i32, seed: u64) -> Opt
         }
     }
     best
+}
+
+pub fn worldgen_settlement_near(
+    wx: i32,
+    wz: i32,
+    radius: i32,
+    seed: u64,
+) -> Option<(i32, i32, i32)> {
+    worldgen_settlement_near_kind(wx, wz, radius, seed, false)
+}
+
+/// Nearest generated CITY anchor within `radius`. Fresh worlds use this so HOME
+/// starts at the civic settlement promised by #204, while callers that want any
+/// village or city keep using worldgen_settlement_near.
+pub fn worldgen_city_near(
+    wx: i32,
+    wz: i32,
+    radius: i32,
+    seed: u64,
+) -> Option<(i32, i32, i32)> {
+    worldgen_settlement_near_kind(wx, wz, radius, seed, true)
 }
 
 /// Returns (type, anchor_x, anchor_z, anchor_y). type==0 (STRUCT_NONE) leaves the
