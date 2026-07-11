@@ -352,10 +352,23 @@ impl<'c> World<'c> {
             });
             self.entity_role_actions.push(if cr.model == 20 {
                 let artisan = (2..=6).contains(&cr.npc_id);
+                let social = cr.social.visible_action();
                 bf_entity_role_action {
                     role: cr.npc_id.max(0) as u32,
-                    action: if artisan { cr.routine.state.action() } else { 0 },
-                    progress: if artisan { cr.routine.progress() } else { 0.0 },
+                    action: if social != 0 {
+                        social
+                    } else if artisan {
+                        cr.routine.state.action()
+                    } else {
+                        0
+                    },
+                    progress: if social != 0 {
+                        cr.social.progress()
+                    } else if artisan {
+                        cr.routine.progress()
+                    } else {
+                        0.0
+                    },
                     _pad: 0,
                 }
             } else {

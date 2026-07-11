@@ -1,5 +1,14 @@
 use super::*;
 
+const SOCIAL_LOOK: u32 = 5;
+const SOCIAL_GESTURE: u32 = 6;
+const SOCIAL_GREET: u32 = 7;
+const SOCIAL_CHAT: u32 = 8;
+const SOCIAL_SIT: u32 = 9;
+const SOCIAL_SWEEP: u32 = 10;
+const SOCIAL_HOME_RADIUS: i32 = 12;
+const SOCIAL_TRAVEL_SECONDS: f32 = 12.0;
+
 impl<'c> World<'c> {
     // The AI pathfinder asks the world about terrain through this thin shim; it never
     // touches World internals directly (epic #131, creature_ai.rs).
@@ -93,24 +102,333 @@ impl<'c> World<'c> {
 
     fn profession_station(&self, c: &Creature, scan: bool) -> Option<(i32, i32, i32, i32)> {
         let (dx, dz, station_block) = Self::profession_station_spec(c.npc_id)?;
+        self.villager_feature(
+            c,
+            station_block,
+            dx,
+            dz,
+            (!scan).then_some(c.routine.station_y),
+        )
+    }
+
+    fn villager_feature(
+        &self,
+        c: &Creature,
+        block: BlockId,
+        dx: i32,
+        dz: i32,
+        cached_y: Option<i32>,
+    ) -> Option<(i32, i32, i32, i32)> {
         let sx = Self::wrap_block(c.home_x + dx);
         let sz = Self::wrap_block(c.home_z + dz);
         let wx = Self::wrap_block(sx - 1);
-        let sy = if scan {
+        let sy = if let Some(y) = cached_y {
+            y
+        } else {
             (WORLD_Y_MIN_BLOCK..=WORLD_Y_MAX_BLOCK)
                 .rev()
-                .find(|&y| self.block_at(IVec3 { x: sx, y, z: sz }) == station_block)?
-        } else {
-            c.routine.station_y
+                .find(|&y| self.block_at(IVec3 { x: sx, y, z: sz }) == block)?
         };
         if sy == NO_FLOOR
-            || self.block_at(IVec3 { x: sx, y: sy, z: sz }) != station_block
+            || self.block_at(IVec3 { x: sx, y: sy, z: sz }) != block
             || !self.collide_solid(wx, sy - 1, sz)
             || self.creature_body_blocked(wx as f32 + 0.5, sy, sz as f32 + 0.5, c.scale)
         {
             return None;
         }
         Some((sx, sy, wx, sz))
+    }
+
+    pub(super) fn villager_social_key(c: &Creature) -> u64 {
+        let mut h = (c.home_x as u32 as u64).wrapping_mul(0x9E3779B185EBCA87)
+            ^ (c.home_z as u32 as u64).wrapping_mul(0xC2B2AE3D27D4EB4F)
+            ^ (c.npc_id as u32 as u64).wrapping_mul(0x165667B19E3779F9);
+        h ^= h >> 30;
+        h = h.wrapping_mul(0xBF58476D1CE4E5B9);
+        h ^= h >> 27;
+        h | 1
+    }
+
+    #[inline]
+    fn villager_social_window(c: &Creature) -> bool {
+        Self::profession_station_spec(c.npc_id).is_none()
+            || (c.routine.state == VillagerRoutineState::Idle && c.routine.timer > 0.0)
+    }
+
+    fn villager_social_pair_index(&self, c: &Creature) -> Option<usize> {
+        let mut group: Vec<(u64, usize)> = self
+            .creatures
+            .iter()
+            .enumerate()
+            .filter(|(_, other)| {
+                other.model == 20
+                    && other.hp > 0
+                    && other.home_x == c.home_x
+                    && other.home_z == c.home_z
+                    && {
+                        // Every resident computes the same roster from the shared
+                        // home anchor. A caller-relative A-B-C chain can otherwise
+                        // let both edge villagers claim the middle one.
+                        let dx = Self::wrap_signed_f(other.pos.x - (c.home_x as f32 + 0.5));
+                        let dz = Self::wrap_signed_f(other.pos.z - (c.home_z as f32 + 0.5));
+                        dx * dx + dz * dz <= (SOCIAL_HOME_RADIUS * SOCIAL_HOME_RADIUS) as f32
+                    }
+            })
+            .map(|(idx, other)| (Self::villager_social_key(other), idx))
+            .collect();
+        group.sort_unstable();
+        let key = Self::villager_social_key(c);
+        let at = group.iter().position(|&(candidate, _)| candidate == key)?;
+        let partner = if at & 1 == 0 { at + 1 } else { at - 1 };
+        group.get(partner).map(|&(_, idx)| idx)
+    }
+
+    fn set_villager_social(
+        c: &mut Creature,
+        action: u32,
+        seconds: f32,
+        target_y: i32,
+        partner: u64,
+        arrived: bool,
+    ) {
+        c.social.action = action;
+        c.social.timer = if arrived { seconds } else { SOCIAL_TRAVEL_SECONDS };
+        c.social.total = seconds;
+        c.social.target_y = target_y;
+        c.social.partner = partner;
+        c.social.arrived = arrived;
+        c.social.initialized = true;
+        c.ai.path.clear();
+        c.ai.path_idx = 0;
+        c.ai.repath_cd = 0;
+    }
+
+    fn finish_villager_social(c: &mut Creature) {
+        let key = Self::villager_social_key(c);
+        c.social.action = 0;
+        c.social.timer = 0.0;
+        c.social.partner = 0;
+        c.social.arrived = false;
+        c.social.cooldown = 2.0 + ((key >> 17) % 5) as f32 * 0.45;
+        c.ai.path.clear();
+        c.ai.path_idx = 0;
+        c.ai.repath_cd = 0;
+    }
+
+    #[inline]
+    pub(super) fn villager_social_action(key: u64, sequence: u32) -> u32 {
+        SOCIAL_LOOK + ((key.wrapping_add(sequence as u64)) % 6) as u32
+    }
+
+    fn start_villager_social(&mut self, c: &mut Creature) {
+        let key = Self::villager_social_key(c);
+        let mut action = Self::villager_social_action(key, c.social.sequence);
+        c.social.sequence = c.social.sequence.wrapping_add(1);
+        let partner = self.villager_social_pair_index(c);
+
+        if action == SOCIAL_CHAT {
+            if let Some(j) = partner.filter(|&j| {
+                self.creatures[j].social.action == 0
+                    && Self::villager_social_window(&self.creatures[j])
+            }) {
+                let partner_key = Self::villager_social_key(&self.creatures[j]);
+                Self::set_villager_social(
+                    &mut self.creatures[j], SOCIAL_CHAT, 3.2, NO_FLOOR, key, false,
+                );
+                Self::set_villager_social(c, SOCIAL_CHAT, 3.2, NO_FLOOR, partner_key, false);
+                return;
+            }
+            action = SOCIAL_GREET;
+        }
+
+        if action == SOCIAL_GREET {
+            if let Some(j) = partner {
+                let p = &self.creatures[j];
+                Self::set_villager_social(
+                    c, action, 1.8, NO_FLOOR, Self::villager_social_key(p), true,
+                );
+                return;
+            }
+            action = SOCIAL_LOOK;
+        }
+
+        if matches!(action, SOCIAL_SIT | SOCIAL_SWEEP) {
+            let (block, dz, seconds) = if action == SOCIAL_SIT {
+                (62, 6, 3.0)
+            } else {
+                (63, -6, 3.4)
+            };
+            if let Some((_sx, sy, _wx, _wz)) =
+                self.villager_feature(c, block, 0, dz, None)
+            {
+                Self::set_villager_social(c, action, seconds, sy, 0, false);
+                return;
+            }
+            action = SOCIAL_LOOK;
+        }
+
+        let seconds = if action == SOCIAL_GESTURE { 1.7 } else { 1.5 };
+        Self::set_villager_social(c, action, seconds, NO_FLOOR, 0, true);
+    }
+
+    fn villager_social_decision(
+        &mut self,
+        c: &mut Creature,
+        dt: f32,
+    ) -> Option<crate::creature_ai::Decision> {
+        use crate::creature_ai::Decision;
+        if c.social.action == 0 {
+            if c.social.cooldown > 0.0 {
+                return None;
+            }
+            self.start_villager_social(c);
+        }
+        let stop = |heading| Decision {
+            desired_heading: heading,
+            speed_frac: 0.0,
+            path_goal: None,
+        };
+        match c.social.action {
+            SOCIAL_LOOK | SOCIAL_GESTURE => {
+                c.social.timer -= dt;
+                let dir = ((Self::villager_social_key(c) >> 21)
+                    .wrapping_add(c.social.sequence as u64)
+                    & 3) as u32;
+                let face = match dir {
+                    0 => std::f32::consts::FRAC_PI_2,
+                    1 => -std::f32::consts::FRAC_PI_2,
+                    2 => 0.0,
+                    _ => std::f32::consts::PI,
+                };
+                c.yaw = face;
+                c.ai.heading = face;
+                c.ai.speed = 0.0;
+                if c.social.timer <= 0.0 {
+                    Self::finish_villager_social(c);
+                }
+                Some(stop(face))
+            }
+            SOCIAL_GREET => {
+                let Some(j) = self.villager_social_pair_index(c) else {
+                    Self::finish_villager_social(c);
+                    return Some(stop(c.ai.heading));
+                };
+                if Self::villager_social_key(&self.creatures[j]) != c.social.partner {
+                    Self::finish_villager_social(c);
+                    return Some(stop(c.ai.heading));
+                }
+                let p = self.creatures[j].pos;
+                let face = Self::wrap_signed_f(p.x - c.pos.x)
+                    .atan2(Self::wrap_signed_f(p.z - c.pos.z));
+                c.yaw = face;
+                c.ai.heading = face;
+                c.ai.speed = 0.0;
+                c.social.timer -= dt;
+                if c.social.timer <= 0.0 {
+                    Self::finish_villager_social(c);
+                }
+                Some(stop(face))
+            }
+            SOCIAL_CHAT => {
+                let key = Self::villager_social_key(c);
+                let Some(j) = self.villager_social_pair_index(c) else {
+                    Self::finish_villager_social(c);
+                    return Some(stop(c.ai.heading));
+                };
+                if Self::villager_social_key(&self.creatures[j]) != c.social.partner
+                    || self.creatures[j].social.action != SOCIAL_CHAT
+                    || self.creatures[j].social.partner != key
+                {
+                    Self::finish_villager_social(c);
+                    return Some(stop(c.ai.heading));
+                }
+                let p = self.creatures[j].pos;
+                let dx = Self::wrap_signed_f(p.x - c.pos.x);
+                let dz = Self::wrap_signed_f(p.z - c.pos.z);
+                let face = dx.atan2(dz);
+                if dx * dx + dz * dz > 2.2 * 2.2 {
+                    c.social.timer -= dt;
+                    if c.social.timer <= 0.0 {
+                        Self::finish_villager_social(c);
+                        return Some(stop(face));
+                    }
+                    let goal = Self::villager_nearest_goal(
+                        c.pos.x,
+                        c.pos.z,
+                        Self::ifloor(p.x),
+                        Self::ifloor(p.z),
+                    );
+                    return Some(Decision {
+                        desired_heading: face,
+                        speed_frac: 0.65,
+                        path_goal: Some(goal),
+                    });
+                }
+                if !c.social.arrived {
+                    c.social.arrived = true;
+                    c.social.timer = c.social.total;
+                    self.creatures[j].social.arrived = true;
+                    self.creatures[j].social.timer = self.creatures[j].social.total;
+                }
+                c.social.timer -= dt;
+                c.yaw = face;
+                c.ai.heading = face;
+                c.ai.speed = 0.0;
+                if c.social.timer <= 0.0 {
+                    if self.creatures[j].social.partner == key {
+                        Self::finish_villager_social(&mut self.creatures[j]);
+                    }
+                    Self::finish_villager_social(c);
+                }
+                Some(stop(face))
+            }
+            SOCIAL_SIT | SOCIAL_SWEEP => {
+                let (block, dz) = if c.social.action == SOCIAL_SIT { (62, 6) } else { (63, -6) };
+                let Some((sx, sy, wx, wz)) =
+                    self.villager_feature(c, block, 0, dz, Some(c.social.target_y))
+                else {
+                    Self::finish_villager_social(c);
+                    return Some(stop(c.ai.heading));
+                };
+                let dx = Self::wrap_signed_f(wx as f32 + 0.5 - c.pos.x);
+                let dz = Self::wrap_signed_f(wz as f32 + 0.5 - c.pos.z);
+                let face = Self::wrap_signed_f(sx as f32 + 0.5 - c.pos.x)
+                    .atan2(Self::wrap_signed_f(wz as f32 + 0.5 - c.pos.z));
+                if dx * dx + dz * dz > 0.75 * 0.75 {
+                    c.social.timer -= dt;
+                    if c.social.timer <= 0.0 {
+                        Self::finish_villager_social(c);
+                        return Some(stop(face));
+                    }
+                    return Some(Decision {
+                        desired_heading: dx.atan2(dz),
+                        speed_frac: 0.7,
+                        path_goal: Some(Self::villager_nearest_goal(c.pos.x, c.pos.z, wx, wz)),
+                    });
+                }
+                c.pos.x = Self::wrap_pos_f(wx as f32 + 0.5);
+                c.pos.y = sy as f32;
+                c.pos.z = Self::wrap_pos_f(wz as f32 + 0.5);
+                c.vy = 0.0;
+                c.climb = 0.0;
+                c.yaw = face;
+                c.ai.heading = face;
+                c.ai.speed = 0.0;
+                if !c.social.arrived {
+                    c.social.arrived = true;
+                    c.social.timer = c.social.total;
+                }
+                c.social.timer -= dt;
+                if c.social.timer <= 0.0 {
+                    Self::finish_villager_social(c);
+                }
+                Some(stop(face))
+            }
+            _ => {
+                Self::finish_villager_social(c);
+                None
+            }
+        }
     }
 
     // Pick a real clear home cell, not the settlement marker block at the exact
@@ -154,6 +472,29 @@ impl<'c> World<'c> {
             }
         }
         None
+    }
+
+    fn villager_tether_decision(&self, c: &Creature) -> Option<crate::creature_ai::Decision> {
+        use crate::creature_ai::Decision;
+        let hx = Self::wrap_signed_f(c.home_x as f32 + 0.5 - c.pos.x);
+        let hz = Self::wrap_signed_f(c.home_z as f32 + 0.5 - c.pos.z);
+        if hx.abs().max(hz.abs()) <= SOCIAL_HOME_RADIUS as f32 {
+            return None;
+        }
+        let Some((x, _y, z)) = self.villager_home_cell(c) else {
+            return Some(Decision {
+                desired_heading: c.ai.heading,
+                speed_frac: 0.0,
+                path_goal: None,
+            });
+        };
+        let (gx, gz) = Self::villager_nearest_goal(c.pos.x, c.pos.z, x, z);
+        Some(Decision {
+            desired_heading: (gx as f32 + 0.5 - c.pos.x)
+                .atan2(gz as f32 + 0.5 - c.pos.z),
+            speed_frac: 0.75,
+            path_goal: Some((gx, gz)),
+        })
     }
 
     #[inline]
@@ -436,9 +777,46 @@ impl<'c> World<'c> {
             // Drive the behaviour state machine from the world rng so it stays
             // deterministic with the rest of the sim. The world's rng is the seed.
             c.ai.tick_repath();
+            if c.model == 20 {
+                if !c.social.initialized {
+                    let key = Self::villager_social_key(&c);
+                    c.social.cooldown = 0.5 + ((key >> 12) % 6) as f32 * 0.45;
+                    c.social.initialized = true;
+                } else {
+                    c.social.cooldown = (c.social.cooldown - dt).max(0.0);
+                }
+            }
             let mut seed = self.rng;
-            let routine_driven = c.model == 20 && Self::profession_station_spec(c.npc_id).is_some();
-            let dec = if routine_driven {
+            let artisan = c.model == 20 && Self::profession_station_spec(c.npc_id).is_some();
+            let tether_decision = if c.model == 20
+                && (!artisan || c.routine.state == VillagerRoutineState::Idle)
+            {
+                self.villager_tether_decision(&c)
+            } else {
+                None
+            };
+            let social_allowed = c.model == 20
+                && tether_decision.is_none()
+                && Self::villager_social_window(&c);
+            if !social_allowed && c.social.action != 0 {
+                Self::finish_villager_social(&mut c);
+            }
+            let social_decision = if social_allowed {
+                self.villager_social_decision(&mut c, dt)
+            } else {
+                None
+            };
+            if artisan && social_decision.is_some() {
+                c.routine.timer -= dt;
+            }
+            let social_driven = social_decision.is_some();
+            let tether_driven = tether_decision.is_some() && !social_driven;
+            let routine_driven = artisan && !social_driven && !tether_driven;
+            let dec = if let Some(dec) = social_decision {
+                dec
+            } else if let Some(dec) = tether_decision {
+                dec
+            } else if routine_driven {
                 self.profession_routine_decision(&mut c, dt)
             } else {
                 cai::decide(
@@ -462,13 +840,19 @@ impl<'c> World<'c> {
                     );
                     let dx = goal.0 as f32 + 0.5 - c.pos.x;
                     let dz = goal.1 as f32 + 0.5 - c.pos.z;
-                    routine_path_failed = routine_driven
+                    routine_path_failed = (routine_driven || social_driven || tether_driven)
                         && path.is_empty()
                         && dx * dx + dz * dz > 0.55 * 0.55;
                     c.ai.set_path(path);
                 }
                 if routine_path_failed {
-                    Self::villager_routine_path_failed(&mut c);
+                    if social_driven {
+                        Self::finish_villager_social(&mut c);
+                    } else if routine_driven {
+                        Self::villager_routine_path_failed(&mut c);
+                    } else {
+                        c.ai.path.clear();
+                    }
                 } else if let Some(h) = c.ai.follow_heading(c.pos.x, c.pos.z) {
                     desired_heading = h;
                 } else {
@@ -713,6 +1097,16 @@ impl<'c> World<'c> {
 mod profession_station_tests {
     use super::*;
 
+    fn villager(role: i32, x: f32, z: f32, home: (i32, i32)) -> Creature {
+        let mut c = Creature::default();
+        c.model = 20;
+        c.npc_id = role;
+        c.home_x = home.0;
+        c.home_z = home.1;
+        c.pos = V3::new(x, 8.0, z);
+        c
+    }
+
     #[test]
     fn artisan_roles_select_their_canonical_physical_station() {
         assert_eq!(World::<'static>::profession_station_spec(2), Some((6, 6, 61)));
@@ -722,5 +1116,106 @@ mod profession_station_tests {
         assert_eq!(World::<'static>::profession_station_spec(6), Some((-4, -4, 59)));
         assert_eq!(World::<'static>::profession_station_spec(1), None);
         assert_eq!(World::<'static>::profession_station_spec(7), None);
+    }
+
+    #[test]
+    fn social_identity_pairing_is_stable_mutual_home_and_radius_bounded() {
+        let mut world = World::new(None);
+        world.creatures = vec![
+            villager(1, 8.5, 8.5, (8, 8)),
+            villager(2, 9.5, 8.5, (8, 8)),
+            villager(3, 10.5, 8.5, (8, 8)),
+            villager(4, 11.5, 8.5, (8, 8)),
+            villager(5, 40.5, 40.5, (8, 8)),
+            villager(6, 9.5, 9.5, (9, 9)),
+        ];
+        let keys: std::collections::HashSet<_> = world.creatures[..4]
+            .iter()
+            .map(World::villager_social_key)
+            .collect();
+        assert_eq!(keys.len(), 4);
+        for i in 0..4 {
+            let partner = world.villager_social_pair_index(&world.creatures[i]).unwrap();
+            assert!(partner < 4 && partner != i);
+            assert_eq!(
+                world.villager_social_pair_index(&world.creatures[partner]),
+                Some(i)
+            );
+        }
+        assert!(world.villager_social_pair_index(&world.creatures[4]).is_none());
+        assert!(world.villager_social_pair_index(&world.creatures[5]).is_none());
+
+        // Caller-relative filtering made both ends of this A-B-C chain claim B.
+        // All three are inside the shared home radius but the ends are not inside
+        // each other's radius, so only a home-derived roster pairs them mutually.
+        world.creatures = vec![
+            villager(1, -3.0, 8.5, (8, 8)),
+            villager(2, 8.5, 8.5, (8, 8)),
+            villager(3, 20.0, 8.5, (8, 8)),
+        ];
+        for i in 0..world.creatures.len() {
+            if let Some(partner) = world.villager_social_pair_index(&world.creatures[i]) {
+                assert_eq!(
+                    world.villager_social_pair_index(&world.creatures[partner]),
+                    Some(i),
+                    "chain member {i} selected a non-mutual partner"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn social_sequence_covers_every_additive_pose_deterministically() {
+        let c = villager(1, 8.5, 8.5, (8, 8));
+        let key = World::villager_social_key(&c);
+        let actions: std::collections::HashSet<_> = (0..6)
+            .map(|seq| World::villager_social_action(key, seq))
+            .collect();
+        assert_eq!(actions, (5..=10).collect());
+    }
+
+    #[test]
+    fn pair_chat_faces_and_pauses_then_breaks_when_partner_disappears() {
+        let mut world = World::new(None);
+        let mut a = villager(1, 8.5, 8.5, (8, 8));
+        let mut b = villager(2, 10.0, 8.5, (8, 8));
+        let ak = World::villager_social_key(&a);
+        let bk = World::villager_social_key(&b);
+        World::set_villager_social(&mut a, SOCIAL_CHAT, 3.0, NO_FLOOR, bk, false);
+        World::set_villager_social(&mut b, SOCIAL_CHAT, 3.0, NO_FLOOR, ak, false);
+        world.creatures = vec![a.clone(), b];
+        let dec = world.villager_social_decision(&mut a, 0.1).unwrap();
+        assert!(a.social.arrived && world.creatures[1].social.arrived);
+        assert_eq!(dec.speed_frac, 0.0);
+        assert!(dec.path_goal.is_none() && a.social.timer < 3.0);
+        world.creatures[1].pos.x = 40.5;
+        let _ = world.villager_social_decision(&mut a, 0.1);
+        assert_eq!(a.social.action, 0, "moving outside home range cancels chat safely");
+
+        World::set_villager_social(&mut a, SOCIAL_CHAT, 3.0, NO_FLOOR, bk, false);
+        world.creatures.pop();
+        let _ = world.villager_social_decision(&mut a, 0.1);
+        assert_eq!(a.social.action, 0, "despawn cancels pair chat safely");
+    }
+
+    #[test]
+    fn social_idle_window_hands_an_artisan_back_to_their_shift() {
+        let mut world = World::new(None);
+        world.generate_test_world();
+        world.pos = V3::new(0.5, 12.0, 0.5);
+        world.set_block_internal(IVec3 { x: 12, y: 8, z: 12 }, 56);
+        let mut c = villager(4, 8.5, 8.5, (8, 8));
+        c.routine.timer = 0.01;
+        c.social.initialized = true;
+        World::set_villager_social(&mut c, SOCIAL_LOOK, 5.0, NO_FLOOR, 0, true);
+        world.creatures.push(c);
+        world.update_creatures(0.05);
+        assert_eq!(world.creatures[0].routine.state, VillagerRoutineState::Idle);
+        world.update_creatures(0.05);
+        assert_eq!(world.creatures[0].social.action, 0, "due shift cancels social time");
+        assert_eq!(
+            world.creatures[0].routine.state,
+            VillagerRoutineState::TravelToStation
+        );
     }
 }

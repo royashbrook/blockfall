@@ -41,6 +41,7 @@ pub fn light_opaque(b: BlockId) -> bool {
         && b != 56
         && b != 57
         && !(58..=61).contains(&b)
+        && !(62..=63).contains(&b)
         && !light_glass(b)
         && !light_plant(b)
         && !light_snow_overlay(b)
@@ -431,6 +432,21 @@ mod tests {
             assert_eq!(ch.sky_light(8, 8, 8), 15, "station {id} reads cell light");
             assert_eq!(ch.sky_light(8, 7, 8), 15, "station {id} cast a cube shadow");
             assert_eq!(ch.block_light(8, 8, 8), if id == 59 { 9 } else { 0 });
+        }
+    }
+
+    #[test]
+    fn social_props_pass_sky_light() {
+        for id in 62..=63 {
+            let mut store = ChunkStore::new();
+            let cc = ChunkCoord { x: 0, y: 0, z: 0 };
+            let mut ch = PaletteChunk::new(cc, 0);
+            ch.set(8, 8, 8, id);
+            store.insert(ch);
+            light_chunk(&mut store, cc);
+            let ch = store.get(cc).unwrap();
+            assert_eq!(ch.sky_light(8, 8, 8), 15);
+            assert_eq!(ch.sky_light(8, 7, 8), 15);
         }
     }
 

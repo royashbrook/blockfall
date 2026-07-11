@@ -296,6 +296,28 @@ func makeHeldItem(_ itemId: Int) -> [PropCuboidGPU] {
             ]
         }
     }
+    if itemId == 102 {                                             // communal bench
+        let oak = SIMD3<Float>(0.60, 0.42, 0.22)
+        return [
+            part(SIMD3(fx, fy + 0.22, fz), SIMD3(0.24, 0.04, 0.13), oak),
+            part(SIMD3(fx - 0.16, fy + 0.10, fz), SIMD3(0.03, 0.12, 0.03), oak * 0.72),
+            part(SIMD3(fx + 0.16, fy + 0.10, fz), SIMD3(0.03, 0.12, 0.03), oak * 0.72),
+            part(SIMD3(fx, fy + 0.38, fz - 0.05), SIMD3(0.22, 0.10, 0.03), oak * 1.10),
+            part(SIMD3(fx - 0.17, fy + 0.34, fz - 0.05), SIMD3(0.025, 0.15, 0.025), oak * 0.72),
+            part(SIMD3(fx + 0.17, fy + 0.34, fz - 0.05), SIMD3(0.025, 0.15, 0.025), oak * 0.72),
+        ]
+    }
+    if itemId == 103 {                                             // broom rack + broom
+        let oak = SIMD3<Float>(0.50, 0.31, 0.15)
+        let straw = SIMD3<Float>(0.86, 0.67, 0.24)
+        return [
+            part(SIMD3(fx + 0.10, fy + 0.05, fz), SIMD3(0.11, 0.025, 0.10), oak),
+            part(SIMD3(fx + 0.12, fy + 0.24, fz), SIMD3(0.025, 0.22, 0.025), oak),
+            part(SIMD3(fx + 0.04, fy + 0.43, fz), SIMD3(0.14, 0.025, 0.08), oak),
+            part(SIMD3(fx - 0.09, fy + 0.25, fz), SIMD3(0.022, 0.28, 0.022), oak),
+            part(SIMD3(fx - 0.09, fy + 0.04, fz), SIMD3(0.13, 0.08, 0.09), straw),
+        ]
+    }
     // A held BLOCK shows as a small cube in its own colour, so it reads as that block.
     if let bc = heldBlockColor(itemId) {
         return [ part(SIMD3(fx, fy + 0.18, fz), SIMD3(0.13, 0.13, 0.13), bc) ]

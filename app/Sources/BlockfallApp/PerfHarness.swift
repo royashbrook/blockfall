@@ -660,7 +660,12 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 // caller frames separately), keep it to one for a clean flat-ground shot.
                 let testEnts = [mkEnt(baseXZ.x, baseXZ.z)]
                 var testRole = bf_entity_role_action()
-                if ProcessInfo.processInfo.environment["BF_SHOT_VILLAGER_WORK"] == "1" {
+                if let social = ProcessInfo.processInfo.environment["BF_SHOT_SOCIAL_ACTION"],
+                   let action = UInt32(social) {
+                    testRole.role = UInt32(ProcessInfo.processInfo.environment["BF_SHOT_SOCIAL_ROLE"] ?? "1") ?? 1
+                    testRole.action = action
+                    testRole.progress = Float(ProcessInfo.processInfo.environment["BF_SHOT_SOCIAL_PROGRESS"] ?? "0.55") ?? 0.55
+                } else if ProcessInfo.processInfo.environment["BF_SHOT_VILLAGER_WORK"] == "1" {
                     testRole.role = UInt32(ProcessInfo.processInfo.environment["BF_SHOT_WORK_ROLE"] ?? "4") ?? 4
                     testRole.action = 3
                     testRole.progress = Float(ProcessInfo.processInfo.environment["BF_SHOT_WORK_PROGRESS"] ?? "0.55") ?? 0.55

@@ -212,6 +212,43 @@ impl<'c> World<'c> {
             .map(|c| c.routine.state.action())
             .unwrap_or(0)
     }
+    pub fn debug_villager_social_action(&self, i: i32) -> u32 {
+        self.creatures
+            .get(i.max(0) as usize)
+            .filter(|c| i >= 0 && c.model == 20)
+            .map(|c| c.social.visible_action())
+            .unwrap_or(0)
+    }
+    pub fn debug_force_villager_social_action(&mut self, i: i32, wanted: u32) -> bool {
+        if i < 0 || !(5..=10).contains(&wanted) || i as usize >= self.creatures.len() {
+            return false;
+        }
+        let idx = i as usize;
+        if self.creatures[idx].model != 20 {
+            return false;
+        }
+        let (home_x, home_z) = (self.creatures[idx].home_x, self.creatures[idx].home_z);
+        for (j, c) in self.creatures.iter_mut().enumerate() {
+            if c.model != 20 || c.home_x != home_x || c.home_z != home_z {
+                continue;
+            }
+            c.social.action = 0;
+            c.social.timer = 0.0;
+            c.social.partner = 0;
+            c.social.arrived = false;
+            c.social.initialized = true;
+            c.social.cooldown = if j == idx { 0.0 } else { 60.0 };
+            c.ai.path.clear();
+            c.ai.path_idx = 0;
+            c.ai.repath_cd = 0;
+        }
+        let c = &mut self.creatures[idx];
+        let key = Self::villager_social_key(c);
+        c.social.sequence = (0..6)
+            .find(|&sequence| Self::villager_social_action(key, sequence) == wanted)
+            .unwrap();
+        true
+    }
     pub fn debug_creature_path_len(&self, i: i32) -> usize {
         if i < 0 {
             return 0;

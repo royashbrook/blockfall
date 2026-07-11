@@ -713,9 +713,11 @@ final class EntityRenderer {
             case 100: drawKind20(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             default: drawKind0(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             }
-            if e.kind == 20 && (2...6).contains(curEntityRole) && curEntityAction == 3 {
+            let detailedVillagerPose = ((2...6).contains(curEntityRole) && curEntityAction == 3)
+                || (5...10).contains(curEntityAction)
+            if e.kind == 20 && detailedVillagerPose {
                 assert(lastBodyPartDraws - bodyPartsBefore <= 29,
-                       "profession work pose exceeded the #257 villager part cap")
+                       "villager action pose exceeded the #257 part cap")
             }
             // Clear so kind 6 (and the next iter before it sets) never inherit.
             curFlash    = .zero

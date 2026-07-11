@@ -232,7 +232,8 @@ typedef struct bf_entity_draw {
 
 /* #254 (v28): profession + deterministic routine action, index-aligned with
  * bf_render_frame.entities. role/action 0 means no metadata. The draw struct
- * above remains frozen at 44 bytes. action: 1 idle, 2 travel, 3 work, 4 home. */
+ * above remains frozen at 44 bytes. action: 1 idle, 2 travel, 3 work, 4 home,
+ * 5 look, 6 gesture, 7 greet, 8 chat, 9 sit, 10 sweep. */
 typedef struct bf_entity_role_action {
     uint32_t role;
     uint32_t action;

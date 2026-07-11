@@ -225,5 +225,31 @@
     "textures": {
       "all": "oak_planks"
     }
+  },
+  {
+    "id": 62,
+    "name": "communal_bench",
+    "display_name": "Communal Bench",
+    "hardness": 7,
+    "required_tier": 0,
+    "preferred_tool": "axe",
+    "drop_item": "communal_bench",
+    "transparent": true,
+    "textures": {
+      "all": "oak_planks"
+    }
+  },
+  {
+    "id": 63,
+    "name": "broom_stand",
+    "display_name": "Broom Stand",
+    "hardness": 5,
+    "required_tier": 0,
+    "preferred_tool": "axe",
+    "drop_item": "broom_stand",
+    "transparent": true,
+    "textures": {
+      "all": "oak_planks"
+    }
   }
 ]

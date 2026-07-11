@@ -1920,6 +1920,93 @@ fn woodcutter_missing_blocked_and_unreachable_station_falls_back() {
 }
 
 #[test]
+fn villager_social_loop_is_visible_home_bound_and_cancels_failed_prop_paths() {
+    let content: &'static ContentRegistry = {
+        let mut c = ContentRegistry::new();
+        assert!(c.load(CONTENT));
+        Box::leak(Box::new(c))
+    };
+    let mut w = World::new(None);
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_content(content);
+    w.generate_test_world();
+    w.debug_set_camera(0.5, 12.0, 0.5, 0.0, 0.0);
+    w.debug_edit(8, 8, 14, 62); // communal bench, west interaction cell is clear
+    w.debug_edit(8, 8, 2, 63); // broom stand
+    let elder = w.debug_spawn_villager_role(8, 8, 1);
+    let partner = w.debug_spawn_villager_role(8, 8, 2);
+    w.debug_set_creature_pos(elder, 8.5, 8.0, 8.5);
+    w.debug_set_creature_pos(partner, 10.5, 8.0, 8.5);
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+
+    for wanted in 5..=10 {
+        assert!(w.debug_force_villager_social_action(elder, wanted));
+        for _ in 0..320 {
+            w.update(&zero, 0.05);
+            let (x, _, z) = w.debug_creature_pos(elder);
+            assert!(
+                (x - 8.5).abs().max((z - 8.5).abs()) <= 12.01,
+                "social action {wanted} escaped its home radius: ({x:.2}, {z:.2})"
+            );
+            if w.debug_villager_social_action(elder) == wanted {
+                break;
+            }
+        }
+        assert_eq!(w.debug_villager_social_action(elder), wanted);
+
+        let mut frame = empty_frame();
+        let mut draws = Vec::new();
+        let mut shadows = Vec::new();
+        let mut props = Vec::new();
+        w.build_frame(&mut frame, &mut draws, &mut shadows, &mut props, 0.0);
+        let sidecar = w
+            .entity_role_actions()
+            .iter()
+            .find(|entry| entry.role == 1)
+            .expect("elder sidecar entry");
+        assert_eq!(sidecar.action, wanted, "social pose reaches the v28 sidecar");
+
+        if wanted == 9 {
+            w.debug_edit(8, 8, 14, world::AIR);
+            w.update(&zero, 0.05);
+            assert_eq!(w.debug_villager_social_action(elder), 0, "removed bench cancels sitting");
+            assert_eq!(w.debug_creature_path_len(elder), 0, "cancel clears the old prop path");
+        }
+    }
+
+    // A forced social action cannot override the home tether.
+    w.debug_set_creature_pos(elder, 21.5, 8.0, 8.5);
+    assert!(w.debug_force_villager_social_action(elder, 6));
+    for _ in 0..320 {
+        w.update(&zero, 0.05);
+        let (x, _, z) = w.debug_creature_pos(elder);
+        if (x - 8.5).abs().max((z - 8.5).abs()) <= 12.0 {
+            break;
+        }
+    }
+    let (x, _, z) = w.debug_creature_pos(elder);
+    assert!((x - 8.5).abs().max((z - 8.5).abs()) <= 12.01, "elder returns inside tether");
+    assert_eq!(w.debug_villager_social_action(elder), 0, "tether cancels social state");
+
+    // Keep the real broom and its interaction cell valid, but seal the villager in.
+    // The bounded path failure must cancel sweep without leaving stale movement.
+    w.debug_set_creature_pos(elder, 8.5, 8.0, 8.5);
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            if dx == 0 && dz == 0 { continue; }
+            for y in 8..=10 {
+                w.debug_edit(8 + dx, y, 8 + dz, world::GLOW);
+            }
+        }
+    }
+    assert!(w.debug_force_villager_social_action(elder, 10));
+    w.update(&zero, 0.05);
+    assert_eq!(w.debug_villager_social_action(elder), 0, "unreachable broom cancels sweep");
+    assert_eq!(w.debug_creature_path_len(elder), 0, "failed sweep leaves no stale path");
+}
+
+#[test]
 fn woodcutter_station_goal_uses_nearest_torus_image() {
     let period = worldgen::WORLD_PERIOD;
     let (gx, gz) = World::debug_villager_nearest_goal(

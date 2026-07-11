@@ -35,5 +35,7 @@
   { "id": 98, "name": "mason_bench", "display_name": "Mason Bench", "max_stack": 1, "places_block": "mason_bench" },
   { "id": 99, "name": "blacksmith_forge", "display_name": "Blacksmith Forge", "max_stack": 1, "places_block": "blacksmith_forge" },
   { "id": 100, "name": "herbalist_table", "display_name": "Herbalist Table", "max_stack": 1, "places_block": "herbalist_table" },
-  { "id": 101, "name": "builder_sawbench", "display_name": "Builder Sawbench", "max_stack": 1, "places_block": "builder_sawbench" }
+  { "id": 101, "name": "builder_sawbench", "display_name": "Builder Sawbench", "max_stack": 1, "places_block": "builder_sawbench" },
+  { "id": 102, "name": "communal_bench", "display_name": "Communal Bench", "max_stack": 1, "places_block": "communal_bench" },
+  { "id": 103, "name": "broom_stand", "display_name": "Broom Stand", "max_stack": 1, "places_block": "broom_stand" }
 ]

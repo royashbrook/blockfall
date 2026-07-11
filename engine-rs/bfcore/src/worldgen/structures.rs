@@ -1310,6 +1310,10 @@ const SETTLEMENT_WORKSTATIONS: [(i32, i32, BlockId); 5] = [
     (6, 6, BUILDER_SAWBENCH),
     (4, 4, CHOPPING_BLOCK),
 ];
+const SETTLEMENT_SOCIAL_PROPS: [(i32, i32, BlockId); 2] = [
+    (0, 6, COMMUNAL_BENCH),
+    (0, -6, BROOM_STAND),
+];
 
 fn place_settlement_workstation<C: Chunk>(
     ax: i32,
@@ -1376,6 +1380,23 @@ fn place_settlement_workstations<C: Chunk>(
     }
 }
 
+fn place_settlement_social_props<C: Chunk>(
+    ax: i32,
+    az: i32,
+    seed: u64,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+    foundation: BlockId,
+) {
+    for (dx, dz, block) in SETTLEMENT_SOCIAL_PROPS {
+        place_settlement_workstation(
+            ax, az, dx, dz, block, seed, chunk, wx_min, wy_min, wz_min, foundation,
+        );
+    }
+}
+
 fn place_village<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
     for dz in -1..=1 {
         for dx in -1..=1 {
@@ -1396,6 +1417,7 @@ fn place_village<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, w
         place_settlement_building(ax, az, *site, hh, seed, chunk, wx_min, wy_min, wz_min);
     }
     place_settlement_workstations(ax, az, seed, chunk, wx_min, wy_min, wz_min, COBBLESTONE);
+    place_settlement_social_props(ax, az, seed, chunk, wx_min, wy_min, wz_min, COBBLESTONE);
 
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
@@ -2080,6 +2102,7 @@ fn place_city<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
     }
     place_settlement_workstations(ax, az, seed, chunk, wx_min, wy_min, wz_min, STONE_BRICK);
     place_city_core(ax, az, h, seed, chunk, wx_min, wy_min, wz_min);
+    place_settlement_social_props(ax, az, seed, chunk, wx_min, wy_min, wz_min, STONE_BRICK);
 
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }

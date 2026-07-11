@@ -328,6 +328,9 @@ struct Creature {
     // creature field: villagers are repopulated after load, so old saves need no
     // migration and a missing workstation simply falls back to home.
     routine: VillagerRoutine,
+    // #251 transient social action. Villagers are reconstructed after load, so
+    // pairing/pose/cooldown state needs no save migration or global scheduler.
+    social: VillagerSocial,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -378,6 +381,45 @@ impl VillagerRoutine {
     }
 }
 
+#[derive(Clone, Debug)]
+struct VillagerSocial {
+    action: u32,
+    timer: f32,
+    total: f32,
+    cooldown: f32,
+    sequence: u32,
+    target_y: i32,
+    partner: u64,
+    initialized: bool,
+    arrived: bool,
+}
+
+impl Default for VillagerSocial {
+    fn default() -> Self {
+        Self {
+            action: 0,
+            timer: 0.0,
+            total: 1.0,
+            cooldown: 0.0,
+            sequence: 0,
+            target_y: NO_FLOOR,
+            partner: 0,
+            initialized: false,
+            arrived: false,
+        }
+    }
+}
+
+impl VillagerSocial {
+    fn progress(&self) -> f32 {
+        (1.0 - self.timer / self.total.max(0.001)).clamp(0.0, 1.0)
+    }
+
+    fn visible_action(&self) -> u32 {
+        if matches!(self.action, 8..=10) && !self.arrived { 2 } else { self.action }
+    }
+}
+
 impl Default for Creature {
     fn default() -> Creature {
         Creature {
@@ -407,6 +449,7 @@ impl Default for Creature {
             given: String::new(),
             ai: creature_ai::CreatureAi::default(),
             routine: VillagerRoutine::default(),
+            social: VillagerSocial::default(),
         }
     }
 }

@@ -240,7 +240,8 @@ pub struct bf_entity_draw {
 
 /// #254 (v28): profession and current routine action for one render entity.
 /// Entries are index-aligned with bf_render_frame.entities. Zero means the
-/// entity has no profession/routine metadata.
+/// entity has no profession/routine metadata. Actions: 1 idle, 2 travel,
+/// 3 work, 4 home, 5 look, 6 gesture, 7 greet, 8 chat, 9 sit, 10 sweep.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct bf_entity_role_action {

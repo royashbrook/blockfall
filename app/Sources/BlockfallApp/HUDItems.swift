@@ -75,6 +75,8 @@ private let kItemTable: [UInt16: ItemInfo] = [
     99: .init(name: "Blacksmith Forge", color: itemColor(0.28, 0.30, 0.34)),
     100: .init(name: "Herbalist Table", color: itemColor(0.38, 0.58, 0.32)),
     101: .init(name: "Builder Sawbench", color: itemColor(0.68, 0.48, 0.25)),
+    102: .init(name: "Communal Bench", color: itemColor(0.60, 0.42, 0.22)),
+    103: .init(name: "Broom Stand", color: itemColor(0.66, 0.51, 0.25)),
 ]
 func itemName(_ id: UInt16) -> String { kItemTable[id]?.name ?? "Item \(id)" }
 func itemChipColor(_ id: UInt16) -> NSColor { kItemTable[id]?.color ?? NSColor(hue: CGFloat(id % 12)/12, saturation: 0.6, brightness: 0.9, alpha: 1) }
@@ -157,6 +159,8 @@ func itemDescription(id: UInt16) -> String {
     case 99: return "A heavy anvil and glowing little forge where the blacksmith shapes iron."
     case 100: return "A herb table with a mortar, bottles and fresh leaves for mixing remedies."
     case 101: return "A sturdy trestle bench with a plank and saw for the village builder."
+    case 102: return "A warm oak bench where villagers can sit together in the square."
+    case 103: return "A little rack with a real broom and dustpan for keeping the square tidy."
     default: return "A useful item. Try crafting with it or placing it in the world!"
     }
 }

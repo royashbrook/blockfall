@@ -490,6 +490,8 @@ extension HUDView {
         // --- Workstations ---
         case 97: drawChoppingBlock(in: r)
         case 98, 99, 100, 101: drawArtisanStation(id: id, in: r)
+        case 102: drawCommunalBench(in: r)
+        case 103: drawBroomStand(in: r)
         default: drawBlob(in: r, color: base)                   // graceful fallback
         }
     }
@@ -630,6 +632,52 @@ extension HUDView {
                        to: NSPoint(x: r.maxX - r.width * 0.05, y: r.maxY - r.height * 0.02),
                        thickness: max(2, r.width * 0.08))
         }
+    }
+
+    private func drawCommunalBench(in r: NSRect) {
+        let wood = itemColor(0.60, 0.42, 0.22)
+        let dark = shade(wood, 0.62)
+        let seat = NSRect(x: r.minX + r.width * 0.10, y: r.minY + r.height * 0.38,
+                          width: r.width * 0.80, height: r.height * 0.16)
+        wood.setFill(); NSBezierPath(roundedRect: seat, xRadius: 3, yRadius: 3).fill()
+        for x in [seat.minX + r.width * 0.10, seat.maxX - r.width * 0.16] {
+            dark.setFill()
+            NSBezierPath(rect: NSRect(x: x, y: r.minY + r.height * 0.10,
+                                      width: r.width * 0.07, height: r.height * 0.30)).fill()
+        }
+        let back = NSRect(x: seat.minX + r.width * 0.04, y: seat.maxY + r.height * 0.08,
+                          width: seat.width - r.width * 0.08, height: r.height * 0.20)
+        lighten(wood, 0.12).setFill()
+        NSBezierPath(roundedRect: back, xRadius: 3, yRadius: 3).fill()
+        tick(NSPoint(x: back.minX, y: seat.maxY), NSPoint(x: back.minX, y: back.maxY), dark,
+             width: max(2, r.width * 0.07))
+        tick(NSPoint(x: back.maxX, y: seat.maxY), NSPoint(x: back.maxX, y: back.maxY), dark,
+             width: max(2, r.width * 0.07))
+    }
+
+    private func drawBroomStand(in r: NSRect) {
+        let wood = itemColor(0.50, 0.31, 0.15)
+        let straw = itemColor(0.86, 0.67, 0.24)
+        let iron = itemColor(0.30, 0.32, 0.35)
+        wood.setFill()
+        NSBezierPath(roundedRect: NSRect(x: r.minX + r.width * 0.54, y: r.minY + r.height * 0.10,
+                                         width: r.width * 0.28, height: r.height * 0.10),
+                     xRadius: 2, yRadius: 2).fill()
+        tick(NSPoint(x: r.minX + r.width * 0.70, y: r.minY + r.height * 0.16),
+             NSPoint(x: r.minX + r.width * 0.70, y: r.maxY - r.height * 0.10), wood,
+             width: max(2, r.width * 0.08))
+        tick(NSPoint(x: r.minX + r.width * 0.48, y: r.maxY - r.height * 0.15),
+             NSPoint(x: r.minX + r.width * 0.82, y: r.maxY - r.height * 0.15), iron,
+             width: max(1, r.width * 0.05))
+        tick(NSPoint(x: r.minX + r.width * 0.27, y: r.minY + r.height * 0.30),
+             NSPoint(x: r.minX + r.width * 0.53, y: r.maxY - r.height * 0.08), wood,
+             width: max(2, r.width * 0.065))
+        let bristles = NSBezierPath()
+        bristles.move(to: NSPoint(x: r.minX + r.width * 0.10, y: r.minY + r.height * 0.10))
+        bristles.line(to: NSPoint(x: r.minX + r.width * 0.42, y: r.minY + r.height * 0.10))
+        bristles.line(to: NSPoint(x: r.minX + r.width * 0.32, y: r.minY + r.height * 0.34))
+        bristles.line(to: NSPoint(x: r.minX + r.width * 0.22, y: r.minY + r.height * 0.34))
+        bristles.close(); straw.setFill(); bristles.fill()
     }
 
     // ----- Tools -----------------------------------------------------------

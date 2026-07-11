@@ -523,6 +523,8 @@ const MASON_BENCH: BlockId = 58;
 const BLACKSMITH_FORGE: BlockId = 59;
 const HERBALIST_TABLE: BlockId = 60;
 const BUILDER_SAWBENCH: BlockId = 61;
+const COMMUNAL_BENCH: BlockId = 62;
+const BROOM_STAND: BlockId = 63;
 const MISSING_BELOW_OCCLUDER: BlockId = 1;
 #[inline]
 fn is_door(id: BlockId) -> bool {
@@ -547,6 +549,11 @@ fn is_chopping_block(id: BlockId) -> bool {
 #[inline]
 fn is_artisan_workstation(id: BlockId) -> bool {
     (MASON_BENCH..=BUILDER_SAWBENCH).contains(&id)
+}
+
+#[inline]
+fn is_social_prop(id: BlockId) -> bool {
+    id == COMMUNAL_BENCH || id == BROOM_STAND
 }
 
 #[inline]
@@ -579,6 +586,7 @@ fn is_opaque(id: BlockId) -> bool {
         && !is_bed(id)
         && !is_chopping_block(id)
         && !is_artisan_workstation(id)
+        && !is_social_prop(id)
         && !is_stone_rubble(id)
         && !is_snow_overlay(id)
         && !is_prop(id)
@@ -602,6 +610,7 @@ fn is_occluder(id: BlockId) -> bool {
         && !is_bed(id)
         && !is_chopping_block(id)
         && !is_artisan_workstation(id)
+        && !is_social_prop(id)
         && !is_stone_rubble(id)
         && !is_snow_overlay(id)
         && !is_prop(id)
@@ -1443,6 +1452,63 @@ fn emit_artisan_workstation(
     true
 }
 
+// Finished communal detail: a west-facing backed bench and a broom rack with a
+// stepped leaning broom/dustpan. Both are persistent one-voxel objects built only
+// from existing real materials, never their placeholder block material.
+fn emit_social_prop(
+    id: BlockId,
+    bx: i32,
+    by: i32,
+    bz: i32,
+    sky: u8,
+    blk: u8,
+    buf: &mut MeshBuffers,
+) -> bool {
+    const BENCH: &[WorkstationPiece] = &[
+        (3, 6, 0, 6, 3, 6, 21),
+        (3, 6, 0, 6, 10, 13, 21),
+        (10, 13, 0, 6, 3, 6, 21),
+        (10, 13, 0, 6, 10, 13, 21),
+        (2, 14, 6, 9, 2, 14, 4),
+        (12, 14, 8, 16, 2, 5, 21),
+        (12, 14, 8, 16, 11, 14, 21),
+        (12, 14, 10, 13, 3, 13, 4),
+        (12, 14, 14, 16, 3, 13, 4),
+        (3, 12, 9, 11, 2, 4, 4),
+        (3, 12, 9, 11, 12, 14, 4),
+        (3, 11, 9, 10, 4, 12, 28),
+    ];
+    const BROOM: &[WorkstationPiece] = &[
+        (4, 12, 0, 2, 4, 12, 4),
+        (11, 14, 2, 16, 6, 10, 21),
+        (7, 14, 13, 16, 4, 12, 4),
+        (5, 8, 11, 14, 4, 6, 53),
+        (5, 8, 11, 14, 10, 12, 53),
+        (3, 5, 2, 7, 7, 9, 21),
+        (4, 6, 6, 11, 7, 9, 21),
+        (5, 7, 10, 15, 7, 9, 21),
+        (1, 6, 0, 3, 5, 11, 6),
+        (2, 6, 3, 5, 6, 10, 6),
+        (7, 11, 2, 5, 2, 5, 14),
+    ];
+    let pieces = match id {
+        COMMUNAL_BENCH => BENCH,
+        BROOM_STAND => BROOM,
+        _ => return false,
+    };
+    if buf.vtx_cap - buf.vtx.len() < pieces.len() * 24 * VERTEX_SIZE
+        || buf.idx_cap - buf.idx.len() < pieces.len() * 36 * INDEX_SIZE
+    {
+        return false;
+    }
+    for &(xlo, xhi, ylo, yhi, zlo, zhi, mat) in pieces {
+        if !emit_cuboid_16(bx, by, bz, xlo, xhi, ylo, yhi, zlo, zhi, mat, sky, blk, buf) {
+            return false;
+        }
+    }
+    true
+}
+
 // ---- torch emission ---------------------------------------------------------
 // Closed torch-shaped prop for a torch cell (id 32): post + head, 11 quads =
 // 44 verts + 66 indices. Sub-cell positions use bf_pack_pos fractions.
@@ -2210,6 +2276,16 @@ impl GreedyMesher {
                         continue;
                     }
 
+                    if is_social_prop(here) {
+                        let psky = chunk.sky_light(x as usize, y as usize, z as usize);
+                        let pblk = chunk.block_light(x as usize, y as usize, z as usize);
+                        if !emit_social_prop(here, x, y, z, psky, pblk, &mut buf) {
+                            buf.full = true;
+                            return finalize(buf, false);
+                        }
+                        continue;
+                    }
+
                     // #244 beds: two stateless BED cells become one finished furniture
                     // mesh. The low X/Z endpoint owns both cells, preventing duplicate
                     // geometry and the internal full-block seam. An orphan still draws
@@ -2859,6 +2935,43 @@ mod tests {
                 short.vtx.is_empty() && short.idx.is_empty(),
                 "station {id} partially emitted past cap"
             );
+        }
+    }
+
+    #[test]
+    fn social_props_are_finished_persistent_material_silhouettes() {
+        for &(id, cuboids, materials) in &[
+            (COMMUNAL_BENCH, 12u32, &[4, 21, 28][..]),
+            (BROOM_STAND, 11u32, &[4, 6, 14, 21, 53][..]),
+        ] {
+            assert!(!is_opaque(id));
+            assert!(!is_occluder(id));
+            assert!(!is_prop(id), "social prop {id} must persist at distance");
+            let mut store = TestStore::new();
+            let mut ch = TestChunk::new();
+            ch.set(8, 8, 8, id);
+            store.chunks.insert(ChunkCoord::default(), ch);
+            let (res, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+            let verts = decode_position_and_mat(&vtx);
+            assert_eq!(res.index_count, cuboids * 36);
+            assert_eq!(res.vertex_bytes, cuboids * 24 * VERTEX_SIZE as u32);
+            assert!(verts.iter().all(|(_, mat)| *mat != id));
+            for material in materials {
+                assert!(verts.iter().any(|(_, mat)| mat == material));
+            }
+            for axis in 0..3 {
+                let (lo, hi) = verts.iter().map(|(p, _)| p[axis]).fold(
+                    (f32::MAX, f32::MIN),
+                    |(lo, hi), v| (lo.min(v), hi.max(v)),
+                );
+                assert!(lo >= 8.0 && hi <= 9.0, "social prop {id} escaped axis {axis}");
+            }
+            let mut short = MeshBuffers::new(
+                cuboids as usize * 24 * VERTEX_SIZE - 1,
+                cuboids as usize * 36 * INDEX_SIZE,
+            );
+            assert!(!emit_social_prop(id, 0, 0, 0, 15, 0, &mut short));
+            assert!(short.vtx.is_empty() && short.idx.is_empty());
         }
     }
 

@@ -2642,6 +2642,7 @@ extension EntityRenderer {
         // ---- WORLD CENTRE (at body mid) ----
         let groundY = pos.y
         let bodyY   = groundY + legTotalH + tH * 0.5 + breatheY
+            - (sitting ? s * 0.20 : 0)
         let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
 
         // Fold hit-squash + yaw into R; then bodySway is applied per-part via pw.
@@ -3933,10 +3934,26 @@ extension EntityRenderer {
         // Three deterministic tool strokes span a shift; no wall-clock guess is
         // involved, so stills and motion strips reproduce the same pose.
         let professionWorking = curEntityAction == 3 && (2...6).contains(curEntityRole)
+        let socialPose = (5...10).contains(curEntityAction)
+        let sweeping = curEntityAction == 10
+        let sitting = curEntityAction == 9
+        let poseActive = professionWorking || socialPose
         let workT = curEntityActionProgress * .pi * 6.0
         let workStroke = 0.5 - 0.5 * cos(workT)
         let workSweep = sin(workT)
         let workArms: (Float, Float, Float) = {
+            if socialPose {
+                switch curEntityAction {
+                case 6: return (-1.05 + workSweep * 0.22, 0.08, 0.02) // point/gesture
+                case 7: return (0.06, -1.28 + workSweep * 0.36, 0.02) // greeting wave
+                case 8: return (-0.34 + workSweep * 0.16,
+                                -0.58 - workSweep * 0.16, 0.03) // conversation
+                case 9: return (-0.18, 0.18, -0.06) // hands relaxed while seated
+                case 10: return (-0.72 + workSweep * 0.24,
+                                 -0.96 - workSweep * 0.24, 0.18) // two-hand sweep
+                default: return (0.02, -0.02, 0.0) // look around
+                }
+            }
             switch curEntityRole {
             case 2: return (-0.62 + workSweep * 0.32, -0.48 - workSweep * 0.32, 0.15) // saw
             case 3: return (-0.40 + workSweep * 0.18, -0.64 - workSweep * 0.22, 0.10) // stir
@@ -3950,13 +3967,13 @@ extension EntityRenderer {
         // #212 WALK CYCLE. Gate leg/arm swing on the measured ground speed so a moving
         // villager actually STRIDES (no more sliding) and a standing one plants its
         // feet and falls back to the gentle idle sway.
-        let walkAmt = professionWorking ? 0 : min(1.0, curGaitSpeed / 1.3)
+        let walkAmt = poseActive ? 0 : min(1.0, curGaitSpeed / 1.3)
         let strideWave = sin(phase)
         let easedStride = strideWave * (0.78 + 0.22 * abs(strideWave))
         let stride  = easedStride * 0.90 * walkAmt
-        let armAngL = professionWorking ? workArms.0
+        let armAngL = poseActive ? workArms.0
             : armSway * (1 - walkAmt) + (-stride * 1.1) * walkAmt
-        let armAngR = professionWorking ? workArms.1
+        let armAngR = poseActive ? workArms.1
             : -armSway * (1 - walkAmt) + (stride * 1.1) * walkAmt
         let footfall = abs(cos(phase))
         let stepSquash = footfall * footfall * 0.075 * walkAmt
@@ -3964,7 +3981,7 @@ extension EntityRenderer {
         let breatheY   = breatheYOffset(breathPhase, scale: s)
         let eyeBlinkSY = blinkScale(blinkPhase)
         let walkLean   = cos(phase) * 0.055 * walkAmt
-        let workLean: Float = professionWorking ? workArms.2 : 0
+        let workLean: Float = poseActive ? workArms.2 : 0
         let bodyLean   = EntityRenderer.rotZ(leanAngle + walkLean)
             * EntityRenderer.rotX(-walkLean * 0.65 + workLean)
 
@@ -4024,15 +4041,19 @@ extension EntityRenderer {
         let hipL = SIMD3<Float>(-tW * 0.24, hipY, 0)
         let hipR = SIMD3<Float>( tW * 0.24, hipY, 0)
         let ankleLag = cos(phase - 0.45) * 0.20 * walkAmt
-        drawCube(enc: enc, viewProj: viewProj, model: legM(hipL,  stride),
+        let legAngL: Float = sitting ? 1.05 : stride
+        let legAngR: Float = sitting ? 1.05 : -stride
+        let ankleL: Float = sitting ? -0.85 : -stride * 0.30 + ankleLag
+        let ankleR: Float = sitting ? -0.85 : stride * 0.30 - ankleLag
+        drawCube(enc: enc, viewProj: viewProj, model: legM(hipL, legAngL),
                  rgb: pantsCol, sat: sat, shape: .cylinder)
-        drawCube(enc: enc, viewProj: viewProj, model: legM(hipR, -stride),
+        drawCube(enc: enc, viewProj: viewProj, model: legM(hipR, legAngR),
                  rgb: pantsCol, sat: sat, shape: .cylinder)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: footM(hipL, stride, -stride * 0.30 + ankleLag),
+                 model: footM(hipL, legAngL, ankleL),
                  rgb: shoeCol, sat: sat, shape: .sphere)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: footM(hipR, -stride, stride * 0.30 - ankleLag),
+                 model: footM(hipR, legAngR, ankleR),
                  rgb: shoeCol, sat: sat, shape: .sphere)
 
         // ---- TORSO (tunic) ----
@@ -4086,13 +4107,17 @@ extension EntityRenderer {
         }
         let elbowLag = cos(phase - 0.55) * 0.30 * walkAmt
         let idleElbow = sin(phase * 0.7 + hash) * 0.05 * (1 - walkAmt)
-        let elbowL: Float = professionWorking ? (curEntityRole == 2 ? -0.42 : -0.22)
+        let poseElbowL: Float = socialPose ? (sweeping ? -0.38 : -0.24)
+            : (curEntityRole == 2 ? -0.42 : -0.22)
+        let poseElbowR: Float = socialPose ? (sweeping ? -0.48 : -0.30)
+            : (curEntityRole == 3 ? -0.40 : -0.12)
+        let elbowL: Float = poseActive ? poseElbowL
             : elbowLag + idleElbow
-        let elbowR: Float = professionWorking ? (curEntityRole == 3 ? -0.40 : -0.12)
+        let elbowR: Float = poseActive ? poseElbowR
             : -elbowLag - idleElbow
-        let wristL: Float = professionWorking ? (curEntityRole == 2 ? 0.28 : 0.10)
+        let wristL: Float = poseActive ? (sweeping ? 0.20 : 0.10)
             : -elbowL * 0.40 + sin(phase - 0.9) * 0.10 * walkAmt
-        let wristR: Float = professionWorking ? (curEntityRole == 3 ? -0.22 : 0.05)
+        let wristR: Float = poseActive ? (sweeping ? -0.18 : 0.05)
             : -elbowR * 0.40 - sin(phase - 0.9) * 0.10 * walkAmt
         drawCube(enc: enc, viewProj: viewProj,
                  model: upperArmM(shoulderXL, armAngL),
@@ -4112,7 +4137,7 @@ extension EntityRenderer {
         drawCube(enc: enc, viewProj: viewProj,
                  model: handM(shoulderXR, armAngR, elbowR, wristR),
                  rgb: skinCol, sat: sat, shape: .sphere)
-        if professionWorking {
+        if professionWorking || sweeping {
             // Finished held tools make every role readable in a still frame. Two
             // parts per tool preserve the 29-part villager cap.
             func toolM(_ offset: SIMD3<Float>, _ dims: SIMD3<Float>,
@@ -4130,7 +4155,16 @@ extension EntityRenderer {
             }
             let handleCol = SIMD3<Float>(0.46, 0.27, 0.12)
             let ironCol = SIMD3<Float>(0.48, 0.53, 0.58)
-            switch curEntityRole {
+            if sweeping {
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: toolM(SIMD3(0, -s * 0.34, 0),
+                                      SIMD3(s * 0.065, s * 0.72, s * 0.065), rotX: 0.18),
+                         rgb: handleCol, sat: sat, shape: .cylinder)
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: toolM(SIMD3(0, -s * 0.72, s * 0.04),
+                                      SIMD3(s * 0.34, s * 0.18, s * 0.22), rotX: 0.18),
+                         rgb: SIMD3<Float>(0.86, 0.67, 0.24), sat: sat)
+            } else { switch curEntityRole {
             case 2: // builder: broad hand-saw blade and warm handle.
                 drawCube(enc: enc, viewProj: viewProj,
                          model: toolM(SIMD3(0, -s * 0.14, -s * 0.10),
@@ -4177,6 +4211,7 @@ extension EntityRenderer {
                                       SIMD3(s * 0.34, s * 0.15, s * 0.10)),
                          rgb: ironCol, sat: sat)
             }
+            }
         }
 
         // ---- NECK + HEAD ----
@@ -4192,9 +4227,13 @@ extension EntityRenderer {
             + sin(phase - 0.70) * 0.075 * walkAmt
             + sin(phase * 0.55 + hash) * 0.018 * (1 - walkAmt)
         let headLagX = cos(phase - 0.45) * 0.065 * walkAmt
+        let socialHeadY: Float = curEntityAction == 5 ? sin(curEntityActionProgress * .pi * 2) * 0.52 : 0
+        let socialNod: Float = (curEntityAction == 7 || curEntityAction == 8)
+            ? sin(curEntityActionProgress * .pi * 4) * 0.10 : 0
         let headRig = EntityRenderer.trans(headPivot)
             * EntityRenderer.rotZ(headLagZ)
-            * EntityRenderer.rotX(headLagX)
+            * EntityRenderer.rotY(socialHeadY)
+            * EntityRenderer.rotX(headLagX + socialNod)
             * EntityRenderer.trans(-headPivot)
         func hpw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * bodyLean * headRig
@@ -4288,7 +4327,7 @@ extension EntityRenderer {
 
         switch faceStyle {
         case 1: // alert brows and a small round "o" mouth.
-            if !professionWorking {
+            if !professionWorking && !sweeping {
                 for bx in [-eyeSpread, eyeSpread] {
                     drawCube(enc: enc, viewProj: viewProj,
                              model: hpw(SIMD3(bx, eyeY + hH * 0.18, hBrowZ),
@@ -4301,7 +4340,7 @@ extension EntityRenderer {
                                 SIMD3(s * 0.075, s * 0.095, s * 0.035)),
                      rgb: mouthCol, sat: sat, shape: .sphere)
         case 2: // two freckle clusters and a broad toothy grin.
-            if !professionWorking {
+            if !professionWorking && !sweeping {
                 for fx in [-hW * 0.30, hW * 0.30] {
                     drawCube(enc: enc, viewProj: viewProj,
                              model: hpw(SIMD3(fx, headY - hH * 0.13, hSideFaceZ),
@@ -4318,7 +4357,7 @@ extension EntityRenderer {
                                 SIMD3(hW * 0.26, s * 0.025, s * 0.018)),
                      rgb: scleraCol, sat: sat)
         case 3: // drooping moustache over a shy straight mouth.
-            if !professionWorking {
+            if !professionWorking && !sweeping {
                 for mx in [-s * 0.055, s * 0.055] {
                     drawCube(enc: enc, viewProj: viewProj,
                              model: hpw(SIMD3(mx, headY - hH * 0.19, hFaceZ),
@@ -4331,7 +4370,7 @@ extension EntityRenderer {
                                 SIMD3(hW * 0.25, s * 0.035, s * 0.025)),
                      rgb: mouthCol, sat: sat)
         default: // classic rosy-cheeked smile.
-            if !professionWorking {
+            if !professionWorking && !sweeping {
                 for cx in [-hW * 0.32, hW * 0.32] {
                     drawCube(enc: enc, viewProj: viewProj,
                              model: hpw(SIMD3(cx, headY - hH * 0.14, hSideFaceZ),

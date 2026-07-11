@@ -363,6 +363,106 @@ mod worldgen_tests {
         assert_eq!(anchor + 4, K_CHUNK_DIM, "fixture must cross an X/Z chunk seam");
     }
 
+    #[test]
+    fn settlement_social_props_are_unique_supported_clear_and_seam_safe() {
+        fn stamp(
+            anchor: i32,
+            seed: u64,
+            foundation: BlockId,
+            reverse: bool,
+        ) -> std::collections::HashMap<(i32, i32, i32), BlockId> {
+            let mut windows = Vec::new();
+            let mut low_y = i32::MAX;
+            let mut high_y = i32::MIN;
+            for &(dx, dz, _) in &SETTLEMENT_SOCIAL_PROPS {
+                let floor = struct_surface(anchor + dx, anchor + dz, seed)
+                    .max(struct_surface(anchor + dx - 1, anchor + dz, seed))
+                    .max(SEA_LEVEL + 1);
+                low_y = low_y.min(floor - 1);
+                high_y = high_y.max(floor + 2);
+            }
+            for cy in seam_floordiv_pub(low_y, K_CHUNK_DIM)
+                ..=seam_floordiv_pub(high_y, K_CHUNK_DIM)
+            {
+                for cz in seam_floordiv_pub(anchor - 6, K_CHUNK_DIM)
+                    ..=seam_floordiv_pub(anchor + 6, K_CHUNK_DIM)
+                {
+                    for cx in seam_floordiv_pub(anchor - 1, K_CHUNK_DIM)
+                        ..=seam_floordiv_pub(anchor, K_CHUNK_DIM)
+                    {
+                        windows.push((cx, cy, cz));
+                    }
+                }
+            }
+            if reverse {
+                windows.reverse();
+            }
+            let mut cells = std::collections::HashMap::new();
+            for (cx, cy, cz) in windows {
+                let (wx_min, wy_min, wz_min) =
+                    (cx * K_CHUNK_DIM, cy * K_CHUNK_DIM, cz * K_CHUNK_DIM);
+                let mut chunk = GridChunk {
+                    wx_min,
+                    wy_min,
+                    wz_min,
+                    cells: std::mem::take(&mut cells),
+                };
+                place_settlement_social_props(
+                    anchor, anchor, seed, &mut chunk, wx_min, wy_min, wz_min, foundation,
+                );
+                cells = chunk.cells;
+            }
+            cells
+        }
+
+        let seed = SEED;
+        let anchor = K_CHUNK_DIM;
+        for &(typ, hash, foundation) in &[
+            (STRUCT_VILLAGE, 0x251A11u64, COBBLESTONE),
+            (STRUCT_CITY, 0x251C17u64, STONE_BRICK),
+        ] {
+            let sd = StructDesc {
+                anchor_wx: anchor,
+                anchor_wz: anchor,
+                typ,
+                cell_hash: hash,
+                present: true,
+            };
+            let cells = stamp(anchor, seed, foundation, false);
+            assert_eq!(cells, stamp(anchor, seed, foundation, true));
+            for &(dx, dz, block) in &SETTLEMENT_SOCIAL_PROPS {
+                let found: Vec<_> = cells
+                    .iter()
+                    .filter_map(|(&pos, &b)| (b == block).then_some(pos))
+                    .collect();
+                assert_eq!(found.len(), 1, "expected one social prop {block}");
+                let (sx, sy, sz) = found[0];
+                assert_eq!((sx, sz), (anchor + dx, anchor + dz));
+                assert_eq!(cells.get(&(sx, sy - 1, sz)), Some(&foundation));
+                assert_eq!(cells.get(&(sx, sy + 1, sz)).copied().unwrap_or(AIR), AIR);
+                assert_eq!(cells.get(&(sx - 1, sy - 1, sz)), Some(&foundation));
+                for wy in sy..=sy + 1 {
+                    assert_eq!(cells.get(&(sx - 1, wy, sz)).copied().unwrap_or(AIR), AIR);
+                }
+
+                let (wx_min, wy_min, wz_min) = (
+                    seam_floordiv_pub(sx, K_CHUNK_DIM) * K_CHUNK_DIM,
+                    seam_floordiv_pub(sy, K_CHUNK_DIM) * K_CHUNK_DIM,
+                    seam_floordiv_pub(sz, K_CHUNK_DIM) * K_CHUNK_DIM,
+                );
+                let mut owner = GridChunk {
+                    wx_min,
+                    wy_min,
+                    wz_min,
+                    cells: std::collections::HashMap::new(),
+                };
+                place_structure(&sd, seed, &mut owner, wx_min, wy_min, wz_min);
+                assert_eq!(owner.cells.get(&(sx, sy, sz)), Some(&block));
+            }
+        }
+        assert_eq!(anchor % K_CHUNK_DIM, 0, "props own an X-seam voxel");
+    }
+
     // The world is varied (the biome map is not collapsed to one type). #181:
     // biomes are latitude-banded now (warm equator at z = 0, cold pole at
     // z = W/2), so a scan that only looks near the origin sees the warm set.

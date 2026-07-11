@@ -70,6 +70,8 @@ final class ParticleSystem {
         59: SIMD3(0.28, 0.30, 0.34),   // blacksmith forge — iron/stone
         60: SIMD3(0.38, 0.58, 0.32),   // herbalist table — herbs/wood
         61: SIMD3(0.68, 0.48, 0.25),   // builder sawbench — fresh timber
+        62: SIMD3(0.60, 0.42, 0.22),   // communal bench — warm oak
+        63: SIMD3(0.66, 0.51, 0.25),   // broom stand — wood and straw
     ]
     private static let defaultColour = SIMD3<Float>(0.55, 0.55, 0.55)   // mid-grey
 
