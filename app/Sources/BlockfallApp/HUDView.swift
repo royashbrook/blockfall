@@ -914,8 +914,8 @@ final class HUDView: NSView {
         switch v.tier {
         case 0: tierName = "Village"
         case 1: tierName = "Walled Village"
-        case 2: tierName = "Stone Town"
-        default: tierName = "Iron-Gated Town"
+        case 2: tierName = "Town"
+        default: tierName = "City"
         }
         // Headline + the donation hint.
         let title = "\(tierName)  ·  Tier \(v.tier)/3"

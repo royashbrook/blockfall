@@ -154,6 +154,7 @@ final class MinimapView: NSView {
         switch kind {
         case 0: col = NSColor(calibratedRed: 0.90, green: 0.42, blue: 0.30, alpha: 1); r = 4.5 // home
         case 1: col = NSColor(calibratedRed: 0.70, green: 0.52, blue: 0.26, alpha: 1); r = 4    // village
+        case 4: col = NSColor(calibratedRed: 0.88, green: 0.55, blue: 0.22, alpha: 1); r = 5    // town
         case 3: col = NSColor(calibratedRed: 0.62, green: 0.63, blue: 0.72, alpha: 1); r = 5.5 // city (#221): bigger grey keep dot
         default: col = NSColor(calibratedRed: 0.70, green: 0.54, blue: 1.0, alpha: 1); r = 4    // totem
         }

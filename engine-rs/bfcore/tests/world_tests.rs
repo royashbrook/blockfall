@@ -2342,6 +2342,55 @@ fn village_woodcutter_builds_wall_to_tier1() {
 }
 
 #[test]
+fn natural_city_is_complete_and_logs_cannot_regress_stone_growth() {
+    let (mut city, _) = village_world(11);
+    let (px, _, pz, _) = city.get_player();
+    let (typ, cx, cz) = worldgen::worldgen_settlement_near(px as i32, pz as i32, 80, 11)
+        .expect("fresh HOME city");
+    assert!(worldgen::worldgen_is_city(typ));
+    assert_eq!(city.debug_settlement_class(cx, cz), 2);
+    assert_eq!(city.debug_village_raw_tier(cx, cz), 0);
+    assert_eq!(city.debug_village_tier(cx, cz), 3, "natural city reports complete");
+
+    let worker = city.debug_spawn_villager_role(cx, cz, 4);
+    let log = city.debug_item_id("oak_log");
+    city.debug_give(log, 8);
+    city.debug_set_selected(0);
+    let before = city.debug_item_count(log);
+    assert!(city.debug_try_donation(worker), "complete city explicitly refuses");
+    assert_eq!(city.debug_item_count(log), before, "city consumes no donation");
+    assert_eq!(city.debug_village_raw_tier(cx, cz), 0);
+
+    let (mut town, (ax, az)) = village_world(11);
+    town.debug_set_village_tier(ax, az, 2);
+    let worker = town.debug_spawn_villager_role(ax, az, 4);
+    let log = town.debug_item_id("oak_log");
+    town.debug_give(log, 8);
+    town.debug_set_selected(0);
+    let before = town.debug_item_count(log);
+    assert!(town.debug_try_donation(worker));
+    assert_eq!(town.debug_item_count(log), before, "stone town consumes no logs");
+    assert_eq!(town.debug_village_raw_tier(ax, az), 2, "wood never regresses stone");
+}
+
+#[test]
+fn town_blacksmith_and_city_herbalist_keep_active_trade_sheets() {
+    let (world, _) = village_world(11);
+    assert_eq!(World::debug_villager_npc_for_index(false, 4), 6);
+    assert_eq!(World::debug_villager_npc_for_index(false, 5), 3);
+
+    let mut blacksmith = bf_trade_view::default();
+    world.trade_offers(6, &mut blacksmith);
+    assert_eq!(blacksmith.active, 1, "Town Blacksmith trades");
+    assert!(blacksmith.offer_count > 0);
+
+    let mut herbalist = bf_trade_view::default();
+    world.trade_offers(3, &mut herbalist);
+    assert_eq!(herbalist.active, 1, "City Herbalist trades");
+    assert!(herbalist.offer_count > 0);
+}
+
+#[test]
 fn village_mason_upgrades_wood_to_stone_tier2() {
     let (mut w, (ax, az)) = village_world(11);
     let mason = w.debug_spawn_villager_role(ax, az, 5);
@@ -2500,17 +2549,108 @@ fn village_tier_persists_round_trip() {
 }
 
 #[test]
+fn artisan_growth_preserves_player_blocks_through_promotion_and_load() {
+    let dir = std::env::temp_dir().join(format!("bf_growth_save_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.to_str().unwrap().to_string();
+    let seed = 11;
+    let (mut world, _) = village_world(seed);
+    let mut village = None;
+    'scan: for z in (-4096..4096).step_by(64) {
+        for x in (-4096..4096).step_by(64) {
+            let (typ, ax, az, _) = worldgen::worldgen_structure_near(x, z, seed);
+            if typ == 8 {
+                village = Some((ax, az));
+                break 'scan;
+            }
+        }
+    }
+    let (ax, az) = village.expect("generated village");
+    let shop_cell = |dx: i32, dz: i32| {
+        let sx = ax + dx;
+        let sz = az + dz;
+        let floor = worldgen::worldgen_surface_height(sx, sz, seed)
+            .max(worldgen::worldgen_surface_height(sx - 1, sz, seed))
+            .max(7);
+        (sx, floor + 3, sz + 2)
+    };
+    let player = shop_cell(-4, -4);
+    let clean = shop_cell(-4, 4);
+    let _ = world.debug_generate_chunk_at(player.0, player.1, player.2);
+    let _ = world.debug_generate_chunk_at(clean.0, clean.1, clean.2);
+    world.debug_edit(player.0, player.1, player.2, world::BRICK);
+
+    world.debug_set_village_tier(ax, az, 2);
+    assert_eq!(
+        world.debug_block_at(player.0, player.1, player.2),
+        world::BRICK,
+        "promotion never overwrites the player shop block"
+    );
+    assert_eq!(
+        world.debug_block_at(clean.0, clean.1, clean.2),
+        24,
+        "clean mason plot grows its pitched roof"
+    );
+    assert!(world.save(&path));
+
+    let content: &'static ContentRegistry = {
+        let mut c = ContentRegistry::new();
+        assert!(c.load(CONTENT));
+        Box::leak(Box::new(c))
+    };
+    let mut loaded = World::new(Some(TerrainGen::new()));
+    loaded.debug_set_sync_streaming(true);
+    loaded.set_allocator(allocator());
+    loaded.set_content(content);
+    assert!(loaded.load(&path));
+    let _ = loaded.debug_generate_chunk_at(clean.0, clean.1, clean.2);
+    assert_eq!(loaded.debug_block_at(player.0, player.1, player.2), world::BRICK);
+    assert_eq!(loaded.debug_block_at(clean.0, clean.1, clean.2), 24);
+    assert_eq!(loaded.debug_village_raw_tier(ax, az), 2);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn route_for_anchor(world: &World<'_>, ax: i32, az: i32, tier: u8) -> Option<usize> {
+    let delta = |d: i32| {
+        (d + worldgen::WORLD_PERIOD / 2).rem_euclid(worldgen::WORLD_PERIOD)
+            - worldgen::WORLD_PERIOD / 2
+    };
+    (0..world.debug_road_route_count()).find(|&i| {
+        let Some(r) = world.debug_road_route(i) else {
+            return false;
+        };
+        let distance = |x: i32, z: i32| delta(x - ax).abs().max(delta(z - az).abs());
+        r.6 == tier && distance(r.0, r.1).min(distance(r.4, r.5)) == 9
+    })
+}
+
+fn develop_tier2_route(world: &mut World<'_>, seed: u64) -> (i32, i32, usize) {
+    for z in (-4096..4096).step_by(64) {
+        for x in (-4096..4096).step_by(64) {
+            let (typ, ax, az, _) = worldgen::worldgen_structure_near(x, z, seed);
+            if typ != 8 {
+                continue;
+            }
+            world.debug_set_village_tier(ax, az, 2);
+            if let Some(route) = route_for_anchor(world, ax, az, 2) {
+                return (ax, az, route);
+            }
+        }
+    }
+    panic!("seed {seed} has no independent tier-2 village route");
+}
+
+#[test]
 fn developed_roads_stream_upgrade_and_preserve_player_edits() {
     let (mut w, _) = village_world(11);
-    let (px, _, pz, _) = w.get_player();
-    let (_, ax, az) = worldgen::worldgen_settlement_near(px as i32, pz as i32, 80, 11)
-        .expect("fresh HOME is beside a generated settlement");
+    let (ax, az, route) = develop_tier2_route(&mut w, 11);
     let (core_y, wet) = worldgen::worldgen_road_surface(ax, az, 11);
     assert!(!wet, "settlement anchors are dry");
     let _ = w.debug_generate_chunk_at(ax, core_y, az);
     let core_before = w.debug_block_at(ax, core_y, az);
 
-    w.debug_set_village_tier(ax, az, 2);
     assert!(w.debug_road_route_count() > 0, "tier 2 creates a route");
     assert_eq!(
         w.debug_road_material_at(ax, az),
@@ -2523,9 +2663,9 @@ fn developed_roads_stream_upgrade_and_preserve_player_edits() {
         "tier promotion leaves the procedural city core untouched"
     );
 
-    let first_gate = w.debug_road_sample(0, 0).expect("route starts at a gate");
+    let first_gate = w.debug_road_sample(route, 0).expect("route starts at a gate");
     let last_gate = w
-        .debug_road_sample(0, w.debug_road_sample_count(0) - 1)
+        .debug_road_sample(route, w.debug_road_sample_count(route) - 1)
         .expect("route ends at a gate");
     let wrap_delta = |d: i32| {
         (d + worldgen::WORLD_PERIOD / 2).rem_euclid(worldgen::WORLD_PERIOD)
@@ -2552,9 +2692,9 @@ fn developed_roads_stream_upgrade_and_preserve_player_edits() {
         "the broad structure reserve does not leave a 51-block endpoint gap"
     );
 
-    let count = w.debug_road_sample_count(0);
+    let count = w.debug_road_sample_count(route);
     let (road_x, road_z, road_y) = (0..count)
-        .filter_map(|i| w.debug_road_sample(0, i))
+        .filter_map(|i| w.debug_road_sample(route, i))
         .find(|&(x, z, _)| {
             !worldgen::worldgen_structure_footprint(x, z, 11)
                 && !worldgen::worldgen_road_surface(x, z, 11).1
@@ -2579,7 +2719,7 @@ fn developed_roads_stream_upgrade_and_preserve_player_edits() {
     );
 
     let (far_x, far_z, far_y) = (count / 2..count)
-        .filter_map(|i| w.debug_road_sample(0, i))
+        .filter_map(|i| w.debug_road_sample(route, i))
         .find(|&(x, z, _)| {
             !worldgen::worldgen_structure_footprint(x, z, 11)
                 && (x.div_euclid(32), z.div_euclid(32))
@@ -2614,15 +2754,13 @@ fn road_routes_rebuild_from_saved_tiers_without_a_road_file() {
 
     {
         let (mut w, _) = village_world(42);
-        let (px, _, pz, _) = w.get_player();
-        let (_, sx, sz) = worldgen::worldgen_settlement_near(px as i32, pz as i32, 80, 42)
-            .expect("fresh HOME settlement");
-        ax = sx;
-        az = sz;
-        w.debug_set_village_tier(ax, az, 2);
-        route_before = w.debug_road_route(0).expect("tier creates route");
-        road_cell = (0..w.debug_road_sample_count(0))
-            .filter_map(|i| w.debug_road_sample(0, i))
+        let developed = develop_tier2_route(&mut w, 42);
+        ax = developed.0;
+        az = developed.1;
+        let route = developed.2;
+        route_before = w.debug_road_route(route).expect("tier creates route");
+        road_cell = (0..w.debug_road_sample_count(route))
+            .filter_map(|i| w.debug_road_sample(route, i))
             .find(|&(x, z, _)| !worldgen::worldgen_structure_footprint(x, z, 42))
             .expect("saved route exits the protected settlement footprint");
         assert!(w.save(&path));
@@ -2643,7 +2781,8 @@ fn road_routes_rebuild_from_saved_tiers_without_a_road_file() {
         loaded.set_content(content);
         assert!(loaded.load(&path));
         assert_eq!(loaded.debug_village_tier(ax, az), 2);
-        assert_eq!(loaded.debug_road_route(0), Some(route_before));
+        let route = route_for_anchor(&loaded, ax, az, 2).expect("loaded town route");
+        assert_eq!(loaded.debug_road_route(route), Some(route_before));
         let (x, z, y) = road_cell;
         let (surface_y, _) = worldgen::worldgen_road_surface(x, z, 42);
         let _ = loaded.debug_generate_chunk_at(x, surface_y, z);

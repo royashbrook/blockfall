@@ -321,11 +321,29 @@ impl RoadRoute {
 
 impl<'c> World<'c> {
     pub(super) fn rebuild_road_routes(&mut self) {
-        let mut links = std::collections::BTreeMap::<((i32, i32), (i32, i32)), u8>::new();
-        for (&from, state) in &self.villages {
-            if state.tier < 2 {
-                continue;
+        let mut developed = std::collections::BTreeMap::<(i32, i32), u8>::new();
+        for &anchor in self.villages.keys() {
+            let tier = self.effective_village_tier(anchor.0, anchor.1);
+            if tier >= 2 {
+                developed.insert(anchor, tier);
             }
+        }
+        // #248 HOME is always a procedural city and therefore complete even
+        // though its raw village tier is intentionally not persisted.
+        if let Some((_typ, ax, az)) = worldgen::worldgen_city_near(0, 0, 2048, self.seed) {
+            developed.insert((ax, az), 3);
+        }
+        // A discovered procedural city joins the road network without adding a
+        // save field: visited anchors already live in map.dat and class is derived.
+        for &(ax, az) in &self.visited_villages {
+            let tier = self.effective_village_tier(ax, az);
+            if tier >= 2 {
+                developed.insert((ax, az), tier);
+            }
+        }
+
+        let mut links = std::collections::BTreeMap::<((i32, i32), (i32, i32)), u8>::new();
+        for (from, tier) in developed {
             let Some((_typ, px, pz)) =
                 worldgen::worldgen_settlement_partner(from.0, from.1, self.seed)
             else {
@@ -339,8 +357,8 @@ impl<'c> World<'c> {
             };
             links
                 .entry(key)
-                .and_modify(|tier| *tier = (*tier).max(state.tier.min(3)))
-                .or_insert(state.tier.min(3));
+                .and_modify(|old| *old = (*old).max(tier))
+                .or_insert(tier);
         }
         self.road_routes = links
             .into_iter()
@@ -498,12 +516,7 @@ impl<'c> World<'c> {
     }
 
     pub fn debug_set_village_tier(&mut self, ax: i32, az: i32, tier: u8) {
-        self.villages
-            .entry((Self::wrap_block(ax), Self::wrap_block(az)))
-            .or_default()
-            .tier = tier.min(3);
-        self.rebuild_road_routes();
-        self.refresh_resident_roads();
+        self.promote_village(ax, az, tier);
     }
 
     pub fn debug_road_route_count(&self) -> usize {
@@ -629,6 +642,48 @@ mod tests {
             assert_eq!(sy, worldgen::worldgen_road_surface(sx, sz, seed).0);
             assert_eq!(ey, worldgen::worldgen_road_surface(ex, ez, seed).0);
         }
+    }
+
+    #[test]
+    fn effective_home_and_visited_cities_join_routes_without_raw_tiers() {
+        let seed = 11;
+        let (_, hx, hz) = worldgen::worldgen_city_near(0, 0, 2048, seed).unwrap();
+        let mut world = World::new(Some(TerrainGen::new()));
+        world.seed = seed;
+        world.rebuild_road_routes();
+        assert_eq!(world.raw_village_tier(hx, hz), 0);
+        assert!(world.road_routes.iter().any(|route| {
+            route.tier == 3
+                && [route.settlement_from, route.settlement_to]
+                    .into_iter()
+                    .flatten()
+                    .any(|p| (World::wrap_block(p.0), World::wrap_block(p.1)) == (hx, hz))
+        }));
+
+        let mut visited = None;
+        'scan: for z in (-4096..4096).step_by(64) {
+            for x in (-4096..4096).step_by(64) {
+                let (typ, ax, az, _) = worldgen::worldgen_structure_near(x, z, seed);
+                if worldgen::worldgen_is_city(typ) && (ax, az) != (hx, hz) {
+                    visited = Some((ax, az));
+                    break 'scan;
+                }
+            }
+        }
+        let visited = visited.expect("second city");
+        world.visited_villages.push(visited);
+        world.rebuild_road_routes();
+        assert!(world.road_routes.iter().any(|route| {
+            [route.settlement_from, route.settlement_to]
+                .into_iter()
+                .flatten()
+                .any(|p| {
+                    (World::wrap_block(p.0), World::wrap_block(p.1)) == visited
+                })
+        }));
+        let once = world.road_routes.clone();
+        world.rebuild_road_routes();
+        assert_eq!(world.road_routes, once, "derived city routes are deterministic");
     }
 
     #[test]

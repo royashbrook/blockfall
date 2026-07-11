@@ -346,6 +346,12 @@ impl<'c> World<'c> {
         // #179: canonical spawn column (the ring search can land negative).
         let sx = Self::wrap_block(sx);
         let sz = Self::wrap_block(sz);
+        // Engine handles can be reused for a fresh world. Drop old discoveries
+        // before deriving the new seed's HOME road network.
+        self.visited_villages.clear();
+        // #256: the effective-complete HOME city owns a paved route from the
+        // first generated frame; no synthetic raw tier is needed or persisted.
+        self.rebuild_road_routes();
         // Find the surface at the chosen spawn column.
         let scol = Self::to_chunk(IVec3 { x: sx, y: 0, z: sz });
         let slx = Self::mod16(sx);
@@ -419,7 +425,6 @@ impl<'c> World<'c> {
         self.explored = vec![0u8; crate::world::MAP_EXPLORED_BYTES];
         self.totems.clear();
         self.totem_next = 0;
-        self.visited_villages.clear();
         self.last_reveal_pos = None;
         // #189: reveal a round clearing centred on spawn so HOME reads dead-centre
         // of the non-grey circle, not at the edge of the trail walked after landing.

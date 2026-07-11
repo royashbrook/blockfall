@@ -214,6 +214,7 @@ impl<'c> World<'c> {
         let gen = self.gen.as_ref()?;
         let mut ch = PaletteChunk::new(cc, 0);
         gen.generate(cc, &mut ch);
+        self.apply_settlement_growth_to_chunk(cc, &mut ch);
         self.apply_roads_to_chunk(cc, &mut ch);
         Some(ch)
     }

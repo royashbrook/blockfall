@@ -23,6 +23,18 @@ fn make_world(content: &ContentRegistry, seed: u64) -> World<'_> {
     w
 }
 
+fn settlement(seed: u64, city: bool) -> (i32, i32) {
+    for z in (-4096..4096).step_by(64) {
+        for x in (-4096..4096).step_by(64) {
+            let (typ, ax, az, _) = bfcore::worldgen::worldgen_structure_near(x, z, seed);
+            if (city && bfcore::worldgen::worldgen_is_city(typ)) || (!city && typ == 8) {
+                return (ax, az);
+            }
+        }
+    }
+    panic!("seed {seed} has no requested settlement");
+}
+
 #[test]
 fn spawn_reveals_a_centred_home_clearing() {
     // #189: home must sit in the MIDDLE of a round explored clearing, not at the
@@ -187,6 +199,69 @@ fn village_visit_recorded_within_range() {
         1,
         "no duplicate for the same anchor"
     );
+}
+
+#[test]
+fn settlement_markers_follow_derived_class_and_raw_tier_persists() {
+    let mut content = ContentRegistry::new();
+    content.load(CONTENT);
+    let seed = 11;
+    let (vx, vz) = settlement(seed, false);
+    let (cx, cz) = settlement(seed, true);
+    let dir = std::env::temp_dir().join(format!("bf_growth_rt_{}", std::process::id()));
+    let dir = dir.to_string_lossy().to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let mut world = make_world(&content, seed);
+    assert!(world.debug_road_route_count() > 0, "HOME city has a derived route");
+    assert!((0..world.debug_road_route_count()).any(|i| {
+        world
+            .debug_road_route(i)
+            .map(|route| route.6 == 3)
+            .unwrap_or(false)
+    }));
+    world.debug_visit_village(vx, vz);
+    let village = &world.map_markers()[1];
+    assert_eq!((village.kind, village.name.as_str()), (1, "Village 1"));
+
+    world.debug_set_village_tier(vx, vz, 2);
+    let town = &world.map_markers()[1];
+    assert_eq!((town.kind, town.name.as_str()), (4, "Town 1"));
+    assert_eq!(world.debug_settlement_class(vx, vz), 1);
+    assert_eq!(world.debug_village_raw_tier(vx, vz), 2);
+    assert!(world.save(&dir));
+
+    let mut loaded = World::new(Some(TerrainGen::new()));
+    loaded.debug_set_sync_streaming(true);
+    loaded.set_content(&content);
+    assert!(loaded.load(&dir));
+    assert_eq!(loaded.debug_village_raw_tier(vx, vz), 2);
+    let town = &loaded.map_markers()[1];
+    assert_eq!((town.kind, town.name.as_str()), (4, "Town 1"));
+
+    loaded.debug_set_village_tier(vx, vz, 3);
+    loaded.debug_set_village_tier(vx, vz, 1);
+    let city = &loaded.map_markers()[1];
+    assert_eq!((city.kind, city.name.as_str()), (3, "City 1"));
+    assert_eq!(loaded.debug_village_raw_tier(vx, vz), 3, "no regression");
+
+    let mut natural = make_world(&content, seed);
+    natural.debug_visit_village(cx, cz);
+    let city = &natural.map_markers()[1];
+    assert_eq!((city.kind, city.name.as_str()), (3, "City 1"));
+    assert_eq!(natural.debug_village_raw_tier(cx, cz), 0);
+    assert_eq!(
+        natural.debug_village_tier(cx, cz),
+        3,
+        "natural city is complete"
+    );
+    assert_eq!(
+        natural.village_view_nearest().expect("HOME city HUD view").2,
+        3,
+        "natural city reports complete through the live HUD feed"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

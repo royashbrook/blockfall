@@ -274,9 +274,10 @@ impl<'c> World<'c> {
                 continue;
             }
             let mut chunk = r.chunk;
-            // Worker generation is seed-only; tier-derived roads use the current
-            // frame-thread settlement state so a promotion racing a job cannot land
-            // a stale chunk.
+            // Worker generation is seed-only; tier-derived growth and roads use the
+            // current frame-thread state so a promotion racing a job cannot land a
+            // stale chunk.
+            self.apply_settlement_growth_to_chunk(r.cc, &mut chunk);
             self.apply_roads_to_chunk(r.cc, &mut chunk);
             if chunk.is_uniform() && chunk.get(0, 0, 0) == AIR {
                 continue;

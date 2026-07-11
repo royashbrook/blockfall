@@ -9,6 +9,34 @@ pub(super) struct VillageState {
     pub(super) progress: i32,
 }
 
+/// #256: player-facing settlement size is derived, never separately saved.
+/// Procedural cities are complete from birth; upgraded villages keep their raw
+/// tier and original role order while growing through the same three classes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SettlementClass {
+    Village,
+    Town,
+    City,
+}
+
+impl SettlementClass {
+    pub(super) fn map_kind(self) -> u32 {
+        match self {
+            Self::Village => 1,
+            Self::Town => 4,
+            Self::City => 3,
+        }
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Village => "Village",
+            Self::Town => "Town",
+            Self::City => "City",
+        }
+    }
+}
+
 impl<'c> World<'c> {
     // The palisade / wall ring is an R-radius square centred on the settlement anchor.
     const PALISADE_R: i32 = 8;
@@ -17,8 +45,10 @@ impl<'c> World<'c> {
     const WALL_STONE: BlockId = 8; // stone_brick
     const IRON_GATE: BlockId = 53; // iron_bars
     const LAMP: BlockId = 35; // crystal_lamp
+    const WOOD_BEAM: BlockId = 51;
     const VILLAGER_GLOBAL_CAP: i32 = 6;
     const VILLAGE_VILLAGERS: i32 = 3;
+    const TOWN_VILLAGERS: i32 = 5;
     const CITY_VILLAGERS: i32 = 6;
 
     pub fn village_view_nearest(&self) -> Option<(i32, i32, u8, i32, i32, i32, i32)> {
@@ -227,110 +257,286 @@ impl<'c> World<'c> {
         }
     }
 
-    fn stamp_town_expansion(&mut self, cx: i32, cz: i32, tier: u8) {
-        let plots: &[(i32, i32)] = match tier {
-            2 => &[(-13, -11), (13, 11)],
-            3 => &[(13, -11), (-13, 11)],
-            _ => &[],
-        };
-        for &(dx, dz) in plots {
-            self.place_player_hut(cx + dx, cz + dz, tier);
+    pub(super) fn raw_village_tier(&self, ax: i32, az: i32) -> u8 {
+        self.villages
+            .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
+            .map(|v| v.tier)
+            .unwrap_or(0)
+    }
+
+    fn settlement_is_procedural_city(&self, ax: i32, az: i32) -> bool {
+        let (typ, sx, sz, _) = worldgen::worldgen_structure_near(ax, az, self.seed);
+        worldgen::worldgen_is_city(typ)
+            && Self::wrap_block(sx) == Self::wrap_block(ax)
+            && Self::wrap_block(sz) == Self::wrap_block(az)
+    }
+
+    pub(super) fn settlement_class_at(&self, ax: i32, az: i32) -> SettlementClass {
+        if self.settlement_is_procedural_city(ax, az) || self.raw_village_tier(ax, az) >= 3 {
+            SettlementClass::City
+        } else if self.raw_village_tier(ax, az) == 2 {
+            SettlementClass::Town
+        } else {
+            SettlementClass::Village
         }
     }
 
-    fn place_player_hut(&mut self, cx: i32, cz: i32, tier: u8) {
-        let wall: BlockId = if tier >= 2 { Self::WALL_STONE } else { 4 };
-        const FLOOR: BlockId = 4;
-        const GLASS: BlockId = 25;
-        const DOOR: BlockId = 33;
-        const GLOW: BlockId = 7;
-        let surf = worldgen::worldgen_surface_height(cx, cz, self.seed);
-        if self.block_at(IVec3 {
-            x: cx,
-            y: surf,
-            z: cz,
-        }) == FLOOR
-            && self.block_at(IVec3 {
-                x: cx,
-                y: surf + 1,
-                z: cz,
-            }) == GLOW
-        {
-            return;
+    pub(super) fn effective_village_tier(&self, ax: i32, az: i32) -> u8 {
+        if self.settlement_is_procedural_city(ax, az) {
+            3
+        } else {
+            self.raw_village_tier(ax, az).min(3)
         }
-        for dz in -2..=2 {
-            for dx in -2..=2 {
-                let wx = cx + dx;
-                let wz = cz + dz;
-                let s = worldgen::worldgen_surface_height(wx, wz, self.seed);
-                self.set_block_internal(IVec3 { x: wx, y: s, z: wz }, FLOOR);
-                let edge = dx == -2 || dx == 2 || dz == -2 || dz == 2;
-                if edge {
-                    if dz == 2 && dx == 0 {
-                        self.set_block_internal(
-                            IVec3 {
-                                x: wx,
-                                y: s + 1,
-                                z: wz,
-                            },
-                            DOOR,
-                        );
-                        self.set_block_internal(
-                            IVec3 {
-                                x: wx,
-                                y: s + 2,
-                                z: wz,
-                            },
-                            DOOR,
-                        );
-                        continue;
-                    }
-                    let win = (dx == 0 || dz == 0) && !(dz == 2 && dx == 0);
-                    for dy in 1..=3 {
-                        let b = if win && dy == 2 { GLASS } else { wall };
-                        self.set_block_internal(
-                            IVec3 {
-                                x: wx,
-                                y: s + dy,
-                                z: wz,
-                            },
-                            b,
-                        );
-                    }
-                    self.set_block_internal(
-                        IVec3 {
-                            x: wx,
-                            y: s + 4,
-                            z: wz,
-                        },
-                        wall,
-                    );
+    }
+
+    fn growth_cell(cc: ChunkCoord, wx: i32, wy: i32, wz: i32) -> Option<(usize, usize, usize)> {
+        let w = Self::canon_block(IVec3 {
+            x: wx,
+            y: wy,
+            z: wz,
+        });
+        if Self::canon_chunk(Self::to_chunk(w)) != Self::canon_chunk(cc) {
+            return None;
+        }
+        Some((
+            Self::mod16(w.x) as usize,
+            Self::mod16(w.y) as usize,
+            Self::mod16(w.z) as usize,
+        ))
+    }
+
+    fn growth_replaceable(block: BlockId) -> bool {
+        block == AIR
+            || block == WATER
+            || Self::is_plant(block)
+            || Self::is_snow_overlay(block)
+            || Self::is_tree_block(block)
+    }
+
+    fn growth_set(
+        cc: ChunkCoord,
+        chunk: &mut PaletteChunk,
+        wx: i32,
+        wy: i32,
+        wz: i32,
+        block: BlockId,
+    ) -> bool {
+        let Some((lx, ly, lz)) = Self::growth_cell(cc, wx, wy, wz) else {
+            return false;
+        };
+        let old = chunk.get(lx, ly, lz);
+        if Self::growth_replaceable(old) && old != block {
+            chunk.set(lx, ly, lz, block);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn growth_clear(cc: ChunkCoord, chunk: &mut PaletteChunk, wx: i32, wy: i32, wz: i32) -> bool {
+        let Some((lx, ly, lz)) = Self::growth_cell(cc, wx, wy, wz) else {
+            return false;
+        };
+        let old = chunk.get(lx, ly, lz);
+        if old != AIR && Self::growth_replaceable(old) {
+            chunk.set(lx, ly, lz, AIR);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Add a small, open-sided artisan shelter around one real workstation.
+    /// The shaped beam frame and pitched material roof replace the old sealed
+    /// 5x5 cube huts; the worker's west-side cell remains fully open.
+    fn apply_artisan_shop(
+        &self,
+        cc: ChunkCoord,
+        chunk: &mut PaletteChunk,
+        ax: i32,
+        az: i32,
+        dx: i32,
+        dz: i32,
+        station: BlockId,
+        roof: BlockId,
+    ) -> bool {
+        const SEA_LEVEL: i32 = 6;
+        let sx = ax + dx;
+        let sz = az + dz;
+        let work_x = sx - 1;
+        let floor_y = worldgen::worldgen_surface_height(sx, sz, self.seed)
+            .max(worldgen::worldgen_surface_height(work_x, sz, self.seed))
+            .max(SEA_LEVEL + 1);
+        let mut changed = false;
+
+        // Four slim posts, then a three-step pitched roof with a shaped ridge.
+        for (px, pz) in [
+            (sx - 2, sz - 1),
+            (sx - 2, sz + 1),
+            (sx + 1, sz - 1),
+            (sx + 1, sz + 1),
+        ] {
+            for y in (worldgen::worldgen_surface_height(px, pz, self.seed) + 1)..=floor_y {
+                changed |= Self::growth_set(cc, chunk, px, y, pz, Self::WALL_STONE);
+            }
+            for y in (floor_y + 1)..=(floor_y + 3) {
+                changed |= Self::growth_set(cc, chunk, px, y, pz, Self::WOOD_BEAM);
+            }
+        }
+        for x in (sx - 2)..=(sx + 1) {
+            for z in [sz - 2, sz + 2] {
+                changed |= Self::growth_set(cc, chunk, x, floor_y + 3, z, roof);
+            }
+            for z in [sz - 1, sz + 1] {
+                changed |= Self::growth_set(cc, chunk, x, floor_y + 4, z, roof);
+            }
+            changed |= Self::growth_set(cc, chunk, x, floor_y + 5, sz, Self::WOOD_BEAM);
+        }
+
+        // Preserve the physical routine contract even if foliage crossed the plot.
+        for y in (floor_y + 1)..=(floor_y + 2) {
+            changed |= Self::growth_clear(cc, chunk, work_x, y, sz);
+        }
+
+        // Each trade reads differently at a glance without inventing more blocks.
+        match station {
+            58 => changed |= Self::growth_set(cc, chunk, sx + 1, floor_y + 1, sz, 57),
+            59 => changed |= Self::growth_set(cc, chunk, sx + 1, floor_y + 1, sz, Self::IRON_GATE),
+            60 => {
+                changed |= Self::growth_set(cc, chunk, sx + 1, floor_y + 1, sz - 1, 36);
+                changed |= Self::growth_set(cc, chunk, sx + 1, floor_y + 1, sz + 1, 37);
+            }
+            61 => changed |= Self::growth_set(cc, chunk, sx + 1, floor_y + 1, sz, Self::WOOD_BEAM),
+            56 => changed |= Self::growth_set(cc, chunk, sx + 1, floor_y + 1, sz, Self::WALL_WOOD),
+            _ => {}
+        }
+        changed
+    }
+
+    pub(super) fn apply_settlement_growth_to_chunk(
+        &self,
+        cc: ChunkCoord,
+        chunk: &mut PaletteChunk,
+    ) -> bool {
+        let mut changed = false;
+        let wx = cc.x * KCHUNK_DIM + KCHUNK_DIM / 2;
+        let wz = cc.z * KCHUNK_DIM + KCHUNK_DIM / 2;
+        let mut settlements: Vec<(i32, i32)> = self
+            .villages
+            .keys()
+            .copied()
+            .filter(|&(ax, az)| {
+                Self::wrap_signed_block(ax - wx).abs() <= 28
+                    && Self::wrap_signed_block(az - wz).abs() <= 28
+            })
+            .collect();
+        // Settlement anchors are spaced farther apart than one growth footprint,
+        // so one centre query covers every city that can touch this chunk.
+        if let Some((typ, ax, az)) = worldgen::worldgen_settlement_near(wx, wz, 28, self.seed) {
+            if worldgen::worldgen_is_city(typ) && !settlements.contains(&(ax, az)) {
+                settlements.push((ax, az));
+            }
+        }
+
+        for (ax, az) in settlements {
+            match self.settlement_class_at(ax, az) {
+                SettlementClass::Village => {}
+                SettlementClass::Town => {
+                    changed |= self.apply_artisan_shop(cc, chunk, ax, az, -4, 4, 58, 24);
+                    changed |= self.apply_artisan_shop(cc, chunk, ax, az, -4, -4, 59, 8);
+                    changed |= self.apply_artisan_shop(cc, chunk, ax, az, 6, 6, 61, 4);
+                }
+                SettlementClass::City => {
+                    changed |= self.apply_artisan_shop(cc, chunk, ax, az, -4, 4, 58, 24);
+                    changed |= self.apply_artisan_shop(cc, chunk, ax, az, -4, -4, 59, 8);
+                    changed |= self.apply_artisan_shop(cc, chunk, ax, az, 6, 6, 61, 4);
+                    changed |= self.apply_artisan_shop(cc, chunk, ax, az, 4, -4, 60, 24);
+                    changed |= self.apply_artisan_shop(cc, chunk, ax, az, 4, 4, 56, 4);
                 }
             }
         }
-        for dz in -2..=2 {
-            for dx in -2..=2 {
-                let wx = cx + dx;
-                let wz = cz + dz;
-                let s = worldgen::worldgen_surface_height(wx, wz, self.seed);
-                self.set_block_internal(
-                    IVec3 {
-                        x: wx,
-                        y: s + 4,
-                        z: wz,
-                    },
-                    wall,
-                );
+        changed
+    }
+
+    fn materialize_resident_settlement_growth(
+        &mut self,
+        ax: i32,
+        az: i32,
+        preserve_edited: bool,
+    ) {
+        let mut columns = HashSet::new();
+        for dz in -12..=12 {
+            for dx in -12..=12 {
+                let cc = Self::to_chunk(IVec3 {
+                    x: Self::wrap_block(ax + dx),
+                    y: 0,
+                    z: Self::wrap_block(az + dz),
+                });
+                columns.insert((cc.x, cc.z));
             }
         }
-        self.set_block_internal(
-            IVec3 {
-                x: cx,
-                y: surf + 1,
-                z: cz,
-            },
-            GLOW,
-        );
+        for (cx, cz) in columns {
+            if preserve_edited
+                && (CY_MIN..=CY_MAX).any(|cy| {
+                    self.edited.contains(&ChunkCoord {
+                        x: cx,
+                        y: cy,
+                        z: cz,
+                    })
+                })
+            {
+                continue;
+            }
+            for cy in CY_MIN..=CY_MAX {
+                let cc = ChunkCoord {
+                    x: cx,
+                    y: cy,
+                    z: cz,
+                };
+                let Some(mut chunk) = self.store.get(cc).cloned() else {
+                    continue;
+                };
+                if self.apply_settlement_growth_to_chunk(cc, &mut chunk) {
+                    self.store.insert(chunk);
+                    self.dirty_chunk_and_resident_neighbours(cc);
+                    self.shadow.refill_cols.insert((cc.x, cc.z));
+                }
+            }
+        }
+    }
+
+    pub(super) fn refresh_resident_settlement_growth(&mut self, ax: i32, az: i32) {
+        self.materialize_resident_settlement_growth(ax, az, true);
+    }
+
+    pub(super) fn refresh_all_resident_settlement_growth(&mut self) {
+        let anchors: Vec<(i32, i32)> = self.villages.keys().copied().collect();
+        for (ax, az) in anchors {
+            self.refresh_resident_settlement_growth(ax, az);
+        }
+    }
+
+    pub(super) fn promote_village(&mut self, ax: i32, az: i32, tier: u8) -> bool {
+        let tier = tier.min(3);
+        let changed = {
+            let state = self.village_state_mut(ax, az);
+            if tier <= state.tier {
+                false
+            } else {
+                state.tier = tier;
+                state.progress = 0;
+                true
+            }
+        };
+        if changed {
+            self.rebuild_road_routes();
+            self.refresh_resident_roads();
+            // Promotion may share chunks with its own palisade edits. Materialize
+            // there too, but the overlay only fills replaceable cells and therefore
+            // never overwrites a player's solid blocks.
+            self.materialize_resident_settlement_growth(ax, az, false);
+        }
+        changed
     }
 
     fn village_state_mut(&mut self, ax: i32, az: i32) -> &mut VillageState {
@@ -351,12 +557,20 @@ impl<'c> World<'c> {
         let in_name = self.item_name(held.item);
         let npc_id = self.creatures[idx].npc_id;
         let (ax, az) = (self.creatures[idx].home_x, self.creatures[idx].home_z);
+        if self.settlement_is_procedural_city(ax, az) {
+            self.toast("This city is already complete — trade with its artisans instead!");
+            return true;
+        }
         match npc_id {
             4 => {
                 let is_log =
                     in_name == "oak_log" || in_name == "birch_log" || in_name == "pine_log";
                 if !is_log {
                     return false;
+                }
+                if self.raw_village_tier(ax, az) >= 2 {
+                    self.toast("Woodcutter: our stone walls need no more logs.");
+                    return true;
                 }
                 if held.count < 2 {
                     self.toast("Woodcutter: bring me more logs for the wall.");
@@ -373,8 +587,9 @@ impl<'c> World<'c> {
                     let total = self.count_palisade_cells(ax, az, Self::WALL_WOOD);
                     let vs = self.village_state_mut(ax, az);
                     vs.wood_cells = total;
-                    if total >= Self::PALISADE_CELLS && vs.tier < 1 {
-                        vs.tier = 1;
+                    let complete = total >= Self::PALISADE_CELLS && vs.tier < 1;
+                    if complete {
+                        self.promote_village(ax, az, 1);
                         self.toast("Woodcutter: our wall is complete! Ask Bria the mason to make it stone.");
                     } else {
                         self.toast("Woodcutter: the village wall grows!");
@@ -382,9 +597,8 @@ impl<'c> World<'c> {
                 } else {
                     let total = self.count_palisade_cells(ax, az, Self::WALL_WOOD)
                         + self.count_palisade_cells(ax, az, Self::WALL_STONE);
-                    let vs = self.village_state_mut(ax, az);
-                    if total >= Self::PALISADE_CELLS && vs.tier < 1 {
-                        vs.tier = 1;
+                    if total >= Self::PALISADE_CELLS && self.raw_village_tier(ax, az) < 1 {
+                        self.promote_village(ax, az, 1);
                     }
                     self.toast("Woodcutter: our palisade is complete!");
                 }
@@ -424,12 +638,7 @@ impl<'c> World<'c> {
                 if progress >= STONE_NEEDED {
                     self.upgrade_palisade_material(ax, az, Self::WALL_STONE);
                     self.stamp_stone_accents(ax, az);
-                    self.stamp_town_expansion(ax, az, 2);
-                    let vs = self.village_state_mut(ax, az);
-                    vs.tier = 2;
-                    vs.progress = 0;
-                    self.rebuild_road_routes();
-                    self.refresh_resident_roads();
+                    self.promote_village(ax, az, 2);
                     self.toast(
                         "Mason: cut stone and proud towers! Now Dov can forge the iron gate.",
                     );
@@ -475,12 +684,7 @@ impl<'c> World<'c> {
                 self.fx(1, pv, 0);
                 if progress >= IRON_NEEDED {
                     self.stamp_iron_gate_and_lamps(ax, az);
-                    self.stamp_town_expansion(ax, az, 3);
-                    let vs = self.village_state_mut(ax, az);
-                    vs.tier = 3;
-                    vs.progress = 0;
-                    self.rebuild_road_routes();
-                    self.refresh_resident_roads();
+                    self.promote_village(ax, az, 3);
                     self.toast("Blacksmith: iron gate hung, lamps lit! Our town will shine through the night.");
                 } else {
                     self.toast(&format!(
@@ -525,8 +729,9 @@ impl<'c> World<'c> {
                 best = Some((ax, az));
             }
         }
-        let (styp, sax, saz, _sy) = worldgen::worldgen_structure_near(wx, wz, self.seed);
-        if styp == 8 || worldgen::worldgen_is_city(styp) {
+        if let Some((_styp, sax, saz)) =
+            worldgen::worldgen_settlement_near(wx, wz, radius, self.seed)
+        {
             let d2 = (Self::wrap_signed_block(sax - wx) as i64).pow(2)
                 + (Self::wrap_signed_block(saz - wz) as i64).pow(2);
             if d2 <= best_d2 {
@@ -539,7 +744,8 @@ impl<'c> World<'c> {
             .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
             .cloned()
             .unwrap_or_default();
-        let (progress_needed, progress) = match vs.tier {
+        let tier = self.effective_village_tier(ax, az);
+        let (progress_needed, progress) = match tier {
             1 => (16, vs.progress),
             2 => (8, vs.progress),
             _ => (0, 0),
@@ -547,7 +753,7 @@ impl<'c> World<'c> {
         Some((
             ax,
             az,
-            vs.tier,
+            tier,
             vs.wood_cells,
             Self::PALISADE_CELLS,
             progress,
@@ -560,10 +766,19 @@ impl<'c> World<'c> {
     }
 
     pub fn debug_village_tier(&self, ax: i32, az: i32) -> i32 {
-        self.villages
-            .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
-            .map(|v| v.tier as i32)
-            .unwrap_or(0)
+        self.effective_village_tier(ax, az) as i32
+    }
+
+    pub fn debug_village_raw_tier(&self, ax: i32, az: i32) -> i32 {
+        self.raw_village_tier(ax, az) as i32
+    }
+
+    pub fn debug_settlement_class(&self, ax: i32, az: i32) -> i32 {
+        match self.settlement_class_at(ax, az) {
+            SettlementClass::Village => 0,
+            SettlementClass::Town => 1,
+            SettlementClass::City => 2,
+        }
     }
 
     pub fn debug_village_progress(&self, ax: i32, az: i32) -> i32 {
@@ -603,7 +818,7 @@ impl<'c> World<'c> {
         self.villager_timer = 2.0;
         let px = Self::ifloor(self.pos.x);
         let pz = Self::ifloor(self.pos.z);
-        let Some((typ, ax, az)) =
+        let Some((_typ, ax, az)) =
             worldgen::worldgen_settlement_near(px, pz, 80, self.seed)
         else {
             return;
@@ -617,13 +832,13 @@ impl<'c> World<'c> {
             return;
         }
 
-        let budget = self.villager_roster_budget(worldgen::worldgen_is_city(typ), ax, az);
+        let budget = self.villager_roster_budget(self.settlement_class_at(ax, az), ax, az);
         if budget > 0 {
             self.spawn_villager_at(ax, ay, az, budget);
         }
     }
 
-    fn villager_roster_budget(&self, is_city: bool, ax: i32, az: i32) -> i32 {
+    fn villager_roster_budget(&self, class: SettlementClass, ax: i32, az: i32) -> i32 {
         let ax = Self::wrap_block(ax);
         let az = Self::wrap_block(az);
         let have = self.creatures.iter().filter(|c| c.model == 20).count() as i32;
@@ -632,10 +847,10 @@ impl<'c> World<'c> {
             .iter()
             .filter(|c| c.model == 20 && c.home_x == ax && c.home_z == az)
             .count() as i32;
-        let target = if is_city {
-            Self::CITY_VILLAGERS
-        } else {
-            Self::VILLAGE_VILLAGERS
+        let target = match class {
+            SettlementClass::Village => Self::VILLAGE_VILLAGERS,
+            SettlementClass::Town => Self::TOWN_VILLAGERS,
+            SettlementClass::City => Self::CITY_VILLAGERS,
         };
         (target - at_home)
             .min(Self::VILLAGER_GLOBAL_CAP - have)
@@ -709,12 +924,9 @@ impl<'c> World<'c> {
         if pool.is_empty() || budget <= 0 {
             return 0;
         }
-        // Is this settlement a city? Cities host the full profession chain; villages get
-        // an ordered chain prefix. The structure type comes straight from worldgen so the
-        // worldgen city upgrade and the profession assignment stay in sync (one source of
-        // truth for "city vs village").
-        let (styp, _sx, _sz, _sy) = worldgen::worldgen_structure_near(ax, az, self.seed);
-        let is_city = worldgen::worldgen_is_city(styp);
+        // Only a procedural city uses the city-first role order. A promoted
+        // village grows to six without renaming/reordering its existing people.
+        let is_city = self.settlement_is_procedural_city(ax, az);
         // Index of the next villager within THIS settlement: count the ones already
         // anchored at this home. Spawning is incremental, so this keeps the per-settlement
         // role sequence stable as the village fills up over time.
@@ -862,6 +1074,28 @@ impl<'c> World<'c> {
 mod tests {
     use super::*;
 
+    fn settlement(seed: u64, city: bool) -> (i32, i32) {
+        for z in (-4096..4096).step_by(64) {
+            for x in (-4096..4096).step_by(64) {
+                let (typ, ax, az, _) = worldgen::worldgen_structure_near(x, z, seed);
+                if (city && worldgen::worldgen_is_city(typ)) || (!city && typ == 8) {
+                    return (ax, az);
+                }
+            }
+        }
+        panic!("seed {seed} has no requested settlement");
+    }
+
+    fn generated_block(w: &World<'_>, x: i32, y: i32, z: i32) -> BlockId {
+        let cc = World::canon_chunk(World::to_chunk(IVec3 { x, y, z }));
+        let chunk = w.gen_chunk(cc).expect("terrain generator");
+        chunk.get(
+            World::mod16(x) as usize,
+            World::mod16(y) as usize,
+            World::mod16(z) as usize,
+        )
+    }
+
     fn add_residents(w: &mut World<'_>, is_city: bool, ax: i32, az: i32, count: i32) {
         let start = w
             .creatures
@@ -886,15 +1120,24 @@ mod tests {
     fn roster_budget_fills_city_and_village_once() {
         let mut city = World::new(None);
         let seam_home = (-9, -40);
-        assert_eq!(city.villager_roster_budget(true, seam_home.0, seam_home.1), 6);
+        assert_eq!(
+            city.villager_roster_budget(SettlementClass::City, seam_home.0, seam_home.1),
+            6
+        );
         add_residents(&mut city, true, seam_home.0, seam_home.1, 2);
-        assert_eq!(city.villager_roster_budget(true, seam_home.0, seam_home.1), 4);
+        assert_eq!(
+            city.villager_roster_budget(SettlementClass::City, seam_home.0, seam_home.1),
+            4
+        );
         add_residents(&mut city, true, seam_home.0, seam_home.1, 2);
-        assert_eq!(city.villager_roster_budget(true, seam_home.0, seam_home.1), 2);
+        assert_eq!(
+            city.villager_roster_budget(SettlementClass::City, seam_home.0, seam_home.1),
+            2
+        );
         add_residents(&mut city, true, seam_home.0, seam_home.1, 2);
         assert_eq!(
             city.villager_roster_budget(
-                true,
+                SettlementClass::City,
                 World::wrap_block(seam_home.0),
                 World::wrap_block(seam_home.1),
             ),
@@ -909,16 +1152,22 @@ mod tests {
 
         city.creatures.clear(); // load clears transient residents
         assert_eq!(
-            city.villager_roster_budget(true, seam_home.0, seam_home.1),
+            city.villager_roster_budget(SettlementClass::City, seam_home.0, seam_home.1),
             6,
             "a loaded city refills its roster"
         );
 
         let mut village = World::new(None);
         add_residents(&mut village, false, 200, 300, 2);
-        assert_eq!(village.villager_roster_budget(false, 200, 300), 1);
+        assert_eq!(
+            village.villager_roster_budget(SettlementClass::Village, 200, 300),
+            1
+        );
         add_residents(&mut village, false, 200, 300, 1);
-        assert_eq!(village.villager_roster_budget(false, 200, 300), 0);
+        assert_eq!(
+            village.villager_roster_budget(SettlementClass::Village, 200, 300),
+            0
+        );
         assert_eq!(
             village
                 .creatures
@@ -927,6 +1176,134 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![4, 1, 5],
             "village stops at its smaller deterministic prefix"
+        );
+    }
+
+    #[test]
+    fn class_population_and_promoted_role_order_are_derived() {
+        let seed = 11;
+        let (vx, vz) = settlement(seed, false);
+        let (cx, cz) = settlement(seed, true);
+        let mut world = World::new(None);
+        world.seed = seed;
+
+        assert_eq!(world.settlement_class_at(vx, vz), SettlementClass::Village);
+        assert_eq!(world.settlement_class_at(cx, cz), SettlementClass::City);
+        assert_eq!(world.raw_village_tier(cx, cz), 0);
+        assert_eq!(world.effective_village_tier(cx, cz), 3);
+
+        world.villages.insert(
+            (World::wrap_block(vx), World::wrap_block(vz)),
+            VillageState {
+                tier: 2,
+                ..VillageState::default()
+            },
+        );
+        assert_eq!(world.settlement_class_at(vx, vz), SettlementClass::Town);
+        assert_eq!(
+            world.villager_roster_budget(SettlementClass::Town, vx, vz),
+            5
+        );
+        add_residents(&mut world, false, vx, vz, 5);
+        assert_eq!(
+            world.creatures.iter().map(|c| c.npc_id).collect::<Vec<_>>(),
+            vec![4, 1, 5, 2, 6],
+            "town adds Builder and Blacksmith without reordering village roles"
+        );
+        assert!(world.promote_village(vx, vz, 3));
+        assert_eq!(world.settlement_class_at(vx, vz), SettlementClass::City);
+        assert_eq!(
+            world.villager_roster_budget(SettlementClass::City, vx, vz),
+            1
+        );
+        add_residents(&mut world, false, vx, vz, 1);
+        assert_eq!(
+            world.creatures.last().unwrap().npc_id,
+            3,
+            "city adds Herbalist"
+        );
+        assert!(
+            !world.promote_village(vx, vz, 1),
+            "promotion cannot regress"
+        );
+        assert_eq!(world.raw_village_tier(vx, vz), 3);
+    }
+
+    #[test]
+    fn natural_city_status_survives_structure_cell_boundaries() {
+        let seed = 11;
+        let (cx, cz) = settlement(seed, true);
+        let probe = (-64..=64)
+            .flat_map(|dz| (-64..=64).map(move |dx| (cx + dx, cz + dz)))
+            .find(|&(x, z)| {
+                let dx = (x - cx) as i64;
+                let dz = (z - cz) as i64;
+                if dx * dx + dz * dz > 64 * 64 {
+                    return false;
+                }
+                let (_, old_x, old_z, _) = worldgen::worldgen_structure_near(x, z, seed);
+                (old_x, old_z) != (cx, cz)
+                    && worldgen::worldgen_settlement_near(x, z, 64, seed)
+                        .map(|(_, ax, az)| (ax, az))
+                        == Some((cx, cz))
+            })
+            .expect("city has an in-range probe across a structure-cell boundary");
+
+        let mut world = World::new(Some(TerrainGen::new()));
+        world.seed = seed;
+        let status = world
+            .village_status_near(probe.0, probe.1, 64)
+            .expect("natural city remains visible across the cell boundary");
+        assert_eq!((status.0, status.1, status.2), (cx, cz, 3));
+    }
+
+    #[test]
+    fn town_and_city_generate_open_shops_around_real_stations() {
+        let seed = 11;
+        let (ax, az) = settlement(seed, false);
+        let mut town = World::new(Some(TerrainGen::new()));
+        town.init_world(seed);
+        town.villages.insert(
+            (World::wrap_block(ax), World::wrap_block(az)),
+            VillageState {
+                tier: 2,
+                ..VillageState::default()
+            },
+        );
+
+        let forge = (ax - 4, az - 4);
+        let forge_y = worldgen::worldgen_surface_height(forge.0, forge.1, seed)
+            .max(worldgen::worldgen_surface_height(
+                forge.0 - 1,
+                forge.1,
+                seed,
+            ))
+            .max(7);
+        assert_eq!(generated_block(&town, forge.0, forge_y + 1, forge.1), 59);
+        assert_eq!(generated_block(&town, forge.0, forge_y + 3, forge.1 + 2), 8);
+        assert_eq!(
+            generated_block(&town, forge.0 - 1, forge_y + 1, forge.1),
+            AIR
+        );
+
+        let herb = (ax + 4, az - 4);
+        let herb_y = worldgen::worldgen_surface_height(herb.0, herb.1, seed)
+            .max(worldgen::worldgen_surface_height(herb.0 - 1, herb.1, seed))
+            .max(7);
+        assert_ne!(
+            generated_block(&town, herb.0, herb_y + 3, herb.1 + 2),
+            24,
+            "Town does not receive the City herbalist canopy"
+        );
+
+        town.villages
+            .get_mut(&(World::wrap_block(ax), World::wrap_block(az)))
+            .unwrap()
+            .tier = 3;
+        assert_eq!(
+            generated_block(&town, herb.0, herb_y + 3, herb.1 + 2),
+            24,
+            "City adds the pitched herbalist canopy"
         );
     }
 }

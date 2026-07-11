@@ -325,12 +325,16 @@ impl<'c> World<'c> {
                 }
             }
         }
-        // #255 road geometry is rebuilt from the seed + tier table; there is no
-        // separate road save format to migrate or corrupt.
-        self.rebuild_road_routes();
+        // #256 growth is tier-derived. Fresh chunks receive it during generation;
+        // resident old-save chunks are refreshed only when their column has no saved
+        // edits, preserving player builds and legacy plot changes conservatively.
+        self.refresh_all_resident_settlement_growth();
         // #182 map progress (explored bits + totems + visited villages).
         // Missing/old saves simply start with an empty map (load_map_dat resets).
         self.load_map_dat(dir);
+        // #255/#256 road geometry is rebuilt from seed + effective settlement
+        // class after map.dat is loaded, so discovered natural cities participate.
+        self.rebuild_road_routes();
         {
             let px = Self::ifloor(self.pos.x);
             let pz = Self::ifloor(self.pos.z);

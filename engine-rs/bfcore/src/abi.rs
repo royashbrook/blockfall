@@ -506,7 +506,7 @@ pub const BF_MAP_MAX_MARKERS: usize = 49;
 #[derive(Clone, Copy)]
 pub struct bf_map_marker {
     pub pos: bf_ivec3,
-    /// 0 = home (world spawn), 1 = visited village, 2 = warp totem.
+    /// 0 = home, 1 = village, 2 = warp totem, 3 = city, 4 = town.
     pub kind: u32,
     /// Stable id for bf_map_teleport.
     pub id: u32,

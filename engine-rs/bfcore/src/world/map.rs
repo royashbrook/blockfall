@@ -50,7 +50,7 @@ pub(super) struct TotemMark {
 /// One marker row handed to the FFI layer (which packs it into bf_map_marker).
 pub struct MapMarkerInfo {
     pub pos: IVec3,
-    pub kind: u32, // 0 = home, 1 = village, 2 = totem
+    pub kind: u32, // 0 home, 1 village, 2 totem, 3 city, 4 town
     pub id: u32,
     pub name: String,
 }
@@ -198,7 +198,13 @@ impl<'c> World<'c> {
             return;
         }
         self.visited_villages.push(key);
-        self.toast("Village discovered! It is on your map now (M).");
+        let class = self.settlement_class_at(key.0, key.1);
+        let label = class.label();
+        self.toast(&format!("{label} discovered! It is on your map now (M)."));
+        if class.map_kind() != 1 {
+            self.rebuild_road_routes();
+            self.refresh_resident_roads();
+        }
     }
 
     pub fn debug_visited_village_count(&self) -> usize {
@@ -230,16 +236,14 @@ impl<'c> World<'c> {
             name: "Home".to_string(),
         });
         for (i, &(ax, az)) in self.visited_villages.iter().enumerate() {
-            // #221: derive village-vs-CITY at marker-build time from worldgen (pure
-            // hash lookup, at most 32 anchors), so the map can show a distinct city
-            // icon with zero persistence or ABI layout change. kind 3 = city.
-            let (styp, _sx, _sz, _sy) = worldgen::worldgen_structure_near(ax, az, self.seed);
-            let is_city = worldgen::worldgen_is_city(styp);
+            // #256: class is derived from procedural type + raw upgrade tier, so
+            // old map.dat files gain town/city markers without a migration.
+            let class = self.settlement_class_at(ax, az);
             out.push(MapMarkerInfo {
                 pos: IVec3 { x: ax, y: 0, z: az },
-                kind: if is_city { 3 } else { 1 },
+                kind: class.map_kind(),
                 id: MARKER_ID_VILLAGE_BASE + i as u32,
-                name: format!("{} {}", if is_city { "City" } else { "Village" }, i + 1),
+                name: format!("{} {}", class.label(), i + 1),
             });
         }
         for (i, t) in self.totems.iter().enumerate() {

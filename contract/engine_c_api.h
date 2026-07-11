@@ -640,7 +640,7 @@ BF_API bf_result bf_village_query(bf_engine e, bf_village_view* out);
 
 typedef struct bf_map_marker {
     bf_ivec3 pos;      /* world block position (y = surface hint / totem y)   */
-    uint32_t kind;     /* 0 = home, 1 = visited village, 2 = warp totem       */
+    uint32_t kind;     /* 0 home, 1 village, 2 totem, 3 city, 4 town          */
     uint32_t id;       /* stable marker id for bf_map_teleport                */
     char     name[24]; /* UTF-8, NUL-terminated ("Home", "Totem 3", ...)      */
 } bf_map_marker;

@@ -326,7 +326,7 @@ final class MapView: NSView {
             NSColor(calibratedRed: 0.45, green: 0.25, blue: 0.16, alpha: 1).setFill()
             roof.fill()
             outline(roof); outline(NSBezierPath(rect: wall))
-        case 1, 4: // VILLAGE / TOWN: two little roofs side by side.
+        case 1: // VILLAGE: two little roofs side by side.
             for dx in [-s * 0.55, s * 0.55] {
                 let roof = NSBezierPath()
                 roof.move(to: NSPoint(x: p.x + dx - s * 0.62, y: p.y - s * 0.55))
@@ -334,6 +334,20 @@ final class MapView: NSView {
                 roof.line(to: NSPoint(x: p.x + dx + s * 0.62, y: p.y - s * 0.55))
                 roof.close()
                 NSColor(calibratedRed: 0.62, green: 0.44, blue: 0.24, alpha: 1).setFill()
+                roof.fill()
+                outline(roof)
+            }
+        case 4: // TOWN (#256): a denser row of three warm workshop roofs.
+            for (i, dx) in [-s * 0.72, 0, s * 0.72].enumerated() {
+                let peak = i == 1 ? s * 0.95 : s * 0.62
+                let roof = NSBezierPath()
+                roof.move(to: NSPoint(x: p.x + dx - s * 0.48, y: p.y - s * 0.55))
+                roof.line(to: NSPoint(x: p.x + dx, y: p.y + peak))
+                roof.line(to: NSPoint(x: p.x + dx + s * 0.48, y: p.y - s * 0.55))
+                roof.close()
+                NSColor(calibratedRed: i == 1 ? 0.78 : 0.68,
+                        green: i == 1 ? 0.48 : 0.39,
+                        blue: 0.20, alpha: 1).setFill()
                 roof.fill()
                 outline(roof)
             }

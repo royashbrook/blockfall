@@ -293,6 +293,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 let name: String
                 switch m.kind {
                 case 1: name = TownNames.name(x: m.pos.x, z: m.pos.z)
+                case 4: name = "Town of " + TownNames.name(x: m.pos.x, z: m.pos.z)
                 case 3: name = "City of " + TownNames.name(x: m.pos.x, z: m.pos.z)
                 default: name = engineName
                 }
