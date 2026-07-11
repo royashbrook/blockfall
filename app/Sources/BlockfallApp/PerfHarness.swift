@@ -267,6 +267,10 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     let entityStress = ProcessInfo.processInfo.environment["BF_ENTITY_STRESS"] == "1"
     let entityShapeOverride = ProcessInfo.processInfo.environment["BF_ENTITY_SHAPE"]
         .map { $0.lowercased() }.flatMap(EntityPartShape.init(rawValue:))
+    let shotCameraEnv = ProcessInfo.processInfo.environment["BF_SHOT_POS"]?
+        .split(separator: ",").compactMap { Float($0.trimmingCharacters(in: .whitespaces)) }
+    let freezeShotCamera = ProcessInfo.processInfo.environment["BF_SHOT_FREEZE_CAMERA"] == "1"
+        && shotCameraEnv?.count == 5
 
     // ---- Engine ------------------------------------------------------------
     var cfg = bf_engine_config()
@@ -393,6 +397,11 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         input.look_pitch_delta = pitch   // #52 shot mode tilts down to frame ground props
         let engineStart = CACurrentMediaTime()
         _ = bf_frame_begin(e, &input, dt)
+        // Elevated structure-review fixtures must not fall to the ground while
+        // their chunks settle. This is opt-in and only affects the headless harness.
+        if freezeShotCamera, let pv = shotCameraEnv {
+            bf_debug_set_camera(e, pv[0], pv[1], pv[2], pv[3], pv[4])
+        }
         var f = bf_render_frame(); _ = bf_frame_acquire_render(e, &f)
         var entityRoles = bf_entity_role_action_view()
         _ = bf_entity_role_actions(e, &entityRoles)
@@ -914,8 +923,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         let travelEnv = Int(ProcessInfo.processInfo.environment["BF_SHOT_TRAVEL"] ?? "")
         // #219: BF_SHOT_POS="x,y,z,yaw,pitch" pins the camera at an exact spot so a
         // player-reported view reproduces headless (skips the walk entirely).
-        let posEnv = ProcessInfo.processInfo.environment["BF_SHOT_POS"]?
-            .split(separator: ",").compactMap { Float($0.trimmingCharacters(in: .whitespaces)) }
+        let posEnv = shotCameraEnv
         if let pv = posEnv, pv.count == 5 {
             bf_debug_set_camera(e, pv[0], pv[1], pv[2], pv[3], pv[4])
             for _ in 0..<240 { renderOneFrame(yaw: 0, forward: 0) }   // stream the area in
