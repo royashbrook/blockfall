@@ -20,7 +20,7 @@ final class MapView: NSView {
     struct Marker {
         let x: Int32
         let z: Int32
-        let kind: UInt32   // 0 home, 1 village, 2 totem
+        let kind: UInt32   // 0 home, 1 village, 2 totem, 3 city, 4 town
         let id: UInt32
         let name: String
     }
@@ -123,6 +123,10 @@ final class MapView: NSView {
         return CGPoint(x: r.midX + dx * scale, y: r.midY - dz * scale)
     }
 
+    private func isDevelopedSettlement(_ kind: UInt32) -> Bool {
+        kind == 3 || kind == 4
+    }
+
     // ---- map backdrop ------------------------------------------------------
 
     // An n x n RGBA image (n = cells visible at the current zoom) sampled so
@@ -215,6 +219,11 @@ final class MapView: NSView {
             ctx.fill(r)
         }
 
+        // #258: first known settlement pair gets one restrained trade route.
+        // Repeat the torus-short segment at true world-period offsets so it
+        // joins across the planet edge without falsely repeating when zoomed.
+        drawTradeRoute(in: r, ctx: ctx)
+
         // Title + hint.
         drawCenteredText("World Map", at: NSPoint(x: b.midX, y: frame.maxY + 16),
                          size: 30, weight: .heavy)
@@ -256,6 +265,41 @@ final class MapView: NSView {
         }
     }
 
+    private func drawTradeRoute(in r: NSRect, ctx: CGContext) {
+        let settlements = markers.filter { isDevelopedSettlement($0.kind) }
+        guard settlements.count >= 2 else { return }
+        let a = settlements[0], b = settlements[1]
+        let start = mapPoint(x: a.x, z: a.z)
+        let scale = r.width / CGFloat(viewSpan)
+        let end = CGPoint(x: start.x + CGFloat(wrapSigned(Int(b.x) - Int(a.x))) * scale,
+                          y: start.y - CGFloat(wrapSigned(Int(b.z) - Int(a.z))) * scale)
+        let repeatPixels = CGFloat(period) * scale
+
+        func traceCopies() {
+            for ox in [-repeatPixels, 0, repeatPixels] {
+                for oy in [-repeatPixels, 0, repeatPixels] {
+                    ctx.move(to: CGPoint(x: start.x + ox, y: start.y + oy))
+                    ctx.addLine(to: CGPoint(x: end.x + ox, y: end.y + oy))
+                }
+            }
+        }
+
+        ctx.saveGState()
+        ctx.clip(to: r)
+        ctx.setLineCap(.round)
+        ctx.setLineDash(phase: 0, lengths: [8, 7])
+        ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.48).cgColor)
+        ctx.setLineWidth(5)
+        traceCopies()
+        ctx.strokePath()
+        ctx.setStrokeColor(NSColor(calibratedRed: 0.92, green: 0.70, blue: 0.30,
+                                   alpha: 0.78).cgColor)
+        ctx.setLineWidth(2.5)
+        traceCopies()
+        ctx.strokePath()
+        ctx.restoreGState()
+    }
+
     private func drawCenteredText(_ s: String, at p: NSPoint, size: CGFloat,
                                   weight: NSFont.Weight, color: NSColor = .white) {
         let attrs: [NSAttributedString.Key: Any] = [
@@ -282,7 +326,7 @@ final class MapView: NSView {
             NSColor(calibratedRed: 0.45, green: 0.25, blue: 0.16, alpha: 1).setFill()
             roof.fill()
             outline(roof); outline(NSBezierPath(rect: wall))
-        case 1: // VILLAGE: two little roofs side by side.
+        case 1, 4: // VILLAGE / TOWN: two little roofs side by side.
             for dx in [-s * 0.55, s * 0.55] {
                 let roof = NSBezierPath()
                 roof.move(to: NSPoint(x: p.x + dx - s * 0.62, y: p.y - s * 0.55))

@@ -4541,6 +4541,153 @@ extension EntityRenderer {
                  shape: .sphere)
     }
 
+    // =========================================================================
+    // KIND 27 — TRAVELLING MERCHANT (#258). A friendly mule pulls a tiny
+    // two-wheel market cart: warm wood, visible spinning spokes, cargo sacks,
+    // and a striped pitched awning. The long cart silhouette keeps it readable
+    // as a caravan instead of another four-legged creature.
+    // =========================================================================
+    func drawKind27(enc: MTLRenderCommandEncoder, viewProj: simd_float4x4,
+                    e: bf_entity_draw, pos: SIMD3<Float>, phase: Float,
+                    hash: Float, squash: SIMD3<Float>) {
+        let s = e.scale, sat = e.sat
+        let tint = SIMD3<Float>(e.color.x, e.color.y, e.color.z)
+        let fur = SIMD3<Float>(min(1, tint.x * 0.38 + 0.46),
+                               min(1, tint.y * 0.32 + 0.34),
+                               min(1, tint.z * 0.22 + 0.20))
+        let muzzle = SIMD3<Float>(0.88, 0.76, 0.58)
+        let dark = SIMD3<Float>(0.19, 0.12, 0.08)
+        let wood = SIMD3<Float>(0.43, 0.24, 0.10)
+        let woodLight = SIMD3<Float>(0.66, 0.40, 0.16)
+        let cloth = SIMD3<Float>(0.78, 0.25, 0.18)
+        let cream = SIMD3<Float>(0.95, 0.82, 0.52)
+        let teal = SIMD3<Float>(0.18, 0.54, 0.50)
+
+        let moving: Float = curGaitSpeed > 0.05 ? 1 : 0
+        let travel = phase * 1.35
+        let swing = sin(travel) * 0.30 * moving
+        let bob = abs(sin(travel)) * s * 0.025 * moving
+            + sin(phase * 0.45 + hash) * s * 0.008
+        let cartBob = sin(travel * 2 - 0.35) * s * 0.012 * moving
+        let cartOffsetY = cartBob - bob
+        let wheelRoll = -phase * 1.8 * moving
+
+        let bodyH = s * 0.44, legH = s * 0.44
+        let groundY = pos.y
+        let wc = SIMD3<Float>(pos.x, groundY + legH + bodyH * 0.5 + bob, pos.z)
+        let Ryaw = EntityRenderer.rotY(e.yaw)
+        let R = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
+        func part(_ lo: SIMD3<Float>, _ d: SIMD3<Float>,
+                  shape: EntityPartShape = .box, color: SIMD3<Float>) {
+            let model = EntityRenderer.trans(wc) * R
+                * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+            drawCube(enc: enc, viewProj: viewProj, model: model,
+                     rgb: color, sat: sat, shape: shape)
+        }
+        func leg(_ x: Float, _ z: Float, _ angle: Float) {
+            let model = EntityRenderer.trans(wc) * R
+                * EntityRenderer.trans(SIMD3<Float>(x, -bodyH * 0.36, z))
+                * EntityRenderer.rotX(angle)
+                * EntityRenderer.trans(SIMD3<Float>(0, -legH * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3<Float>(s * 0.105, legH, s * 0.105))
+            drawCube(enc: enc, viewProj: viewProj, model: model,
+                     rgb: dark, sat: sat, shape: .cylinder)
+        }
+        func cartPart(_ lo: SIMD3<Float>, _ d: SIMD3<Float>,
+                      rotZ: Float = 0, color: SIMD3<Float>) {
+            let model = EntityRenderer.trans(wc) * R
+                * EntityRenderer.trans(SIMD3<Float>(0, cartOffsetY, 0))
+                * EntityRenderer.trans(lo) * EntityRenderer.rotZ(rotZ)
+                * EntityRenderer.scaleM(d)
+            drawCube(enc: enc, viewProj: viewProj, model: model,
+                     rgb: color, sat: sat)
+        }
+
+        let animalZ = s * 0.31
+        // Alternating planted legs and a rounded mule body.
+        leg(-s * 0.21, animalZ + s * 0.24,  swing)
+        leg( s * 0.21, animalZ + s * 0.24, -swing)
+        leg(-s * 0.21, animalZ - s * 0.24, -swing)
+        leg( s * 0.21, animalZ - s * 0.24,  swing)
+        part(SIMD3<Float>(0, 0, animalZ), SIMD3<Float>(s * 0.62, bodyH, s * 0.78),
+             shape: .sphere, color: fur)
+
+        // Forward-leaning neck, soft muzzle, tall ears, and wide gentle eyes.
+        let neckH = s * 0.42
+        let neckBase = SIMD3<Float>(0, bodyH * 0.26, animalZ + s * 0.27)
+        let neckTilt: Float = 0.34
+        let neckModel = EntityRenderer.trans(wc) * R
+            * EntityRenderer.trans(neckBase) * EntityRenderer.rotX(neckTilt)
+            * EntityRenderer.trans(SIMD3<Float>(0, neckH * 0.5, 0))
+            * EntityRenderer.scaleM(SIMD3<Float>(s * 0.16, neckH, s * 0.17))
+        drawCube(enc: enc, viewProj: viewProj, model: neckModel,
+                 rgb: fur, sat: sat, shape: .cylinder)
+        let head = SIMD3<Float>(0, s * 0.50, animalZ + s * 0.54)
+        part(head, SIMD3<Float>(s * 0.34, s * 0.28, s * 0.38), shape: .sphere, color: fur)
+        part(head + SIMD3<Float>(0, -s * 0.04, s * 0.22),
+             SIMD3<Float>(s * 0.28, s * 0.18, s * 0.25), shape: .sphere, color: muzzle)
+        for ex in [-s * 0.105, s * 0.105] {
+            part(head + SIMD3<Float>(ex, s * 0.22, -s * 0.03),
+                 SIMD3<Float>(s * 0.10, s * 0.24, s * 0.10), shape: .cone, color: dark)
+            part(head + SIMD3<Float>(ex, s * 0.05, s * 0.185),
+                 SIMD3<Float>(s * 0.075, s * 0.085, s * 0.035), shape: .sphere, color: cream)
+            part(head + SIMD3<Float>(ex, s * 0.045, s * 0.207),
+                 SIMD3<Float>(s * 0.035, s * 0.045, s * 0.025), shape: .sphere, color: dark)
+        }
+        // Bright saddle blanket reads as cared-for and merchant-owned.
+        part(SIMD3<Float>(0, bodyH * 0.47, animalZ - s * 0.02),
+             SIMD3<Float>(s * 0.70, s * 0.08, s * 0.56), color: teal)
+
+        // Twin shafts lead the eye from mule to cart.
+        for x in [-s * 0.29, s * 0.29] {
+            cartPart(SIMD3<Float>(x, -s * 0.10, -s * 0.22),
+                     SIMD3<Float>(s * 0.055, s * 0.055, s * 0.98), color: woodLight)
+        }
+        let cartZ = -s * 0.72
+        cartPart(SIMD3<Float>(0, -s * 0.08, cartZ),
+                 SIMD3<Float>(s * 1.04, s * 0.18, s * 0.78), color: wood)
+
+        // Wheels are cylinders turned onto the axle. Two pale spoke bars make
+        // the otherwise symmetric low-poly discs visibly roll in motion mode.
+        let wheelY = -s * 0.33, wheelD = s * 0.60
+        for side: Float in [-1, 1] {
+            let x = side * s * 0.58
+            let wheelModel = EntityRenderer.trans(wc) * R
+                * EntityRenderer.trans(SIMD3<Float>(0, cartOffsetY, 0))
+                * EntityRenderer.trans(SIMD3<Float>(x, wheelY, cartZ))
+                * EntityRenderer.rotZ(Float.pi * 0.5) * EntityRenderer.rotY(wheelRoll)
+                * EntityRenderer.scaleM(SIMD3<Float>(wheelD, s * 0.14, wheelD))
+            drawCube(enc: enc, viewProj: viewProj, model: wheelModel,
+                     rgb: dark, sat: sat, shape: .cylinder)
+            for spoke in [wheelRoll, wheelRoll + Float.pi * 0.5] {
+                let spokeModel = EntityRenderer.trans(wc) * R
+                    * EntityRenderer.trans(SIMD3<Float>(0, cartOffsetY, 0))
+                    * EntityRenderer.trans(SIMD3<Float>(x + side * s * 0.075, wheelY, cartZ))
+                    * EntityRenderer.rotX(spoke)
+                    * EntityRenderer.scaleM(SIMD3<Float>(s * 0.035, wheelD * 0.78, s * 0.045))
+                drawCube(enc: enc, viewProj: viewProj, model: spokeModel,
+                         rgb: cream, sat: sat)
+            }
+            part(SIMD3<Float>(x + side * s * 0.085, wheelY + cartOffsetY, cartZ),
+                 SIMD3<Float>(s * 0.12, s * 0.12, s * 0.12), shape: .sphere, color: woodLight)
+        }
+
+        // Two supports, two sloped cloth panels, and rounded sacks finish the
+        // tiny market wagon without turning it into a stack of full cubes.
+        for x in [-s * 0.40, s * 0.40] {
+            cartPart(SIMD3<Float>(x, s * 0.30, cartZ - s * 0.18),
+                     SIMD3<Float>(s * 0.055, s * 0.66, s * 0.055), color: woodLight)
+        }
+        cartPart(SIMD3<Float>(-s * 0.23, s * 0.66, cartZ),
+                 SIMD3<Float>(s * 0.58, s * 0.065, s * 0.84), rotZ: 0.28, color: cloth)
+        cartPart(SIMD3<Float>( s * 0.23, s * 0.66, cartZ),
+                 SIMD3<Float>(s * 0.58, s * 0.065, s * 0.84), rotZ: -0.28, color: cream)
+        part(SIMD3<Float>(-s * 0.20, s * 0.10 + cartOffsetY, cartZ + s * 0.05),
+             SIMD3<Float>(s * 0.28, s * 0.30, s * 0.28), shape: .sphere, color: cream)
+        part(SIMD3<Float>( s * 0.19, s * 0.11 + cartOffsetY, cartZ - s * 0.10),
+             SIMD3<Float>(s * 0.30, s * 0.32, s * 0.30), shape: .sphere, color: teal)
+    }
+
     private func drawCube(enc: MTLRenderCommandEncoder,
                           viewProj: simd_float4x4,
                           model: simd_float4x4,

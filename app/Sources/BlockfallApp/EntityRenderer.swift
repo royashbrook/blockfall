@@ -701,6 +701,7 @@ final class EntityRenderer {
             case 24: drawKind24(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             case 25: drawKind25(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             case 26: drawKind26(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 27: drawKind27(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             // kind 22 — DEBRIS FRAGMENT (#170 blockfall): a small tumbling cube
             // chip in the broken block's colour. yaw carries the engine-driven
             // spin phase; scale seeds the size + a fixed per-fragment tilt.
@@ -743,7 +744,9 @@ final class EntityRenderer {
             let pos = SIMD3<Float>(e.position.x, e.position.y, e.position.z)
             // Footprint radius scales with the creature's draw scale. Most kinds occupy ~0.6 units
             // wide at scale 1; the blob is a touch larger so it reads as a soft contact pool.
-            let r = max(0.18, e.scale * 0.55)
+            // The merchant's cart extends well behind its animal; one wider
+            // pool keeps the combined silhouette grounded without another pass.
+            let r = max(0.18, e.scale * (e.kind == 27 ? 1.05 : 0.55))
             shadowInsts.append(EntityShadowInstance(
                 footRadius: SIMD4<Float>(pos.x, pos.y, pos.z, r),
                 meta: .zero))

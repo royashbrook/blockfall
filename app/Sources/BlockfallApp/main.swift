@@ -1355,7 +1355,7 @@ if let idx = CommandLine.arguments.firstIndex(of: "--mapshot"), idx + 1 < Comman
     mv.markers = [
         // Home sits at spawn, dead-centre of the clearing (#189).
         MapView.Marker(x: Int32(px), z: Int32(pz), kind: 0, id: 1, name: "Home"),
-        MapView.Marker(x: Int32(px + 550), z: Int32(pz - 350), kind: 1, id: 100,
+        MapView.Marker(x: Int32(px + 550), z: Int32(pz - 350), kind: 4, id: 100,
                        name: TownNames.name(x: Int32(px + 550), z: Int32(pz - 350))),
         MapView.Marker(x: Int32(px - 620), z: Int32(pz - 480), kind: 3, id: 101,
                        name: "City of " + TownNames.name(x: Int32(px - 620), z: Int32(pz - 480))),
@@ -1382,6 +1382,21 @@ if let idx = CommandLine.arguments.firstIndex(of: "--mapshot"), idx + 1 < Comman
     // #241: keep HOME centred at planet zoom while the player sits elsewhere.
     mv.playerX = Float(px + 6000); mv.playerZ = Float(pz - 5000)
     mapShot(base + "_planet.png")
+    // #258: a second full-planet fixture puts the first two settlements on
+    // opposite chart edges but only 3,200 world blocks apart across the torus.
+    // The dashed route should continue cleanly at both edges, never cross the
+    // whole chart. This makes seam/zoom handling deterministic to review.
+    let regularMarkers = mv.markers
+    mv.markers = [
+        MapView.Marker(x: Int32(px), z: Int32(pz), kind: 0, id: 1, name: "Home"),
+        MapView.Marker(x: Int32(px + period / 2 - 1600), z: Int32(pz - 500),
+                       kind: 4, id: 100, name: "Eastmarket"),
+        MapView.Marker(x: Int32(px - period / 2 + 1600), z: Int32(pz + 500),
+                       kind: 3, id: 101, name: "Westgate City"),
+    ]
+    mv.playerX = Float(px); mv.playerZ = Float(pz)
+    mapShot(base + "_route_seam.png")
+    mv.markers = regularMarkers
     // #187 also render the corner minimap with the same sample data (over a green
     // backdrop so the translucent disc reads) for review without the live app.
     let mm = MinimapView(frame: NSRect(x: 0, y: 0, width: 176, height: 176))

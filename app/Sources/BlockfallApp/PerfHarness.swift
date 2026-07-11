@@ -1096,7 +1096,7 @@ func runCritterGallery(savePath: String) -> Bool {
     let motionKind = UInt32(ProcessInfo.processInfo.environment["BF_CRITTER_KIND"] ?? "20") ?? 20
     let kinds: [UInt32] = motionMode ? Array(repeating: motionKind, count: 4)
         : (villagerMode ? Array(repeating: 20, count: villagerCols.count)
-           : [0,1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,23,24,25,26,100])
+           : [0,1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,23,24,25,26,27,100])
     let cols: [SIMD3<Float>] = [
         SIMD3(0.85,0.80,0.74), SIMD3(0.78,0.45,0.28), SIMD3(0.55,0.58,0.62), SIMD3(0.30,0.55,0.35),
         SIMD3(0.90,0.86,0.40), SIMD3(0.40,0.40,0.48), SIMD3(0.72,0.36,0.30), SIMD3(0.95,0.95,0.97)
@@ -1159,6 +1159,10 @@ func runCritterGallery(savePath: String) -> Bool {
             totalEntities = entR.lastEntityCount
             totalParts = entR.lastBodyPartDraws
             totalTriangles = entR.lastBodyTriangles
+        }
+        if motionMode && motionKind == 27 {
+            assert(totalEntities == 4 && totalParts == 128 && totalTriangles <= 2_600,
+                   "merchant cart exceeded its 32-part / 650-triangle budget")
         }
         print("critter metrics: entities=\(totalEntities) body_parts=\(totalParts) triangles=\(totalTriangles)")
         enc.endEncoding()
