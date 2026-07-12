@@ -2323,14 +2323,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         case 36, 37:   // flowers (red / yellow)
             let bloom: SIMD3<Float> = (type == 36) ? SIMD3(0.90, 0.20, 0.22) : SIMD3(0.97, 0.82, 0.16)
             return [
-                (SIMD3(0.5, 0.28, 0.5), SIMD3(0.05, 0.28, 0.05), green),               // stem
-                (SIMD3(0.5, 0.66, 0.5), SIMD3(0.20, 0.10, 0.20), bloom),               // bloom
-                (SIMD3(0.5, 0.70, 0.5), SIMD3(0.09, 0.11, 0.09), SIMD3(0.98,0.80,0.22)),// center
+                (SIMD3(0.50, 0.22, 0.50), SIMD3(0.025, 0.22, 0.025), green),
+                (SIMD3(0.42, 0.47, 0.50), SIMD3(0.09, 0.07, 0.08), bloom),
+                (SIMD3(0.58, 0.47, 0.50), SIMD3(0.09, 0.07, 0.08), bloom),
+                (SIMD3(0.50, 0.47, 0.57), SIMD3(0.08, 0.07, 0.09), bloom),
+                (SIMD3(0.50, 0.49, 0.49), SIMD3(0.05, 0.055, 0.045), SIMD3(0.98,0.80,0.22)),
             ]
         case 39:       // mushroom
             return [
-                (SIMD3(0.5, 0.22, 0.5), SIMD3(0.09, 0.22, 0.09), SIMD3(0.92,0.88,0.78)),// stem
-                (SIMD3(0.5, 0.52, 0.5), SIMD3(0.24, 0.12, 0.24), SIMD3(0.85,0.16,0.14)),// cap
+                (SIMD3(0.5, 0.14, 0.5), SIMD3(0.055, 0.14, 0.055), SIMD3(0.92,0.88,0.78)),
+                (SIMD3(0.5, 0.33, 0.5), SIMD3(0.16, 0.075, 0.16), SIMD3(0.85,0.16,0.14)),
             ]
         case 40:       // color crystal (pink, matches its light)
             return [

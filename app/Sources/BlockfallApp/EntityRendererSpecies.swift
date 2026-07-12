@@ -155,17 +155,20 @@ extension EntityRenderer {
                          scleraCol: SIMD3<Float>, pupilCol: SIMD3<Float>,
                          shape: EntityPartShape = .box,
                          highlight: Bool = true) {
-        // Sclera
-        drawCube(enc: enc, viewProj: viewProj, model: pw(c, SIMD3(r.x, r.y, r.z)),
+        // Sink the eye into the curved head so it reads as part of the animal,
+        // not a stack of face pieces hovering in front of it.
+        let socket = SIMD3<Float>(c.x, c.y, c.z - r.z * 0.28)
+        drawCube(enc: enc, viewProj: viewProj, model: pw(socket, SIMD3(r.x, r.y, r.z)),
                  rgb: scleraCol, sat: sat, shape: shape)
-        // Pupil — slightly smaller, pushed to the very front so it reads on top
-        let pupil = SIMD3<Float>(r.x * 0.55, r.y * 0.62, r.z * 0.9)
-        let pupilC = SIMD3<Float>(c.x, c.y - r.y * 0.05, c.z + r.z * 0.45)
+        // Flatter pupil and catchlight hug that socket instead of forming a
+        // three-layer telescope. Large shapes keep the expressive cartoon read.
+        let pupil = SIMD3<Float>(r.x * 0.55, r.y * 0.62, r.z * 0.46)
+        let pupilC = SIMD3<Float>(c.x, c.y - r.y * 0.05, socket.z + r.z * 0.30)
         drawCube(enc: enc, viewProj: viewProj, model: pw(pupilC, pupil),
                  rgb: pupilCol, sat: sat, shape: shape)
         // Highlight — tiny bright fleck upper-outer of pupil (catchlight = life)
-        let hl = SIMD3<Float>(r.x * 0.22, r.y * 0.24, r.z * 0.5)
-        let hlC = SIMD3<Float>(c.x + r.x * 0.18, c.y + r.y * 0.22, c.z + r.z * 0.7)
+        let hl = SIMD3<Float>(r.x * 0.22, r.y * 0.24, r.z * 0.24)
+        let hlC = SIMD3<Float>(c.x + r.x * 0.18, c.y + r.y * 0.22, socket.z + r.z * 0.46)
         if highlight {
             drawCube(enc: enc, viewProj: viewProj, model: pw(hlC, hl),
                      rgb: SIMD3<Float>(0.98, 0.98, 1.0), sat: sat, shape: shape)
@@ -4012,13 +4015,18 @@ extension EntityRenderer {
         // involved, so stills and motion strips reproduce the same pose.
         let professionWorking = curEntityAction == 3 && (2...6).contains(curEntityRole)
         let socialPose = (5...10).contains(curEntityAction)
+        let playerActing = e.kind == 100 && curEntityAction == 11
         let sweeping = curEntityAction == 10
         let sitting = curEntityAction == 9
-        let poseActive = professionWorking || socialPose
+        let poseActive = professionWorking || socialPose || playerActing
         let workT = curEntityActionProgress * .pi * 6.0
         let workStroke = 0.5 - 0.5 * cos(workT)
         let workSweep = sin(workT)
         let workArms: (Float, Float, Float) = {
+            if playerActing {
+                let strike = sin(curEntityActionProgress * .pi)
+                return (-0.18 + strike * 0.34, -0.30 - strike * 1.45, 0.10 + strike * 0.14)
+            }
             if socialPose {
                 switch curEntityAction {
                 case 6: return (-1.05 + workSweep * 0.22, 0.08, 0.02) // point/gesture

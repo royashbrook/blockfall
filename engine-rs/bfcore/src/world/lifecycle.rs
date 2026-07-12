@@ -84,7 +84,9 @@ impl<'c> World<'c> {
             step_timer: 0.0,
             remote_avatars: Vec::new(),
             remote_avatar_appearances: Vec::new(),
+            remote_avatar_actions: Vec::new(),
             mine_progress: 0.0,
+            player_action_timer: 0.0,
             has_target: false,
             target: IVec3::default(),
             place: IVec3::default(),
@@ -153,10 +155,30 @@ impl<'c> World<'c> {
     pub fn world_seed(&self) -> u64 {
         self.seed
     }
-    pub fn set_remote_avatars(&mut self, a: Vec<bf_entity_draw>, appearances: Vec<bf_player_appearance>) {
+    pub fn set_remote_avatars(
+        &mut self,
+        a: Vec<bf_entity_draw>,
+        appearances: Vec<bf_player_appearance>,
+        actions: Vec<bf_entity_role_action>,
+    ) {
         debug_assert_eq!(a.len(), appearances.len());
+        debug_assert_eq!(a.len(), actions.len());
         self.remote_avatars = a;
         self.remote_avatar_appearances = appearances;
+        self.remote_avatar_actions = actions;
+    }
+    pub(crate) fn player_animation_state(&self) -> (bool, u32, f32) {
+        if self.mining {
+            return (self.moving, 11, self.mine_progress.clamp(0.0, 1.0));
+        }
+        if self.player_action_timer > 0.0 {
+            return (
+                self.moving,
+                11,
+                (1.0 - self.player_action_timer / 0.35).clamp(0.0, 1.0),
+            );
+        }
+        (self.moving, 0, 0.0)
     }
     pub fn mode(&self) -> bf_game_mode {
         self.mode

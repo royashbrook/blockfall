@@ -4,6 +4,9 @@ impl<'c> World<'c> {
     // ---- discrete actions ------------------------------------------------
     pub fn action(&mut self, a: &bf_action) {
         use bf_action_kind::*;
+        if matches!(a.kind, BF_ACT_MINE_START | BF_ACT_PLACE | BF_ACT_ATTACK) {
+            self.player_action_timer = 0.35;
+        }
         match a.kind {
             BF_ACT_MINE_START => {
                 let idx = self.creature_in_view();

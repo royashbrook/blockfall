@@ -1205,13 +1205,19 @@ func runCritterGallery(savePath: String) -> Bool {
             let phases: [Float] = [0, .pi * 0.5, .pi, .pi * 1.5]
             var moving = bf_entity_role_action()
             moving._pad = 1
+            moving.action = UInt32(ProcessInfo.processInfo.environment["BF_CRITTER_ACTION"] ?? "0") ?? 0
+            moving.progress = Float(ProcessInfo.processInfo.environment["BF_CRITTER_ACTION_PROGRESS"] ?? "0.5") ?? 0.5
             for i in ents.indices {
                 withUnsafePointer(to: &ents[i]) { p in
                     withUnsafePointer(to: &moving) { rp in
-                        entR.encode(enc, viewProj: viewProj, entities: p, count: 1,
-                                    animationTime: phases[i], gaitPhase: phases[i], gaitSpeed: 1.2,
-                                    animationHash: 0.25, shapeOverride: shapeOverride,
-                                    roleActions: rp, roleActionCount: 1)
+                        withUnsafePointer(to: &avatarAppearances[i]) { ap in
+                            entR.encode(enc, viewProj: viewProj, entities: p, count: 1,
+                                        animationTime: phases[i], gaitPhase: phases[i], gaitSpeed: 1.2,
+                                        animationHash: 0.25, shapeOverride: shapeOverride,
+                                        roleActions: rp, roleActionCount: 1,
+                                        appearances: motionKind == 100 ? ap : nil,
+                                        appearanceCount: motionKind == 100 ? 1 : 0)
+                        }
                     }
                 }
                 totalEntities += entR.lastEntityCount

@@ -52,6 +52,7 @@ impl<'c> World<'c> {
             dt = 0.1;
         }
         let dtf = dt as f32;
+        self.player_action_timer = (self.player_action_timer - dtf).max(0.0);
         self.moving =
             (input.move_forward.abs() + input.move_strafe.abs() + (input.jump as f32).abs()) > 0.1;
         self.world_clock += dt;

@@ -506,13 +506,23 @@ impl<'c> World<'c> {
                 .push(bf_entity_role_action::default());
             self.entity_appearances.push(bf_player_appearance::default());
         }
-        for (a, appearance) in self.remote_avatars.iter().zip(&self.remote_avatar_appearances) {
+        for (index, (a, appearance)) in self
+            .remote_avatars
+            .iter()
+            .zip(&self.remote_avatar_appearances)
+            .enumerate()
+        {
             // #179: co-op peers render at their nearest image too.
             let mut a = *a;
             a.position.x = cam_pos.x + Self::wrap_signed_f(a.position.x - cam_pos.x);
             a.position.z = cam_pos.z + Self::wrap_signed_f(a.position.z - cam_pos.z);
             self.entities.push(a);
-            self.entity_role_actions.push(bf_entity_role_action::default());
+            self.entity_role_actions.push(
+                self.remote_avatar_actions
+                    .get(index)
+                    .copied()
+                    .unwrap_or_default(),
+            );
             self.entity_appearances.push(*appearance);
         }
         debug_assert_eq!(self.entities.len(), self.entity_role_actions.len());

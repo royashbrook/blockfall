@@ -40,7 +40,9 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::abi::{bf_entity_draw, bf_game_mode, bf_player_appearance, bf_vec3};
+use crate::abi::{
+    bf_entity_draw, bf_entity_role_action, bf_game_mode, bf_player_appearance, bf_vec3,
+};
 use crate::net::NetChannel;
 use crate::types::{BlockId, IVec3};
 use crate::world::World;
@@ -171,6 +173,9 @@ struct RemotePlayer {
     z: f32,
     yaw: f32,
     appearance: bf_player_appearance,
+    moving: bool,
+    action: u32,
+    action_progress: f32,
 }
 
 /// Server-authoritative co-op session. See module docs for the borrow model.
@@ -319,7 +324,8 @@ impl NetSession {
                     None => return,
                 };
                 self.remote.insert(peer, RemotePlayer {
-                    x, y, z, yaw, appearance: bf_player_appearance::default()
+                    x, y, z, yaw, appearance: bf_player_appearance::default(),
+                    moving: false, action: 0, action_progress: 0.0,
                 });
                 self.rebuild_avatars(world);
             }
@@ -336,12 +342,21 @@ impl NetSession {
                 let z = match r.get_f32() { Some(v) => v, None => return };
                 let yaw = match r.get_f32() { Some(v) => v, None => return };
                 let appearance = match Self::read_appearance(&mut r) { Some(v) => v, None => return };
+                // Appended animation fields are optional so v29 peers remain
+                // compatible: older packets simply render an idle avatar.
+                let moving = r.get_u8().unwrap_or(0) != 0;
+                let action = r.get_u8().unwrap_or(0) as u32;
+                let action_progress = r.get_f32().unwrap_or(0.0).clamp(0.0, 1.0);
                 // Clients cannot spoof another peer id. The host assigns the
                 // transport id, then relays that canonical state to all others.
                 let origin = if self.role == NetRole::Host { peer } else { claimed_origin };
-                self.remote.insert(origin, RemotePlayer { x, y, z, yaw, appearance });
+                self.remote.insert(origin, RemotePlayer {
+                    x, y, z, yaw, appearance, moving, action, action_progress,
+                });
                 if self.role == NetRole::Host {
-                    let relay = Self::player_state(origin, x, y, z, yaw, appearance);
+                    let relay = Self::player_state(
+                        origin, x, y, z, yaw, appearance, moving, action, action_progress,
+                    );
                     let peers = self.peers.clone();
                     for target in peers {
                         if target != peer && self.joined_peers.contains(&target) {
@@ -369,7 +384,10 @@ impl NetSession {
         }
         self.snap_timer = 0.0;
         let (x, y, z, yaw) = world.get_player();
-        let w = Self::player_state(0, x, y, z, yaw, self.local_appearance);
+        let (moving, action, action_progress) = world.player_animation_state();
+        let w = Self::player_state(
+            0, x, y, z, yaw, self.local_appearance, moving, action, action_progress,
+        );
         let peers = self.peers.clone();
         for p in peers {
             self.send_to(p, NetChannel::Unreliable, &w);
@@ -448,13 +466,26 @@ impl NetSession {
         })
     }
 
-    fn player_state(origin: u16, x: f32, y: f32, z: f32, yaw: f32,
-                    appearance: bf_player_appearance) -> Vec<u8> {
+    #[allow(clippy::too_many_arguments)]
+    fn player_state(
+        origin: u16,
+        x: f32,
+        y: f32,
+        z: f32,
+        yaw: f32,
+        appearance: bf_player_appearance,
+        moving: bool,
+        action: u32,
+        action_progress: f32,
+    ) -> Vec<u8> {
         let mut w = PktWriter::new();
         w.put_type(PktType::PlayerState);
         w.put_u16(origin);
         w.put_f32(x); w.put_f32(y); w.put_f32(z); w.put_f32(yaw);
         Self::put_appearance(&mut w, appearance);
+        w.put_u8(u8::from(moving));
+        w.put_u8(action.min(u8::MAX as u32) as u8);
+        w.put_f32(action_progress.clamp(0.0, 1.0));
         w.buf
     }
 
@@ -467,6 +498,7 @@ impl NetSession {
     fn rebuild_avatars(&self, world: &mut World) {
         let mut av: Vec<bf_entity_draw> = Vec::new();
         let mut appearances = Vec::new();
+        let mut actions = Vec::new();
         for (&peer_id, rp) in &self.remote {
             av.push(bf_entity_draw {
                 position: bf_vec3 {
@@ -488,8 +520,14 @@ impl NetSession {
                 _pad: u32::from(peer_id).wrapping_add(1),
             });
             appearances.push(rp.appearance);
+            actions.push(bf_entity_role_action {
+                role: 0,
+                action: rp.action,
+                progress: rp.action_progress,
+                _pad: u32::from(rp.moving),
+            });
         }
-        world.set_remote_avatars(av, appearances);
+        world.set_remote_avatars(av, appearances, actions);
     }
 
     fn game_mode_from_u8(m: u8) -> bf_game_mode {
@@ -568,7 +606,9 @@ mod tests {
             mouth: 4, eye_style: 3, eye_color: 2, head_shape: 1,
             body_shape: 9, _reserved: [0; 2],
         };
-        let packet = NetSession::player_state(42, 1.0, 2.0, 3.0, 4.0, appearance);
+        let packet = NetSession::player_state(
+            42, 1.0, 2.0, 3.0, 4.0, appearance, true, 11, 0.625,
+        );
         let mut reader = PktReader::new(&packet);
         assert_eq!(reader.pkt_type(), Some(PktType::PlayerState));
         assert_eq!(reader.get_u16(), Some(42));
@@ -576,6 +616,9 @@ mod tests {
             assert_eq!(reader.get_f32(), Some(expected));
         }
         assert_eq!(NetSession::read_appearance(&mut reader), Some(appearance));
+        assert_eq!(reader.get_u8(), Some(1));
+        assert_eq!(reader.get_u8(), Some(11));
+        assert_eq!(reader.get_f32(), Some(0.625));
     }
 
     #[test]
@@ -597,10 +640,14 @@ mod tests {
             mouth: 7, eye_style: 8, eye_color: 9, head_shape: 1,
             body_shape: 2, _reserved: [0; 2],
         };
-        let spoofed = NetSession::player_state(999, 10.0, 11.0, 12.0, 1.5, appearance);
+        let spoofed = NetSession::player_state(
+            999, 10.0, 11.0, 12.0, 1.5, appearance, true, 11, 0.5,
+        );
         session.on_payload(7, NetChannel::Unreliable, &spoofed, &mut world);
 
         assert_eq!(session.remote.get(&7).unwrap().appearance, appearance);
+        assert!(session.remote.get(&7).unwrap().moving);
+        assert_eq!(session.remote.get(&7).unwrap().action, 11);
         assert!(session.remote.get(&999).is_none());
         let outbound = sent.borrow();
         assert_eq!(outbound.len(), 1);

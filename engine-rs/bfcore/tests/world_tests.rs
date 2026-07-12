@@ -1719,9 +1719,9 @@ fn villager_home_is_a_real_building() {
             "seed {seed}: home should have at least two windows, got {}",
             s.window_blocks
         );
-        assert!(
-            s.beam_blocks >= 20,
-            "seed {seed}: home should have a complete timber frame, got {} beam cells",
+        assert_eq!(
+            s.beam_blocks, 12,
+            "seed {seed}: home should use shaped beams only for four solid-wall corner posts, got {} beam cells",
             s.beam_blocks
         );
         assert!(

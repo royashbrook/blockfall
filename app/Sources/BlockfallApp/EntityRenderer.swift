@@ -644,12 +644,18 @@ final class EntityRenderer {
 
                     let dx = pos.x - h.lastX
                     let dz = pos.z - h.lastZ
-                    if e.kind == 20 {
+                    let inst = sqrt(dx * dx + dz * dz) / max(frameDt, 1e-4)
+                    if e.kind == 20 || e.kind == 100 {
                         // #270: locomotion is an animation state, not inverse
                         // kinematics reconstructed from render-frame displacement.
                         // Blend across short simulation stalls and play the authored
                         // cycle at a stable cadence while the engine says "moving".
-                        let target: Float = curEntityMoving ? 1 : 0
+                        // Villagers receive an engine state bit. Remote players
+                        // use their network-smoothed displacement only to select
+                        // the same clip; it never directly poses a limb.
+                        let target: Float = e.kind == 20
+                            ? (curEntityMoving ? 1 : 0)
+                            : ((curEntityMoving || inst > 0.08) ? 1 : 0)
                         let response: Float = target > h.gaitSpeed ? 9 : 5
                         h.gaitSpeed += (target - h.gaitSpeed) * min(1, frameDt * response)
                         if h.gaitSpeed > 0.01 {
@@ -658,7 +664,6 @@ final class EntityRenderer {
                             h.gait = 0
                         }
                     } else {
-                        let inst = sqrt(dx * dx + dz * dz) / max(frameDt, 1e-4)
                         h.gaitSpeed += (inst - h.gaitSpeed) * min(1.0, frameDt * 12.0)
                         let cadence: Float = (h.gaitSpeed > 0.05) ? (h.gaitSpeed * 2.2) : 0.0
                         h.gait += cadence * frameDt
@@ -668,7 +673,8 @@ final class EntityRenderer {
                     // Use the gait phase (plus the per-entity hash offset so a crowd
                     // doesn't step in sync) for the walk cycle this frame.
                     phase = h.gait + phaseHash * 3.14159
-                    curGaitSpeed = e.kind == 20 ? h.gaitSpeed * 1.3 : h.gaitSpeed
+                    curGaitSpeed = (e.kind == 20 || e.kind == 100)
+                        ? h.gaitSpeed * 1.3 : h.gaitSpeed
 
                     if h.hitAt >= 0, t - h.hitAt < hitDuration {
                         let p = (t - h.hitAt) / hitDuration

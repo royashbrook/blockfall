@@ -998,73 +998,12 @@ fn place_hut<C: Chunk>(cx: i32, cz: i32, hh: u64, seed: u64, chunk: &mut C, wx_m
         }
     }
 
-    // Finished timber frame. Corner posts run the full wall height. The doorway gets
-    // two uprights plus a three-cell lintel; every non-door wall keeps its centre glass
-    // window and gains an upright on each side. These blocks replace only wall cells,
-    // never the door, glass, floor, or interior.
+    // Finished timber frame. Shaped beams are inset and therefore decorative, not
+    // weather-tight wall material. Keep them only at corners where two solid wall
+    // planes meet; doorway and window jambs remain the selected solid wall block.
     for &(dx, dz) in &[(-rx, -rz), (rx, -rz), (-rx, rz), (rx, rz)] {
         for wy in (floor_h + 1)..=wall_top {
             struct_set(chunk, cx + dx, wy, cz + dz, wx_min, wy_min, wz_min, WOOD_BEAM);
-        }
-    }
-
-    match dir {
-        0 | 1 => {
-            let dx = if dir == 0 { rx } else { -rx };
-            for dz in [-1, 1] {
-                for wy in (floor_h + 1)..wall_top {
-                    struct_set(chunk, cx + dx, wy, cz + dz, wx_min, wy_min, wz_min, WOOD_BEAM);
-                }
-            }
-            for dz in -1..=1 {
-                struct_set(chunk, cx + dx, wall_top, cz + dz, wx_min, wy_min, wz_min, WOOD_BEAM);
-            }
-        }
-        _ => {
-            let dz = if dir == 2 { rz } else { -rz };
-            for dx in [-1, 1] {
-                for wy in (floor_h + 1)..wall_top {
-                    struct_set(chunk, cx + dx, wy, cz + dz, wx_min, wy_min, wz_min, WOOD_BEAM);
-                }
-            }
-            for dx in -1..=1 {
-                struct_set(chunk, cx + dx, wall_top, cz + dz, wx_min, wy_min, wz_min, WOOD_BEAM);
-            }
-        }
-    }
-
-    for &(dx, wall_dir) in &[(-rx, 1), (rx, 0)] {
-        if dir == wall_dir {
-            continue;
-        }
-        for dz in [-1, 1] {
-            struct_set(
-                chunk,
-                cx + dx,
-                floor_h + 2,
-                cz + dz,
-                wx_min,
-                wy_min,
-                wz_min,
-                WOOD_BEAM,
-            );
-        }
-    }
-    for &(dz, wall_dir) in &[(-rz, 3), (rz, 2)] {
-        if dir == wall_dir {
-            continue;
-        }
-        for dx in [-1, 1] {
-            struct_set(
-                chunk,
-                cx + dx,
-                floor_h + 2,
-                cz + dz,
-                wx_min,
-                wy_min,
-                wz_min,
-                WOOD_BEAM,
-            );
         }
     }
 
@@ -1327,12 +1266,15 @@ fn place_settlement_workstation<C: Chunk>(
     wy_min: i32,
     wz_min: i32,
     foundation: BlockId,
+    floor_override: Option<i32>,
 ) {
     let (station_x, station_z) = (ax + dx, az + dz);
     let (work_x, work_z) = (station_x - 1, station_z);
-    let floor_y = struct_surface(station_x, station_z, seed)
-        .max(struct_surface(work_x, work_z, seed))
-        .max(SEA_LEVEL + 1);
+    let floor_y = floor_override.unwrap_or_else(|| {
+        struct_surface(station_x, station_z, seed)
+            .max(struct_surface(work_x, work_z, seed))
+            .max(SEA_LEVEL + 1)
+    });
 
     for (wx, wz) in [(station_x, station_z), (work_x, work_z)] {
         struct_fill_col(
@@ -1372,10 +1314,12 @@ fn place_settlement_workstations<C: Chunk>(
     wy_min: i32,
     wz_min: i32,
     foundation: BlockId,
+    floor_override: Option<i32>,
 ) {
     for (dx, dz, block) in SETTLEMENT_WORKSTATIONS {
         place_settlement_workstation(
             ax, az, dx, dz, block, seed, chunk, wx_min, wy_min, wz_min, foundation,
+            floor_override,
         );
     }
 }
@@ -1389,10 +1333,12 @@ fn place_settlement_social_props<C: Chunk>(
     wy_min: i32,
     wz_min: i32,
     foundation: BlockId,
+    floor_override: Option<i32>,
 ) {
     for (dx, dz, block) in SETTLEMENT_SOCIAL_PROPS {
         place_settlement_workstation(
             ax, az, dx, dz, block, seed, chunk, wx_min, wy_min, wz_min, foundation,
+            floor_override,
         );
     }
 }
@@ -1416,8 +1362,12 @@ fn place_village<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, w
         let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x2545F4914F6CDD1D).wrapping_add(71)));
         place_settlement_building(ax, az, *site, hh, seed, chunk, wx_min, wy_min, wz_min);
     }
-    place_settlement_workstations(ax, az, seed, chunk, wx_min, wy_min, wz_min, COBBLESTONE);
-    place_settlement_social_props(ax, az, seed, chunk, wx_min, wy_min, wz_min, COBBLESTONE);
+    place_settlement_workstations(
+        ax, az, seed, chunk, wx_min, wy_min, wz_min, COBBLESTONE, None,
+    );
+    place_settlement_social_props(
+        ax, az, seed, chunk, wx_min, wy_min, wz_min, COBBLESTONE, None,
+    );
 
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
@@ -1807,6 +1757,14 @@ fn place_ruin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
 const CITY_WALL_R: i32 = 9;
 
 #[inline]
+fn city_floor_height(ax: i32, az: i32, seed: u64) -> i32 {
+    // HOME spawns at +2,+2. Keeping the authored civic floor at that exact
+    // surface preserves safe spawn height while the rest of the enclosure is
+    // filled or cut to match it.
+    struct_surface(ax + 2, az + 2, seed).max(SEA_LEVEL + 1)
+}
+
+#[inline]
 fn city_wall_material(h: u64, dx: i32, dz: i32) -> BlockId {
     let salt = (dx as u32 as u64) | ((dz as u32 as u64) << 32);
     match fmix64(h ^ salt) % 7 {
@@ -1821,22 +1779,17 @@ fn place_city_gate_x<C: Chunk>(
     ax: i32,
     az: i32,
     side: i32,
-    seed: u64,
+    floor_y: i32,
     chunk: &mut C,
     wx_min: i32,
     wy_min: i32,
     wz_min: i32,
 ) {
     let gate_x = ax + side * CITY_WALL_R;
-    let lintel_y = (-2..=2)
-        .map(|dz| struct_surface(gate_x, az + dz, seed))
-        .max()
-        .unwrap_or(SEA_LEVEL + 1)
-        + 4;
+    let lintel_y = floor_y + 4;
     for dz in [-2, 2] {
         let wz = az + dz;
-        let floor = struct_surface(gate_x, wz, seed);
-        for wy in (floor + 1)..=lintel_y {
+        for wy in (floor_y + 1)..=lintel_y {
             struct_set(chunk, gate_x, wy, wz, wx_min, wy_min, wz_min, WOOD_BEAM);
         }
         struct_set(
@@ -1869,22 +1822,17 @@ fn place_city_gate_z<C: Chunk>(
     ax: i32,
     az: i32,
     side: i32,
-    seed: u64,
+    floor_y: i32,
     chunk: &mut C,
     wx_min: i32,
     wy_min: i32,
     wz_min: i32,
 ) {
     let gate_z = az + side * CITY_WALL_R;
-    let lintel_y = (-2..=2)
-        .map(|dx| struct_surface(ax + dx, gate_z, seed))
-        .max()
-        .unwrap_or(SEA_LEVEL + 1)
-        + 4;
+    let lintel_y = floor_y + 4;
     for dx in [-2, 2] {
         let wx = ax + dx;
-        let floor = struct_surface(wx, gate_z, seed);
-        for wy in (floor + 1)..=lintel_y {
+        for wy in (floor_y + 1)..=lintel_y {
             struct_set(chunk, wx, wy, gate_z, wx_min, wy_min, wz_min, WOOD_BEAM);
         }
         struct_set(
@@ -1920,6 +1868,7 @@ fn place_city_corner_tower<C: Chunk>(
     sz: i32,
     h: u64,
     seed: u64,
+    floor_y: i32,
     chunk: &mut C,
     wx_min: i32,
     wy_min: i32,
@@ -1927,12 +1876,7 @@ fn place_city_corner_tower<C: Chunk>(
 ) {
     let cx = ax + sx * CITY_WALL_R;
     let cz = az + sz * CITY_WALL_R;
-    let mut deck_y = i32::MIN;
-    for dz in -1..=1 {
-        for dx in -1..=1 {
-            deck_y = deck_y.max(struct_surface(cx + dx, cz + dz, seed) + 1);
-        }
-    }
+    let deck_y = floor_y + 1;
 
     // A compact stone plinth follows the slope; the upper tower stays open and
     // uses the shaped timber vocabulary instead of becoming another solid cube.
@@ -2006,13 +1950,12 @@ fn place_city_corner_tower<C: Chunk>(
 fn place_city_civic_landmark<C: Chunk>(
     ax: i32,
     az: i32,
-    seed: u64,
+    base_y: i32,
     chunk: &mut C,
     wx_min: i32,
     wy_min: i32,
     wz_min: i32,
 ) {
-    let base_y = struct_surface(ax, az, seed);
     for (dx, dz, b) in [
         (0, 0, MOSSY_STONE),
         (-1, 0, COBBLESTONE),
@@ -2053,7 +1996,33 @@ fn place_city_core<C: Chunk>(
     wx_min: i32,
     wy_min: i32,
     wz_min: i32,
-) {
+) -> i32 {
+    let floor_y = city_floor_height(ax, az, seed);
+
+    // A city core is deliberately developed land, not untouched biome inside a
+    // wall. Level every enclosed column, clear its old plant cell, and pave it.
+    for dz in -CITY_WALL_R..=CITY_WALL_R {
+        for dx in -CITY_WALL_R..=CITY_WALL_R {
+            let wx = ax + dx;
+            let wz = az + dz;
+            let natural = struct_surface(wx, wz, seed);
+            struct_fill_col(
+                chunk, wx, wz, floor_y, seed, wx_min, wy_min, wz_min, COBBLESTONE,
+            );
+            if natural > floor_y {
+                for wy in (floor_y + 1)..=(natural + 1) {
+                    struct_clear(chunk, wx, wy, wz, wx_min, wy_min, wz_min);
+                }
+            } else {
+                struct_clear(chunk, wx, floor_y + 1, wz, wx_min, wy_min, wz_min);
+            }
+            let plaza = dx.abs() <= 3 && dz.abs() <= 3;
+            let avenue = dx.abs() <= 1 || dz.abs() <= 1;
+            let paving = if plaza || avenue { STONE_BRICK } else { COBBLESTONE };
+            struct_set(chunk, wx, floor_y, wz, wx_min, wy_min, wz_min, paving);
+        }
+    }
+
     for dz in -CITY_WALL_R..=CITY_WALL_R {
         for dx in -CITY_WALL_R..=CITY_WALL_R {
             if dx.abs() != CITY_WALL_R && dz.abs() != CITY_WALL_R {
@@ -2067,24 +2036,23 @@ fn place_city_core<C: Chunk>(
             }
             let wx = ax + dx;
             let wz = az + dz;
-            let floor = struct_surface(wx, wz, seed);
             let edge_pos = if dx.abs() == CITY_WALL_R { dz } else { dx };
             let b = city_wall_material(h, dx, dz);
             if (edge_pos + CITY_WALL_R).rem_euclid(3) == 0 {
                 // Timber is trim, not the wall plane: keep two solid courses
                 // beneath a shaped cap so the fortification never turns into a
                 // three-log-high see-through fence (#268).
-                struct_set(chunk, wx, floor + 1, wz, wx_min, wy_min, wz_min, b);
-                struct_set(chunk, wx, floor + 2, wz, wx_min, wy_min, wz_min, b);
-                struct_set(chunk, wx, floor + 3, wz, wx_min, wy_min, wz_min, WOOD_BEAM);
+                struct_set(chunk, wx, floor_y + 1, wz, wx_min, wy_min, wz_min, b);
+                struct_set(chunk, wx, floor_y + 2, wz, wx_min, wy_min, wz_min, b);
+                struct_set(chunk, wx, floor_y + 3, wz, wx_min, wy_min, wz_min, WOOD_BEAM);
             } else {
-                struct_set(chunk, wx, floor + 1, wz, wx_min, wy_min, wz_min, b);
-                struct_set(chunk, wx, floor + 2, wz, wx_min, wy_min, wz_min, b);
+                struct_set(chunk, wx, floor_y + 1, wz, wx_min, wy_min, wz_min, b);
+                struct_set(chunk, wx, floor_y + 2, wz, wx_min, wy_min, wz_min, b);
                 if edge_pos.rem_euclid(2) == 0 {
                     struct_set(
                         chunk,
                         wx,
-                        floor + 3,
+                        floor_y + 3,
                         wz,
                         wx_min,
                         wy_min,
@@ -2097,29 +2065,22 @@ fn place_city_core<C: Chunk>(
     }
 
     for side in [-1, 1] {
-        place_city_gate_x(ax, az, side, seed, chunk, wx_min, wy_min, wz_min);
-        place_city_gate_z(ax, az, side, seed, chunk, wx_min, wy_min, wz_min);
+        place_city_gate_x(ax, az, side, floor_y, chunk, wx_min, wy_min, wz_min);
+        place_city_gate_z(ax, az, side, floor_y, chunk, wx_min, wy_min, wz_min);
     }
     for (sx, sz) in [(-1, -1), (1, -1), (-1, 1), (1, 1)] {
         place_city_corner_tower(
-            ax, az, sx, sz, h, seed, chunk, wx_min, wy_min, wz_min,
+            ax, az, sx, sz, h, seed, floor_y, chunk, wx_min, wy_min, wz_min,
         );
     }
-    place_city_civic_landmark(ax, az, seed, chunk, wx_min, wy_min, wz_min);
+    place_city_civic_landmark(ax, az, floor_y, chunk, wx_min, wy_min, wz_min);
+    floor_y
 }
 
 // A city: a finished walled civic core surrounded by a larger procedural settlement.
 // Buildings still come from the village kit, but sit beyond the perimeter so gates,
 // watchtowers, plaza, and landmark always remain readable and walkable.
 fn place_city<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
-    // Paved central plaza, 7x7. The civic mast is stamped after the roads.
-    for dz in -3..=3 {
-        for dx in -3..=3 {
-            let col_h = struct_surface(ax + dx, az + dz, seed);
-            struct_set(chunk, ax + dx, col_h, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
-        }
-    }
-
     let wanted = CITY_MIN_BUILDINGS + ((h >> 10) as usize % (CITY_MAX_BUILDINGS - CITY_MIN_BUILDINGS + 1));
     let (sites, n_sites) = settlement_sites(h ^ 0xC17A, wanted, true);
     for (i, site) in sites.iter().take(n_sites).enumerate() {
@@ -2130,9 +2091,13 @@ fn place_city<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
         let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(131)));
         place_settlement_building(ax, az, *site, hh, seed, chunk, wx_min, wy_min, wz_min);
     }
-    place_settlement_workstations(ax, az, seed, chunk, wx_min, wy_min, wz_min, STONE_BRICK);
-    place_city_core(ax, az, h, seed, chunk, wx_min, wy_min, wz_min);
-    place_settlement_social_props(ax, az, seed, chunk, wx_min, wy_min, wz_min, STONE_BRICK);
+    let city_floor = place_city_core(ax, az, h, seed, chunk, wx_min, wy_min, wz_min);
+    place_settlement_workstations(
+        ax, az, seed, chunk, wx_min, wy_min, wz_min, STONE_BRICK, Some(city_floor),
+    );
+    place_settlement_social_props(
+        ax, az, seed, chunk, wx_min, wy_min, wz_min, STONE_BRICK, Some(city_floor),
+    );
 
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }

@@ -3370,15 +3370,36 @@ extension Renderer {
         lp.x = 0.5 + dx * cy - dz * sy;
         lp.z = 0.5 + dx * sy + dz * cy;
         float3 nm = float3(cnrm.x * cy - cnrm.z * sy, cnrm.y, cnrm.x * sy + cnrm.z * cy);
-        // #68 clustering: grass (row 4) and berry bush (row 6) grow bigger where many of
-        // the same kind are packed together (density in the seed's top nibble), so a patch
-        // reads as one merged clump and shrinks as you break pieces. A lone plant = normal.
-        if (row == 4 || row == 6) {
+        // Small flowers vary naturally without becoming waist-high toy blocks.
+        if (row == 0 || row == 1) {
+            float flowerScale = 0.62 + 0.18 * (float((inst.seed >> 12u) & 255u) / 255.0);
+            lp.x = 0.5 + (lp.x - 0.5) * flowerScale;
+            lp.z = 0.5 + (lp.z - 0.5) * flowerScale;
+            lp.y *= flowerScale;
+        }
+        if (row == 2) {
+            float mushroomScale = 0.70 + 0.18 * (float((inst.seed >> 14u) & 255u) / 255.0);
+            lp.x = 0.5 + (lp.x - 0.5) * mushroomScale;
+            lp.z = 0.5 + (lp.z - 0.5) * mushroomScale;
+            lp.y *= mushroomScale;
+        }
+        // Most grass is short ground cover. A stable minority keeps the old tall
+        // silhouette, and dense patches spread modestly instead of scaling to 2x.
+        if (row == 4) {
             float dens = float((inst.seed >> 28u) & 0xFu);   // 0..8 same-kind neighbours
-            float gscale = 1.0 + dens * 0.13;                // up to ~2x in a packed patch
-            lp.x = 0.5 + (lp.x - 0.5) * gscale;
-            lp.z = 0.5 + (lp.z - 0.5) * gscale;
-            lp.y *= gscale;                                  // taller from the ground up
+            bool tall = ((inst.seed >> 12u) & 7u) == 0u;
+            float widthScale = 0.72 + min(dens, 8.0) * 0.035;
+            float heightScale = tall ? 0.92 : 0.40 + 0.12 * (float((inst.seed >> 16u) & 255u) / 255.0);
+            lp.x = 0.5 + (lp.x - 0.5) * widthScale;
+            lp.z = 0.5 + (lp.z - 0.5) * widthScale;
+            lp.y *= heightScale;
+        }
+        if (row == 6) {
+            float dens = float((inst.seed >> 28u) & 0xFu);
+            float bushScale = 1.0 + min(dens, 8.0) * 0.05;
+            lp.x = 0.5 + (lp.x - 0.5) * bushScale;
+            lp.z = 0.5 + (lp.z - 0.5) * bushScale;
+            lp.y *= bushScale;
         }
         // Desert cactus (#152): one stored plant block renders as a varied tall cactus.
         // The smallest is about 2x the old prop height and the biggest is about 5x.

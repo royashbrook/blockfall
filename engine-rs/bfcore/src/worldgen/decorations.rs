@@ -394,7 +394,10 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
                 const GPATCH_PERIOD: i32 = 2785;
                 const GPATCH_FREQ: f32 = GPATCH_PERIOD as f32 / WORLD_PERIOD as f32;
                 let gpatch = value_noise2(wx as f32 * GPATCH_FREQ, wz as f32 * GPATCH_FREQ, pseed ^ 0x6772ABCD, GPATCH_PERIOD);
-                let gt: u64 = if gpatch > 0.58 { 205 } else { 24 };
+                // Dense patches should read as pockets of vegetation, not a solid
+                // carpet. The renderer supplies silhouette variety; generation
+                // leaves enough open ground for paths and terrain to remain legible.
+                let gt: u64 = if gpatch > 0.62 { 92 } else { 12 };
 
                 let mut plant = AIR;
 
@@ -402,23 +405,23 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
                     if surf == GRASS {
                         if roll < gt {
                             plant = TALL_GRASS;
-                        } else if roll < gt + 15 {
+                        } else if roll < gt + 6 {
                             plant = FLOWER_RED;
-                        } else if roll < gt + 30 {
+                        } else if roll < gt + 12 {
                             plant = FLOWER_YELLOW;
-                        } else if roll < gt + 40 {
+                        } else if roll < gt + 16 {
                             plant = MUSHROOM;
-                        } else if roll < gt + 46 {
+                        } else if roll < gt + 19 {
                             plant = BERRY_BUSH;
-                        } else if roll < gt + 52 {
+                        } else if roll < gt + 22 {
                             plant = FALLEN_STICK;
                         }
                     } else if surf == DIRT {
-                        if roll2 < 55 {
+                        if roll2 < 24 {
                             plant = MUSHROOM;
-                        } else if roll2 < 70 {
+                        } else if roll2 < 34 {
                             plant = TALL_GRASS;
-                        } else if roll2 < 82 {
+                        } else if roll2 < 40 {
                             plant = FALLEN_STICK;
                         }
                     }
@@ -426,9 +429,9 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
                     if surf == GRASS || surf == DIRT {
                         if roll < gt {
                             plant = TALL_GRASS;
-                        } else if roll < gt + 26 {
+                        } else if roll < gt + 10 {
                             plant = MUSHROOM;
-                        } else if roll < gt + 38 {
+                        } else if roll < gt + 15 {
                             plant = FLOWER_RED;
                         }
                     }
@@ -450,13 +453,13 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
                     if surf == GRASS {
                         if roll < gt {
                             plant = TALL_GRASS;
-                        } else if roll < gt + 19 {
+                        } else if roll < gt + 8 {
                             plant = FLOWER_RED;
-                        } else if roll < gt + 37 {
+                        } else if roll < gt + 16 {
                             plant = FLOWER_YELLOW;
-                        } else if roll < gt + 43 {
+                        } else if roll < gt + 20 {
                             plant = MUSHROOM;
-                        } else if roll < gt + 48 {
+                        } else if roll < gt + 23 {
                             plant = BERRY_BUSH;
                         }
                     }
@@ -470,13 +473,13 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
                     }
                 } else {
                     if surf == GRASS {
-                        if roll < 38 {
+                        if roll < 14 {
                             plant = TALL_GRASS;
-                        } else if roll < 57 {
+                        } else if roll < 20 {
                             plant = FLOWER_RED;
-                        } else if roll < 75 {
+                        } else if roll < 26 {
                             plant = FLOWER_YELLOW;
-                        } else if roll < 81 {
+                        } else if roll < 29 {
                             plant = MUSHROOM;
                         }
                     }

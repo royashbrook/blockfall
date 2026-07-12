@@ -205,7 +205,7 @@ mod worldgen_tests {
                     };
                     place_settlement_workstation(
                         ax, az, 4, 4, CHOPPING_BLOCK, seed,
-                        &mut chunk, wx_min, wy_min, wz_min, foundation,
+                        &mut chunk, wx_min, wy_min, wz_min, foundation, None,
                     );
                     cells = chunk.cells;
                 }
@@ -409,6 +409,7 @@ mod worldgen_tests {
                 };
                 place_settlement_social_props(
                     anchor, anchor, seed, &mut chunk, wx_min, wy_min, wz_min, foundation,
+                    None,
                 );
                 cells = chunk.cells;
             }
@@ -1172,6 +1173,13 @@ mod worldgen_tests {
         }
 
         let mut cells = std::collections::HashMap::new();
+        for dz in -CITY_WALL_R..=CITY_WALL_R {
+            for dx in -CITY_WALL_R..=CITY_WALL_R {
+                let wx = ax + dx;
+                let wz = az + dz;
+                cells.insert((wx, struct_surface(wx, wz, seed) + 1, wz), TALL_GRASS);
+            }
+        }
         for (cx, cy, cz) in windows {
             let (wx_min, wy_min, wz_min) =
                 (cx * K_CHUNK_DIM, cy * K_CHUNK_DIM, cz * K_CHUNK_DIM);
@@ -1202,13 +1210,12 @@ mod worldgen_tests {
             let at = |wx: i32, wy: i32, wz: i32| {
                 *cells.get(&(wx, wy, wz)).unwrap_or(&AIR)
             };
-            let base = struct_surface(ax, az, seed);
+            let base = city_floor_height(ax, az, seed);
 
             // HOME is ax+2,az+2. The civic landmark stays central and leaves a
             // full two-block player column clear at the promised spawn cell.
-            let spawn_y = struct_surface(ax + 2, az + 2, seed);
-            assert_eq!(at(ax + 2, spawn_y + 1, az + 2), AIR);
-            assert_eq!(at(ax + 2, spawn_y + 2, az + 2), AIR);
+            assert_eq!(at(ax + 2, base + 1, az + 2), AIR);
+            assert_eq!(at(ax + 2, base + 2, az + 2), AIR);
             for wy in (base + 1)..=(base + 5) {
                 assert_eq!(at(ax, wy, az), WOOD_BEAM, "seed {seed}: civic mast gap");
             }
@@ -1225,15 +1232,13 @@ mod worldgen_tests {
             for side in [-1, 1] {
                 let gate_x = ax + side * CITY_WALL_R;
                 for dz in -1..=1 {
-                    let floor = struct_surface(gate_x, az + dz, seed);
-                    for wy in (floor + 1)..=(floor + 3) {
+                    for wy in (base + 1)..=(base + 3) {
                         assert_eq!(at(gate_x, wy, az + dz), AIR, "seed {seed}: X gate blocked");
                     }
                 }
                 let gate_z = az + side * CITY_WALL_R;
                 for dx in -1..=1 {
-                    let floor = struct_surface(ax + dx, gate_z, seed);
-                    for wy in (floor + 1)..=(floor + 3) {
+                    for wy in (base + 1)..=(base + 3) {
                         assert_eq!(at(ax + dx, wy, gate_z), AIR, "seed {seed}: Z gate blocked");
                     }
                 }
@@ -1251,8 +1256,7 @@ mod worldgen_tests {
                     (ax + d, az - CITY_WALL_R),
                     (ax + d, az + CITY_WALL_R),
                 ] {
-                    let floor = struct_surface(wx, wz, seed);
-                    for wy in (floor + 1)..=(floor + 2) {
+                    for wy in (base + 1)..=(base + 2) {
                         let b = at(wx, wy, wz);
                         assert!(
                             b != AIR && b != WOOD_BEAM,
@@ -1285,6 +1289,28 @@ mod worldgen_tests {
                 .filter(|&&b| b == MOSSY_STONE || b == COBBLESTONE)
                 .count();
             assert!(texture_cells >= 8, "seed {seed}: city stone has no texture variation");
+
+            // Every enclosed column shares one developed paving elevation and
+            // its first air cell is free of biome plants.
+            for dz in -(CITY_WALL_R - 1)..=(CITY_WALL_R - 1) {
+                for dx in -(CITY_WALL_R - 1)..=(CITY_WALL_R - 1) {
+                    if dx.abs() >= CITY_WALL_R - 1 && dz.abs() >= CITY_WALL_R - 1 {
+                        continue; // corner-tower plinth
+                    }
+                    let floor = at(ax + dx, base, az + dz);
+                    assert!(
+                        floor == STONE_BRICK || floor == COBBLESTONE || floor == MOSSY_STONE,
+                        "seed {seed}: undeveloped city floor at {dx},{dz}: {floor}"
+                    );
+                    if dx != 0 || dz != 0 {
+                        assert_eq!(
+                            at(ax + dx, base + 1, az + dz),
+                            AIR,
+                            "seed {seed}: vegetation or terrain remains above city paving at {dx},{dz}"
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -1522,10 +1548,9 @@ mod worldgen_tests {
             assert!(s.width >= 5 && s.depth >= 5, "seed {seed}: {}x{} < 5x5", s.width, s.depth);
             assert_eq!(s.door_blocks, 2, "seed {seed}: door opening missing");
             assert!(s.window_blocks >= 2, "seed {seed}: too few windows ({})", s.window_blocks);
-            assert!(
-                s.beam_blocks >= 20,
-                "seed {seed}: timber frame is incomplete ({})",
-                s.beam_blocks
+            assert_eq!(
+                s.beam_blocks, 12,
+                "seed {seed}: shaped timber must stay on the four three-high corners"
             );
             assert!(
                 s.roof_levels >= 4,
