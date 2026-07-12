@@ -2008,14 +2008,49 @@ fn villager_social_loop_is_visible_home_bound_and_cancels_failed_prop_paths() {
         let mut shadows = Vec::new();
         let mut props = Vec::new();
         w.build_frame(&mut frame, &mut draws, &mut shadows, &mut props, 0.0);
-        let sidecar = w
+        let elder_draw_index = w
             .entity_role_actions()
             .iter()
-            .find(|entry| entry.role == 1)
+            .position(|entry| entry.role == 1)
             .expect("elder sidecar entry");
+        let sidecar = &w.entity_role_actions()[elder_draw_index];
         assert_eq!(sidecar.action, wanted, "social pose reaches the v28 sidecar");
 
         if wanted == 9 {
+            // #262: collision remains in the clear approach cell, while the
+            // authored draw is centered on the west-facing bench seat and faces
+            // back toward the room.
+            let physical = w.debug_creature_pos(elder);
+            assert!(
+                (physical.0 - 7.5).abs() < 0.01 && (physical.2 - 14.5).abs() < 0.01,
+                "collision body left the west approach cell: {physical:?}"
+            );
+            let entities = unsafe {
+                std::slice::from_raw_parts(frame.entities, frame.entity_count as usize)
+            };
+            let seated = &entities[elder_draw_index];
+            assert!(
+                (seated.position.x - 8.5).abs() < 0.01,
+                "seat x was {} (physical={physical:?}, yaw={})",
+                seated.position.x,
+                seated.yaw
+            );
+            assert!(
+                (seated.position.y - 8.35).abs() < 0.01,
+                "seat y was {}",
+                seated.position.y
+            );
+            assert!(
+                (seated.position.z - 14.5).abs() < 0.01,
+                "seat z was {}",
+                seated.position.z
+            );
+            assert!(
+                seated.yaw.sin() < -0.99 && seated.yaw.cos().abs() < 0.01,
+                "seat faced yaw {}",
+                seated.yaw
+            );
+
             w.debug_edit(8, 8, 14, world::AIR);
             w.update(&zero, 0.05);
             assert_eq!(w.debug_villager_social_action(elder), 0, "removed bench cancels sitting");

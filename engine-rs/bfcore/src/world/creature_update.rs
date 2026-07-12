@@ -4,7 +4,7 @@ const SOCIAL_LOOK: u32 = 5;
 const SOCIAL_GESTURE: u32 = 6;
 const SOCIAL_GREET: u32 = 7;
 const SOCIAL_CHAT: u32 = 8;
-const SOCIAL_SIT: u32 = 9;
+pub(super) const SOCIAL_SIT: u32 = 9;
 const SOCIAL_SWEEP: u32 = 10;
 const SOCIAL_HOME_RADIUS: i32 = 12;
 const SOCIAL_TRAVEL_SECONDS: f32 = 12.0;
@@ -384,7 +384,7 @@ impl<'c> World<'c> {
             }
             SOCIAL_SIT | SOCIAL_SWEEP => {
                 let (block, dz) = if c.social.action == SOCIAL_SIT { (62, 6) } else { (63, -6) };
-                let Some((sx, sy, wx, wz)) =
+                let Some((_sx, sy, wx, wz)) =
                     self.villager_feature(c, block, 0, dz, Some(c.social.target_y))
                 else {
                     Self::finish_villager_social(c);
@@ -392,8 +392,10 @@ impl<'c> World<'c> {
                 };
                 let dx = Self::wrap_signed_f(wx as f32 + 0.5 - c.pos.x);
                 let dz = Self::wrap_signed_f(wz as f32 + 0.5 - c.pos.z);
-                let face = Self::wrap_signed_f(sx as f32 + 0.5 - c.pos.x)
-                    .atan2(Self::wrap_signed_f(wz as f32 + 0.5 - c.pos.z));
+                // villager_feature's approach cell is canonically one block west
+                // of the prop. Face east once settled so work poses do not retain
+                // an arbitrary diagonal from the last path step.
+                let face = std::f32::consts::FRAC_PI_2;
                 if dx * dx + dz * dz > 0.75 * 0.75 {
                     c.social.timer -= dt;
                     if c.social.timer <= 0.0 {

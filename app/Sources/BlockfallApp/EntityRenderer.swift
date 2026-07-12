@@ -493,7 +493,8 @@ final class EntityRenderer {
         // collect a tiny per-entity instance (foot pos + footprint radius). Cheap: a few floats per
         // entity + one instanced draw of two triangles each.
         if charShadowOn {
-            encodeGroundShadows(enc, viewProj: viewProj, entities: entities, count: count)
+            encodeGroundShadows(enc, viewProj: viewProj, entities: entities, count: count,
+                                roleActions: roleActions, roleActionCount: roleActionCount)
         }
 
         // #192 CAMERA-RELATIVE PART MATRICES. Entity world coords live on the #179
@@ -738,11 +739,17 @@ final class EntityRenderer {
     private func encodeGroundShadows(_ enc: MTLRenderCommandEncoder,
                                      viewProj: simd_float4x4,
                                      entities: UnsafePointer<bf_entity_draw>,
-                                     count: Int) {
+                                     count: Int,
+                                     roleActions: UnsafePointer<bf_entity_role_action>?,
+                                     roleActionCount: Int) {
         shadowInsts.removeAll(keepingCapacity: true)
         for i in 0..<count {
             let e = entities[i]
             if e.kind == 6 || e.kind == 22 { continue }   // falling blocks + debris: no contact shadow
+            // #262 shaped benches occupy a full voxel in the shadow volume, so
+            // its height snap would float a blob above the real 9/16-high seat.
+            // The bench itself visually grounds the seated villager.
+            if let actions = roleActions, i < roleActionCount, actions[i].action == 9 { continue }
             let pos = SIMD3<Float>(e.position.x, e.position.y, e.position.z)
             // Footprint radius scales with the creature's draw scale. Most kinds occupy ~0.6 units
             // wide at scale 1; the blob is a touch larger so it reads as a soft contact pool.

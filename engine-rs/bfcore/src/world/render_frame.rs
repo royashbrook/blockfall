@@ -302,6 +302,32 @@ impl<'c> World<'c> {
         self.entity_role_actions.clear();
         const KANIMAL_KIND: [u32; 8] = [0, 1, 2, 3, 7, 8, 9, 10];
         for cr in &self.creatures {
+            let social = if cr.model == 20 {
+                cr.social.visible_action()
+            } else {
+                0
+            };
+            // #262: pathfinding stops in the clear approach cell, but a seated
+            // villager is drawn one block forward on the bench.  Keep collision
+            // and path state outside the solid prop while aligning the visible
+            // rig with the 9/16-high seat. The seated contact shadow is omitted
+            // because shaped props occupy a full voxel in the shadow volume. The
+            // approach yaw points into the bench, so the visible rig turns back
+            // toward the room with the backrest behind it.
+            let visual_pos = if social == super::creature_update::SOCIAL_SIT {
+                V3::new(
+                    Self::wrap_pos_f(cr.pos.x + cr.yaw.sin()),
+                    cr.pos.y + 0.35,
+                    Self::wrap_pos_f(cr.pos.z + cr.yaw.cos()),
+                )
+            } else {
+                cr.pos
+            };
+            let visual_yaw = if social == super::creature_update::SOCIAL_SIT {
+                cr.yaw + std::f32::consts::PI
+            } else {
+                cr.yaw
+            };
             let mut col = if cr.friendly {
                 V3::new(1.0, 0.92, 0.55)
             } else {
@@ -335,11 +361,11 @@ impl<'c> World<'c> {
             }));
             self.entities.push(bf_entity_draw {
                 position: bf_vec3 {
-                    x: cam_pos.x + Self::wrap_signed_f(cr.pos.x - cam_pos.x),
-                    y: cr.pos.y,
-                    z: cam_pos.z + Self::wrap_signed_f(cr.pos.z - cam_pos.z),
+                    x: cam_pos.x + Self::wrap_signed_f(visual_pos.x - cam_pos.x),
+                    y: visual_pos.y,
+                    z: cam_pos.z + Self::wrap_signed_f(visual_pos.z - cam_pos.z),
                 },
-                yaw: cr.yaw,
+                yaw: visual_yaw,
                 color: bf_vec3 {
                     x: col.x,
                     y: col.y,
@@ -352,7 +378,6 @@ impl<'c> World<'c> {
             });
             self.entity_role_actions.push(if cr.model == 20 {
                 let artisan = (2..=6).contains(&cr.npc_id);
-                let social = cr.social.visible_action();
                 bf_entity_role_action {
                     role: cr.npc_id.max(0) as u32,
                     action: if social != 0 {
