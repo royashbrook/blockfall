@@ -235,7 +235,7 @@ pub struct bf_entity_draw {
     pub scale: f32,
     pub kind: u32,
     pub sat: f32,
-    pub _pad: u32,
+    pub _pad: u32, // stable renderer animation identity; 0 = unavailable
 }
 
 /// #254 (v28): profession and current routine action for one render entity.

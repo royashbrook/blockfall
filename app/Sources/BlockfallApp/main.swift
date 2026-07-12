@@ -23,6 +23,10 @@ private struct PauseLayoutPolicy: Equatable {
     let stackedActions: Bool
 }
 
+private final class PauseDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 private func pauseLayoutPolicy(width: CGFloat, scale: CGFloat) -> PauseLayoutPolicy {
     let s = min(2.0, max(1.0, scale))
     return PauseLayoutPolicy(
@@ -541,7 +545,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true
-        let doc = NSView()
+        // A flipped document view makes scroll position zero mean "top". The
+        // default AppKit view is bottom-origin, which could reopen the rebuilt
+        // 2.0x menu scrolled past Text Size and its headings (#267).
+        let doc = PauseDocumentView()
         doc.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(optionsStack)
         scroll.documentView = doc
@@ -569,35 +576,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             bottomActions.widthAnchor.constraint(equalTo: actionBar.widthAnchor).isActive = true
         }
         actionBar.translatesAutoresizingMaskIntoConstraints = false
-        ov.addSubview(title)
-        ov.addSubview(scroll)
-        ov.addSubview(actionBar)
+        // Keep the menu itself centred. The dim backdrop still fills the game,
+        // but the title/options/actions live in one bounded panel instead of
+        // stretching from the top edge to a bottom-anchored action bar (#267).
+        let panel = NSView()
+        panel.translatesAutoresizingMaskIntoConstraints = false
+        panel.wantsLayer = true
+        panel.layer?.backgroundColor = NSColor(calibratedWhite: 0.10, alpha: 0.88).cgColor
+        panel.layer?.cornerRadius = 18
+        panel.addSubview(title)
+        panel.addSubview(scroll)
+        panel.addSubview(actionBar)
+        ov.addSubview(panel)
 
         // Preferred widths yield to hard edge bounds on compact windows.
         let scrollW = scroll.widthAnchor.constraint(equalToConstant: policy.twoOptionColumns ? 900 : 520)
         scrollW.priority = .defaultHigh; scrollW.isActive = true
         let actionW = actionBar.widthAnchor.constraint(equalToConstant: policy.stackedActions ? 460 : 820)
         actionW.priority = .defaultHigh; actionW.isActive = true
+        let panelH = max(1, min(container.bounds.height - 32, 760))
         NSLayoutConstraint.activate([
-            title.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
-            title.topAnchor.constraint(equalTo: ov.topAnchor, constant: 16),
+            panel.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
+            panel.centerYAnchor.constraint(equalTo: ov.centerYAnchor),
+            panel.leadingAnchor.constraint(greaterThanOrEqualTo: ov.leadingAnchor, constant: 16),
+            panel.trailingAnchor.constraint(lessThanOrEqualTo: ov.trailingAnchor, constant: -16),
+            panel.heightAnchor.constraint(equalToConstant: panelH),
 
-            actionBar.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
-            actionBar.leadingAnchor.constraint(greaterThanOrEqualTo: ov.leadingAnchor, constant: 16),
-            actionBar.trailingAnchor.constraint(lessThanOrEqualTo: ov.trailingAnchor, constant: -16),
-            actionBar.bottomAnchor.constraint(equalTo: ov.bottomAnchor, constant: -16),
+            title.centerXAnchor.constraint(equalTo: panel.centerXAnchor),
+            title.topAnchor.constraint(equalTo: panel.topAnchor, constant: 16),
 
-            scroll.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
-            scroll.leadingAnchor.constraint(greaterThanOrEqualTo: ov.leadingAnchor, constant: 16),
-            scroll.trailingAnchor.constraint(lessThanOrEqualTo: ov.trailingAnchor, constant: -16),
+            actionBar.centerXAnchor.constraint(equalTo: panel.centerXAnchor),
+            actionBar.leadingAnchor.constraint(greaterThanOrEqualTo: panel.leadingAnchor, constant: 16),
+            actionBar.trailingAnchor.constraint(lessThanOrEqualTo: panel.trailingAnchor, constant: -16),
+            actionBar.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -16),
+
+            scroll.centerXAnchor.constraint(equalTo: panel.centerXAnchor),
+            scroll.leadingAnchor.constraint(greaterThanOrEqualTo: panel.leadingAnchor, constant: 16),
+            scroll.trailingAnchor.constraint(lessThanOrEqualTo: panel.trailingAnchor, constant: -16),
             scroll.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 12),
             scroll.bottomAnchor.constraint(equalTo: actionBar.topAnchor, constant: -12),
 
             // Vertical-only scroll; options get a left/right margin so the
             // checkboxes on the left column are never clipped at the edge.
             doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            optionsStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: -6),
-            optionsStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: 6),
+            optionsStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 6),
+            optionsStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -6),
             optionsStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 16),
             optionsStack.trailingAnchor.constraint(lessThanOrEqualTo: doc.trailingAnchor, constant: -16),
         ])

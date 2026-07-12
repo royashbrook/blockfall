@@ -49,6 +49,83 @@ use is intentionally shown by the matching resident.
    from the west, but the visible body must sit on the wooden seat facing outward;
    it must not squat beside the bench or cast a floating shadow above it.
 
+## July 12 visual and menu follow-up
+
+The next live pass repaired six more presentation regressions:
+
+- The full-screen pause dimmer now contains a bounded panel centered on both axes.
+  Its scroll document is top-origin, so a rebuild at `2.0x` opens on **Effects** and
+  **Text Size**, never at the bottom of the options.
+- Generated doors count shaped timber jambs when inferring their wall axis. A closed
+  door covers and blocks the opening; its open state swings to the side and is passable.
+- Closed City wall runs keep two solid stone courses. Shaped timber is now the cap/trim,
+  not a three-block-high see-through wall column.
+- Rendered creatures carry a stable animation identity. Villager gait no longer swaps
+  half-block position history, and the walk adds eased stride echo, body lift/squash,
+  delayed elbows/wrists, and rounded elbow joins.
+- Villager heads and eye whites use the targeted smoother primitive; eyes, noses, and
+  mouths are shallower and embedded against the curved face instead of floating out.
+- Large leaf and berry-bush spheres use a smoother silhouette. Berries sit on three
+  outer sides of the clump, and the fixed-position yaw sweep keeps tree detail attached
+  to the same world crown.
+
+### July 12 manual regression
+
+1. Open pause at `1.0x`, `1.6x`, and `2.0x`. The dark panel—not just its buttons—must
+   remain centered. At `2.0x`, **Effects** and **Text Size** must be visible immediately;
+   scroll to reach the remaining effects while all four action buttons stay pinned.
+   Zoom/resize the window, close/reopen pause, and repeat.
+2. In a new seed-11 world, approach homes whose door walls face different compass
+   directions. Before interaction, the plank slab must visibly cover the doorway and
+   block walking. Interact once: it must lie against a jamb and allow passage. Interact
+   again: it must cover/block the doorway. Test both the upper and lower door half.
+3. Visit the starting City and walk the full inside and outside wall perimeter. Rounded
+   timber may appear as corner, gate, cap, or tower detail, but every closed wall run
+   must have a continuous solid lower wall plane with no full-height log-only gaps.
+4. Follow at least three villagers while they cross several block boundaries and pass
+   one another. Arms must not tremble or reset phase. Look for broad eased arm/leg arcs,
+   a small whole-body bounce/squash on steps, delayed forearm/wrist motion, and rounded
+   elbows without a visible hinge gap. Idle villagers must settle rather than walk in place.
+5. Inspect villagers front-on and at a three-quarter angle, including several hair/face
+   variants. Heads and eye whites should be round; pupils, nose, mouth, cheeks/freckles,
+   and moustache must remain on the facial surface rather than floating in front of it.
+6. Stand still near a leafy tree and berry bushes. Turn in one- or two-degree increments
+   across roughly 15 degrees. Lighting/detail must remain attached to the same leaf masses;
+   berries must not flicker from zero to several because of overlapping geometry.
+7. Character customization currently controls the local first-person arm's skin and
+   shirt. There is no local third-person body, and remote peers still use a generic
+   humanoid; full customized in-world/network avatar parity remains tracked in #264.
+
+Deterministic visual/performance fixtures for the character and foliage parts:
+
+```bash
+OUT="$PWD/artifacts/playtest-2026-07-12"
+BIN="$PWD/build/Blockfall.app/Contents/MacOS/Blockfall"
+
+BF_VILLAGERS=1 BF_CEL=1 "$BIN" --critters "$OUT/villagers.png"
+BF_CRITTER_MOTION=1 BF_CRITTER_KIND=20 BF_CEL=1 \
+  "$BIN" --critters "$OUT/villager-motion.png"
+
+for SPEC in "3.14159 180" "3.22886 185" "3.31613 190"; do
+  set -- $SPEC
+  BF_SHOT_SEED=10 BF_SHOT_POS="170,13,62,$1,-0.12" \
+    BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
+    BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/foliage-yaw-$2.png"
+done
+
+BF_ENTITY_STRESS=1 BF_ENTITY_SHAPE=box \
+  BF_METAL_PERF_JSON="$OUT/entity-box.json" \
+  BF_PERF_SAVE_DIR="$OUT/save-box" "$BIN" --perftest 60
+BF_ENTITY_STRESS=1 \
+  BF_METAL_PERF_JSON="$OUT/entity-model.json" \
+  BF_PERF_SAVE_DIR="$OUT/save-model" "$BIN" --perftest 60
+python3 ci/perf_compare.py "$OUT/entity-box.json" "$OUT/entity-model.json"
+```
+
+The accepted same-machine result was `246.7 -> 244.5` median FPS (`-0.9%`),
+`114.4 -> 102.1` 1%-low (`-10.8%`), frame time `+0.9%`, and GPU time
+`+5.9%`; the comparator passed with 26,920 shaped entity triangles.
+
 ## What changed
 
 - Beds are one coherent low furniture mesh with legs, rails, quilt, pillow, and

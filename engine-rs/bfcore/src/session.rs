@@ -406,7 +406,7 @@ impl NetSession {
 
     fn rebuild_avatars(&self, world: &mut World) {
         let mut av: Vec<bf_entity_draw> = Vec::new();
-        for rp in self.remote.values() {
+        for (&peer_id, rp) in &self.remote {
             av.push(bf_entity_draw {
                 position: bf_vec3 {
                     x: rp.x,
@@ -424,7 +424,7 @@ impl NetSession {
                 scale: 1.2,
                 kind: 100,
                 sat: 1.0,
-                _pad: 0,
+                _pad: u32::from(peer_id).wrapping_add(1),
             });
         }
         world.set_remote_avatars(av);

@@ -2352,8 +2352,12 @@ final class Renderer: NSObject, MTKViewDelegate {
             return [
                 (SIMD3(0.50, 0.28, 0.50), SIMD3(0.28, 0.26, 0.28), leaf),   // bush body
                 (SIMD3(0.50, 0.50, 0.50), SIMD3(0.19, 0.13, 0.19), leaf2),  // rounded top
-                (SIMD3(0.34, 0.34, 0.62), SIMD3(0.05, 0.05, 0.05), berry),  // berry
-                (SIMD3(0.66, 0.24, 0.40), SIMD3(0.05, 0.05, 0.05), berry),  // berry
+                // Three berries sit outside different sides of the clump. A
+                // slight camera turn no longer hides the whole berry set inside
+                // the two overlapping leaf spheres (#265).
+                (SIMD3(0.34, 0.36, 0.76), SIMD3(0.055, 0.055, 0.055), berry),
+                (SIMD3(0.72, 0.28, 0.42), SIMD3(0.055, 0.055, 0.055), berry),
+                (SIMD3(0.48, 0.49, 0.29), SIMD3(0.055, 0.055, 0.055), berry),
             ]
         case 43:       // reed / cattail — TWO blocks tall, fuller clump, taller brown poof
             let stalk = SIMD3<Float>(0.28, 0.55, 0.30)
@@ -2487,9 +2491,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
     }
 
-    private static func propVertsPerShape(_ shape: Float) -> Int {
+    private static func propVertsPerShape(_ shape: Float, type: UInt32) -> Int {
         switch Int(shape + 0.5) {
-        case 1: return 72      // sphere: 6 slices x 2 stacks
+        // Trees and berry bushes are large, frequently overlapping silhouettes.
+        // Give only those spheres a smoother 8x3 surface so visible facets do
+        // not pop as the camera yaws; tiny flowers/rocks retain the cheap mesh.
+        case 1: return (type == 5 || type == 27 || type == 42) ? 144 : 72
         case 2: return 54      // cone: sides + base cap
         case 3: return 72      // cylinder: sides + two caps
         default: return 36     // box
@@ -2497,7 +2504,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     static let propRowVertsPerShape: [Int] = propTypeRows.map { type in
-        propVertsPerShape(propPartShape(type))
+        propVertsPerShape(propPartShape(type), type: type)
     }
 
     static let propRowVertexCounts: [Int] = propTypeRows.enumerated().map { row, type in

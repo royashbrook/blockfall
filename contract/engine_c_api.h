@@ -227,7 +227,7 @@ typedef struct bf_entity_draw {
     float    scale;       /* model scale (world units)                       */
     uint32_t kind;        /* archetype id (renderer may vary the model)      */
     float    sat;         /* per-region Dim saturation at the entity         */
-    uint32_t _pad;
+    uint32_t _pad;        /* stable renderer animation identity; 0 = unavailable */
 } bf_entity_draw;
 
 /* #254 (v28): profession + deterministic routine action, index-aligned with

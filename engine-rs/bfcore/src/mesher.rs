@@ -537,6 +537,11 @@ fn is_wood_beam(id: BlockId) -> bool {
 }
 
 #[inline]
+fn is_door_frame(id: BlockId) -> bool {
+    is_opaque(id) || is_wood_beam(id)
+}
+
+#[inline]
 fn is_bed(id: BlockId) -> bool {
     id == BED
 }
@@ -817,16 +822,16 @@ fn door_mesh_rotated<S: ChunkStore>(
     let mut wall_x_score = 0;
     let mut wall_z_score = 0;
     for yy in low_y..=high_y {
-        if is_opaque(sample_block(current_chunk, cc, store, x - 1, yy, z)) {
+        if is_door_frame(sample_block(current_chunk, cc, store, x - 1, yy, z)) {
             wall_x_score += 1;
         }
-        if is_opaque(sample_block(current_chunk, cc, store, x + 1, yy, z)) {
+        if is_door_frame(sample_block(current_chunk, cc, store, x + 1, yy, z)) {
             wall_x_score += 1;
         }
-        if is_opaque(sample_block(current_chunk, cc, store, x, yy, z - 1)) {
+        if is_door_frame(sample_block(current_chunk, cc, store, x, yy, z - 1)) {
             wall_z_score += 1;
         }
-        if is_opaque(sample_block(current_chunk, cc, store, x, yy, z + 1)) {
+        if is_door_frame(sample_block(current_chunk, cc, store, x, yy, z + 1)) {
             wall_z_score += 1;
         }
     }
@@ -3242,6 +3247,25 @@ mod tests {
         assert_eq!(
             bottom, top,
             "both halves of one door must render on the same axis"
+        );
+    }
+
+    #[test]
+    fn shaped_timber_jambs_define_door_orientation() {
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(8, 4, 8, DOOR_CLOSED);
+        ch.set(8, 5, 8, DOOR_CLOSED);
+        for y in [4, 5] {
+            ch.set(8, y, 7, WOOD_BEAM);
+            ch.set(8, y, 9, WOOD_BEAM);
+        }
+        store.chunks.insert(ChunkCoord::default(), ch);
+
+        let cur = store.get(ChunkCoord::default());
+        assert!(
+            door_mesh_rotated(cur, ChunkCoord::default(), &store, 8, 4, 8),
+            "timber jambs along Z must keep the closed slab across the doorway"
         );
     }
 

@@ -134,7 +134,7 @@ import CBlockcore
 // the instanced prop renderer. Box remains the default for every existing part;
 // later model passes can opt individual body masses into a rounded shape.
 enum EntityPartShape: String {
-    case box, sphere, cylinder, cone
+    case box, sphere, smoothSphere, cylinder, cone
 }
 
 final class EntityRenderer {
@@ -143,6 +143,7 @@ final class EntityRenderer {
     let cubeIB:     MTLBuffer
     let indexCount: Int
     private let sphereVB:   MTLBuffer
+    private let smoothSphereVB: MTLBuffer
     private let cylinderVB: MTLBuffer
     private let coneVB:     MTLBuffer
     private let revolvedIB: MTLBuffer
@@ -243,7 +244,10 @@ final class EntityRenderer {
     /// Quantize (pos, kind) into a stable-ish key so a creature maps to the same
     /// history bucket across frames despite small movement. 0.5-unit cells.
     @inline(__always)
-    private func histKey(_ pos: SIMD3<Float>, _ kind: UInt32) -> UInt64 {
+    private func histKey(_ pos: SIMD3<Float>, _ kind: UInt32, _ stableID: UInt32 = 0) -> UInt64 {
+        if stableID != 0 {
+            return (UInt64(stableID) &* 0x9E3779B185EBCA87) ^ UInt64(kind)
+        }
         let qx = UInt64(bitPattern: Int64((pos.x * 2.0).rounded()))
         let qy = UInt64(bitPattern: Int64((pos.y * 2.0).rounded()))
         let qz = UInt64(bitPattern: Int64((pos.z * 2.0).rounded()))
@@ -276,12 +280,12 @@ final class EntityRenderer {
         return (flash, amt, SIMD3<Float>(sxz, sy, sxz))
     }
 
-    // Match RendererShaders.propRevVert: six radial slices, two stacks for the
-    // sphere, and closed caps for cone/cylinder. Vertices are already expanded
+    // Rounded character masses use a smoother 8x4 sphere; narrow limbs retain
+    // cheap six-sided cylinders/cones. Vertices are already expanded
     // into triangle order, so all three shapes share one sequential index buffer.
     private static func revolvedVertices(_ shape: EntityPartShape) -> [Float] {
-        let slices = 6
-        let stacks = shape == .sphere ? 2 : 1
+        let slices = shape == .smoothSphere ? 8 : 6
+        let stacks = shape == .smoothSphere ? 4 : (shape == .sphere ? 2 : 1)
         var out: [Float] = []
         let triangleCorners: [(Float, Float)] = [
             // CCW from outside, matching the existing cube mesh so the caller's
@@ -301,7 +305,7 @@ final class EntityRenderer {
                     let y: Float
                     let slope: Float
                     switch shape {
-                    case .sphere:
+                    case .sphere, .smoothSphere:
                         let phi = Float.pi * t
                         r = sin(phi) * 0.5
                         y = -cos(phi) * 0.5
@@ -318,14 +322,14 @@ final class EntityRenderer {
                         preconditionFailure("box uses the indexed cube mesh")
                     }
                     let p = SIMD3<Float>(r * ca, y, r * sa)
-                    let n = shape == .sphere
+                    let n = (shape == .sphere || shape == .smoothSphere)
                         ? simd_normalize(p + SIMD3<Float>(repeating: 0.00001))
                         : simd_normalize(SIMD3<Float>(ca, slope, sa))
                     append(p, n)
                 }
             }
         }
-        if shape != .sphere {
+        if shape != .sphere && shape != .smoothSphere {
             let caps = shape == .cylinder ? [false, true] : [false]
             for top in caps {
                 let y: Float = top ? 0.5 : -0.5
@@ -355,6 +359,7 @@ final class EntityRenderer {
             switch shape {
             case .box:      vb = cubeVB
             case .sphere:   vb = sphereVB
+            case .smoothSphere: vb = smoothSphereVB
             case .cylinder: vb = cylinderVB
             case .cone:     vb = coneVB
             }
@@ -370,8 +375,14 @@ final class EntityRenderer {
         case .cone:
             count = 54
             ib = revolvedIB
-        case .sphere, .cylinder:
+        case .cylinder:
             count = 72
+            ib = revolvedIB
+        case .sphere:
+            count = 72
+            ib = revolvedIB
+        case .smoothSphere:
+            count = 192
             ib = revolvedIB
         }
         lastBodyPartDraws += 1
@@ -418,13 +429,15 @@ final class EntityRenderer {
         indexCount = indices.count
 
         let sphere = EntityRenderer.revolvedVertices(.sphere)
+        let smoothSphere = EntityRenderer.revolvedVertices(.smoothSphere)
         let cylinder = EntityRenderer.revolvedVertices(.cylinder)
         let cone = EntityRenderer.revolvedVertices(.cone)
-        precondition(sphere.count == 72 * 6 && cylinder.count == 72 * 6 && cone.count == 54 * 6)
+        precondition(sphere.count == 72 * 6 && smoothSphere.count == 192 * 6 && cylinder.count == 72 * 6 && cone.count == 54 * 6)
         sphereVB = device.makeBuffer(bytes: sphere, length: sphere.count * 4, options: .storageModeShared)!
+        smoothSphereVB = device.makeBuffer(bytes: smoothSphere, length: smoothSphere.count * 4, options: .storageModeShared)!
         cylinderVB = device.makeBuffer(bytes: cylinder, length: cylinder.count * 4, options: .storageModeShared)!
         coneVB = device.makeBuffer(bytes: cone, length: cone.count * 4, options: .storageModeShared)!
-        let revolvedIndices = (0..<72).map(UInt16.init)
+        let revolvedIndices = (0..<192).map(UInt16.init)
         revolvedIB = device.makeBuffer(bytes: revolvedIndices,
                                        length: revolvedIndices.count * 2,
                                        options: .storageModeShared)!
@@ -563,7 +576,13 @@ final class EntityRenderer {
             curEntityOriginXZ = SIMD2<Float>(posRel.x, posRel.z)
             // Per-entity spatial hash — scatters all animation phases so
             // dozens of creatures never step in sync.
-            let phaseHash = animationHash ?? sin(pos.x * 1.3 + pos.z * 2.7)
+            let phaseHash: Float = animationHash ?? {
+                guard e._pad != 0 else { return sin(pos.x * 1.3 + pos.z * 2.7) }
+                var h = e._pad &* 747_796_405 &+ 2_891_336_453
+                h = ((h >> ((h >> 28) &+ 4)) ^ h) &* 277_803_737
+                h = (h >> 22) ^ h
+                return Float(h & 0x00FF_FFFF) / Float(0x0100_0000) * 2 - 1
+            }()
             // Ambient (wall-clock) phase: drives the always-on idle breath pulse so
             // a stopped creature still looks alive even though its legs hold.
             let ambient   = t + phaseHash * 3.14159
@@ -601,7 +620,7 @@ final class EntityRenderer {
                     phase = ambient
                     curGaitSpeed = gaitSpeed ?? 0
                 } else {
-                    let key = histKey(pos, e.kind)
+                    let key = histKey(pos, e.kind, e._pad)
                     if var h = hist[key] {
                     // SIGNAL: a sharp drop in scale this frame ≈ damage/recoil.
                     // (See class-level note: swap for an engine field when one

@@ -83,7 +83,8 @@ extension EntityRenderer {
                          pw: (SIMD3<Float>, SIMD3<Float>) -> simd_float4x4,
                          c: SIMD3<Float>, r: SIMD3<Float>, sat: Float,
                          scleraCol: SIMD3<Float>, pupilCol: SIMD3<Float>,
-                         shape: EntityPartShape = .box) {
+                         shape: EntityPartShape = .box,
+                         highlight: Bool = true) {
         // Sclera
         drawCube(enc: enc, viewProj: viewProj, model: pw(c, SIMD3(r.x, r.y, r.z)),
                  rgb: scleraCol, sat: sat, shape: shape)
@@ -95,8 +96,10 @@ extension EntityRenderer {
         // Highlight — tiny bright fleck upper-outer of pupil (catchlight = life)
         let hl = SIMD3<Float>(r.x * 0.22, r.y * 0.24, r.z * 0.5)
         let hlC = SIMD3<Float>(c.x + r.x * 0.18, c.y + r.y * 0.22, c.z + r.z * 0.7)
-        drawCube(enc: enc, viewProj: viewProj, model: pw(hlC, hl),
-                 rgb: SIMD3<Float>(0.98, 0.98, 1.0), sat: sat, shape: shape)
+        if highlight {
+            drawCube(enc: enc, viewProj: viewProj, model: pw(hlC, hl),
+                     rgb: SIMD3<Float>(0.98, 0.98, 1.0), sat: sat, shape: shape)
+        }
     }
 
     // =========================================================================
@@ -3969,13 +3972,15 @@ extension EntityRenderer {
         let walkAmt = poseActive ? 0 : min(1.0, curGaitSpeed / 1.3)
         let strideWave = sin(phase)
         let easedStride = strideWave * (0.78 + 0.22 * abs(strideWave))
-        let stride  = easedStride * 0.90 * walkAmt
+        let rubberEcho = sin(phase - 0.38) * 0.16 * walkAmt
+        let stride  = (easedStride * 0.98 + rubberEcho) * walkAmt
         let armAngL = poseActive ? workArms.0
             : armSway * (1 - walkAmt) + (-stride * 1.1) * walkAmt
         let armAngR = poseActive ? workArms.1
             : -armSway * (1 - walkAmt) + (stride * 1.1) * walkAmt
         let footfall = abs(cos(phase))
         let stepSquash = footfall * footfall * 0.075 * walkAmt
+        let cartoonLift = (1 - footfall) * s * 0.075 * walkAmt
 
         let breatheY   = breatheYOffset(breathPhase, scale: s)
         let eyeBlinkSY = blinkScale(blinkPhase)
@@ -4004,7 +4009,7 @@ extension EntityRenderer {
 
         // ---- WORLD CENTRE (at torso mid) ----
         let groundY = pos.y
-        let bodyY   = groundY + legTotalH + tH * 0.5 + breatheY
+        let bodyY   = groundY + legTotalH + tH * 0.5 + breatheY + cartoonLift
             - (sitting ? s * 0.20 : 0)
         let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
         // A brief ground-pivoted landing squash makes each planted step read
@@ -4105,7 +4110,14 @@ extension EntityRenderer {
                 * EntityRenderer.trans(SIMD3(0, -handH * 0.5, 0))
                 * EntityRenderer.scaleM(SIMD3(handW, handH, handD))
         }
-        let elbowLag = cos(phase - 0.55) * 0.30 * walkAmt
+        func elbowM(_ shoulderX: Float, _ swingAng: Float) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * R * bodyLean
+                * EntityRenderer.trans(SIMD3(shoulderX, shoulderY, 0))
+                * EntityRenderer.rotX(swingAng)
+                * EntityRenderer.trans(SIMD3(0, -upperArmH, 0))
+                * EntityRenderer.scaleM(SIMD3(armW * 1.02, armW * 1.02, armD * 1.02))
+        }
+        let elbowLag = cos(phase - 0.62) * 0.48 * walkAmt
         let idleElbow = sin(phase * 0.7 + hash) * 0.05 * (1 - walkAmt)
         let poseElbowL: Float = socialPose ? (sweeping ? -0.38 : -0.24)
             : (curEntityRole == 2 ? -0.42 : -0.22)
@@ -4116,9 +4128,9 @@ extension EntityRenderer {
         let elbowR: Float = poseActive ? poseElbowR
             : -elbowLag - idleElbow
         let wristL: Float = poseActive ? (sweeping ? 0.20 : 0.10)
-            : -elbowL * 0.40 + sin(phase - 0.9) * 0.10 * walkAmt
+            : -elbowL * 0.55 + sin(phase - 1.05) * 0.18 * walkAmt
         let wristR: Float = poseActive ? (sweeping ? -0.18 : 0.05)
-            : -elbowR * 0.40 - sin(phase - 0.9) * 0.10 * walkAmt
+            : -elbowR * 0.55 - sin(phase - 1.05) * 0.18 * walkAmt
         drawCube(enc: enc, viewProj: viewProj,
                  model: upperArmM(shoulderXL, armAngL),
                  rgb: tunicCol, sat: sat, shape: .cylinder)
@@ -4131,6 +4143,12 @@ extension EntityRenderer {
         drawCube(enc: enc, viewProj: viewProj,
                  model: lowerArmM(shoulderXR, armAngR, elbowR),
                  rgb: tunicCol, sat: sat, shape: .cylinder)
+        // Rounded elbow overlaps hide the mechanical hinge between child
+        // segments, preserving the delayed bend while reading as one hose limb.
+        drawCube(enc: enc, viewProj: viewProj, model: elbowM(shoulderXL, armAngL),
+                 rgb: tunicCol, sat: sat, shape: .sphere)
+        drawCube(enc: enc, viewProj: viewProj, model: elbowM(shoulderXR, armAngR),
+                 rgb: tunicCol, sat: sat, shape: .sphere)
         drawCube(enc: enc, viewProj: viewProj,
                  model: handM(shoulderXL, armAngL, elbowL, wristL),
                  rgb: skinCol, sat: sat, shape: .sphere)
@@ -4241,7 +4259,7 @@ extension EntityRenderer {
         }
         drawCube(enc: enc, viewProj: viewProj,
                  model: hpw(SIMD3(0, headY, headZ), SIMD3(hW, hH, hD)),
-                 rgb: skinCol, sat: sat, shape: .sphere)
+                 rgb: skinCol, sat: sat, shape: .smoothSphere)
 
         // #210: STRUCTURAL head variety from the stable per-villager seed, so a
         // crowd differs in silhouette, not just shade. Styles: 0 classic cap,
@@ -4292,9 +4310,11 @@ extension EntityRenderer {
         // ---- FACE (on the +Z front of the head, so it faces the heading dir) ----
         // Embed details into the curved face instead of floating them on the
         // old cube-front plane; side marks sit farther back on the sphere.
-        let hFaceZ: Float = headZ + hD * 0.44 + s * 0.01
-        let hSideFaceZ: Float = headZ + hD * 0.34 + s * 0.01
-        let hBrowZ: Float = headZ + hD * 0.37 + s * 0.01
+        let hFaceZ: Float = headZ + hD * 0.44
+        let hSideFaceZ: Float = headZ + hD * 0.34
+        let hBrowZ: Float = headZ + hD * 0.43
+        let hNoseZ: Float = headZ + hD * 0.48
+        let hMouthZ: Float = headZ + hD * 0.49
         // Stable facial structure, not just a palette swap. Four seed-selected
         // styles vary eye spacing/proportion and readable brow/nose/mouth marks.
         let faceStyle = Int((vs >> 25) & 3)
@@ -4308,21 +4328,23 @@ extension EntityRenderer {
         default: (eyeW, eyeHBase, eyeSpread) = (s * 0.10, s * 0.12, hW * 0.22)
         }
         let eyeH = eyeHBase * eyeBlinkSY
-        let eyeD = s * 0.04
+        let eyeD = s * 0.018
         let eyeY = headY + hH * 0.08
         let scleraCol = SIMD3<Float>(0.98, 0.98, 0.98)
         drawEye(enc: enc, viewProj: viewProj, pw: hpw,
                 c: SIMD3(-eyeSpread, eyeY, hFaceZ), r: SIMD3(eyeW, eyeH, eyeD),
-                sat: sat, scleraCol: scleraCol, pupilCol: eyeCol, shape: .sphere)
+                sat: sat, scleraCol: scleraCol, pupilCol: eyeCol,
+                shape: .smoothSphere, highlight: false)
         drawEye(enc: enc, viewProj: viewProj, pw: hpw,
                 c: SIMD3( eyeSpread, eyeY, hFaceZ), r: SIMD3(eyeW, eyeH, eyeD),
-                sat: sat, scleraCol: scleraCol, pupilCol: eyeCol, shape: .sphere)
+                sat: sat, scleraCol: scleraCol, pupilCol: eyeCol,
+                shape: .smoothSphere, highlight: false)
 
         let noseY = headY - hH * 0.08
         drawCube(enc: enc, viewProj: viewProj,
-                 model: hpw(SIMD3(0, noseY, hFaceZ + s * 0.025),
+                 model: hpw(SIMD3(0, noseY, hNoseZ),
                             SIMD3(s * (faceStyle == 1 ? 0.075 : 0.095),
-                                  s * (faceStyle == 3 ? 0.10 : 0.075), s * 0.07)),
+                                  s * (faceStyle == 3 ? 0.10 : 0.075), s * 0.035)),
                  rgb: skinCol * (faceStyle == 2 ? 0.84 : 0.92), sat: sat, shape: .sphere)
 
         switch faceStyle {
@@ -4336,8 +4358,8 @@ extension EntityRenderer {
                 }
             }
             drawCube(enc: enc, viewProj: viewProj,
-                     model: hpw(SIMD3(0, headY - hH * 0.27, hFaceZ),
-                                SIMD3(s * 0.075, s * 0.095, s * 0.035)),
+                     model: hpw(SIMD3(0, headY - hH * 0.27, hMouthZ),
+                                SIMD3(s * 0.075, s * 0.095, s * 0.014)),
                      rgb: mouthCol, sat: sat, shape: .sphere)
         case 2: // two freckle clusters and a broad toothy grin.
             if !professionWorking && !sweeping {
@@ -4349,25 +4371,25 @@ extension EntityRenderer {
                 }
             }
             drawCube(enc: enc, viewProj: viewProj,
-                     model: hpw(SIMD3(0, headY - hH * 0.27, hFaceZ),
-                                SIMD3(hW * 0.42, s * 0.085, s * 0.035)),
+                     model: hpw(SIMD3(0, headY - hH * 0.27, hMouthZ),
+                                SIMD3(hW * 0.42, s * 0.085, s * 0.014)),
                      rgb: mouthCol * 0.65, sat: sat, shape: .sphere)
             drawCube(enc: enc, viewProj: viewProj,
-                     model: hpw(SIMD3(0, headY - hH * 0.25, hFaceZ + s * 0.018),
-                                SIMD3(hW * 0.26, s * 0.025, s * 0.018)),
+                     model: hpw(SIMD3(0, headY - hH * 0.25, hMouthZ + s * 0.006),
+                                SIMD3(hW * 0.26, s * 0.025, s * 0.010)),
                      rgb: scleraCol, sat: sat)
         case 3: // drooping moustache over a shy straight mouth.
             if !professionWorking && !sweeping {
                 for mx in [-s * 0.055, s * 0.055] {
                     drawCube(enc: enc, viewProj: viewProj,
-                             model: hpw(SIMD3(mx, headY - hH * 0.19, hFaceZ),
-                                        SIMD3(s * 0.12, s * 0.055, s * 0.03)),
+                             model: hpw(SIMD3(mx, headY - hH * 0.19, hMouthZ),
+                                        SIMD3(s * 0.12, s * 0.055, s * 0.014)),
                              rgb: hairCol, sat: sat, shape: .sphere)
                 }
             }
             drawCube(enc: enc, viewProj: viewProj,
-                     model: hpw(SIMD3(0, headY - hH * 0.29, hFaceZ),
-                                SIMD3(hW * 0.25, s * 0.035, s * 0.025)),
+                     model: hpw(SIMD3(0, headY - hH * 0.29, hMouthZ),
+                                SIMD3(hW * 0.25, s * 0.035, s * 0.012)),
                      rgb: mouthCol, sat: sat)
         default: // classic rosy-cheeked smile.
             if !professionWorking && !sweeping {
@@ -4379,8 +4401,8 @@ extension EntityRenderer {
                 }
             }
             drawCube(enc: enc, viewProj: viewProj,
-                     model: hpw(SIMD3(0, headY - hH * 0.26, hFaceZ),
-                                SIMD3(hW * 0.34, s * 0.05, s * 0.03)),
+                     model: hpw(SIMD3(0, headY - hH * 0.26, hMouthZ),
+                                SIMD3(hW * 0.34, s * 0.05, s * 0.012)),
                      rgb: mouthCol, sat: sat, shape: .sphere)
         }
     }

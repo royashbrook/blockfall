@@ -1252,10 +1252,13 @@ mod worldgen_tests {
                     (ax + d, az + CITY_WALL_R),
                 ] {
                     let floor = struct_surface(wx, wz, seed);
-                    assert!(
-                        ((floor + 1)..=(floor + 3)).any(|wy| at(wx, wy, wz) != AIR),
-                        "seed {seed}: perimeter gap at {wx},{wz}"
-                    );
+                    for wy in (floor + 1)..=(floor + 2) {
+                        let b = at(wx, wy, wz);
+                        assert!(
+                            b != AIR && b != WOOD_BEAM,
+                            "seed {seed}: closed city wall at {wx},{wy},{wz} must have a solid wall plane, got {b}"
+                        );
+                    }
                 }
             }
             for (sx, sz) in [(-1, -1), (1, -1), (-1, 1), (1, 1)] {

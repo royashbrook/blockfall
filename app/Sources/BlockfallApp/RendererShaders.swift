@@ -3264,11 +3264,13 @@ extension Renderer {
                                           // 6d4aeaf grew the CPU table to 5 slots without this constant, so every
                                           // prop row past 0 read shifted cuboids (pink grass, lily-pad trees).
     // #62: build a unit primitive (extent [-0.5,0.5]) from a local vertex id, as a
-    // surface of revolution with 6 slices. shape: 1=sphere, 2=cone, 3=cylinder. Writes
+    // surface of revolution. Small props use 6 slices; canopy/bush spheres pass
+    // 144 verts and get 8 slices x 3 stacks for view-stable silhouettes (#265).
+    // shape: 1=sphere, 2=cone, 3=cylinder. Writes
     // the outward normal. Verts past the shape's own count are returned degenerate.
-    static float3 propRevVert(uint lv, uint shape, thread float3& nrm) {
-        const uint S = 6u;
-        uint T = (shape == 1u) ? 2u : 1u;             // sphere: 2 stacks; cone/cyl: 1 side band
+    static float3 propRevVert(uint lv, uint shape, uint vertsPerShape, thread float3& nrm) {
+        uint S = (shape == 1u && vertsPerShape >= 144u) ? 8u : 6u;
+        uint T = (shape == 1u) ? ((S == 8u) ? 3u : 2u) : 1u;
         uint sideV = S * T * 6u;                       // verts used by the side quads
         if (lv < sideV) {
             uint quad = lv / 6u;
@@ -3357,7 +3359,7 @@ extension Renderer {
             cpos = kFaceCorner[face * 4u + corner];
             cnrm = kFaceNrm[face];
         } else {
-            cpos = propRevVert(lv, shape, cnrm);
+            cpos = propRevVert(lv, shape, vertsPerShape, cnrm);
         }
         float3 lp = float3(cu.center) + cpos * (2.0 * half_);   // local pos in block space
         // per-instance yaw about block centre. Trunks must NOT spin per-block, or the

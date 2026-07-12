@@ -2069,12 +2069,15 @@ fn place_city_core<C: Chunk>(
             let wz = az + dz;
             let floor = struct_surface(wx, wz, seed);
             let edge_pos = if dx.abs() == CITY_WALL_R { dz } else { dx };
+            let b = city_wall_material(h, dx, dz);
             if (edge_pos + CITY_WALL_R).rem_euclid(3) == 0 {
-                for wy in (floor + 1)..=(floor + 3) {
-                    struct_set(chunk, wx, wy, wz, wx_min, wy_min, wz_min, WOOD_BEAM);
-                }
+                // Timber is trim, not the wall plane: keep two solid courses
+                // beneath a shaped cap so the fortification never turns into a
+                // three-log-high see-through fence (#268).
+                struct_set(chunk, wx, floor + 1, wz, wx_min, wy_min, wz_min, b);
+                struct_set(chunk, wx, floor + 2, wz, wx_min, wy_min, wz_min, b);
+                struct_set(chunk, wx, floor + 3, wz, wx_min, wy_min, wz_min, WOOD_BEAM);
             } else {
-                let b = city_wall_material(h, dx, dz);
                 struct_set(chunk, wx, floor + 1, wz, wx_min, wy_min, wz_min, b);
                 struct_set(chunk, wx, floor + 2, wz, wx_min, wy_min, wz_min, b);
                 if edge_pos.rem_euclid(2) == 0 {

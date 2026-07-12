@@ -1,5 +1,26 @@
 use super::*;
 
+fn creature_animation_id(
+    model: i32,
+    given: &str,
+    home_x: i32,
+    home_z: i32,
+    npc_id: i32,
+    entity_index: usize,
+) -> u32 {
+    if model != 20 {
+        return (entity_index as u32).wrapping_add(1);
+    }
+    let mut id = 2_166_136_261u32;
+    for byte in given.bytes() {
+        id = (id ^ u32::from(byte)).wrapping_mul(16_777_619);
+    }
+    for value in [home_x as u32, home_z as u32, npc_id as u32] {
+        id = (id ^ value).wrapping_mul(16_777_619);
+    }
+    id.max(1)
+}
+
 impl<'c> World<'c> {
     /// How far from the camera to include all sub-voxel detail props. These are separate
     /// from chunk meshes; a fixed 120-block cutoff made high-altitude creative flight show
@@ -301,7 +322,7 @@ impl<'c> World<'c> {
         self.entities.clear();
         self.entity_role_actions.clear();
         const KANIMAL_KIND: [u32; 8] = [0, 1, 2, 3, 7, 8, 9, 10];
-        for cr in &self.creatures {
+        for (entity_index, cr) in self.creatures.iter().enumerate() {
             let social = if cr.model == 20 {
                 cr.social.visible_action()
             } else {
@@ -359,6 +380,14 @@ impl<'c> World<'c> {
                 y: Self::ifloor(cr.pos.y),
                 z: Self::ifloor(cr.pos.z),
             }));
+            let animation_id = creature_animation_id(
+                cr.model,
+                &cr.given,
+                cr.home_x,
+                cr.home_z,
+                cr.npc_id,
+                entity_index,
+            );
             self.entities.push(bf_entity_draw {
                 position: bf_vec3 {
                     x: cam_pos.x + Self::wrap_signed_f(visual_pos.x - cam_pos.x),
@@ -374,7 +403,10 @@ impl<'c> World<'c> {
                 scale: cr.scale,
                 kind,
                 sat,
-                _pad: 0,
+                // Reserved ABI word now carries a renderer-only stable animation
+                // identity. It removes gait/phase swaps when villagers cross the
+                // old half-block history buckets (#270).
+                _pad: animation_id,
             });
             self.entity_role_actions.push(if cr.model == 20 {
                 let artisan = (2..=6).contains(&cr.npc_id);
@@ -666,4 +698,18 @@ impl<'c> World<'c> {
     }
 
     // ---- test/debug seams ------------------------------------------------
+}
+
+#[cfg(test)]
+mod animation_identity_tests {
+    use super::creature_animation_id;
+
+    #[test]
+    fn villager_animation_identity_ignores_render_order_and_position() {
+        let a = creature_animation_id(20, "Pip", 120, -44, 4, 0);
+        let reordered = creature_animation_id(20, "Pip", 120, -44, 4, 31);
+        let neighbour = creature_animation_id(20, "Juno", 121, -44, 4, 0);
+        assert_eq!(a, reordered, "villager gait must not follow its frame index");
+        assert_ne!(a, neighbour, "nearby villagers need distinct gait history");
+    }
 }
