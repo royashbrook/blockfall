@@ -1107,6 +1107,7 @@ func runCritterGallery(savePath: String) -> Bool {
     // tinted, per-individual clothing colours the engine now assigns, to review the
     // skin/hair/clothing variety (desert tan, snow pale-blue, forest green, swamp teal).
     let villagerMode = ProcessInfo.processInfo.environment["BF_VILLAGERS"] == "1"
+    let avatarMode = ProcessInfo.processInfo.environment["BF_AVATARS"] == "1"
     let villagerCols: [SIMD3<Float>] = [
         SIMD3(0.82,0.68,0.42), SIMD3(0.88,0.74,0.50),   // desert tan / ochre
         SIMD3(0.70,0.80,0.92), SIMD3(0.84,0.89,0.96),   // snow pale blue / white
@@ -1115,8 +1116,10 @@ func runCritterGallery(savePath: String) -> Bool {
     ]
     let motionKind = UInt32(ProcessInfo.processInfo.environment["BF_CRITTER_KIND"] ?? "20") ?? 20
     let kinds: [UInt32] = motionMode ? Array(repeating: motionKind, count: 4)
-        : (villagerMode ? Array(repeating: 20, count: villagerCols.count)
+        : (avatarMode ? Array(repeating: 100, count: 10)
+           : (villagerMode ? Array(repeating: 20, count: villagerCols.count)
            : [0,1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,23,24,25,26,27,100])
+          )
     let cols: [SIMD3<Float>] = [
         SIMD3(0.85,0.80,0.74), SIMD3(0.78,0.45,0.28), SIMD3(0.55,0.58,0.62), SIMD3(0.30,0.55,0.35),
         SIMD3(0.90,0.86,0.40), SIMD3(0.40,0.40,0.48), SIMD3(0.72,0.36,0.30), SIMD3(0.95,0.95,0.97)
@@ -1125,6 +1128,7 @@ func runCritterGallery(savePath: String) -> Bool {
     let perRow = motionMode ? kinds.count : (kinds.count + 1) / 2
     let spacing: Float = 1.7
     var ents: [bf_entity_draw] = []
+    var avatarAppearances: [bf_player_appearance] = []
     for (i, k) in kinds.enumerated() {
         var e = bf_entity_draw()
         let rowI = i / perRow, colI = i % perRow
@@ -1137,6 +1141,13 @@ func runCritterGallery(savePath: String) -> Bool {
             : (villagerMode ? villagerCols[i % villagerCols.count] : cols[i % cols.count])
         e.color = bf_vec3(x: c.x, y: c.y, z: c.z)
         ents.append(e)
+        avatarAppearances.append(bf_player_appearance(
+            skin: UInt8(i % 10), shirt: UInt8((i * 3) % 12),
+            hair_color: UInt8((i * 5) % 12), hair_style: UInt8(i % 10),
+            nose: UInt8(i % 10), mouth: UInt8(i % 10),
+            eye_style: UInt8(i % 10), eye_color: UInt8((i * 7) % 10),
+            head_shape: UInt8(i % 10), body_shape: UInt8((i * 9) % 10),
+            _reserved: (0, 0)))
     }
     let cx = Float(perRow - 1) * spacing * 0.5
     let proj = Renderer.perspective(fovy: 0.62, aspect: Float(W) / Float(H), near: 0.05, far: 300)
@@ -1173,8 +1184,12 @@ func runCritterGallery(savePath: String) -> Bool {
             }
         } else {
             ents.withUnsafeBufferPointer { p in
-                entR.encode(enc, viewProj: viewProj, entities: p.baseAddress, count: ents.count,
-                            animationTime: 1.0, shapeOverride: shapeOverride)
+                avatarAppearances.withUnsafeBufferPointer { ap in
+                    entR.encode(enc, viewProj: viewProj, entities: p.baseAddress, count: ents.count,
+                                animationTime: 1.0, shapeOverride: shapeOverride,
+                                appearances: avatarMode ? ap.baseAddress : nil,
+                                appearanceCount: avatarMode ? ap.count : 0)
+                }
             }
             totalEntities = entR.lastEntityCount
             totalParts = entR.lastBodyPartDraws

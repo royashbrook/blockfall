@@ -321,6 +321,7 @@ impl<'c> World<'c> {
         // Creatures.
         self.entities.clear();
         self.entity_role_actions.clear();
+        self.entity_appearances.clear();
         const KANIMAL_KIND: [u32; 8] = [0, 1, 2, 3, 7, 8, 9, 10];
         for (entity_index, cr) in self.creatures.iter().enumerate() {
             let social = if cr.model == 20 {
@@ -431,6 +432,7 @@ impl<'c> World<'c> {
             } else {
                 bf_entity_role_action::default()
             });
+            self.entity_appearances.push(bf_player_appearance::default());
         }
         for fb in &self.falling {
             let sat = self.region_sat(Self::to_chunk(IVec3 {
@@ -456,6 +458,7 @@ impl<'c> World<'c> {
                 _pad: 0,
             });
             self.entity_role_actions.push(bf_entity_role_action::default());
+            self.entity_appearances.push(bf_player_appearance::default());
         }
         // #170 debris fragments: kind 22 cube chips. yaw carries the tumble
         // phase and color the block colour (same convention as kind 6); scale
@@ -484,6 +487,7 @@ impl<'c> World<'c> {
                 _pad: 0,
             });
             self.entity_role_actions.push(bf_entity_role_action::default());
+            self.entity_appearances.push(bf_player_appearance::default());
         }
         // #258 nearby-only caravan. The engine owns route travel/state; kind 27
         // reuses the app's finished merchant-cart model without joining creature AI.
@@ -491,16 +495,19 @@ impl<'c> World<'c> {
             self.entities.push(caravan);
             self.entity_role_actions
                 .push(bf_entity_role_action::default());
+            self.entity_appearances.push(bf_player_appearance::default());
         }
-        for a in &self.remote_avatars {
+        for (a, appearance) in self.remote_avatars.iter().zip(&self.remote_avatar_appearances) {
             // #179: co-op peers render at their nearest image too.
             let mut a = *a;
             a.position.x = cam_pos.x + Self::wrap_signed_f(a.position.x - cam_pos.x);
             a.position.z = cam_pos.z + Self::wrap_signed_f(a.position.z - cam_pos.z);
             self.entities.push(a);
             self.entity_role_actions.push(bf_entity_role_action::default());
+            self.entity_appearances.push(*appearance);
         }
         debug_assert_eq!(self.entities.len(), self.entity_role_actions.len());
+        debug_assert_eq!(self.entities.len(), self.entity_appearances.len());
         out.entities = self.entities.as_ptr();
         out.entity_count = self.entities.len() as u32;
 
@@ -510,6 +517,11 @@ impl<'c> World<'c> {
     /// #254 v28: borrowed, index-aligned metadata for the latest render frame.
     pub fn entity_role_actions(&self) -> &[bf_entity_role_action] {
         &self.entity_role_actions
+    }
+
+    /// #264 v29: borrowed, index-aligned player appearance metadata.
+    pub fn entity_appearances(&self) -> &[bf_player_appearance] {
+        &self.entity_appearances
     }
 
     // strncpy(dst, src, dst.len()-1): copy bytes, always NUL-terminate, truncate.

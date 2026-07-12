@@ -1,10 +1,11 @@
 // #71 — character appearance customization (skin, shirt, hair colour + style, nose, mouth).
 // Kid-friendly: each trait is an index into a preset list, so the whole look is six small
 // numbers that persist in UserDefaults and (later, Phase 2) replicate to co-op peers. The
-// same presets drive both the 2D editor portrait and (eventually) the in-world character.
+// The same presets drive the 2D editor portrait, local arm, and replicated 3D avatar.
 // At least 10 options per trait, and a Randomize/Save flow in the editor.
 import AppKit
 import simd
+import CBlockcore
 
 struct CharacterAppearance: Equatable {
     var skin: Int      = 1
@@ -17,6 +18,16 @@ struct CharacterAppearance: Equatable {
     var eyeColor: Int  = 0
     var headShape: Int = 0
     var bodyShape: Int = 0
+
+    var engineValue: bf_player_appearance {
+        bf_player_appearance(
+            skin: UInt8(clamping: skin), shirt: UInt8(clamping: shirt),
+            hair_color: UInt8(clamping: hairColor), hair_style: UInt8(clamping: hairStyle),
+            nose: UInt8(clamping: nose), mouth: UInt8(clamping: mouth),
+            eye_style: UInt8(clamping: eyeStyle), eye_color: UInt8(clamping: eyeColor),
+            head_shape: UInt8(clamping: headShape), body_shape: UInt8(clamping: bodyShape),
+            _reserved: (0, 0))
+    }
 
     // ---- preset tables (10+ each, all meant to look normal, not wacky) -----
     static let skinPalette: [SIMD3<Float>] = [

@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 28u  /* v28: entity role/action sidecar (#254) */
+#define BF_ABI_VERSION 29u  /* v29: replicated player appearance (#264) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -247,6 +247,21 @@ typedef struct bf_entity_role_action_view {
     uint32_t                     _pad;
 } bf_entity_role_action_view;
 
+/* #264 (v29): all character-editor choices. These compact indices are the
+ * source of truth for local and replicated player models. */
+typedef struct bf_player_appearance {
+    uint8_t skin, shirt, hair_color, hair_style;
+    uint8_t nose, mouth, eye_style, eye_color;
+    uint8_t head_shape, body_shape;
+    uint8_t _reserved[2];
+} bf_player_appearance;
+
+typedef struct bf_entity_appearance_view {
+    const bf_player_appearance* entries;
+    uint32_t                    count;
+    uint32_t                    _pad;
+} bf_entity_appearance_view;
+
 /* One decorative prop the renderer draws as a detailed small-cuboid toy model
  * (#51 sub-voxel detail). The engine emits one per prop block in view; the
  * renderer looks `type` up in its model table and builds the geometry. */
@@ -380,6 +395,8 @@ BF_API bf_result bf_frame_acquire_render(bf_engine e, bf_render_frame* out);
 /* [MAIN] Borrow the v28 role/action array for the acquired frame. The entry at
  * i describes frame.entities[i]; valid until bf_frame_end. */
 BF_API bf_result bf_entity_role_actions(bf_engine e, bf_entity_role_action_view* out);
+/* [MAIN] Borrow v29 appearance records aligned with frame.entities. */
+BF_API bf_result bf_entity_appearances(bf_engine e, bf_entity_appearance_view* out);
 
 /* Fill `out` (capacity `cap`) with the FULL quest progression list and return the
  * total quest count (may exceed cap; only min(count,cap) are written). Powers the
@@ -462,6 +479,7 @@ BF_API bf_result bf_net_host_start(bf_engine e, uint16_t port);
 BF_API bf_result bf_net_client_connect(bf_engine e, const char* host, uint16_t port);
 BF_API bf_result bf_net_stop(bf_engine e);
 BF_API uint32_t  bf_net_peer_count(bf_engine e);
+BF_API bf_result bf_player_appearance_set(bf_engine e, const bf_player_appearance* appearance);
 
 /* Change the horizontal render/stream distance at runtime (pause-menu slider, #85).
  * `chunks` is clamped to [4, 28]. Re-streams immediately. */

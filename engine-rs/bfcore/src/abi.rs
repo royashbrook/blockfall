@@ -1,7 +1,7 @@
 //! Blockfall engine C ABI, ported to Rust #[repr(C)].
 //!
 //! This is a faithful, byte-for-byte port of `contract/engine_c_api.h` (the
-//! frozen C ABI, currently BF_ABI_VERSION 28). Every typedef, enum, and struct here
+//! frozen C ABI, currently BF_ABI_VERSION 29). Every typedef, enum, and struct here
 //! mirrors the C declaration: same field names, same types, same order. The
 //! layout must match the C structs exactly so the Swift app reads the same
 //! bytes whether the engine is the C++ core or this Rust port.
@@ -38,7 +38,8 @@ use core::ffi::{c_char, c_void};
 /// v27: appended bf_set_difficulty (#238). Purely additive.
 /// v28: appended bf_entity_role_actions + its borrowed role/action sidecar
 ///      (#254). bf_entity_draw remains frozen at 44 bytes.
-pub const BF_ABI_VERSION: u32 = 28;
+/// v29: replicated player appearance setter + entity sidecar (#264).
+pub const BF_ABI_VERSION: u32 = 29;
 
 // ---------------------------------------------------------------------------
 // Primitive types
@@ -259,6 +260,48 @@ pub struct bf_entity_role_action_view {
     pub entries: *const bf_entity_role_action,
     pub count: u32,
     pub _pad: u32,
+}
+
+/// #264 (v29): the ten character-editor choices for a player avatar. Values
+/// are palette/style indices; consumers clamp unknown future values.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct bf_player_appearance {
+    pub skin: u8,
+    pub shirt: u8,
+    pub hair_color: u8,
+    pub hair_style: u8,
+    pub nose: u8,
+    pub mouth: u8,
+    pub eye_style: u8,
+    pub eye_color: u8,
+    pub head_shape: u8,
+    pub body_shape: u8,
+    pub _reserved: [u8; 2],
+}
+
+impl Default for bf_player_appearance {
+    fn default() -> Self {
+        Self {
+            skin: 1, shirt: 4, hair_color: 1, hair_style: 2,
+            nose: 0, mouth: 0, eye_style: 0, eye_color: 0,
+            head_shape: 0, body_shape: 0, _reserved: [0; 2],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct bf_entity_appearance_view {
+    pub entries: *const bf_player_appearance,
+    pub count: u32,
+    pub _pad: u32,
+}
+
+impl Default for bf_entity_appearance_view {
+    fn default() -> Self {
+        Self { entries: core::ptr::null(), count: 0, _pad: 0 }
+    }
 }
 
 impl Default for bf_entity_role_action_view {
@@ -627,6 +670,8 @@ mod parity {
         assert_eq!(size_of::<bf_entity_draw>(), 44, "bf_entity_draw");
         assert_eq!(size_of::<bf_entity_role_action>(), 16, "bf_entity_role_action");
         assert_eq!(size_of::<bf_entity_role_action_view>(), 16, "bf_entity_role_action_view");
+        assert_eq!(size_of::<bf_player_appearance>(), 12, "bf_player_appearance");
+        assert_eq!(size_of::<bf_entity_appearance_view>(), 16, "bf_entity_appearance_view");
         assert_eq!(size_of::<bf_prop_instance>(), 24, "bf_prop_instance");
         assert_eq!(size_of::<bf_camera>(), 188, "bf_camera");
         assert_eq!(size_of::<bf_hud_slot>(), 8, "bf_hud_slot");
@@ -790,6 +835,12 @@ mod parity {
         assert_eq!(offset_of!(bf_entity_role_action_view, entries), 0);
         assert_eq!(offset_of!(bf_entity_role_action_view, count), 8);
         assert_eq!(offset_of!(bf_entity_role_action_view, _pad), 12);
+        assert_eq!(offset_of!(bf_player_appearance, skin), 0);
+        assert_eq!(offset_of!(bf_player_appearance, body_shape), 9);
+        assert_eq!(offset_of!(bf_player_appearance, _reserved), 10);
+        assert_eq!(offset_of!(bf_entity_appearance_view, entries), 0);
+        assert_eq!(offset_of!(bf_entity_appearance_view, count), 8);
+        assert_eq!(offset_of!(bf_entity_appearance_view, _pad), 12);
     }
 
     #[test]

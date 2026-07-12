@@ -92,9 +92,13 @@ The next live pass repaired six more presentation regressions:
 6. Stand still near a leafy tree and berry bushes. Turn in one- or two-degree increments
    across roughly 15 degrees. Lighting/detail must remain attached to the same leaf masses;
    berries must not flicker from zero to several because of overlapping geometry.
-7. Character customization currently controls the local first-person arm's skin and
-   shirt. There is no local third-person body, and remote peers still use a generic
-   humanoid; full customized in-world/network avatar parity remains tracked in #264.
+7. Customize two players with deliberately different skin, shirt, hair style/colour,
+   eyes/colour, nose, mouth, head, and body. Host a LAN game and join from the second
+   Mac. Each remote body must match its owner's editor portrait while the local arm
+   matches its skin/shirt. Save a different look while connected; the other player
+   must see it update without reconnecting. Add a third player if available: both
+   clients must see each other, not only the host. Missing/old appearance data must
+   fall back to the normal default avatar rather than corrupt geometry.
 
 Deterministic visual/performance fixtures for the character and foliage parts:
 
@@ -103,6 +107,7 @@ OUT="$PWD/artifacts/playtest-2026-07-12"
 BIN="$PWD/build/Blockfall.app/Contents/MacOS/Blockfall"
 
 BF_VILLAGERS=1 BF_CEL=1 "$BIN" --critters "$OUT/villagers.png"
+BF_AVATARS=1 BF_CEL=1 "$BIN" --critters "$OUT/player-avatars.png"
 BF_CRITTER_MOTION=1 BF_CRITTER_KIND=20 BF_CEL=1 \
   "$BIN" --critters "$OUT/villager-motion.png"
 
@@ -405,6 +410,15 @@ Check villagers first:
 - Head/body/limbs are rounded low-poly forms.
 - Walk phases show eased stride, hand/foot follow-through, child-joint lag, and
   restrained squash; they should feel floppy, not rubbery.
+
+Then inspect `BF_AVATARS=1`:
+
+- It renders ten remote-player models using the character editor's actual palettes
+  and named styles (Bald through Bun), not generated villager identities.
+- Every row choice must visibly alter the intended feature: skin, shirt, hair and
+  eye colour, hair/eye/nose/mouth style, and head/body silhouette.
+- Hair must match the editor label (especially Side Part, Long, Ponytail, Spiky,
+  Mohawk, Curly, and Bun); face parts stay seated on the head.
 
 Passive roster to inspect: `0–3, 7–10, 12–14, 18–19, 21`.
 

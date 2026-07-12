@@ -240,6 +240,7 @@ final class EntityRenderer {
     var curEntityRole: UInt32 = 0
     var curEntityAction: UInt32 = 0
     var curEntityActionProgress: Float = 0
+    var curPlayerAppearance: bf_player_appearance? = nil
 
     /// Quantize (pos, kind) into a stable-ish key so a creature maps to the same
     /// history bucket across frames despite small movement. 0.5-unit cells.
@@ -487,7 +488,9 @@ final class EntityRenderer {
                 animationHash: Float? = nil,
                 shapeOverride: EntityPartShape? = nil,
                 roleActions: UnsafePointer<bf_entity_role_action>? = nil,
-                roleActionCount: Int = 0) {   // #180 horizon curvature (default flat)
+                roleActionCount: Int = 0,
+                appearances: UnsafePointer<bf_player_appearance>? = nil,
+                appearanceCount: Int = 0) {   // #180 horizon curvature (default flat)
         lastEntityCount = max(0, count)
         lastBodyPartDraws = 0
         lastBodyTriangles = 0
@@ -555,6 +558,7 @@ final class EntityRenderer {
 
         for i in 0..<count {
             let e = entities[i]
+            curPlayerAppearance = (e.kind == 100 && i < appearanceCount) ? appearances?[i] : nil
             let bodyPartsBefore = lastBodyPartDraws
             if let roleActions, i < roleActionCount {
                 let a = roleActions[i]
@@ -745,6 +749,7 @@ final class EntityRenderer {
             curEntityRole = 0
             curEntityAction = 0
             curEntityActionProgress = 0
+            curPlayerAppearance = nil
         }
     }
 

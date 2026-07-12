@@ -3906,12 +3906,15 @@ extension EntityRenderer {
             SIMD3(0.32, 0.20, 0.10), SIMD3(0.12, 0.10, 0.09), SIMD3(0.86, 0.72, 0.42),
             SIMD3(0.55, 0.28, 0.14), SIMD3(0.74, 0.74, 0.76), SIMD3(0.20, 0.14, 0.10),
         ]
-        let skinCol  = skinPalette[Int(vs % UInt32(skinPalette.count))]
+        let player = curPlayerAppearance
+        let skinCol = player.map { CharacterAppearance.skinPalette[Int($0.skin) % CharacterAppearance.skinPalette.count] }
+            ?? skinPalette[Int(vs % UInt32(skinPalette.count))]
         // Clothing comes from the entity tint so villager/elder/trader differ.
         // Keep it bright and cheerful (lift toward a vivid mid-tone).
-        let tunicCol = SIMD3<Float>(min(1, tint.x * 0.60 + 0.22),
-                                    min(1, tint.y * 0.60 + 0.30),
-                                    min(1, tint.z * 0.60 + 0.34))
+        let tunicCol = player.map { CharacterAppearance.shirtPalette[Int($0.shirt) % CharacterAppearance.shirtPalette.count] }
+            ?? SIMD3<Float>(min(1, tint.x * 0.60 + 0.22),
+                            min(1, tint.y * 0.60 + 0.30),
+                            min(1, tint.z * 0.60 + 0.34))
         // Lighter collar/trim band.
         let tunicTrim = SIMD3<Float>(min(1, tunicCol.x + 0.20),
                                      min(1, tunicCol.y + 0.20),
@@ -3919,8 +3922,10 @@ extension EntityRenderer {
         let beltCol  = SIMD3<Float>(0.40, 0.28, 0.16)   // brown belt
         let pantsCol = SIMD3<Float>(0.34, 0.27, 0.20)   // muted brown trousers
         let shoeCol  = SIMD3<Float>(0.22, 0.16, 0.12)   // dark shoes
-        let hairCol  = hairPalette[Int((vs >> 9) % UInt32(hairPalette.count))]   // #201 per-villager
-        let eyeCol   = SIMD3<Float>(0.10, 0.08, 0.10)   // soft dark eyes
+        let hairCol = player.map { CharacterAppearance.hairPalette[Int($0.hair_color) % CharacterAppearance.hairPalette.count] }
+            ?? hairPalette[Int((vs >> 9) % UInt32(hairPalette.count))]
+        let eyeCol = player.map { CharacterAppearance.eyeColorPalette[Int($0.eye_color) % CharacterAppearance.eyeColorPalette.count] }
+            ?? SIMD3<Float>(0.10, 0.08, 0.10)
         let mouthCol = SIMD3<Float>(0.62, 0.30, 0.28)   // gentle warm smile
         let cheekCol = SIMD3<Float>(0.96, 0.62, 0.56)   // rosy cheeks
 
@@ -3992,17 +3997,23 @@ extension EntityRenderer {
         // ---- PROPORTIONS (cute, slightly stocky person) ----
         // #212: a per-villager vertical stretch (from the stable seed) on legs + torso,
         // so builds vary from short-and-stocky to tall-and-lanky, not just uniform scale.
-        let vstretch = 0.82 + Float((vs >> 18) % 100) / 100.0 * 0.52   // 0.82..1.34
+        let bodyFactors = player.map { CharacterAppearance.bodyShapeFactors(Int($0.body_shape)) }
+        let bodyWidth = bodyFactors.map { Float($0.0) } ?? 1
+        let bodyHeight = bodyFactors.map { Float($0.1) } ?? 1
+        let headFactors = player.map { CharacterAppearance.headShapeFactors(Int($0.head_shape)) }
+        let headWidth = headFactors.map { Float($0.0) } ?? 1
+        let headHeight = headFactors.map { Float($0.1) } ?? 1
+        let vstretch = player == nil ? 0.82 + Float((vs >> 18) % 100) / 100.0 * 0.52 : bodyHeight
         let legW = s * 0.18; let legH = s * 0.34 * vstretch; let legD = s * 0.18
         let footW = s * 0.20; let footH = s * 0.09; let footD = s * 0.26
         let legTotalH = legH + footH
 
         // Torso: rounded tunic, a touch wider than the lurker for a softer look.
-        let tW = s * 0.50;  let tH = s * 0.46 * vstretch;  let tD = s * 0.30
+        let tW = s * 0.50 * bodyWidth;  let tH = s * 0.46 * vstretch;  let tD = s * 0.30
         // Neck: short connector.
         let nkW = s * 0.16; let nkH = s * 0.08; let nkD = s * 0.16
         // Head: big and round (cute — bigger relative to body than the monster).
-        let hW = s * 0.46;  let hH = s * 0.44;  let hD = s * 0.42
+        let hW = s * 0.46 * headWidth;  let hH = s * 0.44 * headHeight;  let hD = s * 0.42
         // Arms: two short child segments with a rounded hand.
         let armW = s * 0.14; let armH = s * 0.40; let armD = s * 0.14
         let handW = s * 0.17; let handH = s * 0.12; let handD = s * 0.17
@@ -4264,43 +4275,65 @@ extension EntityRenderer {
         // #210: STRUCTURAL head variety from the stable per-villager seed, so a
         // crowd differs in silhouette, not just shade. Styles: 0 classic cap,
         // 1 tall hair, 2 side tufts, 3 bald + headband, 4 straw hat, 5 beanie.
-        let hstyle = Int((vs >> 13) % 6)
+        let hstyle = player.map { Int($0.hair_style) % 10 } ?? Int((vs >> 13) % 6)
         switch hstyle {
-        case 1: // tall rounded hair.
+        case 0 where player != nil: break // editor's Bald choice
+        case 1: // buzz: a close, thin crown cap.
             drawCube(enc: enc, viewProj: viewProj,
-                     model: hpw(SIMD3(0, headY + hH * 0.34, -hD * 0.06), SIMD3(hW * 1.04, hH * 0.36, hD * 1.04)),
+                     model: hpw(SIMD3(0, headY + hH * 0.43, -hD * 0.04), SIMD3(hW * 1.01, hH * 0.16, hD * 1.01)),
+                     rgb: hairCol, sat: sat, shape: .sphere)
+        case 2: // short: rounded cap with modest side coverage.
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: hpw(SIMD3(0, headY + hH * 0.40, -hD * 0.06), SIMD3(hW * 1.04, hH * 0.30, hD * 1.04)),
+                     rgb: hairCol, sat: sat, shape: .sphere)
+        case 3: // side part: cap plus one swept lock.
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: hpw(SIMD3(0, headY + hH * 0.42, -hD * 0.06), SIMD3(hW * 1.04, hH * 0.28, hD * 1.04)),
                      rgb: hairCol, sat: sat, shape: .sphere)
             drawCube(enc: enc, viewProj: viewProj,
-                     model: hpw(SIMD3(0, headY + hH * 0.66, -hD * 0.04), SIMD3(hW * 0.64, hH * 0.42, hD * 0.62)),
+                     model: hpw(SIMD3(hW * 0.34, headY + hH * 0.30, hD * 0.34), SIMD3(hW * 0.42, hH * 0.34, hD * 0.18)),
                      rgb: hairCol, sat: sat, shape: .sphere)
-        case 2: // side tufts over the ears + thin top.
+        case 4: // long: crown plus hair falling down both sides/back.
             drawCube(enc: enc, viewProj: viewProj,
-                     model: hpw(SIMD3(0, headY + hH * 0.42, -hD * 0.06), SIMD3(hW * 1.02, hH * 0.20, hD * 1.02)),
+                     model: hpw(SIMD3(0, headY + hH * 0.40, -hD * 0.06), SIMD3(hW * 1.05, hH * 0.30, hD * 1.05)),
                      rgb: hairCol, sat: sat, shape: .sphere)
-            for tx in [-hW * 0.56, hW * 0.56] {
+            for tx in [-hW * 0.54, hW * 0.54] {
                 drawCube(enc: enc, viewProj: viewProj,
-                         model: hpw(SIMD3(tx, headY + hH * 0.05, 0), SIMD3(hW * 0.14, hH * 0.42, hD * 0.5)),
+                         model: hpw(SIMD3(tx, headY - hH * 0.03, -hD * 0.12), SIMD3(hW * 0.18, hH * 0.72, hD * 0.54)),
                          rgb: hairCol, sat: sat, shape: .sphere)
             }
-        case 3: // bald with a bright headband (uses the tunic trim colour).
+        case 5: // ponytail: short crown with a tied tail behind.
             drawCube(enc: enc, viewProj: viewProj,
-                     model: hpw(SIMD3(0, headY + hH * 0.28, 0), SIMD3(hW * 1.05, hH * 0.12, hD * 1.05)),
-                     rgb: tunicTrim, sat: sat, shape: .cylinder)
-        case 4: // straw hat: wide brim + crown, warm straw colour.
-            let straw = SIMD3<Float>(0.88, 0.76, 0.42)
+                     model: hpw(SIMD3(0, headY + hH * 0.41, -hD * 0.06), SIMD3(hW * 1.03, hH * 0.28, hD * 1.03)),
+                     rgb: hairCol, sat: sat, shape: .sphere)
             drawCube(enc: enc, viewProj: viewProj,
-                     model: hpw(SIMD3(0, headY + hH * 0.42, 0), SIMD3(hW * 1.55, hH * 0.10, hD * 1.55)),
-                     rgb: straw, sat: sat, shape: .cylinder)
+                     model: hpw(SIMD3(0, headY + hH * 0.05, -hD * 0.62), SIMD3(hW * 0.30, hH * 0.70, hD * 0.30)),
+                     rgb: hairCol, sat: sat, shape: .sphere)
+        case 6: // spiky crown
+            for x in [-0.30, 0.0, 0.30] as [Float] {
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: hpw(SIMD3(hW * x, headY + hH * 0.58, 0),
+                                    SIMD3(hW * 0.28, hH * (0.38 + abs(x) * 0.20), hD * 0.38)),
+                         rgb: hairCol, sat: sat, shape: .cone)
+            }
+        case 7: // mohawk
             drawCube(enc: enc, viewProj: viewProj,
-                     model: hpw(SIMD3(0, headY + hH * 0.60, 0), SIMD3(hW * 0.72, hH * 0.30, hD * 0.72)),
-                     rgb: straw, sat: sat, shape: .cylinder)
-        case 5: // beanie: snug cap in the tunic colour with a lighter fold.
+                     model: hpw(SIMD3(0, headY + hH * 0.62, 0), SIMD3(hW * 0.22, hH * 0.54, hD * 0.90)),
+                     rgb: hairCol, sat: sat, shape: .cone)
+        case 8: // curly clusters
+            for x in [-0.34, 0.0, 0.34] as [Float] {
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: hpw(SIMD3(hW * x, headY + hH * 0.48, -hD * 0.03),
+                                    SIMD3(hW * 0.42, hH * 0.34, hD * 0.44)),
+                         rgb: hairCol, sat: sat, shape: .sphere)
+            }
+        case 9: // bun
             drawCube(enc: enc, viewProj: viewProj,
-                     model: hpw(SIMD3(0, headY + hH * 0.49, 0), SIMD3(hW * 1.02, hH * 0.42, hD * 1.02)),
-                     rgb: tunicCol, sat: sat, shape: .cone)
+                     model: hpw(SIMD3(0, headY + hH * 0.38, -hD * 0.06), SIMD3(hW, hH * 0.28, hD)),
+                     rgb: hairCol, sat: sat, shape: .sphere)
             drawCube(enc: enc, viewProj: viewProj,
-                     model: hpw(SIMD3(0, headY + hH * 0.30, 0), SIMD3(hW * 1.10, hH * 0.10, hD * 1.10)),
-                     rgb: tunicTrim, sat: sat, shape: .cylinder)
+                     model: hpw(SIMD3(0, headY + hH * 0.78, -hD * 0.14), SIMD3(hW * 0.44, hH * 0.44, hD * 0.44)),
+                     rgb: hairCol, sat: sat, shape: .sphere)
         default: // classic cap over the top/back of the head.
             drawCube(enc: enc, viewProj: viewProj,
                      model: hpw(SIMD3(0, headY + hH * 0.34, -hD * 0.06), SIMD3(hW * 1.04, hH * 0.36, hD * 1.04)),
@@ -4317,15 +4350,28 @@ extension EntityRenderer {
         let hMouthZ: Float = headZ + hD * 0.49
         // Stable facial structure, not just a palette swap. Four seed-selected
         // styles vary eye spacing/proportion and readable brow/nose/mouth marks.
-        let faceStyle = Int((vs >> 25) & 3)
-        let eyeW: Float
-        let eyeHBase: Float
-        let eyeSpread: Float
+        let mouthVariant = player.map { Int($0.mouth) % 10 } ?? Int((vs >> 25) & 3)
+        let faceStyle = mouthVariant % 4
+        let mouthWidthScale: [Float] = [0.85, 1.0, 0.92, 1.10, 0.78, 1.18, 1.28, 0.62, 1.42, 0.96]
+        let mouthHeightScale: [Float] = [0.75, 1.20, 0.55, 1.35, 0.70, 0.80, 1.45, 0.55, 1.05, 0.68]
+        let mouthW = mouthWidthScale[mouthVariant]
+        let mouthH = mouthHeightScale[mouthVariant]
+        var eyeW: Float
+        var eyeHBase: Float
+        var eyeSpread: Float
         switch faceStyle {
         case 1: (eyeW, eyeHBase, eyeSpread) = (s * 0.11, s * 0.14, hW * 0.20)
         case 2: (eyeW, eyeHBase, eyeSpread) = (s * 0.085, s * 0.10, hW * 0.25)
         case 3: (eyeW, eyeHBase, eyeSpread) = (s * 0.095, s * 0.075, hW * 0.23)
         default: (eyeW, eyeHBase, eyeSpread) = (s * 0.10, s * 0.12, hW * 0.22)
+        }
+        if let player {
+            let eyeStyle = Int(player.eye_style) % 10
+            let widthScale: [Float] = [1.0, 0.82, 1.20, 1.28, 0.72, 1.08, 0.92, 1.05, 1.18, 1.12]
+            let heightScale: [Float] = [1.0, 1.25, 0.82, 1.30, 0.72, 0.58, 0.42, 0.68, 1.18, 1.32]
+            eyeW *= widthScale[eyeStyle]
+            eyeHBase *= heightScale[eyeStyle]
+            eyeSpread *= eyeStyle == 2 ? 1.12 : (eyeStyle == 6 ? 0.90 : 1.0)
         }
         let eyeH = eyeHBase * eyeBlinkSY
         let eyeD = s * 0.018
@@ -4341,10 +4387,13 @@ extension EntityRenderer {
                 shape: .smoothSphere, highlight: false)
 
         let noseY = headY - hH * 0.08
+        let noseStyle = player.map { Int($0.nose) % 10 } ?? faceStyle
+        let noseWidths: [Float] = [0.075, 0.095, 0.065, 0.125, 0.055, 0.075, 0.085, 0.115, 0.135, 0.060]
+        let noseHeights: [Float] = [0.070, 0.090, 0.105, 0.070, 0.055, 0.125, 0.075, 0.055, 0.085, 0.100]
         drawCube(enc: enc, viewProj: viewProj,
                  model: hpw(SIMD3(0, noseY, hNoseZ),
-                            SIMD3(s * (faceStyle == 1 ? 0.075 : 0.095),
-                                  s * (faceStyle == 3 ? 0.10 : 0.075), s * 0.035)),
+                            SIMD3(s * noseWidths[noseStyle],
+                                  s * noseHeights[noseStyle], s * 0.035)),
                  rgb: skinCol * (faceStyle == 2 ? 0.84 : 0.92), sat: sat, shape: .sphere)
 
         switch faceStyle {
@@ -4359,7 +4408,7 @@ extension EntityRenderer {
             }
             drawCube(enc: enc, viewProj: viewProj,
                      model: hpw(SIMD3(0, headY - hH * 0.27, hMouthZ),
-                                SIMD3(s * 0.075, s * 0.095, s * 0.014)),
+                                SIMD3(s * 0.075 * mouthW, s * 0.095 * mouthH, s * 0.014)),
                      rgb: mouthCol, sat: sat, shape: .sphere)
         case 2: // two freckle clusters and a broad toothy grin.
             if !professionWorking && !sweeping {
@@ -4372,7 +4421,7 @@ extension EntityRenderer {
             }
             drawCube(enc: enc, viewProj: viewProj,
                      model: hpw(SIMD3(0, headY - hH * 0.27, hMouthZ),
-                                SIMD3(hW * 0.42, s * 0.085, s * 0.014)),
+                                SIMD3(hW * 0.42 * mouthW, s * 0.085 * mouthH, s * 0.014)),
                      rgb: mouthCol * 0.65, sat: sat, shape: .sphere)
             drawCube(enc: enc, viewProj: viewProj,
                      model: hpw(SIMD3(0, headY - hH * 0.25, hMouthZ + s * 0.006),
@@ -4389,7 +4438,7 @@ extension EntityRenderer {
             }
             drawCube(enc: enc, viewProj: viewProj,
                      model: hpw(SIMD3(0, headY - hH * 0.29, hMouthZ),
-                                SIMD3(hW * 0.25, s * 0.035, s * 0.012)),
+                                SIMD3(hW * 0.25 * mouthW, s * 0.035 * mouthH, s * 0.012)),
                      rgb: mouthCol, sat: sat)
         default: // classic rosy-cheeked smile.
             if !professionWorking && !sweeping {
@@ -4402,7 +4451,7 @@ extension EntityRenderer {
             }
             drawCube(enc: enc, viewProj: viewProj,
                      model: hpw(SIMD3(0, headY - hH * 0.26, hMouthZ),
-                                SIMD3(hW * 0.34, s * 0.05, s * 0.012)),
+                                SIMD3(hW * 0.34 * mouthW, s * 0.05 * mouthH, s * 0.012)),
                      rgb: mouthCol, sat: sat, shape: .sphere)
         }
     }

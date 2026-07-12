@@ -600,6 +600,8 @@ pub struct World<'c> {
     entities: Vec<bf_entity_draw>,
     // #254 ABI v28 sidecar, index-aligned with `entities` for the current frame.
     entity_role_actions: Vec<bf_entity_role_action>,
+    // #264 ABI v29 sidecar, index-aligned with `entities`.
+    entity_appearances: Vec<bf_player_appearance>,
     creature_timer: f32,
     villager_timer: f32,
     danger_timer: f32,
@@ -647,6 +649,7 @@ pub struct World<'c> {
     fx_cb: Option<FxCb>,
     step_timer: f32,
     remote_avatars: Vec<bf_entity_draw>,
+    remote_avatar_appearances: Vec<bf_player_appearance>,
     mine_progress: f32,
     has_target: bool,
     target: IVec3,

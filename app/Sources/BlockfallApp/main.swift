@@ -827,7 +827,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func saveChar() {
         editorAppearance.save()
-        renderer?.setCharacterAppearance(skin: editorAppearance.skinRGB, shirt: editorAppearance.shirtRGB)
+        renderer?.setCharacterAppearance(editorAppearance)
         charEditorOverlay?.removeFromSuperview(); charEditorOverlay = nil
     }
 

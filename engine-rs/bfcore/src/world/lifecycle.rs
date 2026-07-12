@@ -54,6 +54,7 @@ impl<'c> World<'c> {
             debris: Vec::new(),
             entities: Vec::new(),
             entity_role_actions: Vec::new(),
+            entity_appearances: Vec::new(),
             creature_timer: 0.0,
             villager_timer: 0.0,
             danger_timer: 0.0,
@@ -82,6 +83,7 @@ impl<'c> World<'c> {
             fx_cb: None,
             step_timer: 0.0,
             remote_avatars: Vec::new(),
+            remote_avatar_appearances: Vec::new(),
             mine_progress: 0.0,
             has_target: false,
             target: IVec3::default(),
@@ -151,8 +153,10 @@ impl<'c> World<'c> {
     pub fn world_seed(&self) -> u64 {
         self.seed
     }
-    pub fn set_remote_avatars(&mut self, a: Vec<bf_entity_draw>) {
+    pub fn set_remote_avatars(&mut self, a: Vec<bf_entity_draw>, appearances: Vec<bf_player_appearance>) {
+        debug_assert_eq!(a.len(), appearances.len());
         self.remote_avatars = a;
+        self.remote_avatar_appearances = appearances;
     }
     pub fn mode(&self) -> bf_game_mode {
         self.mode

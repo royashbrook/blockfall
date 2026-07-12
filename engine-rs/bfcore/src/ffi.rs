@@ -121,6 +121,7 @@ struct Engine {
     session: Option<crate::session::NetSession>,
     net_outbox: NetQueue,
     net_inbox: NetQueue,
+    player_appearance: bf_player_appearance,
 }
 
 /// A shared queue of session-level payloads: (peer_id, channel, bytes).
@@ -226,6 +227,7 @@ pub unsafe extern "C" fn bf_engine_create(
         session: None,
         net_outbox: std::rc::Rc::new(RefCell::new(Vec::new())),
         net_inbox: std::rc::Rc::new(RefCell::new(Vec::new())),
+        player_appearance: bf_player_appearance::default(),
     });
     let raw = Box::into_raw(engine);
 
@@ -525,6 +527,33 @@ pub unsafe extern "C" fn bf_entity_role_actions(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn bf_entity_appearances(
+    e: bf_engine,
+    out: *mut bf_entity_appearance_view,
+) -> bf_result {
+    let e = match engine_ref(e) {
+        Some(e) => e,
+        None => return bf_result::BF_ERR_BAD_ARG,
+    };
+    if out.is_null() {
+        return bf_result::BF_ERR_BAD_ARG;
+    }
+    if !e.world_ready || !e.borrowed {
+        unsafe { *out = bf_entity_appearance_view::default() };
+        return bf_result::BF_ERR_NOT_READY;
+    }
+    let entries = e.world.entity_appearances();
+    unsafe {
+        *out = bf_entity_appearance_view {
+            entries: if entries.is_empty() { core::ptr::null() } else { entries.as_ptr() },
+            count: entries.len() as u32,
+            _pad: 0,
+        };
+    }
+    bf_result::BF_OK
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn bf_frame_end(e: bf_engine) {
     if let Some(e) = engine_mut(e) {
         e.borrowed = false;
@@ -688,6 +717,7 @@ fn wire_net(e: &mut Engine, role: crate::session::NetRole) {
     ));
 
     let mut session = NetSession::new(role);
+    session.set_local_appearance(e.player_appearance);
     let outbox = e.net_outbox.clone();
     session.set_sender(Box::new(
         move |peer: u16, ch: NetChannel, payload: &[u8]| {
@@ -784,6 +814,25 @@ pub extern "C" fn bf_net_peer_count(e: bf_engine) -> u32 {
         Some(e) => e.transport.as_ref().map(|t| t.peer_count()).unwrap_or(0),
         None => 0,
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn bf_player_appearance_set(
+    e: bf_engine,
+    appearance: *const bf_player_appearance,
+) -> bf_result {
+    let e = match engine_mut(e) {
+        Some(e) => e,
+        None => return bf_result::BF_ERR_BAD_ARG,
+    };
+    if appearance.is_null() {
+        return bf_result::BF_ERR_BAD_ARG;
+    }
+    e.player_appearance = unsafe { *appearance };
+    if let Some(session) = e.session.as_mut() {
+        session.set_local_appearance(e.player_appearance);
+    }
+    bf_result::BF_OK
 }
 
 #[no_mangle]

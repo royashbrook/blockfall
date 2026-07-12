@@ -40,7 +40,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::abi::{bf_entity_draw, bf_game_mode, bf_vec3};
+use crate::abi::{bf_entity_draw, bf_game_mode, bf_player_appearance, bf_vec3};
 use crate::net::NetChannel;
 use crate::types::{BlockId, IVec3};
 use crate::world::World;
@@ -61,6 +61,7 @@ enum PktType {
     PlayerPos = 4,
     #[allow(dead_code)]
     Snapshot = 5,
+    PlayerState = 6,
 }
 
 impl PktType {
@@ -71,6 +72,7 @@ impl PktType {
             3 => Some(PktType::BlockEdit),
             4 => Some(PktType::PlayerPos),
             5 => Some(PktType::Snapshot),
+            6 => Some(PktType::PlayerState),
             _ => None,
         }
     }
@@ -168,6 +170,7 @@ struct RemotePlayer {
     y: f32,
     z: f32,
     yaw: f32,
+    appearance: bf_player_appearance,
 }
 
 /// Server-authoritative co-op session. See module docs for the borrow model.
@@ -180,6 +183,7 @@ pub struct NetSession {
     local_edits: LocalEditQueue,
     snap_timer: f64,
     joined: bool,
+    local_appearance: bf_player_appearance,
 }
 
 impl NetSession {
@@ -193,7 +197,12 @@ impl NetSession {
             local_edits: Rc::new(RefCell::new(Vec::new())),
             snap_timer: 0.0,
             joined: false,
+            local_appearance: bf_player_appearance::default(),
         }
+    }
+
+    pub fn set_local_appearance(&mut self, appearance: bf_player_appearance) {
+        self.local_appearance = appearance;
     }
 
     /// Install the World edit callback that funnels local edits into our queue.
@@ -309,7 +318,37 @@ impl NetSession {
                     Some(v) => v,
                     None => return,
                 };
-                self.remote.insert(peer, RemotePlayer { x, y, z, yaw });
+                self.remote.insert(peer, RemotePlayer {
+                    x, y, z, yaw, appearance: bf_player_appearance::default()
+                });
+                self.rebuild_avatars(world);
+            }
+            Some(PktType::PlayerState) => {
+                if self.role == NetRole::Host && !self.joined_peers.contains(&peer) {
+                    return;
+                }
+                if self.role == NetRole::Client && !self.joined {
+                    return;
+                }
+                let claimed_origin = match r.get_u16() { Some(v) => v, None => return };
+                let x = match r.get_f32() { Some(v) => v, None => return };
+                let y = match r.get_f32() { Some(v) => v, None => return };
+                let z = match r.get_f32() { Some(v) => v, None => return };
+                let yaw = match r.get_f32() { Some(v) => v, None => return };
+                let appearance = match Self::read_appearance(&mut r) { Some(v) => v, None => return };
+                // Clients cannot spoof another peer id. The host assigns the
+                // transport id, then relays that canonical state to all others.
+                let origin = if self.role == NetRole::Host { peer } else { claimed_origin };
+                self.remote.insert(origin, RemotePlayer { x, y, z, yaw, appearance });
+                if self.role == NetRole::Host {
+                    let relay = Self::player_state(origin, x, y, z, yaw, appearance);
+                    let peers = self.peers.clone();
+                    for target in peers {
+                        if target != peer && self.joined_peers.contains(&target) {
+                            self.send_to(target, NetChannel::Unreliable, &relay);
+                        }
+                    }
+                }
                 self.rebuild_avatars(world);
             }
             _ => {}
@@ -330,15 +369,10 @@ impl NetSession {
         }
         self.snap_timer = 0.0;
         let (x, y, z, yaw) = world.get_player();
-        let mut w = PktWriter::new();
-        w.put_type(PktType::PlayerPos);
-        w.put_f32(x);
-        w.put_f32(y);
-        w.put_f32(z);
-        w.put_f32(yaw);
+        let w = Self::player_state(0, x, y, z, yaw, self.local_appearance);
         let peers = self.peers.clone();
         for p in peers {
-            self.send_to(p, NetChannel::Unreliable, &w.buf);
+            self.send_to(p, NetChannel::Unreliable, &w);
         }
     }
 
@@ -398,6 +432,32 @@ impl NetSession {
         w.buf
     }
 
+    fn put_appearance(w: &mut PktWriter, a: bf_player_appearance) {
+        for v in [a.skin, a.shirt, a.hair_color, a.hair_style, a.nose,
+                  a.mouth, a.eye_style, a.eye_color, a.head_shape, a.body_shape] {
+            w.put_u8(v);
+        }
+    }
+
+    fn read_appearance(r: &mut PktReader<'_>) -> Option<bf_player_appearance> {
+        Some(bf_player_appearance {
+            skin: r.get_u8()?, shirt: r.get_u8()?, hair_color: r.get_u8()?,
+            hair_style: r.get_u8()?, nose: r.get_u8()?, mouth: r.get_u8()?,
+            eye_style: r.get_u8()?, eye_color: r.get_u8()?,
+            head_shape: r.get_u8()?, body_shape: r.get_u8()?, _reserved: [0; 2],
+        })
+    }
+
+    fn player_state(origin: u16, x: f32, y: f32, z: f32, yaw: f32,
+                    appearance: bf_player_appearance) -> Vec<u8> {
+        let mut w = PktWriter::new();
+        w.put_type(PktType::PlayerState);
+        w.put_u16(origin);
+        w.put_f32(x); w.put_f32(y); w.put_f32(z); w.put_f32(yaw);
+        Self::put_appearance(&mut w, appearance);
+        w.buf
+    }
+
     fn send_to(&mut self, peer: u16, ch: NetChannel, d: &[u8]) {
         if let Some(s) = self.sender.as_mut() {
             s(peer, ch, d);
@@ -406,6 +466,7 @@ impl NetSession {
 
     fn rebuild_avatars(&self, world: &mut World) {
         let mut av: Vec<bf_entity_draw> = Vec::new();
+        let mut appearances = Vec::new();
         for (&peer_id, rp) in &self.remote {
             av.push(bf_entity_draw {
                 position: bf_vec3 {
@@ -426,8 +487,9 @@ impl NetSession {
                 sat: 1.0,
                 _pad: u32::from(peer_id).wrapping_add(1),
             });
+            appearances.push(rp.appearance);
         }
-        world.set_remote_avatars(av);
+        world.set_remote_avatars(av, appearances);
     }
 
     fn game_mode_from_u8(m: u8) -> bf_game_mode {
@@ -455,6 +517,12 @@ mod tests {
         p.put_type(PktType::Welcome);
         p.put_u64(seed);
         p.put_u8(bf_game_mode::BF_MODE_CREATIVE as u8);
+        p.buf
+    }
+
+    fn hello_packet() -> Vec<u8> {
+        let mut p = PktWriter::new();
+        p.put_type(PktType::Hello);
         p.buf
     }
 
@@ -491,5 +559,90 @@ mod tests {
         );
 
         assert_eq!(world.debug_block_at(pos.x, pos.y, pos.z), before);
+    }
+
+    #[test]
+    fn player_state_roundtrips_every_appearance_trait() {
+        let appearance = bf_player_appearance {
+            skin: 9, shirt: 8, hair_color: 7, hair_style: 6, nose: 5,
+            mouth: 4, eye_style: 3, eye_color: 2, head_shape: 1,
+            body_shape: 9, _reserved: [0; 2],
+        };
+        let packet = NetSession::player_state(42, 1.0, 2.0, 3.0, 4.0, appearance);
+        let mut reader = PktReader::new(&packet);
+        assert_eq!(reader.pkt_type(), Some(PktType::PlayerState));
+        assert_eq!(reader.get_u16(), Some(42));
+        for expected in [1.0, 2.0, 3.0, 4.0] {
+            assert_eq!(reader.get_f32(), Some(expected));
+        }
+        assert_eq!(NetSession::read_appearance(&mut reader), Some(appearance));
+    }
+
+    #[test]
+    fn host_canonicalizes_and_relays_client_appearance() {
+        let mut world = World::new(None);
+        world.init_world(123);
+        let mut session = NetSession::new(NetRole::Host);
+        let sent = Rc::new(RefCell::new(Vec::<(u16, Vec<u8>)>::new()));
+        let captured = sent.clone();
+        session.set_sender(Box::new(move |peer, _, data| {
+            captured.borrow_mut().push((peer, data.to_vec()));
+        }));
+        session.on_payload(7, NetChannel::ReliableOrdered, &hello_packet(), &mut world);
+        session.on_payload(8, NetChannel::ReliableOrdered, &hello_packet(), &mut world);
+        sent.borrow_mut().clear();
+
+        let appearance = bf_player_appearance {
+            skin: 2, shirt: 3, hair_color: 4, hair_style: 5, nose: 6,
+            mouth: 7, eye_style: 8, eye_color: 9, head_shape: 1,
+            body_shape: 2, _reserved: [0; 2],
+        };
+        let spoofed = NetSession::player_state(999, 10.0, 11.0, 12.0, 1.5, appearance);
+        session.on_payload(7, NetChannel::Unreliable, &spoofed, &mut world);
+
+        assert_eq!(session.remote.get(&7).unwrap().appearance, appearance);
+        assert!(session.remote.get(&999).is_none());
+        let outbound = sent.borrow();
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0].0, 8);
+        let mut reader = PktReader::new(&outbound[0].1);
+        assert_eq!(reader.pkt_type(), Some(PktType::PlayerState));
+        assert_eq!(reader.get_u16(), Some(7));
+    }
+
+    #[test]
+    fn legacy_player_position_uses_safe_default_appearance() {
+        let mut world = World::new(None);
+        world.init_world(123);
+        let mut session = NetSession::new(NetRole::Host);
+        let mut p = PktWriter::new();
+        p.put_type(PktType::PlayerPos);
+        for v in [1.0, 2.0, 3.0, 4.0] { p.put_f32(v); }
+        session.on_payload(7, NetChannel::Unreliable, &p.buf, &mut world);
+        assert_eq!(session.remote.get(&7).unwrap().appearance, bf_player_appearance::default());
+    }
+
+    #[test]
+    fn changed_local_appearance_is_sent_on_next_snapshot() {
+        let mut world = World::new(None);
+        world.init_world(123);
+        let mut session = NetSession::new(NetRole::Client);
+        session.peers.push(1);
+        let sent = Rc::new(RefCell::new(Vec::<Vec<u8>>::new()));
+        let captured = sent.clone();
+        session.set_sender(Box::new(move |_, _, data| captured.borrow_mut().push(data.to_vec())));
+        let appearance = bf_player_appearance {
+            skin: 8, shirt: 7, hair_color: 6, hair_style: 5, nose: 4,
+            mouth: 3, eye_style: 2, eye_color: 1, head_shape: 9,
+            body_shape: 8, _reserved: [0; 2],
+        };
+        session.set_local_appearance(appearance);
+        session.update(0.05, &mut world);
+        let packets = sent.borrow();
+        let mut reader = PktReader::new(&packets[0]);
+        assert_eq!(reader.pkt_type(), Some(PktType::PlayerState));
+        assert_eq!(reader.get_u16(), Some(0));
+        for _ in 0..4 { reader.get_f32().unwrap(); }
+        assert_eq!(NetSession::read_appearance(&mut reader), Some(appearance));
     }
 }

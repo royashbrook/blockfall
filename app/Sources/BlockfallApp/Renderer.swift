@@ -61,12 +61,16 @@ final class Renderer: NSObject, MTKViewDelegate {
     func setRenderDistance(_ chunks: Int) {   // #85 live render-distance slider
         if let e = engine { bf_set_render_distance(e, UInt32(max(8, min(40, chunks)))) }
     }
-    func setCharacterAppearance(skin: SIMD3<Float>, shirt: SIMD3<Float>) {
-        charSkin = skin; charShirt = shirt
+    func setCharacterAppearance(_ appearance: CharacterAppearance) {
+        charSkin = appearance.skinRGB; charShirt = appearance.shirtRGB
         let arm = makeViewModelArm(skin: charSkin, sleeve: charShirt)
         viewModelArmCount = arm.count
         viewModelArmBuf = device.makeBuffer(bytes: arm, length: arm.count * MemoryLayout<PropCuboidGPU>.stride,
                                             options: .storageModeShared)
+        if let e = engine {
+            var value = appearance.engineValue
+            _ = bf_player_appearance_set(e, &value)
+        }
     }
     private var heldItemBuf: MTLBuffer?            // #70 v2: equipped item in hand
     private var heldItemCount = 0
@@ -1018,6 +1022,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         guard let e = engine, err == BF_OK else {
             fatalError("engine create failed: \(String(cString: bf_last_error_global()))")
         }
+        var appearance = CharacterAppearance.load().engineValue
+        _ = bf_player_appearance_set(e, &appearance)
         var alloc = bf_gpu_allocator()
         alloc.user = Unmanaged.passUnretained(registry).toOpaque()
         alloc.alloc = allocTrampoline
@@ -1173,6 +1179,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         _ = bf_frame_acquire_render(e, &frame)
         var entityRoles = bf_entity_role_action_view()
         _ = bf_entity_role_actions(e, &entityRoles)
+        var entityAppearances = bf_entity_appearance_view()
+        _ = bf_entity_appearances(e, &entityAppearances)
 
         // Snapshot the buffer registry AFTER acquire: this frame's update/remesh
         // (inside frame_begin/acquire) may have allocated brand-new mesh buffers,
@@ -1501,7 +1509,9 @@ final class Renderer: NSObject, MTKViewDelegate {
                                   occ: shadowVolTex, occCoarse: shadowVolCoarseTex,
                                   camPosH: horizonCamH,
                                   roleActions: entityRoles.entries,
-                                  roleActionCount: Int(entityRoles.count))   // #254 v28 work pose
+                                  roleActionCount: Int(entityRoles.count),
+                                  appearances: entityAppearances.entries,
+                                  appearanceCount: Int(entityAppearances.count))
             particles.update(Float(dt))
             particles.encode(enc, viewProj: viewProj)
 
