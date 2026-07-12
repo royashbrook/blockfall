@@ -202,6 +202,45 @@ fn pause_dt_zero_freezes_world_clock_then_resumes() {
     );
 }
 
+// #260 dt=0 is a complete simulation hold, not merely a frozen clock. Villager
+// social decisions and tick-count AI cooldowns used to mutate on every paused frame.
+#[test]
+fn pause_dt_zero_does_not_advance_villager_or_ai_state() {
+    let mut w = World::new(None);
+    let mut villager = Creature::default();
+    villager.model = 20;
+    villager.npc_id = 1;
+    villager.hp = 3;
+    villager.pos = V3::new(0.5, 8.0, 0.5);
+    villager.social.initialized = true;
+    villager.social.cooldown = 0.0;
+    villager.ai.repath_cd = 7;
+    villager.ai.blocked_cd = 5;
+    w.creatures.push(villager);
+
+    let input = zero_input();
+    w.update(&input, 0.0);
+    w.update(&input, 0.0);
+
+    let frozen = &w.creatures[0];
+    assert_eq!(
+        frozen.social.action, 0,
+        "paused villager started a social action"
+    );
+    assert_eq!(
+        frozen.social.sequence, 0,
+        "paused villager advanced its social sequence"
+    );
+    assert_eq!(
+        frozen.ai.repath_cd, 7,
+        "paused AI consumed its repath cooldown"
+    );
+    assert_eq!(
+        frozen.ai.blocked_cd, 5,
+        "paused AI consumed its blocked cooldown"
+    );
+}
+
 // Zero-input frame helper (no movement / look), so a tick advances only time + sim.
 fn zero_input() -> bf_frame_input {
     bf_frame_input {

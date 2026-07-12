@@ -2156,7 +2156,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             chatter.append(HUDView.VillagerMarker(key: key, screenPt: pt,
                                                   worldPos: wp, dist: d))
         }
-        hud.setVillagers(chatter)
+        // #260 chatter is cosmetic world state too: drive it from the same
+        // pause-aware clock as every other animation, never wall time.
+        hud.setVillagers(chatter, now: animClock)
     }
 
     // Helper: fullscreen triangle pass with one input + one output texture.

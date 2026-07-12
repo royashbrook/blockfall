@@ -387,17 +387,16 @@ final class HUDView: NSView {
         [(0, "New here?"), (1, "Been here forever!")],
     ]
 
-    func setVillagers(_ list: [VillagerMarker]) {
+    func setVillagers(_ list: [VillagerMarker], now: CFTimeInterval) {
         let had = !villagers.isEmpty
         villagers = list
-        chatterTick()
+        chatterTick(now: now)
         if (had || !list.isEmpty) && hud.inventory_open == 0 && !questLogOpen {
             needsDisplay = true
         }
     }
 
-    private func chatterTick() {
-        let now = CACurrentMediaTime()
+    private func chatterTick(now: CFTimeInterval) {
         // Advance or finish an active exchange.
         if let pair = chatPair {
             let aVisible = villagers.contains { $0.key == pair.a }

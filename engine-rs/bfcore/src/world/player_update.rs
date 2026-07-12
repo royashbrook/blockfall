@@ -42,6 +42,11 @@ impl<'c> World<'c> {
 
     // ---- per-frame update ------------------------------------------------
     pub fn update(&mut self, input: &bf_frame_input, dt: f64) {
+        // #260 dt=0 is the single-player pause contract. Do not run threshold-driven
+        // maintenance or AI at all: several of those paths can mutate without time passing.
+        if dt == 0.0 {
+            return;
+        }
         let mut dt = dt;
         if dt > 0.1 {
             dt = 0.1;
