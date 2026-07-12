@@ -9,7 +9,12 @@ const STRUCT_CELL_SIZE: i32 = 64; // divides WORLD_PERIOD (512 cells across the 
 const STRUCT_CELL_COUNT: i32 = WORLD_PERIOD / STRUCT_CELL_SIZE; // 512
 const STRUCT_SEED_MIX: u64 = 0x57AC7EDEDBEF5717;
 const MARKER_BLOCK: BlockId = 34;
-const STRUCT_PROB_THRESH: u64 = 128;
+// Keep the existing broad candidate set for landmarks and settlements, but thin the
+// small biome props that made every skyline feel occupied. This preserves every
+// prior tall-tower / keep / ruin / village / city candidate while retaining only 3/8 of
+// cabins, camps, wells, shrines, and similar common sites.
+const STRUCT_CANDIDATE_THRESH: u64 = 128;
+const STRUCT_COMMON_THRESH: u64 = 48;
 const STRUCT_ANCHOR_MIN_OFFSET: i32 = 7;
 const STRUCT_ANCHOR_OFFSET_CHOICES: i32 = 50;
 const STRUCT_ANCHOR_OFFSET_SPAN: i32 = STRUCT_ANCHOR_OFFSET_CHOICES - 1;
@@ -92,6 +97,11 @@ fn struct_is_settlement(typ: i32) -> bool {
     typ == STRUCT_VILLAGE || typ == STRUCT_CITY
 }
 
+#[inline]
+fn struct_is_landmark(typ: i32) -> bool {
+    typ == STRUCT_TALL_TOWER || typ == STRUCT_KEEP || typ == STRUCT_RUIN
+}
+
 // Half extent (in blocks, from the anchor) of a structure type's solid footprint.
 // Used to carve a no-tree clearance zone around placed structures so trunks and
 // canopies do not punch through walls or roofs (#143). Values track the widest
@@ -166,13 +176,13 @@ fn raw_struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
     let sseed = fmix64(seed ^ STRUCT_SEED_MIX);
     // #179: canonical cell hash (periodic grid); anchor geometry stays in the
     // caller's frame so seam-adjacent placement works on raw coordinates.
-    let h = hash2(wrap_cell(scx, STRUCT_CELL_COUNT), wrap_cell(scz, STRUCT_CELL_COUNT), sseed);
+    let cell_hash = hash2(wrap_cell(scx, STRUCT_CELL_COUNT), wrap_cell(scz, STRUCT_CELL_COUNT), sseed);
 
-    if (h & 0xFF) >= STRUCT_PROB_THRESH {
+    if (cell_hash & 0xFF) >= STRUCT_CANDIDATE_THRESH {
         return struct_none();
     }
 
-    let h2s = fmix64(h ^ 0xFACEBEEF0BAB);
+    let h2s = fmix64(cell_hash ^ 0xFACEBEEF0BAB);
     let off_x = STRUCT_ANCHOR_MIN_OFFSET + ((h2s >> 0) % (STRUCT_ANCHOR_OFFSET_CHOICES as u64)) as i32;
     let off_z = STRUCT_ANCHOR_MIN_OFFSET + ((h2s >> 16) % (STRUCT_ANCHOR_OFFSET_CHOICES as u64)) as i32;
 
@@ -316,6 +326,13 @@ fn raw_struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
         stype
     };
 
+    if !struct_is_landmark(stype)
+        && !struct_is_settlement(stype)
+        && (cell_hash & 0xFF) >= STRUCT_COMMON_THRESH
+    {
+        return struct_none();
+    }
+
     StructDesc { anchor_wx: ax, anchor_wz: az, typ: stype, cell_hash: h2s, present: true }
 }
 
@@ -325,7 +342,7 @@ fn raw_struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
 fn raw_settlement_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
     let sseed = fmix64(seed ^ STRUCT_SEED_MIX);
     let h = hash2(wrap_cell(scx, STRUCT_CELL_COUNT), wrap_cell(scz, STRUCT_CELL_COUNT), sseed);
-    if (h & 0xFF) >= STRUCT_PROB_THRESH {
+    if (h & 0xFF) >= STRUCT_CANDIDATE_THRESH {
         return struct_none();
     }
 

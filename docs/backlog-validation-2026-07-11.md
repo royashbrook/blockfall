@@ -602,12 +602,15 @@ Work roles: `2 builder`, `3 herbalist`, `4 woodcutter`, `5 mason`, `6 blacksmith
 BF_SHOT_SEED=10 BF_SHOT_POS="170,13,62,3.14159,-0.12" \
   BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_HELD=0 \
   BF_SHOT_TESTCREATURE=20 BF_SHOT_TCDIST=4 BF_SHOT_VILLAGER_WORK=1 \
-  BF_SHOT_WORK_ROLE=4 BF_SHOT_WORK_PROGRESS=0.55 BF_CEL=1 \
+  BF_SHOT_WORK_ROLE=4 BF_SHOT_WORK_PROGRESS=0.166667 BF_CEL=1 \
   "$BIN" --shot "$OUT/work-woodcutter.png"
 ```
 
-Repeat with roles `2–6` and progress `0.15`, `0.55`, and `0.85`, changing the
-output filename for each role/progress pair.
+Repeat with roles `2–6` and progress `0`, `0.083333`, `0.166667`, `0.25`, and
+`0.333333`, changing the output filename for each role/progress pair. These are
+raised, mid-swing, contact, return, and raised poses for the three-stroke shift.
+Roles 4–6 must travel overhead to the station-facing contact point; role 2's saw
+must lie forward across its work instead of hanging vertically.
 
 Social actions: `5 look`, `6 gesture`, `7 greet`, `8 chat`, `9 sit`, `10 sweep`.
 

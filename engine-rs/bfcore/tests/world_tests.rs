@@ -379,6 +379,16 @@ fn quest_engine() {
         .filter(|cr| cr.disposition == "boss")
         .count();
     assert_eq!(bosses, 2, "two bosses in the roster");
+    assert_eq!(
+        x.creatures().iter().find(|cr| cr.name == "stone_basilisk").map(|cr| cr.model),
+        Some(2),
+        "Stone Basilisk keeps its reptile silhouette"
+    );
+    assert_eq!(
+        x.creatures().iter().find(|cr| cr.name == "dim_ramlord").map(|cr| cr.model),
+        Some(3),
+        "Dim Ramlord keeps its horned ram silhouette"
+    );
 
     let mut w = World::new(Some(TerrainGen::new()));
     w.set_allocator(allocator());

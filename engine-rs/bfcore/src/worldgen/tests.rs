@@ -857,16 +857,17 @@ mod worldgen_tests {
         assert_ne!(b, Biome::Beach as i32);
     }
 
-    // Structure variety: scanning a wide area for seed 11 must turn up more than one
-    // structure type, and must include at least one of the big / ruined structures
-    // (tall tower, keep, ruin, or city). Catches a regression that collapses the
-    // structure roster back to only small buildings.
+    // Structure distribution: common sites stay sparse while the deterministic
+    // landmark and settlement roster remains easy to encounter.
     #[test]
-    fn structure_variety_has_big_and_ruined() {
+    fn structure_distribution_keeps_landmarks_and_thins_common_sites() {
         let mut seen = std::collections::HashSet::new();
         let mut saw_big = false;
         let mut saw_ruin = false;
         let mut saw_city = false;
+        let mut common = 0;
+        let mut landmarks = 0;
+        let mut settlements = 0;
         // Scan structure cells over a wide region (cell size 64, so this is a big
         // area in blocks).
         for scz in -60..=60 {
@@ -889,8 +890,20 @@ mod worldgen_tests {
                 if sd.typ == STRUCT_CITY {
                     saw_city = true;
                 }
+                if struct_is_landmark(sd.typ) {
+                    landmarks += 1;
+                } else if struct_is_settlement(sd.typ) {
+                    settlements += 1;
+                } else {
+                    common += 1;
+                }
             }
         }
+        assert_eq!(
+            (common, landmarks, settlements),
+            (1_155, 505, 19),
+            "seed-11 structure distribution changed"
+        );
         assert!(seen.len() > 1, "expected more than one structure type, saw {seen:?}");
         assert!(saw_big, "expected at least one big structure (tower/keep/ruin/city), types {seen:?}");
         assert!(saw_ruin, "expected at least one ruin in the scan, types {seen:?}");
@@ -2627,9 +2640,10 @@ mod worldgen_tests {
         // These cells were re-picked for the #172 constants.
         // Re-picked for the #179 looping-world constants (canonical-frame cells).
         // #181: the latitude bias rerolled the cabin cell (biome-dependent roll);
-        // the keep and tower cells survived unchanged.
+        // the keep and tower cells survived unchanged. Common-site thinning re-picked
+        // the cabin cell while leaving the landmark samples unchanged.
         let samples = [
-            (11u64, 31, 0, STRUCT_CABIN),
+            (11u64, 32, -58, STRUCT_CABIN),
             (11u64, 45, 0, STRUCT_KEEP),
             (11u64, 61, 0, STRUCT_TALL_TOWER),
         ];

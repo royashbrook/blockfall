@@ -286,8 +286,11 @@ final class EntityRenderer {
     // cheap six-sided cylinders/cones. Vertices are already expanded
     // into triangle order, so all three shapes share one sequential index buffer.
     private static func revolvedVertices(_ shape: EntityPartShape) -> [Float] {
-        let slices = shape == .smoothSphere ? 8 : 6
-        let stacks = shape == .smoothSphere ? 4 : (shape == .sphere ? 2 : 1)
+        // Creature bodies used to use a two-stack "sphere", which is really an
+        // octahedral diamond. Three latitude bands keep the deliberate low-poly
+        // style while giving heads, haunches, and joints an actual curved contour.
+        let slices = (shape == .sphere || shape == .smoothSphere) ? 8 : 6
+        let stacks = shape == .smoothSphere ? 4 : (shape == .sphere ? 3 : 1)
         var out: [Float] = []
         let triangleCorners: [(Float, Float)] = [
             // CCW from outside, matching the existing cube mesh so the caller's
@@ -381,7 +384,7 @@ final class EntityRenderer {
             count = 72
             ib = revolvedIB
         case .sphere:
-            count = 72
+            count = 144
             ib = revolvedIB
         case .smoothSphere:
             count = 192
@@ -434,7 +437,7 @@ final class EntityRenderer {
         let smoothSphere = EntityRenderer.revolvedVertices(.smoothSphere)
         let cylinder = EntityRenderer.revolvedVertices(.cylinder)
         let cone = EntityRenderer.revolvedVertices(.cone)
-        precondition(sphere.count == 72 * 6 && smoothSphere.count == 192 * 6 && cylinder.count == 72 * 6 && cone.count == 54 * 6)
+        precondition(sphere.count == 144 * 6 && smoothSphere.count == 192 * 6 && cylinder.count == 72 * 6 && cone.count == 54 * 6)
         sphereVB = device.makeBuffer(bytes: sphere, length: sphere.count * 4, options: .storageModeShared)!
         smoothSphereVB = device.makeBuffer(bytes: smoothSphere, length: smoothSphere.count * 4, options: .storageModeShared)!
         cylinderVB = device.makeBuffer(bytes: cylinder, length: cylinder.count * 4, options: .storageModeShared)!
