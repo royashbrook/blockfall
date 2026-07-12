@@ -896,6 +896,46 @@ fn save_load_round_trip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn save_load_preserves_world_clock_and_accepts_legacy_meta() {
+    let dir = std::env::temp_dir().join(format!("bf_time_saveload_rs_{}", std::process::id()));
+    let dir = dir.to_string_lossy().to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let mut world = World::new(None);
+    world.set_allocator(allocator());
+    world.debug_set_day_time(0.61);
+    assert!(world.save(&dir), "save with world time");
+
+    let mut loaded = World::new(None);
+    loaded.set_allocator(allocator());
+    assert!(loaded.load(&dir), "load tagged world time");
+    assert!(
+        (loaded.debug_day_time() - 0.61).abs() < 1e-6,
+        "world time resumed at the saved phase ({})",
+        loaded.debug_day_time()
+    );
+
+    // #263: removing the optional BFTM trailer recreates the old world.meta
+    // layout. It must still load, with the legacy fresh-world clock fallback.
+    let meta_path = format!("{dir}/world.meta");
+    let mut legacy_meta = std::fs::read(&meta_path).expect("read new world.meta");
+    let trailer = legacy_meta.len() - 12;
+    assert_eq!(&legacy_meta[trailer..trailer + 4], b"BFTM");
+    legacy_meta.truncate(trailer);
+    std::fs::write(&meta_path, legacy_meta).expect("write legacy world.meta");
+
+    let mut legacy = World::new(None);
+    legacy.set_allocator(allocator());
+    assert!(legacy.load(&dir), "legacy world.meta still loads");
+    assert!(
+        legacy.debug_day_time().abs() < 1e-6,
+        "legacy save keeps phase-zero fallback"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ============================================================================
 // test_gameplay.cpp — survival drops, crafting, creatures, deep-cave hostiles.
 // ============================================================================

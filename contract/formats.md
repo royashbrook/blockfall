@@ -36,6 +36,9 @@ directory holds region files + one `player.dat` + `world.meta`.
 `world.meta` (magic `BFWM`): seed, ABI version, game mode, day/time,
 total play-time, and the **per-region restoration progress** table
 (`region_coord → saturation 0..1`) so Dim/colour state persists.
+The current legacy-compatible writer appends the clock as an optional tagged
+trailer: `BFTM` followed by a little-endian `f64 world_clock`. Readers accept
+older files with no trailer and use the fresh-world phase-zero fallback.
 
 `player.dat` (magic `BFPL`): position, look, **inventory (all 36 slots)**,
 selected hotbar slot, **game mode**, **health/hunger**, and **active +

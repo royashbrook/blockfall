@@ -23,6 +23,10 @@ impl<'c> World<'c> {
                 buf.extend_from_slice(&k.z.to_le_bytes());
                 buf.extend_from_slice(&v.to_le_bytes());
             }
+            // #263: append instead of changing the legacy BFWM prefix/layout, so
+            // old saves still load and new saves resume at the exact world time.
+            buf.extend_from_slice(b"BFTM");
+            buf.extend_from_slice(&self.world_clock.to_le_bytes());
             if f.write_all(&buf).is_err() {
                 return false;
             }
@@ -164,6 +168,13 @@ impl<'c> World<'c> {
                 self.region_sat.insert(RegionKey { x, z }, v);
             } else {
                 break; // #216: truncated/garbage region count must not spin to EOF
+            }
+        }
+        // #263: BFTM is an optional trailer. Saves written before it simply keep
+        // the fresh-world clock, while corrupt/non-finite clocks are ignored.
+        if r.take(4) == Some(b"BFTM") {
+            if let Some(clock) = r.f64().filter(|clock| clock.is_finite() && *clock >= 0.0) {
+                self.world_clock = clock;
             }
         }
         let mut quest_loaded = false;
@@ -409,5 +420,11 @@ impl<'a> ByteReader<'a> {
     pub(super) fn f32(&mut self) -> Option<f32> {
         let b = self.take(4)?;
         Some(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    pub(super) fn f64(&mut self) -> Option<f64> {
+        let b = self.take(8)?;
+        Some(f64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
     }
 }
