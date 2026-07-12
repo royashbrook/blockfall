@@ -305,9 +305,8 @@ struct Creature {
     npc_id: i32,
     home_x: i32,
     home_z: i32,
-    // Set for hostiles spawned at a ruined "danger site". These ignore the
-    // night/quest gate (a ruin is dangerous around the clock) and are capped
-    // separately so they never overwhelm the world.
+    // Set for hostiles spawned at a procedural danger site. These ignore the
+    // night/quest gate and are capped separately so they never overwhelm the world.
     from_ruin: bool,
     // Vertical distance still to be climbed when the creature is stepping up onto
     // a ledge it bumped into. While this is > 0 the creature raises its Y toward
@@ -454,8 +453,8 @@ impl Default for Creature {
     }
 }
 
-// Per-ruin "danger site" state so a ruin is CLEARABLE rather than an endless spawner.
-// Keyed in the world by the ruin anchor (ax, az). A site spawns a small fixed number
+// Per-landmark danger state so an encounter is CLEARABLE rather than an endless spawner.
+// Keyed in the world by its structure anchor (ax, az). A site spawns a small fixed number
 // of defenders exactly once. Once the player kills them the site is marked cleared and
 // does NOT respawn while the player stays put; it only re-arms after a long cooldown
 // AND once the player has moved well away (so you cannot farm it by camping on top of
@@ -470,7 +469,7 @@ struct RuinSite {
     // Seconds remaining before a cleared site may re-arm. Counts down only while the
     // player is far from the site.
     rearm_cd: f32,
-    // True once the clear reward has been granted for this ruin. The reward fires only
+    // True once the clear reward has been granted for this site. The reward fires only
     // the first time the ruin is cleared, never again (even after a re-arm + reclear).
     rewarded: bool,
 }
@@ -516,7 +515,7 @@ type EditCb = Box<dyn FnMut(IVec3, BlockId)>;
 
 const DIM_SAT: f32 = 0.18;
 const WORLD_Y_MIN_BLOCK: i32 = -16;
-const WORLD_Y_MAX_BLOCK: i32 = 63;
+const WORLD_Y_MAX_BLOCK: i32 = worldgen::WORLD_TOP_Y;
 const CY_MIN: i32 = floor_div_const(WORLD_Y_MIN_BLOCK, KCHUNK_DIM);
 const CY_MAX: i32 = floor_div_const(WORLD_Y_MAX_BLOCK, KCHUNK_DIM);
 const GEN_BUDGET: i32 = 6;
@@ -605,8 +604,8 @@ pub struct World<'c> {
     creature_timer: f32,
     villager_timer: f32,
     danger_timer: f32,
-    // Per-ruin "danger site" state, keyed by the ruin anchor (ax, az). A ruin is
-    // clearable: it spawns its defenders once, and once the player kills them it does
+    // Per-landmark danger-site state, keyed by the structure anchor. A site is
+    // clearable: it spawns its encounter once, and once the player clears it, it does
     // not immediately respawn. See RuinSite / maintain_danger_sites.
     ruin_sites: HashMap<(i32, i32), RuinSite>,
     // #109 per-chest container contents, keyed by the chest block's world position.

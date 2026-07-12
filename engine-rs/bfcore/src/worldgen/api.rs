@@ -487,22 +487,24 @@ pub fn worldgen_structure_near(wx: i32, wz: i32, seed: u64) -> (i32, i32, i32, i
 
 /// Danger site lookup for the creature system. Scans structure cells overlapping a
 /// square of half-size `radius` blocks around (wx,wz) and returns the anchor of the
-/// nearest ruined structure as (anchor_x, anchor_y, anchor_z), or None if there is
-/// no ruin in range. Deterministic for a given seed: the result depends only on the
-/// structure cells, not on call order. The creature system uses this to spawn a
-/// hostile or two at the ruin regardless of the night/quest gate.
-pub fn worldgen_dangerous_site_near(wx: i32, wz: i32, radius: i32, seed: u64) -> Option<(i32, i32, i32)> {
+fn worldgen_site_near_matching(
+    wx: i32,
+    wz: i32,
+    radius: i32,
+    seed: u64,
+    matches: fn(i32) -> bool,
+) -> Option<(i32, i32, i32, i32)> {
     let scx_min = struct_floordiv(wx - radius, STRUCT_CELL_SIZE);
     let scx_max = struct_floordiv(wx + radius, STRUCT_CELL_SIZE);
     let scz_min = struct_floordiv(wz - radius, STRUCT_CELL_SIZE);
     let scz_max = struct_floordiv(wz + radius, STRUCT_CELL_SIZE);
 
-    let mut best: Option<(i32, i32, i32)> = None;
+    let mut best: Option<(i32, i32, i32, i32)> = None;
     let mut best_d2 = i64::MAX;
     for scz in scz_min..=scz_max {
         for scx in scx_min..=scx_max {
             let sd = struct_for_cell(scx, scz, seed);
-            if !sd.present || !struct_is_ruin(sd.typ) {
+            if !sd.present || !matches(sd.typ) {
                 continue;
             }
             let ddx = (sd.anchor_wx - wx) as i64;
@@ -510,13 +512,51 @@ pub fn worldgen_dangerous_site_near(wx: i32, wz: i32, radius: i32, seed: u64) ->
             let d2 = ddx * ddx + ddz * ddz;
             if d2 <= (radius as i64) * (radius as i64) && d2 < best_d2 {
                 best_d2 = d2;
-                let y = struct_surface(sd.anchor_wx, sd.anchor_wz, seed);
+                let y = struct_danger_floor(sd.typ, sd.anchor_wx, sd.anchor_wz, seed);
                 // #179: canonical anchor so per-ruin state keys are unique.
-                best = Some((wrap_world(sd.anchor_wx), y, wrap_world(sd.anchor_wz)));
+                best = Some((sd.typ, wrap_world(sd.anchor_wx), y, wrap_world(sd.anchor_wz)));
             }
         }
     }
     best
+}
+
+/// Nearest ruin or epic landmark as `(type, anchor_x, anchor_y, anchor_z)`. The
+/// creature system uses the type to give castles a boss while ruins and grand towers
+/// use the existing defender band. Deterministic and independent of generation order.
+pub fn worldgen_dangerous_site_typed_near(
+    wx: i32,
+    wz: i32,
+    radius: i32,
+    seed: u64,
+) -> Option<(i32, i32, i32, i32)> {
+    worldgen_site_near_matching(wx, wz, radius, seed, struct_is_danger_site)
+}
+
+/// Backward-compatible untyped danger lookup.
+pub fn worldgen_dangerous_site_near(
+    wx: i32,
+    wz: i32,
+    radius: i32,
+    seed: u64,
+) -> Option<(i32, i32, i32)> {
+    worldgen_dangerous_site_typed_near(wx, wz, radius, seed).map(|(_, x, y, z)| (x, y, z))
+}
+
+/// Nearest rare castle/tower for deterministic validation captures and high-tier
+/// chest classification, returned as `(type, anchor_x, anchor_y, anchor_z)`.
+pub fn worldgen_epic_landmark_near(
+    wx: i32,
+    wz: i32,
+    radius: i32,
+    seed: u64,
+) -> Option<(i32, i32, i32, i32)> {
+    worldgen_site_near_matching(wx, wz, radius, seed, struct_is_epic_landmark)
+}
+
+#[inline]
+pub fn worldgen_danger_site_is_boss(typ: i32) -> bool {
+    typ == STRUCT_BOSS_CASTLE
 }
 
 pub fn worldgen_structure_footprint(wx: i32, wz: i32, seed: u64) -> bool {

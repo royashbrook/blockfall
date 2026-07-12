@@ -283,6 +283,13 @@ impl<'c> World<'c> {
         self.difficulty = if (0..=2).contains(&d) { d } else { 1 };
     }
 
+    /// Hostiles normally belong to survival; Hard also enables them in Creative
+    /// as harmless observation subjects (hunting remains survival-only).
+    pub(super) fn hostile_spawning_enabled(&self) -> bool {
+        self.difficulty != 0
+            && (self.mode == bf_game_mode::BF_MODE_SURVIVAL || self.difficulty == 2)
+    }
+
     pub(super) fn maintain_creatures(&mut self, dt: f32) {
         if self.gen.is_none() || self.store.resident_count() < 20 {
             return;
@@ -294,15 +301,20 @@ impl<'c> World<'c> {
         let kdespawn2 = 90.0f32 * 90.0;
         let px = self.pos.x;
         let pz = self.pos.z;
+        let mut abandoned_sites = Vec::new();
         self.creatures.retain(|c| {
             let dx = Self::wrap_signed_f(c.pos.x - px);
             let dz = Self::wrap_signed_f(c.pos.z - pz);
-            (dx * dx + dz * dz) <= kdespawn2
+            let keep = (dx * dx + dz * dz) <= kdespawn2;
+            if !keep && c.from_ruin {
+                abandoned_sites.push((c.home_x, c.home_z));
+            }
+            keep
         });
         let t = Self::day_time(self.world_clock);
-        let surv = self.mode == bf_game_mode::BF_MODE_SURVIVAL;
-        let night = surv && Self::is_night_phase(t);
-        let dark_cave = surv
+        let spawn_hostiles = self.hostile_spawning_enabled();
+        let night = spawn_hostiles && Self::is_night_phase(t);
+        let dark_cave = spawn_hostiles
             && (worldgen::worldgen_surface_height(
                 Self::ifloor(self.pos.x),
                 Self::ifloor(self.pos.z),
@@ -314,15 +326,22 @@ impl<'c> World<'c> {
         // also removes ruin hostiles, which are otherwise active around the clock.
         let easy = self.difficulty == 0;
         let hard = self.difficulty == 2;
-        let monsters_active =
-            !easy && (night || dark_cave) && self.quests_completed > 0;
-        if easy {
-            self.creatures.retain(|c| !c.hostile);
+        let quest_unlocked = self.quests_completed > 0
+            || (hard && self.mode == bf_game_mode::BF_MODE_CREATIVE);
+        let monsters_active = !easy && (night || dark_cave) && quest_unlocked;
+        if easy || !spawn_hostiles {
+            self.creatures.retain(|c| {
+                if c.hostile && c.from_ruin {
+                    abandoned_sites.push((c.home_x, c.home_z));
+                }
+                !c.hostile
+            });
         } else if !monsters_active {
             // Cull gated (night/cave) hostiles when the gate is closed, but keep the
             // ruin "danger site" hostiles, which are dangerous around the clock.
             self.creatures.retain(|c| !c.hostile || c.from_ruin);
         }
+        self.reconcile_danger_sites_after_cull(abandoned_sites);
         let mut ambient = 0;
         let mut bosses = 0;
         let mut hostiles = 0;

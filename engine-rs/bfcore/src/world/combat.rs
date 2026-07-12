@@ -98,7 +98,11 @@ impl<'c> World<'c> {
         if self.inv.is_none() {
             return;
         }
-        if cr.hostile {
+        if cr.is_boss {
+            let n1 = 2 + (self.rand01() * 2.0) as i32;
+            self.give_loot("crystal_shard", n1);
+            self.give_loot("color_dust", 2);
+        } else if cr.hostile {
             let n1 = 1 + (self.rand01() * 2.0) as i32;
             self.give_loot("color_dust", n1);
             let n2 = 1 + (self.rand01() * 2.0) as i32;
@@ -106,10 +110,6 @@ impl<'c> World<'c> {
             if self.rand01() < 0.5 {
                 self.give_loot("coal", 1);
             }
-        } else if cr.is_boss {
-            let n1 = 2 + (self.rand01() * 2.0) as i32;
-            self.give_loot("crystal_shard", n1);
-            self.give_loot("color_dust", 2);
         } else {
             let n1 = 1 + (self.rand01() * 2.0) as i32;
             self.give_loot("feather", n1);

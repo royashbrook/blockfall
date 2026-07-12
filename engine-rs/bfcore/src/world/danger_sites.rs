@@ -1,31 +1,40 @@
 use super::*;
 
 impl<'c> World<'c> {
-    // Ruined structures are localized "danger sites": when the player is near one, a
-    // small fixed band of defenders spawns at it regardless of the night/quest gate (so
-    // ruins feel dangerous in the daytime too). A ruin is CLEARABLE: each site spawns
-    // its defenders at most once, and once the player kills them they do NOT immediately
-    // respawn. A cleared site only re-arms after a long cooldown AND once the player has
-    // moved well away, so killing the defenders actually clears the ruin instead of
-    // refilling a global cap. Per-site state is keyed on the deterministic ruin anchor.
+    /// Reconcile transient site state after non-combat culls (distance, mode change,
+    /// or player respawn). Only actual combat/debug kills are allowed to clear a site.
+    pub(super) fn reconcile_danger_sites_after_cull(&mut self, mut sites: Vec<(i32, i32)>) {
+        sites.sort_unstable();
+        sites.dedup();
+        for key in sites {
+            let alive = self
+                .creatures
+                .iter()
+                .filter(|c| c.hostile && c.from_ruin && (c.home_x, c.home_z) == key)
+                .count() as i32;
+            if let Some(site) = self.ruin_sites.get_mut(&key) {
+                if !site.cleared {
+                    site.spawned = alive;
+                }
+            }
+        }
+    }
+
+    // Procedural danger sites spawn a fixed encounter regardless of the night/quest
+    // gate: ruins and grand towers get a defender band, while a boss castle gets one
+    // anchored boss. A cleared site only re-arms after a long cooldown and once the
+    // player has moved away. State is keyed on the deterministic structure anchor.
     pub(super) fn maintain_danger_sites(&mut self, dt: f32) {
         // Re-arm cooldown for a cleared ruin, and how far the player must be for the
         // cooldown to tick / a respawn to be allowed.
         const REARM_COOLDOWN: f32 = 300.0; // several minutes
         const AWAY_DIST: f32 = 64.0;
-        // Defenders per ruin site (a small fixed number).
-        const DEFENDERS_PER_SITE: i32 = 3;
-
         if self.gen.is_none() || self.store.resident_count() < 20 {
             return;
         }
-        // Only meaningful in survival (hostiles do not act in creative).
-        if self.mode != bf_game_mode::BF_MODE_SURVIVAL {
-            return;
-        }
-        // #238 Easy: no bad guys anywhere, ruins included (maintain_creatures
-        // culls any already-spawned defenders).
-        if self.difficulty == 0 {
+        // Hard Creative deliberately spawns harmless defenders for observation;
+        // hostile hunting and damage remain survival-only.
+        if !self.hostile_spawning_enabled() {
             return;
         }
         self.danger_timer -= dt;
@@ -58,12 +67,14 @@ impl<'c> World<'c> {
             }
         }
 
-        // Find the nearest ruin within a reasonable radius of the player.
-        let site = worldgen::worldgen_dangerous_site_near(px, pz, 48, self.seed);
-        let (ax, ay, az) = match site {
+        // Find the nearest ruin or epic landmark within a reasonable radius.
+        let site = worldgen::worldgen_dangerous_site_typed_near(px, pz, 48, self.seed);
+        let (site_type, ax, ay, az) = match site {
             Some(s) => s,
             None => return,
         };
+        let boss_site = worldgen::worldgen_danger_site_is_boss(site_type);
+        let encounter_size = if boss_site { 1 } else { 3 };
         // Only spawn once the ruin's chunk is actually resident (avoids spawning into
         // ungenerated space).
         if !self.store.is_resident(Self::to_chunk(IVec3 {
@@ -82,7 +93,7 @@ impl<'c> World<'c> {
         }
         // This site has already spawned its full band of defenders for this cycle. If
         // they are all dead, mark it cleared (one-shot until re-arm); otherwise wait.
-        if st.spawned >= DEFENDERS_PER_SITE {
+        if st.spawned >= encounter_size {
             let alive = self
                 .creatures
                 .iter()
@@ -104,13 +115,59 @@ impl<'c> World<'c> {
             }
             return;
         }
-        // Still arming: spawn one defender per tick (the 3s danger_timer spaces them out)
-        // up to the fixed band. Each defender jitters within a few blocks of the anchor,
-        // so they do not stack on one spot.
-        if self.spawn_hostile_at(ax, ay, az) {
+        // Still arming: spawn one creature per tick. Ordinary defenders jitter around
+        // the anchor; the scale-2 boss occupies the castle's deliberately clear arena.
+        let spawned = if boss_site {
+            self.spawn_boss_at(ax, ay, az)
+        } else {
+            self.spawn_hostile_at(ax, ay, az)
+        };
+        if spawned {
             let st = self.ruin_sites.get_mut(&key).expect("site present");
             st.spawned += 1;
         }
+    }
+
+    /// Spawn one content-defined boss at a rare castle anchor. It is hostile in
+    /// Survival but remains a harmless wandering observation subject in Creative.
+    fn spawn_boss_at(&mut self, ax: i32, ay: i32, az: i32) -> bool {
+        let gy = self.floor_below(ax, ay + 4, az);
+        if gy == NO_FLOOR || self.creature_body_blocked(ax as f32 + 0.5, gy, az as f32 + 0.5, 2.0) {
+            return false;
+        }
+        let boss_count = self
+            .extra
+            .map(|x| x.creatures().iter().filter(|d| d.disposition == "boss").count())
+            .unwrap_or(0);
+
+        let mut c = Creature::default();
+        c.pos = V3::new(ax as f32 + 0.5, gy as f32, az as f32 + 0.5);
+        c.yaw = self.rand01() * std::f32::consts::TAU;
+        c.hostile = true;
+        c.is_boss = true;
+        c.from_ruin = true;
+        c.home_x = ax;
+        c.home_z = az;
+        c.scale = 2.0;
+        if boss_count == 0 {
+            c.name = "castle_guardian".into();
+            c.speed = 1.2;
+            c.hp = 20;
+            c.color = Self::color_for("boss", 0);
+        } else {
+            let pick = (self.rand01() * boss_count as f32) as usize % boss_count;
+            let d = self
+                .extra
+                .and_then(|x| x.creatures().iter().filter(|d| d.disposition == "boss").nth(pick))
+                .expect("boss count came from the same content registry");
+            c.name = d.name.clone();
+            c.model = d.model;
+            c.speed = d.move_speed.max(0.8) * 0.7;
+            c.hp = (d.max_health as i32).max(20);
+            c.color = Self::color_for("boss", d.id);
+        }
+        self.creatures.push(c);
+        true
     }
 
     // Spawn a single ruin "danger site" hostile near (ax,ay,az). Mirrors the body of

@@ -291,6 +291,9 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     // under review (e.g. a desert spawn for a dune-relief check). Default 2026.
     let worldSeed = UInt64(ProcessInfo.processInfo.environment["BF_SHOT_SEED"] ?? "") ?? 2026
     _ = bf_world_new(e, worldSeed)
+    if let value = Int32(ProcessInfo.processInfo.environment["BF_SHOT_DIFFICULTY"] ?? "") {
+        bf_set_difficulty(e, value)
+    }
     var perfCameraSet = false
     if let cam = ProcessInfo.processInfo.environment["BF_PERF_CAMERA"] {
         let vals = cam.split(separator: ",").compactMap { Float($0.trimmingCharacters(in: .whitespaces)) }

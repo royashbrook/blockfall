@@ -321,6 +321,41 @@ impl<'c> World<'c> {
             .filter(|c| c.hostile && c.from_ruin)
             .count() as i32
     }
+
+    pub fn debug_danger_boss_count(&self) -> i32 {
+        self.creatures
+            .iter()
+            .filter(|c| c.hostile && c.is_boss && c.from_ruin)
+            .count() as i32
+    }
+
+    pub fn debug_danger_boss_info(&self) -> Option<(String, i32, f32)> {
+        self.creatures
+            .iter()
+            .find(|c| c.hostile && c.is_boss && c.from_ruin)
+            .map(|c| (c.name.clone(), c.model, c.scale))
+    }
+
+    pub fn debug_danger_site_count(&self) -> usize {
+        self.ruin_sites.len()
+    }
+
+    pub fn debug_move_one_danger_hostile(&mut self, ax: i32, az: i32, x: f32, y: f32, z: f32) -> bool {
+        if let Some(c) = self
+            .creatures
+            .iter_mut()
+            .find(|c| c.hostile && c.from_ruin && (c.home_x, c.home_z) == (ax, az))
+        {
+            c.pos = V3::new(x, y, z);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn debug_respawn_now(&mut self) {
+        self.respawn();
+    }
     // tests: simulate the player clearing a ruin by removing all of its defenders.
     // Returns how many were removed.
     pub fn debug_kill_ruin_hostiles(&mut self) -> i32 {

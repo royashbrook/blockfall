@@ -34,6 +34,18 @@ const STRUCT_TALL_TOWER: i32 = 10; // a tall intact tower (mage-tower style)
 const STRUCT_KEEP: i32 = 11; // a small keep / castle (walls + a few rooms)
 const STRUCT_RUIN: i32 = 12; // a ruined keep / tower, broken walls, holds baddies
 const STRUCT_CITY: i32 = 13; // a larger settlement cluster (town / city)
+const STRUCT_BOSS_CASTLE: i32 = 14; // rare multi-room fortress with a boss encounter
+const STRUCT_GRAND_TOWER: i32 = 15; // rare enterable tower with an internal climb
+
+// Epic landmarks replace selected existing big structures rather than adding more
+// candidates. Each 4096-block macro cell has eight deterministic target cells in its
+// central half; the first target that is already a tower/keep/ruin upgrades. Adjacent
+// macro targets are therefore at least 33 structure cells (2112 blocks) apart.
+const EPIC_MACRO_SIZE_CELLS: i32 = 64;
+const EPIC_MACRO_COUNT: i32 = STRUCT_CELL_COUNT / EPIC_MACRO_SIZE_CELLS;
+const EPIC_TARGET_COUNT: usize = 8;
+const EPIC_TARGET_MIN_OFFSET: i32 = 16;
+const EPIC_TARGET_OFFSET_CHOICES: u64 = 32;
 
 // Share of would-be villages (low byte 0..256) that grow into a city. Cities are the
 // only settlement that hosts the full profession chain, so they need to be findable in
@@ -93,13 +105,31 @@ fn struct_is_ruin(typ: i32) -> bool {
 }
 
 #[inline]
+fn struct_is_danger_site(typ: i32) -> bool {
+    struct_is_ruin(typ) || struct_is_epic_landmark(typ)
+}
+
+#[inline]
+fn struct_is_epic_landmark(typ: i32) -> bool {
+    typ == STRUCT_BOSS_CASTLE || typ == STRUCT_GRAND_TOWER
+}
+
+#[inline]
+fn epic_landmark_height(typ: i32) -> i32 {
+    if typ == STRUCT_GRAND_TOWER { 28 } else { 13 }
+}
+
+#[inline]
 fn struct_is_settlement(typ: i32) -> bool {
     typ == STRUCT_VILLAGE || typ == STRUCT_CITY
 }
 
 #[inline]
 fn struct_is_landmark(typ: i32) -> bool {
-    typ == STRUCT_TALL_TOWER || typ == STRUCT_KEEP || typ == STRUCT_RUIN
+    typ == STRUCT_TALL_TOWER
+        || typ == STRUCT_KEEP
+        || typ == STRUCT_RUIN
+        || struct_is_epic_landmark(typ)
 }
 
 // Half extent (in blocks, from the anchor) of a structure type's solid footprint.
@@ -123,6 +153,8 @@ fn struct_footprint_reach(typ: i32) -> i32 {
         x if x == STRUCT_KEEP => 4,        // curtain wall + turrets at +/-4
         x if x == STRUCT_RUIN => 4,
         x if x == STRUCT_CITY => CITY_LAYOUT_REACH,
+        x if x == STRUCT_BOSS_CASTLE => 11,
+        x if x == STRUCT_GRAND_TOWER => 6,
         _ => 0,
     }
 }
@@ -165,6 +197,28 @@ fn struct_floordiv(a: i32, b: i32) -> i32 {
 // Pure surface height at a column for structure placement (matches surface_height).
 fn struct_surface(wx: i32, wz: i32, seed: u64) -> i32 {
     surface_height(wx, wz, seed)
+}
+
+fn struct_levelled_floor(ax: i32, az: i32, reach: i32, seed: u64) -> i32 {
+    let mut floor = i32::MIN;
+    for dz in -reach..=reach {
+        for dx in -reach..=reach {
+            floor = floor.max(struct_surface(ax + dx, az + dz, seed));
+        }
+    }
+    floor
+}
+
+fn struct_danger_floor(typ: i32, ax: i32, az: i32, seed: u64) -> i32 {
+    if typ == STRUCT_BOSS_CASTLE {
+        struct_levelled_floor(ax, az, 11, seed)
+    } else if typ == STRUCT_GRAND_TOWER {
+        struct_levelled_floor(ax, az, 6, seed)
+    } else if typ == STRUCT_RUIN {
+        struct_levelled_floor(ax, az, 4, seed)
+    } else {
+        struct_surface(ax, az, seed)
+    }
 }
 
 #[inline]
@@ -438,9 +492,78 @@ fn settlement_rejected_by_spacing(sd: &StructDesc, scx: i32, scz: i32, seed: u64
     false
 }
 
+#[inline]
+fn struct_is_legacy_big(typ: i32) -> bool {
+    typ == STRUCT_TALL_TOWER || typ == STRUCT_KEEP || typ == STRUCT_RUIN
+}
+
+#[inline]
+fn epic_target_cell(origin_x: i32, origin_z: i32, macro_hash: u64, index: usize) -> (i32, i32) {
+    let roll = fmix64(macro_hash ^ (index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    (
+        origin_x + EPIC_TARGET_MIN_OFFSET + (roll % EPIC_TARGET_OFFSET_CHOICES) as i32,
+        origin_z + EPIC_TARGET_MIN_OFFSET + ((roll >> 16) % EPIC_TARGET_OFFSET_CHOICES) as i32,
+    )
+}
+
+fn epic_upgrade_for_cell(scx: i32, scz: i32, seed: u64) -> Option<i32> {
+    let macro_x = struct_floordiv(scx, EPIC_MACRO_SIZE_CELLS);
+    let macro_z = struct_floordiv(scz, EPIC_MACRO_SIZE_CELLS);
+    let origin_x = macro_x * EPIC_MACRO_SIZE_CELLS;
+    let origin_z = macro_z * EPIC_MACRO_SIZE_CELLS;
+    let macro_hash = hash2(
+        wrap_cell(macro_x, EPIC_MACRO_COUNT),
+        wrap_cell(macro_z, EPIC_MACRO_COUNT),
+        fmix64(seed ^ 0xE91C_1A4D_5EED),
+    );
+
+    let mut target_index = None;
+    for i in 0..EPIC_TARGET_COUNT {
+        let (tx, tz) = epic_target_cell(origin_x, origin_z, macro_hash, i);
+        if (tx, tz) == (scx, scz) {
+            target_index = Some(i);
+            break;
+        }
+    }
+    let target_index = target_index?;
+
+    // Check only the small fixed target list up to this cell. The first target that
+    // was already a legacy big structure wins; all other old structures are unchanged.
+    for i in 0..=target_index {
+        let (tx, tz) = epic_target_cell(origin_x, origin_z, macro_hash, i);
+        let candidate = raw_struct_for_cell(tx, tz, seed);
+        if candidate.present && struct_is_legacy_big(candidate.typ) {
+            let epic_type = if (macro_x + macro_z).rem_euclid(2) == 0 {
+                STRUCT_BOSS_CASTLE
+            } else {
+                STRUCT_GRAND_TOWER
+            };
+            let floor = struct_danger_floor(epic_type, candidate.anchor_wx, candidate.anchor_wz, seed);
+            if floor + epic_landmark_height(epic_type) > WORLD_TOP_Y {
+                continue;
+            }
+            return if (tx, tz) == (scx, scz) {
+                Some(epic_type)
+            } else {
+                None
+            };
+        }
+    }
+    None
+}
+
 fn struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
     let sd = raw_struct_for_cell(scx, scz, seed);
-    if !sd.present || !struct_is_settlement(sd.typ) {
+    if !sd.present {
+        return sd;
+    }
+    if struct_is_legacy_big(sd.typ) {
+        if let Some(typ) = epic_upgrade_for_cell(scx, scz, seed) {
+            return StructDesc { typ, ..sd };
+        }
+        return sd;
+    }
+    if !struct_is_settlement(sd.typ) {
         return sd;
     }
     if settlement_rejected_by_spacing(&sd, scx, scz, seed) {
@@ -1771,6 +1894,319 @@ fn place_ruin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
     struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
 }
 
+#[allow(clippy::too_many_arguments)]
+fn place_castle_room<C: Chunk>(
+    cx: i32,
+    cz: i32,
+    rx: i32,
+    rz: i32,
+    height: i32,
+    h: u64,
+    floor_y: i32,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+) {
+    for dz in -rz..=rz {
+        for dx in -rx..=rx {
+            let edge = dx.abs() == rx || dz.abs() == rz;
+            let door = dz == -rz && dx == 0;
+            if edge {
+                for dy in 1..=height {
+                    if door && dy <= 2 {
+                        continue;
+                    }
+                    let window = dy == 3
+                        && ((dx == -rx || dx == rx) && dz == 0
+                            || dz == rz && dx.abs() == rx.saturating_sub(1));
+                    let b = if window {
+                        GLASS_PANE
+                    } else {
+                        weathered_keep_stone(h, cx + dx, cz + dz, dy)
+                    };
+                    struct_set(chunk, cx + dx, floor_y + dy, cz + dz, wx_min, wy_min, wz_min, b);
+                }
+            }
+        }
+    }
+    struct_set(chunk, cx, floor_y + 1, cz - rz, wx_min, wy_min, wz_min, OAK_DOOR);
+    struct_set(chunk, cx, floor_y + 2, cz - rz, wx_min, wy_min, wz_min, OAK_DOOR);
+    place_pitched_roof(
+        cx,
+        cz,
+        rx,
+        rz,
+        floor_y + height,
+        rx >= rz,
+        STONE_BRICK,
+        OAK_PLANKS,
+        chunk,
+        wx_min,
+        wy_min,
+        wz_min,
+    );
+}
+
+// A destination-scale fortress: broad curtain walls, four tall corner towers, a
+// gatehouse, and three separately enterable rooms around an open boss courtyard.
+// The footprint replaces an old big landmark candidate, so it adds spectacle without
+// increasing total structure density.
+fn place_boss_castle<C: Chunk>(
+    ax: i32,
+    az: i32,
+    h: u64,
+    seed: u64,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+) {
+    const R: i32 = 10;
+    let base_h = struct_levelled_floor(ax, az, 11, seed);
+
+    // Level and pave the enclosure. Clearing above the paving gives the boss arena
+    // and every room deterministic headroom even on a rugged former keep site.
+    for dz in -R..=R {
+        for dx in -R..=R {
+            let b = if dx.abs() <= 3 && dz.abs() <= 3 {
+                STONE_BRICK
+            } else {
+                COBBLESTONE
+            };
+            struct_fill_col(chunk, ax + dx, az + dz, base_h, seed, wx_min, wy_min, wz_min, b);
+            struct_set(chunk, ax + dx, base_h, az + dz, wx_min, wy_min, wz_min, b);
+            for dy in 1..=13 {
+                struct_clear(chunk, ax + dx, base_h + dy, az + dz, wx_min, wy_min, wz_min);
+            }
+        }
+    }
+
+    // Curtain wall and a three-wide south gate beneath a high, readable arch.
+    for dz in -R..=R {
+        for dx in -R..=R {
+            if dx.abs() != R && dz.abs() != R {
+                continue;
+            }
+            let gate = dz == -R && dx.abs() <= 1;
+            for dy in 1..=6 {
+                if gate && dy <= 3 {
+                    continue;
+                }
+                let b = weathered_keep_stone(h ^ 0x00CA_571E, dx, dz, dy);
+                struct_set(chunk, ax + dx, base_h + dy, az + dz, wx_min, wy_min, wz_min, b);
+            }
+            if !gate && (dx + dz).rem_euclid(2) == 0 {
+                struct_set(chunk, ax + dx, base_h + 7, az + dz, wx_min, wy_min, wz_min, STONE_RUBBLE);
+            }
+        }
+    }
+    for dx in -1..=1 {
+        struct_set(chunk, ax + dx, base_h + 4, az - R, wx_min, wy_min, wz_min, STONE_BRICK);
+    }
+    for dx in [-3, 3] {
+        for dy in 1..=9 {
+            struct_set(chunk, ax + dx, base_h + dy, az - R, wx_min, wy_min, wz_min, STONE_BRICK);
+        }
+        struct_set(chunk, ax + dx, base_h + 10, az - R, wx_min, wy_min, wz_min, CRYSTAL_LAMP);
+    }
+
+    // Four hollow 5x5 corner towers rise well above the wall and carry bright crowns.
+    for (sx, sz) in [(-1, -1), (1, -1), (-1, 1), (1, 1)] {
+        let (cx, cz) = (ax + sx * 9, az + sz * 9);
+        for dz in -2i32..=2 {
+            for dx in -2i32..=2 {
+                let edge = dx.abs() == 2 || dz.abs() == 2;
+                if edge {
+                    struct_fill_col(chunk, cx + dx, cz + dz, base_h, seed, wx_min, wy_min, wz_min, STONE_BRICK);
+                    for dy in 1..=11 {
+                        let b = weathered_keep_stone(h ^ 0x705E, cx + dx, cz + dz, dy);
+                        struct_set(chunk, cx + dx, base_h + dy, cz + dz, wx_min, wy_min, wz_min, b);
+                    }
+                    if (dx + dz).rem_euclid(2) == 0 {
+                        struct_set(chunk, cx + dx, base_h + 12, cz + dz, wx_min, wy_min, wz_min, STONE_RUBBLE);
+                    }
+                }
+                struct_set(chunk, cx + dx, base_h + 8, cz + dz, wx_min, wy_min, wz_min, OAK_PLANKS);
+            }
+        }
+        for dy in 9..=12 {
+            struct_set(chunk, cx, base_h + dy, cz, wx_min, wy_min, wz_min, WOOD_BEAM);
+        }
+        struct_set(chunk, cx, base_h + 13, cz, wx_min, wy_min, wz_min, CRYSTAL_LAMP);
+    }
+
+    // Three true rooms: a high treasure hall and two lower side chambers. Their
+    // doors all open into the courtyard, leaving a wide clear arena at the anchor.
+    place_castle_room(ax, az + 6, 4, 3, 7, h ^ 0x4841_4C4C, base_h, chunk, wx_min, wy_min, wz_min);
+    place_castle_room(ax - 7, az + 1, 2, 3, 5, h ^ 0x1EF7, base_h, chunk, wx_min, wy_min, wz_min);
+    place_castle_room(ax + 7, az + 1, 2, 3, 5, h ^ 0x2197, base_h, chunk, wx_min, wy_min, wz_min);
+
+    // Supported stairs reach the east curtain walk; each tread rises one block and
+    // remains horizontally adjacent to the next, making traversal possible by jumps.
+    for step in 1..=5 {
+        for dy in 1..=step {
+            struct_set(
+                chunk,
+                ax + 8,
+                base_h + dy,
+                az - 9 + step,
+                wx_min,
+                wy_min,
+                wz_min,
+                STONE_BRICK,
+            );
+        }
+    }
+    for dz in -9..=9 {
+        struct_set(chunk, ax + 9, base_h + 6, az + dz, wx_min, wy_min, wz_min, COBBLESTONE);
+    }
+
+    // Guarded high-tier rewards: the final hall chest is six blocks from the boss
+    // anchor so the existing proximity-based loot system can classify it exactly.
+    struct_set(chunk, ax, base_h + 1, az + 6, wx_min, wy_min, wz_min, CHEST);
+    struct_set(chunk, ax - 7, base_h + 1, az + 1, wx_min, wy_min, wz_min, CHEST);
+    struct_set(chunk, ax - 3, base_h + 4, az + 3, wx_min, wy_min, wz_min, CRYSTAL_LAMP);
+    struct_set(chunk, ax + 3, base_h + 4, az + 3, wx_min, wy_min, wz_min, CRYSTAL_LAMP);
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
+}
+
+// A taller, wider successor to the old mage tower. The hollow shaft contains a
+// continuous supported spiral climb, two landings, and a reward chamber at the top.
+fn place_grand_tower<C: Chunk>(
+    ax: i32,
+    az: i32,
+    h: u64,
+    seed: u64,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+) {
+    const R: i32 = 4;
+    const TOP: i32 = 23;
+    let base_h = struct_levelled_floor(ax, az, 6, seed);
+
+    for dz in -5..=5 {
+        for dx in -5..=5 {
+            struct_fill_col(chunk, ax + dx, az + dz, base_h, seed, wx_min, wy_min, wz_min, COBBLESTONE);
+            struct_set(chunk, ax + dx, base_h, az + dz, wx_min, wy_min, wz_min, COBBLESTONE);
+        }
+    }
+    for dy in 1..=TOP {
+        let r = R;
+        for dz in -r..=r {
+            for dx in -r..=r {
+                let edge = dx.abs() == r || dz.abs() == r;
+                if edge {
+                    let window = (dy % 6 == 3 || dy % 6 == 4)
+                        && ((dx == 0 && dz.abs() == r) || (dz == 0 && dx.abs() == r));
+                    let b = if window {
+                        GLASS_PANE
+                    } else {
+                        weathered_keep_stone(h ^ 0x0007_0AE2, dx, dz, dy)
+                    };
+                    struct_set(chunk, ax + dx, base_h + dy, az + dz, wx_min, wy_min, wz_min, b);
+                } else {
+                    struct_clear(chunk, ax + dx, base_h + dy, az + dz, wx_min, wy_min, wz_min);
+                }
+            }
+        }
+    }
+
+    // Enterable south doorway with a solid lintel.
+    struct_set(chunk, ax, base_h + 1, az - R, wx_min, wy_min, wz_min, OAK_DOOR);
+    struct_set(chunk, ax, base_h + 2, az - R, wx_min, wy_min, wz_min, OAK_DOOR);
+    struct_set(chunk, ax, base_h + 3, az - R, wx_min, wy_min, wz_min, STONE_BRICK);
+
+    // Tapered exterior buttresses and lamps make the silhouette legible at distance.
+    for (dx, dz) in [(-5, 0), (5, 0), (0, 5)] {
+        for dy in 1..=5 {
+            let inward = (dy - 1) / 3;
+            let bx = ax + dx - dx.signum() * inward;
+            let bz = az + dz - dz.signum() * inward;
+            struct_set(chunk, bx, base_h + dy, bz, wx_min, wy_min, wz_min, STONE_BRICK);
+        }
+        struct_set(chunk, ax + dx, base_h + 2, az + dz, wx_min, wy_min, wz_min, CRYSTAL_LAMP);
+    }
+
+    // Flank the entrance instead of blocking its centreline with a south buttress.
+    for dx in [-2, 2] {
+        for dy in 1..=3 {
+            struct_set(chunk, ax + dx, base_h + dy, az - 5, wx_min, wy_min, wz_min, STONE_BRICK);
+        }
+        struct_set(chunk, ax + dx, base_h + 4, az - 5, wx_min, wy_min, wz_min, CRYSTAL_LAMP);
+    }
+
+    // Projecting balcony bands divide the tall shaft into readable stages.
+    for band in [8, 16] {
+        for dz in -5i32..=5 {
+            for dx in -5i32..=5 {
+                let edge = dx.abs().max(dz.abs());
+                if edge == 4 || edge == 5 {
+                    struct_set(chunk, ax + dx, base_h + band, az + dz, wx_min, wy_min, wz_min, COBBLESTONE);
+                }
+            }
+        }
+        for (dx, dz) in [(-5, -5), (5, -5), (-5, 5), (5, 5), (0, -5), (0, 5), (-5, 0), (5, 0)] {
+            struct_set(chunk, ax + dx, base_h + band + 1, az + dz, wx_min, wy_min, wz_min, STONE_RUBBLE);
+        }
+    }
+
+    // A 24-step loop around the inner 7x7 perimeter. Each tread is attached to the
+    // surrounding shaft instead of becoming a floor-to-ceiling wooden pylon.
+    let loop_cells = [
+        (0, -3), (1, -3), (2, -3), (3, -3), (3, -2), (3, -1),
+        (3, 0), (3, 1), (3, 2), (3, 3), (2, 3), (1, 3),
+        (0, 3), (-1, 3), (-2, 3), (-3, 3), (-3, 2), (-3, 1),
+        (-3, 0), (-3, -1), (-3, -2), (-3, -3), (-2, -3), (-1, -3),
+    ];
+    for (i, &(dx, dz)) in loop_cells.iter().enumerate() {
+        let step = i as i32 + 1;
+        struct_set(chunk, ax + dx, base_h + step, az + dz, wx_min, wy_min, wz_min, OAK_PLANKS);
+    }
+
+    // Compact side landings connect to steps 8 and 16 without roofing over lower
+    // treads. The crown deck connects one cell inward from the final step.
+    for dz in 0..=2 {
+        for dx in 0..=2 {
+            let b = if dx == 0 && dz == 0 { GLOW_BLOCK } else { OAK_PLANKS };
+            struct_set(chunk, ax + dx, base_h + 8, az + dz, wx_min, wy_min, wz_min, b);
+        }
+    }
+    for dz in 1..=2 {
+        for dx in -2..=0 {
+            let b = if dx == 0 && dz == 1 { GLOW_BLOCK } else { OAK_PLANKS };
+            struct_set(chunk, ax + dx, base_h + 15, az + dz, wx_min, wy_min, wz_min, b);
+        }
+    }
+    struct_set(chunk, ax - 2, base_h + 15, az + 3, wx_min, wy_min, wz_min, OAK_PLANKS);
+    for dz in -2..=2 {
+        for dx in -2..=2 {
+            struct_set(chunk, ax + dx, base_h + TOP + 1, az + dz, wx_min, wy_min, wz_min, OAK_PLANKS);
+        }
+    }
+    for dz in -4i32..=4 {
+        for dx in -4i32..=4 {
+            if dx.abs() == 4 || dz.abs() == 4 {
+                struct_set(chunk, ax + dx, base_h + TOP + 1, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
+                if (dx + dz).rem_euclid(2) == 0 {
+                    struct_set(chunk, ax + dx, base_h + TOP + 2, az + dz, wx_min, wy_min, wz_min, STONE_RUBBLE);
+                }
+            }
+        }
+    }
+    for (dx, dz) in [(-4, -4), (4, -4), (-4, 4), (4, 4)] {
+        for dy in (TOP + 2)..=(TOP + 4) {
+            struct_set(chunk, ax + dx, base_h + dy, az + dz, wx_min, wy_min, wz_min, WOOD_BEAM);
+        }
+        struct_set(chunk, ax + dx, base_h + TOP + 5, az + dz, wx_min, wy_min, wz_min, CRYSTAL_LAMP);
+    }
+    struct_set(chunk, ax, base_h + TOP + 2, az, wx_min, wy_min, wz_min, CHEST);
+    struct_set(chunk, ax, base_h + TOP + 3, az, wx_min, wy_min, wz_min, CRYSTAL_LAMP);
+    struct_place_marker(ax, az, seed, chunk, wx_min, wy_min, wz_min);
+}
+
 const CITY_WALL_R: i32 = 9;
 
 #[inline]
@@ -2134,6 +2570,8 @@ fn place_structure<C: Chunk>(sd: &StructDesc, seed: u64, chunk: &mut C, wx_min: 
         x if x == STRUCT_KEEP => place_keep(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
         x if x == STRUCT_RUIN => place_ruin(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
         x if x == STRUCT_CITY => place_city(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
+        x if x == STRUCT_BOSS_CASTLE => place_boss_castle(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
+        x if x == STRUCT_GRAND_TOWER => place_grand_tower(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
         _ => {}
     }
 }

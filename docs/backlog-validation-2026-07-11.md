@@ -402,7 +402,7 @@ At a route endpoint:
    `caravan_trailer_roundtrips_and_old_or_truncated_maps_are_safe`, including a
    reused-World stale-state regression.
 
-### 6. Ruins, keeps, and towers
+### 6. Ruins, keeps, towers, and rare boss landmarks
 
 Seed `10` has a deterministic ruin centred near `(184, 10, 76)`.
 
@@ -420,6 +420,21 @@ Seed `10` has a deterministic ruin centred near `(184, 10, 76)`.
   deterministic coverage is
   `keeps_and_ruins_have_supported_shaped_stone_profiles` and
   `tall_tower_has_restrained_weathered_shaft_and_shaped_crown`.
+
+Seed `11` also has two fixed rare-landmark fixtures. World coordinates wrap, so
+negative `(x,z)` values are equivalent to their canonical `0–32767` values.
+
+- Boss castle: anchor `(6621, 17, -1888)`, canonical z `30880`. Approach through
+  the three-wide south gate. Confirm the open boss courtyard, three enterable rooms,
+  four beacon towers, climbable east curtain walk, and two high-tier chests. In
+  Survival it spawns one hostile scale-2 content boss; in Hard Creative the same boss
+  appears but cannot hunt or damage the observer.
+- Grand tower: anchor `(-1243, 19, 3048)`, canonical x `31525`. Enter the south door,
+  follow all 24 supported steps through both landings, and open the summit chest.
+  Its encounter is the existing bounded three-defender danger band.
+- Fly between several regions. Rare landmarks must remain at least 2048 blocks apart;
+  the common/landmark/settlement seed-11 regression remains exactly `1155/505/19`,
+  proving these replace old landmarks instead of increasing structure density.
 
 ### 7. Character and creature models
 
@@ -444,6 +459,11 @@ Then inspect `BF_AVATARS=1`:
 Passive roster to inspect: `0–3, 7–10, 12–14, 18–19, 21`.
 
 Hostile roster to inspect: `4, 5, 11, 15–17, 23–26`.
+
+For easy observation, select **Hard**, toggle into Creative, and pin night. A fresh
+world may spawn the hostile roster immediately without completing the first quest.
+They must animate and wander but never hunt or damage the Creative observer. Normal
+Creative remains peaceful, and switching to Easy removes hostile creatures.
 
 For each representative species, confirm its original size, palette, face, gait,
 and silhouette still read immediately. At night, emissive eyes/cores must remain
@@ -513,6 +533,35 @@ BF_SHOT_SEED=11 BF_SHOT_POS="3931.5,18,-10,0,0.03" \
   BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
   BF_SHOT_HELD=0 BF_CEL=1 \
   "$BIN" --shot "$OUT/tall-tower-profile.png"
+```
+
+### Rare boss-landmark fixtures
+
+`BF_SHOT_DIFFICULTY=0` suppresses encounters so the architecture is unobstructed;
+repeat live on Hard to validate the boss and defender behavior.
+
+```bash
+BF_SHOT_SEED=11 BF_SHOT_DIFFICULTY=0 \
+  BF_SHOT_POS="6580,34,30835,0.739,-0.13" \
+  BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
+  BF_SHOT_HELD=0 BF_CEL=1 \
+  "$BIN" --shot "$OUT/boss-castle-exterior.png"
+BF_SHOT_SEED=11 BF_SHOT_DIFFICULTY=0 \
+  BF_SHOT_POS="6625,20,30875,-0.349,-0.02" \
+  BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
+  BF_SHOT_HELD=0 BF_CEL=1 \
+  "$BIN" --shot "$OUT/boss-castle-courtyard.png"
+
+BF_SHOT_SEED=11 BF_SHOT_DIFFICULTY=0 \
+  BF_SHOT_POS="31490,42,3010,0.744,-0.12" \
+  BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
+  BF_SHOT_HELD=0 BF_CEL=1 \
+  "$BIN" --shot "$OUT/grand-tower-exterior.png"
+BF_SHOT_SEED=11 BF_SHOT_DIFFICULTY=0 \
+  BF_SHOT_POS="31525.5,30,3048.5,0.75,-0.35" \
+  BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
+  BF_SHOT_HELD=0 BF_CEL=1 \
+  "$BIN" --shot "$OUT/grand-tower-interior.png"
 ```
 
 ### Finished building, bed, station, and communal-prop close-ups

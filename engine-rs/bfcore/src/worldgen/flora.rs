@@ -701,7 +701,7 @@ pub fn worldgen_trunk_fit_to_ceiling(
     canopy_dy_max: i32,
     desired_trunk: i32,
 ) -> i32 {
-    let world_top_y = 63;
+    let world_top_y = WORLD_TOP_Y;
     let max_trunk = world_top_y - surface_h - canopy_dy_max;
     if max_trunk < 3 {
         return 0;

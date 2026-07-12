@@ -1202,9 +1202,10 @@ fn hostiles_spawn_at_night_on_surface() {
 }
 
 // ============================================================================
-// #238 difficulty. Hard raises the night cap above normal's 4; Easy removes
-// every hostile and keeps them gone. Pins the T night phase (0.75), which also
-// guards the #237 fix: that phase must count as night for spawning.
+// #238 difficulty. Hard raises the night cap above normal's 4 and deliberately
+// enables harmless monster observation in Creative; Easy removes every hostile
+// and keeps them gone. Pins the T night phase (0.75), which also guards the #237
+// fix: that phase must count as night for spawning.
 // ============================================================================
 #[test]
 fn difficulty_hard_spawns_more_easy_removes_all() {
@@ -1214,9 +1215,8 @@ fn difficulty_hard_spawns_more_easy_removes_all() {
     w.debug_set_sync_streaming(true);
     w.set_allocator(allocator());
     w.set_content(&content);
-    w.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    w.set_mode(bf_game_mode::BF_MODE_CREATIVE);
     w.init_world(5);
-    w.debug_force_quest_done();
 
     let zero: bf_frame_input = unsafe { std::mem::zeroed() };
     let (cx, cz) = (200, 200);
@@ -1228,8 +1228,25 @@ fn difficulty_hard_spawns_more_easy_removes_all() {
     w.debug_set_day_time(0.75); // the T night pin phase — must gate as night (#237)
     w.debug_set_camera(cx as f32 + 0.5, surf as f32 + 2.0, cz as f32 + 0.5, 0.0, 0.0);
 
-    // Hard: the cap is 8, so the count must clearly exceed normal's cap of 4.
+    // Normal Creative remains peaceful even at night.
+    for _ in 0..80 {
+        w.update(&zero, 0.05);
+    }
+    assert_eq!(w.debug_hostile_count(), 0, "normal creative stays peaceful");
+
+    // Hard Creative: the cap is 8 and the first-quest grace gate is bypassed, so
+    // observers can see a representative group immediately in a fresh world.
     w.set_difficulty(2);
+    let health_before = w.debug_health();
+    w.debug_spawn_hostile_at(cx as f32 + 0.5, surf as f32, cz as f32 + 0.5);
+    for _ in 0..40 {
+        w.update(&zero, 0.05);
+    }
+    assert_eq!(
+        w.debug_health(),
+        health_before,
+        "hard creative monsters remain harmless observation subjects"
+    );
     let mut i = 0;
     while i < 3000 && w.debug_hostile_count() <= 4 {
         w.update(&zero, 0.05);
@@ -1237,10 +1254,25 @@ fn difficulty_hard_spawns_more_easy_removes_all() {
     }
     assert!(
         w.debug_hostile_count() > 4,
-        "hard difficulty spawns past the normal cap (got {}, day_time {})",
+        "hard creative spawns past the normal cap (got {}, day_time {})",
         w.debug_hostile_count(),
         w.debug_day_time()
     );
+
+    // Returning to Normal Creative immediately restores the peaceful contract.
+    w.set_difficulty(1);
+    for _ in 0..80 {
+        w.update(&zero, 0.05);
+    }
+    assert_eq!(w.debug_hostile_count(), 0, "normal creative culls hard-mode observers");
+
+    // Repopulate before the Easy check so that check proves an actual cull.
+    w.set_difficulty(2);
+    while i < 6000 && w.debug_hostile_count() == 0 {
+        w.update(&zero, 0.05);
+        i += 1;
+    }
+    assert!(w.debug_hostile_count() > 0, "hard creative observers return");
 
     // Easy: every hostile is culled on the next maintain tick and none return.
     w.set_difficulty(0);
@@ -1302,11 +1334,11 @@ fn embedded_creature_unsticks_to_clear_ground() {
     );
 }
 
-// A ruined structure is a localized "danger site": a hostile or two spawn at it in
-// broad daylight, before any quest is done (independent of the night/quest gate that
-// governs the normal night spawns). Seed 10 has a ruin in plains at (184,76).
+// A ruined structure is a localized "danger site": in Hard Creative, harmless
+// defenders spawn in broad daylight before any quest is done (independent of the
+// night/quest gate). Seed 10 has a ruin in plains at (184,76).
 #[test]
-fn ruin_spawns_daytime_danger() {
+fn ruin_spawns_daytime_danger_in_hard_creative() {
     let mut content = ContentRegistry::new();
     assert!(content.load(CONTENT), "content load");
 
@@ -1314,8 +1346,10 @@ fn ruin_spawns_daytime_danger() {
     w.debug_set_sync_streaming(true);
     w.set_allocator(allocator());
     w.set_content(&content);
-    w.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    w.set_mode(bf_game_mode::BF_MODE_CREATIVE);
     w.init_world(10);
+    // init resets the runtime difficulty to Normal, just like a fresh app load.
+    w.set_difficulty(2);
     // Deliberately do NOT complete a quest and keep it bright daytime: the normal
     // night/quest gate is shut, so any hostile that appears must be a ruin spawn.
     w.debug_set_day_time(0.30); // bright morning
@@ -1353,6 +1387,139 @@ fn ruin_spawns_daytime_danger() {
         "ruin danger hostiles stay capped, saw {}",
         w.debug_ruin_hostile_count()
     );
+}
+
+#[test]
+fn epic_landmarks_spawn_their_guarded_encounters_and_high_tier_loot() {
+    let mut content = ContentRegistry::new();
+    assert!(content.load(CONTENT), "content load");
+    let mut extra = ContentExtra::new();
+    assert!(extra.load(CONTENT), "extra content load");
+    let epic_item_ids: Vec<ItemId> = [
+        "iron_sword",
+        "iron_pickaxe",
+        "iron_ingot",
+        "crystal_shard",
+        "color_dust",
+        "glow_dust",
+        "honey_cake",
+        "crystal_lamp",
+    ]
+    .iter()
+    .map(|name| content.item_by_name(name).expect("epic loot item exists").id)
+    .collect();
+
+    let mut w = World::new(Some(TerrainGen::new()));
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_content(&content);
+    w.set_extra(&extra);
+    w.set_mode(bf_game_mode::BF_MODE_CREATIVE);
+    w.init_world(11);
+    w.set_difficulty(2);
+    w.debug_set_day_time(0.30);
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+
+    // Seed-11 boss castle: one actual content boss guards the courtyard and two
+    // deterministic high-tier chests reward exploration of the rooms.
+    let castle = worldgen::worldgen_dangerous_site_typed_near(6621, 30880, 0, 11)
+        .expect("seed-11 castle fixture exists");
+    assert!(worldgen::worldgen_danger_site_is_boss(castle.0));
+    let (_, cx, cy, cz) = castle;
+    w.debug_set_camera(cx as f32 + 0.5, cy as f32 + 2.0, cz as f32 + 0.5, 0.0, 0.0);
+    for _ in 0..30 {
+        w.update(&zero, 0.05);
+    }
+    let mut ticks = 0;
+    while ticks < 600 && w.debug_danger_boss_count() == 0 {
+        w.update(&zero, 0.05);
+        ticks += 1;
+    }
+    assert_eq!(w.debug_danger_boss_count(), 1, "castle spawns exactly one anchored boss");
+    let (boss_name, boss_model, boss_scale) = w.debug_danger_boss_info().expect("boss info");
+    assert!(boss_name == "stone_basilisk" || boss_name == "dim_ramlord");
+    assert!(boss_model == 2 || boss_model == 3, "landmark uses a content boss model");
+    assert_eq!(boss_scale, 2.0);
+
+    let mut rolled = 0;
+    for slot in 0..world::CHEST_SLOTS {
+        let (item, count) = w.debug_chest_slot(
+            cx,
+            cy + 1,
+            (cz + 6).rem_euclid(worldgen::WORLD_PERIOD),
+            slot,
+        );
+        if count > 0 {
+            rolled += 1;
+            assert!(epic_item_ids.contains(&item), "castle chest rolled non-epic item {item}");
+        }
+    }
+    assert!(rolled > 0, "castle reward chest is populated");
+
+    // A player respawn culls hostiles but is not a boss kill. Returning must re-arm
+    // the encounter rather than silently clearing/rewarding the castle.
+    w.debug_respawn_now();
+    assert_eq!(w.debug_danger_boss_count(), 0);
+    assert!(!w.debug_ruin_site_cleared(cx, cz));
+    w.debug_set_camera(cx as f32 + 0.5, cy as f32 + 2.0, cz as f32 + 0.5, 0.0, 0.0);
+    ticks = 0;
+    while ticks < 600 && w.debug_danger_boss_count() == 0 {
+        w.update(&zero, 0.05);
+        ticks += 1;
+    }
+    assert_eq!(w.debug_danger_boss_count(), 1, "castle boss re-arms after player respawn");
+
+    // The grand tower is the other encounter flavor: the existing three-defender
+    // danger band guards its enterable climb and summit chest.
+    let tower = worldgen::worldgen_dangerous_site_typed_near(31525, 3048, 0, 11)
+        .expect("seed-11 grand tower fixture exists");
+    assert!(!worldgen::worldgen_danger_site_is_boss(tower.0));
+    let (_, tx, ty, tz) = tower;
+    w.debug_set_camera(tx as f32 + 0.5, ty as f32 + 2.0, tz as f32 + 0.5, 0.0, 0.0);
+    for _ in 0..30 {
+        w.update(&zero, 0.05);
+    }
+    ticks = 0;
+    while ticks < 900 && w.debug_ruin_hostile_count() < 3 {
+        w.update(&zero, 0.05);
+        ticks += 1;
+    }
+    assert_eq!(w.debug_danger_boss_count(), 0, "castle boss despawned after distant travel");
+    assert_eq!(w.debug_ruin_hostile_count(), 3, "grand tower keeps the bounded defender band");
+
+    // Partially abandoning a defender band replenishes only the missing member.
+    assert!(w.debug_move_one_danger_hostile(tx, tz, tx as f32 + 200.0, ty as f32 + 1.0, tz as f32));
+    for _ in 0..240 {
+        w.update(&zero, 0.05);
+    }
+    assert_eq!(w.debug_ruin_hostile_count(), 3, "partial distance cull does not overfill defenders");
+
+    rolled = 0;
+    for slot in 0..world::CHEST_SLOTS {
+        let (item, count) = w.debug_chest_slot(tx, ty + 25, tz, slot);
+        if count > 0 {
+            rolled += 1;
+            assert!(epic_item_ids.contains(&item), "tower chest rolled non-epic item {item}");
+        }
+    }
+    assert!(rolled > 0, "tower summit chest is populated");
+
+    // Distance despawn is not a free clear/reward: returning re-arms the castle
+    // encounter instead of marking it defeated behind the player's back.
+    assert!(!w.debug_ruin_site_cleared(cx, cz));
+    w.debug_set_camera(cx as f32 + 0.5, cy as f32 + 2.0, cz as f32 + 0.5, 0.0, 0.0);
+    ticks = 0;
+    while ticks < 600 && w.debug_danger_boss_count() == 0 {
+        w.update(&zero, 0.05);
+        ticks += 1;
+    }
+    assert_eq!(w.debug_danger_boss_count(), 1, "returning respawns an abandoned castle boss");
+    assert!(!w.debug_ruin_site_cleared(cx, cz));
+
+    // Reusing the World for another seed must not leak transient encounter state.
+    assert!(w.debug_danger_site_count() > 0);
+    w.init_world(12);
+    assert_eq!(w.debug_danger_site_count(), 0, "fresh init clears old danger-site state");
 }
 
 // ============================================================================

@@ -33,6 +33,12 @@ impl<'c> World<'c> {
 
     fn roll_chest_loot(&self, w: IVec3) -> [ItemStack; CHEST_SLOTS] {
         let mut out = [ItemStack::default(); CHEST_SLOTS];
+        let is_epic = worldgen::worldgen_epic_landmark_near(w.x, w.z, 16, self.seed)
+            .map(|(_, ax, _ay, az)| {
+                Self::wrap_signed_block(ax - w.x).abs() <= 12
+                    && Self::wrap_signed_block(az - w.z).abs() <= 12
+            })
+            .unwrap_or(false);
         let is_ruin = worldgen::worldgen_dangerous_site_near(w.x, w.z, 8, self.seed)
             // #179: nearest-image so a ruin whose footprint straddles the seam is
             // still recognized (raw ax - w.x would be ~32764 and the chest would
@@ -42,7 +48,18 @@ impl<'c> World<'c> {
                     && Self::wrap_signed_block(az - w.z).abs() <= 6
             })
             .unwrap_or(false);
-        let table: &[(&str, u16, u16)] = if is_ruin {
+        let table: &[(&str, u16, u16)] = if is_epic {
+            &[
+                ("iron_sword", 1, 1),
+                ("iron_pickaxe", 1, 1),
+                ("iron_ingot", 2, 5),
+                ("crystal_shard", 2, 5),
+                ("color_dust", 4, 8),
+                ("glow_dust", 3, 6),
+                ("honey_cake", 2, 4),
+                ("crystal_lamp", 1, 2),
+            ]
+        } else if is_ruin {
             &[
                 ("iron_ingot", 1, 2),
                 ("crystal_shard", 1, 3),

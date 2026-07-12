@@ -12,7 +12,7 @@ impl<'c> World<'c> {
         self.fx(9, pv, 0);
     }
 
-    fn respawn(&mut self) {
+    pub(super) fn respawn(&mut self) {
         let top = self.surface_top(Self::ifloor(self.spawn.x), Self::ifloor(self.spawn.z));
         let y = if top != NO_FLOOR {
             top as f32 + 3.2
@@ -29,7 +29,14 @@ impl<'c> World<'c> {
         self.first_stream = true;
         self.stream_active_r = 2.min(self.stream_r);
         self.recompute_stream_set();
+        let abandoned_sites = self
+            .creatures
+            .iter()
+            .filter(|c| c.hostile && c.from_ruin)
+            .map(|c| (c.home_x, c.home_z))
+            .collect();
         self.creatures.retain(|c| !c.hostile);
+        self.reconcile_danger_sites_after_cull(abandoned_sites);
         let pv = self.player_voxel();
         self.fx(6, pv, 0);
     }

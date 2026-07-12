@@ -299,6 +299,8 @@ impl<'c> World<'c> {
         self.seed = seed;
         self.villages.clear();
         self.road_routes.clear();
+        self.ruin_sites.clear();
+        self.danger_timer = 0.0;
         if self.gen.is_none() {
             self.generate_test_world();
             return;

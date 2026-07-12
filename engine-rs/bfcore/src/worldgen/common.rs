@@ -36,6 +36,7 @@ pub const K_COLUMN_MIN_Y: i32 = -512; // contract/blockcore_interfaces.hpp kColu
 // ---------------------------------------------------------------------------
 pub const WORLD_PERIOD: i32 = 32768; // 2^15 blocks around the torus (x and z)
 pub const WORLD_PERIOD_CHUNKS: i32 = WORLD_PERIOD / K_CHUNK_DIM;
+pub const WORLD_TOP_Y: i32 = 63;
 
 /// Canonicalize a world x/z coordinate into [0, WORLD_PERIOD). Bitmask: the
 /// period is a power of two, so this is exact for negatives too.

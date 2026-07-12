@@ -910,6 +910,100 @@ mod worldgen_tests {
         assert!(saw_city, "expected at least one city in the scan, types {seen:?}");
     }
 
+    #[test]
+    fn epic_landmarks_are_rare_deterministic_and_well_separated() {
+        let mut epic = Vec::new();
+        for scz in -128..=128 {
+            for scx in -128..=128 {
+                let sd = struct_for_cell(scx, scz, SEED);
+                if sd.present && struct_is_epic_landmark(sd.typ) {
+                    epic.push((scx, scz, sd));
+                }
+            }
+        }
+        println!(
+            "seed-{SEED} epic fixtures: {:?}",
+            epic.iter()
+                .map(|&(scx, scz, sd)| (scx, scz, sd.typ, sd.anchor_wx, sd.anchor_wz))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            epic.iter()
+                .map(|&(scx, scz, sd)| (scx, scz, sd.typ, sd.anchor_wx, sd.anchor_wz))
+                .collect::<Vec<_>>(),
+            vec![
+                (103, -30, STRUCT_BOSS_CASTLE, 6621, -1888),
+                (-20, 47, STRUCT_GRAND_TOWER, -1243, 3048),
+            ],
+            "seed-11 epic validation fixtures changed"
+        );
+        for i in 0..epic.len() {
+            for j in (i + 1)..epic.len() {
+                let a = epic[i].2;
+                let b = epic[j].2;
+                let torus_delta = |d: i32| {
+                    let canonical = d.abs() as i64 % WORLD_PERIOD as i64;
+                    canonical.min(WORLD_PERIOD as i64 - canonical)
+                };
+                let dx = torus_delta(a.anchor_wx - b.anchor_wx);
+                let dz = torus_delta(a.anchor_wz - b.anchor_wz);
+                assert!(
+                    dx * dx + dz * dz >= 2048i64 * 2048,
+                    "epic landmarks too close: ({},{}) and ({},{})",
+                    a.anchor_wx,
+                    a.anchor_wz,
+                    b.anchor_wx,
+                    b.anchor_wz
+                );
+            }
+        }
+        for &(scx, scz, sd) in &epic {
+            let shifted = struct_for_cell(scx + STRUCT_CELL_COUNT, scz - STRUCT_CELL_COUNT, SEED);
+            assert_eq!(shifted.typ, sd.typ, "epic type changes across the torus seam");
+            assert_eq!(
+                (wrap_world(shifted.anchor_wx), wrap_world(shifted.anchor_wz)),
+                (wrap_world(sd.anchor_wx), wrap_world(sd.anchor_wz)),
+                "epic anchor changes across the torus seam"
+            );
+        }
+    }
+
+    #[test]
+    fn epic_landmarks_fit_inside_the_vertical_world_across_seeds() {
+        let mut checked = 0;
+        for seed in 0..32u64 {
+            for macro_z in 0..EPIC_MACRO_COUNT {
+                for macro_x in 0..EPIC_MACRO_COUNT {
+                    let origin_x = macro_x * EPIC_MACRO_SIZE_CELLS;
+                    let origin_z = macro_z * EPIC_MACRO_SIZE_CELLS;
+                    let macro_hash = hash2(
+                        macro_x,
+                        macro_z,
+                        fmix64(seed ^ 0xE91C_1A4D_5EED),
+                    );
+                    for i in 0..EPIC_TARGET_COUNT {
+                        let (scx, scz) = epic_target_cell(origin_x, origin_z, macro_hash, i);
+                        let sd = struct_for_cell(scx, scz, seed);
+                        if !sd.present || !struct_is_epic_landmark(sd.typ) {
+                            continue;
+                        }
+                        let floor = struct_danger_floor(sd.typ, sd.anchor_wx, sd.anchor_wz, seed);
+                        assert!(
+                            floor + epic_landmark_height(sd.typ) <= WORLD_TOP_Y,
+                            "seed {seed} type {} at ({},{}) clips above y={WORLD_TOP_Y}",
+                            sd.typ,
+                            sd.anchor_wx,
+                            sd.anchor_wz
+                        );
+                        checked += 1;
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(checked > 20, "multi-seed scan found too few epic landmarks: {checked}");
+    }
+
 
 
 
@@ -1342,11 +1436,15 @@ mod worldgen_tests {
         let cz1 = seam_floordiv_pub(sd.anchor_wz + reach, K_CHUNK_DIM);
         // Vertical: structures rise well above terrain; cover a generous band of
         // chunk layers around the anchor surface.
-        let base = struct_surface(sd.anchor_wx, sd.anchor_wz, seed);
+        let base = if struct_is_danger_site(sd.typ) {
+            struct_danger_floor(sd.typ, sd.anchor_wx, sd.anchor_wz, seed)
+        } else {
+            struct_surface(sd.anchor_wx, sd.anchor_wz, seed)
+        };
         // Cover the foundation fill below (down to footprint terrain) and the tallest
         // crown above. Towers rise ~19, foundations fill at most a footprint spread.
         let cy0 = seam_floordiv_pub(base - 24, K_CHUNK_DIM);
-        let cy1 = seam_floordiv_pub(base + 28, K_CHUNK_DIM);
+        let cy1 = seam_floordiv_pub(base + 32, K_CHUNK_DIM);
         let mut windows = Vec::new();
         for cy in cy0..=cy1 {
             for cz in cz0..=cz1 {
@@ -1375,6 +1473,87 @@ mod worldgen_tests {
 
     fn stamp_structure(sd: &StructDesc, seed: u64) -> std::collections::HashMap<(i32, i32, i32), BlockId> {
         stamp_structure_order(sd, seed, false)
+    }
+
+    #[test]
+    fn epic_landmarks_have_rooms_traversal_rewards_and_typed_danger_anchors() {
+        let seed = SEED;
+        let castle = struct_for_cell(103, -30, seed);
+        assert_eq!((castle.typ, castle.anchor_wx, castle.anchor_wz), (STRUCT_BOSS_CASTLE, 6621, -1888));
+        let castle_floor = struct_danger_floor(castle.typ, castle.anchor_wx, castle.anchor_wz, seed);
+        let castle_cells = stamp_structure(&castle, seed);
+        assert_eq!(castle_cells, stamp_structure_order(&castle, seed, true));
+        let castle_at = |dx: i32, dy: i32, dz: i32| {
+            castle_cells
+                .get(&(castle.anchor_wx + dx, castle_floor + dy, castle.anchor_wz + dz))
+                .copied()
+                .unwrap_or(AIR)
+        };
+
+        assert_eq!(castle_cells.values().filter(|&&b| b == CHEST).count(), 2);
+        assert_eq!(castle_at(0, 1, 6), CHEST, "final hall reward moved outside danger radius");
+        for dy in 1..=3 {
+            assert_eq!(castle_at(0, dy, -10), AIR, "castle gate is blocked at height {dy}");
+        }
+        assert_eq!(castle_at(0, 4, -10), STONE_BRICK, "castle gate lost its arch");
+        for &(dx, dz) in &[(0, 3), (-7, -2), (7, -2)] {
+            assert_eq!(castle_at(dx, 1, dz), OAK_DOOR, "castle room has no foot door at {dx},{dz}");
+            assert_eq!(castle_at(dx, 2, dz), OAK_DOOR, "castle room has no head door at {dx},{dz}");
+        }
+        assert_eq!(castle_at(0, 1, 0), AIR, "boss anchor foot space is blocked");
+        assert_eq!(castle_at(0, 2, 0), AIR, "boss anchor head space is blocked");
+        for step in 1..=5 {
+            assert_eq!(castle_at(8, step, -9 + step), STONE_BRICK, "castle stair {step} missing");
+            assert_ne!(castle_at(8, step - 1, -9 + step), AIR, "castle stair {step} floats");
+        }
+        assert_eq!(castle_at(-9, 13, -9), CRYSTAL_LAMP, "castle corner silhouette lost its beacon");
+        assert_eq!(castle_at(-9, 12, -9), WOOD_BEAM, "castle beacon is unsupported");
+        let typed = worldgen_dangerous_site_typed_near(castle.anchor_wx, castle.anchor_wz, 0, seed)
+            .expect("castle did not register as a typed danger site");
+        assert_eq!(typed, (STRUCT_BOSS_CASTLE, wrap_world(castle.anchor_wx), castle_floor, wrap_world(castle.anchor_wz)));
+        assert!(worldgen_danger_site_is_boss(typed.0));
+
+        let tower = struct_for_cell(-20, 47, seed);
+        assert_eq!((tower.typ, tower.anchor_wx, tower.anchor_wz), (STRUCT_GRAND_TOWER, -1243, 3048));
+        let tower_floor = struct_danger_floor(tower.typ, tower.anchor_wx, tower.anchor_wz, seed);
+        println!("seed-11 epic floors: castle={castle_floor}, tower={tower_floor}");
+        let tower_cells = stamp_structure(&tower, seed);
+        assert_eq!(tower_cells, stamp_structure_order(&tower, seed, true));
+        let tower_at = |dx: i32, dy: i32, dz: i32| {
+            tower_cells
+                .get(&(tower.anchor_wx + dx, tower_floor + dy, tower.anchor_wz + dz))
+                .copied()
+                .unwrap_or(AIR)
+        };
+        assert_eq!(tower_cells.values().filter(|&&b| b == CHEST).count(), 1);
+        assert_eq!(tower_at(0, 1, -4), OAK_DOOR);
+        assert_eq!(tower_at(0, 2, -4), OAK_DOOR);
+        assert_eq!(tower_at(0, 3, -4), STONE_BRICK);
+        assert_eq!(tower_at(0, 1, -5), AIR, "tower door approach is blocked");
+        assert_eq!(tower_at(0, 2, -5), AIR, "tower door headroom is blocked");
+        assert_eq!(tower_at(5, 8, 0), COBBLESTONE, "lower balcony band missing");
+        assert_eq!(tower_at(5, 16, 0), COBBLESTONE, "upper balcony band missing");
+        let loop_cells = [
+            (0, -3), (1, -3), (2, -3), (3, -3), (3, -2), (3, -1),
+            (3, 0), (3, 1), (3, 2), (3, 3), (2, 3), (1, 3),
+            (0, 3), (-1, 3), (-2, 3), (-3, 3), (-3, 2), (-3, 1),
+            (-3, 0), (-3, -1), (-3, -2), (-3, -3), (-2, -3), (-1, -3),
+        ];
+        for (i, &(dx, dz)) in loop_cells.iter().enumerate() {
+            let step = i as i32 + 1;
+            assert_eq!(tower_at(dx, step, dz), OAK_PLANKS, "tower step {step} missing");
+            assert_eq!(tower_at(dx, step + 1, dz), AIR, "tower step {step} has no headroom");
+            if i > 0 {
+                let (px, pz) = loop_cells[i - 1];
+                assert_eq!((dx - px).abs() + (dz - pz).abs(), 1, "tower climb breaks before step {step}");
+            }
+        }
+        assert_eq!(tower_at(0, 25, 0), CHEST, "tower summit reward moved");
+        let typed = worldgen_dangerous_site_typed_near(tower.anchor_wx, tower.anchor_wz, 0, seed)
+            .expect("tower did not register as a typed danger site");
+        assert_eq!(typed, (STRUCT_GRAND_TOWER, wrap_world(tower.anchor_wx), tower_floor, wrap_world(tower.anchor_wz)));
+        assert!(!worldgen_danger_site_is_boss(typed.0));
+        assert_eq!(worldgen_epic_landmark_near(tower.anchor_wx, tower.anchor_wz, 0, seed), Some(typed));
     }
 
     #[test]
