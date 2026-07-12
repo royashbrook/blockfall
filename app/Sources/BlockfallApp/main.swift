@@ -15,6 +15,33 @@ func persistentCString(_ s: String) -> UnsafePointer<CChar> {
     return UnsafePointer(strdup(s))!
 }
 
+// #261: choose the pause layout from only the available width and the shared
+// text scale. Keeping this pure makes the responsive breakpoints cheap to guard
+// in the existing headless self-test.
+private struct PauseLayoutPolicy: Equatable {
+    let twoOptionColumns: Bool
+    let stackedActions: Bool
+}
+
+private func pauseLayoutPolicy(width: CGFloat, scale: CGFloat) -> PauseLayoutPolicy {
+    let s = min(2.0, max(1.0, scale))
+    return PauseLayoutPolicy(
+        twoOptionColumns: width >= 760 + 180 * (s - 1),
+        stackedActions: width < 560 + 260 * (s - 1)
+    )
+}
+
+private func pauseLayoutPolicySelfTest() -> Bool {
+    let cases: [(CGFloat, CGFloat, PauseLayoutPolicy)] = [
+        (1280, 1, PauseLayoutPolicy(twoOptionColumns: true,  stackedActions: false)),
+        (1280, 2, PauseLayoutPolicy(twoOptionColumns: true,  stackedActions: false)),
+        (700,  1, PauseLayoutPolicy(twoOptionColumns: false, stackedActions: false)),
+        (700,  2, PauseLayoutPolicy(twoOptionColumns: false, stackedActions: true)),
+        (560,  2, PauseLayoutPolicy(twoOptionColumns: false, stackedActions: true)),
+    ]
+    return cases.allSatisfy { pauseLayoutPolicy(width: $0.0, scale: $0.1) == $0.2 }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var renderer: Renderer?
@@ -56,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var celOutlineSlider: NSSlider?
     private weak var bloomSlider: NSSlider?   // #205 greyed when Bloom is toggled off
     private var uncappedDrawTimer: DispatchSourceTimer?
+    private var pauseRebuildPending = false
 
     // ---- HUD option persistence (#: text size + visibility) ----
     // UserDefaults keys. Loaded at startup (startGame) and written on change.
@@ -112,6 +140,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window = NSWindow(contentRect: frame,
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
+        // Below this there is not enough room for the title, four reachable
+        // actions, and a useful slice of the scrollable options at 2x text.
+        window.contentMinSize = NSSize(width: 560, height: 440)
         window.title = "Blockfall"
         window.center()
         window.acceptsMouseMovedEvents = true
@@ -316,17 +347,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // ---- pause menu (Esc) ----
-    // #207: intermittently a live-resize (or app switch mid-resize) left the pause
-    // menu's stack views in a stale overlapped layout until reopened. Rebuild the
-    // overlay from scratch when the window resizes while it is open, the same thing
-    // closing and reopening did by hand, so it can never stay stuck.
+    // #207/#261: coalesce resize-end notifications and rebuild on the next run-loop
+    // turn. The same path is used after Text Size tracking, so a control is never
+    // removed while AppKit is still dispatching its action.
     @objc private func windowResizedWhilePaused(_ n: Notification) {
         guard pauseOverlay != nil else { return }
-        // Skip the continuous didResize spam during a drag; didEndLiveResize
-        // rebuilds once when the drag settles.
         if let w = n.object as? NSWindow, w.inLiveResize { return }
-        pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
-        buildPauseOverlay()
+        rebuildPauseOverlayDeferred()
+    }
+
+    private func rebuildPauseOverlayDeferred() {
+        guard pauseOverlay != nil, !pauseRebuildPending else { return }
+        pauseRebuildPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pauseRebuildPending = false
+            guard self.pauseOverlay != nil else { return }
+            self.pauseOverlay?.removeFromSuperview()
+            self.pauseOverlay = nil
+            self.buildPauseOverlay()
+        }
     }
 
     @objc private func pauseGame() {
@@ -337,8 +377,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         buildPauseOverlay()
     }
 
-    // #206: ALL pause-menu text follows the Text Size slider (1.0x = today's
-    // sizes). Fonts route through mfs(); the #205 scroll region absorbs growth.
+    // #206/#261: pause and HUD text share one multiplier. Pause-menu body bases
+    // stay in the HUD's 14-20pt range; only semantic headings are larger.
     private var menuScale: CGFloat { CGFloat(hud?.hudScale ?? AppDelegate.loadHUDScale()) }
     private func mfs(_ base: CGFloat) -> CGFloat { (base * menuScale).rounded() }
 
@@ -349,9 +389,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ov.autoresizingMask = [.width, .height]
         ov.wantsLayer = true
         ov.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
+        let policy = pauseLayoutPolicy(width: container.bounds.width, scale: menuScale)
 
         let title = NSTextField(labelWithString: "Paused")
-        title.font = .boldSystemFont(ofSize: mfs(40)); title.textColor = .white
+        title.font = .boldSystemFont(ofSize: mfs(28)); title.textColor = .white
         title.alignment = .center; title.translatesAutoresizingMaskIntoConstraints = false
 
         let resume = pauseButton("Keep Playing", #selector(resumeGame))
@@ -362,17 +403,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Both write through to the live HUDView immediately and persist to
         // UserDefaults so they stick between sessions.
         let textLabel = NSTextField(labelWithString: "Text Size")
-        textLabel.font = .boldSystemFont(ofSize: mfs(28)); textLabel.textColor = .white
+        textLabel.font = .boldSystemFont(ofSize: mfs(16)); textLabel.textColor = .white
 
         let slider = NSSlider(value: Double(hud?.hudScale ?? AppDelegate.loadHUDScale()),
                               minValue: 1.0, maxValue: 2.0,
                               target: self, action: #selector(hudScaleChanged(_:)))
+        slider.isContinuous = false
         slider.translatesAutoresizingMaskIntoConstraints = false
         slider.widthAnchor.constraint(equalToConstant: 220).isActive = true
         hudScaleSlider = slider
 
         let valueLabel = NSTextField(labelWithString: "")
-        valueLabel.font = .systemFont(ofSize: mfs(24)); valueLabel.textColor = .white
+        valueLabel.font = .systemFont(ofSize: mfs(14)); valueLabel.textColor = .white
         valueLabel.alignment = .center
         hudScaleValueLabel = valueLabel
 
@@ -384,7 +426,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showHUD.state = (hud?.hudVisible ?? AppDelegate.loadHUDVisible()) ? .on : .off
         showHUD.contentTintColor = .white
         showHUD.attributedTitle = NSAttributedString(string: "Show HUD", attributes: [
-            .font: NSFont.boldSystemFont(ofSize: mfs(28)), .foregroundColor: NSColor.white,
+            .font: NSFont.boldSystemFont(ofSize: mfs(16)), .foregroundColor: NSColor.white,
         ])
 
         updateHUDScaleLabel()   // fill the live value label now that it exists
@@ -394,7 +436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // slider beside the checkbox; Bloom (always on) gets its own labelled slider row. The
         // slider greys out when the effect is toggled off. Lens Flare stays a plain toggle.
         let fxTitle = NSTextField(labelWithString: "Effects")
-        fxTitle.font = .boldSystemFont(ofSize: mfs(30)); fxTitle.textColor = .white
+        fxTitle.font = .boldSystemFont(ofSize: mfs(18)); fxTitle.textColor = .white
 
         // God Rays + Cel Shading: checkbox with an intensity slider beside it.
         let godRayCb = gfxCheckbox("God Rays", tag: 2, on: renderer?.gfxGodRays ?? false)
@@ -443,7 +485,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // #85 Render-distance slider (chunks 8..28), live + persisted.
         let rdLabel = NSTextField(labelWithString: "Render Distance")
-        rdLabel.font = .systemFont(ofSize: mfs(24)); rdLabel.textColor = .white
+        rdLabel.font = .systemFont(ofSize: mfs(14)); rdLabel.textColor = .white
         let rdVal = UserDefaults.standard.object(forKey: "gfxRenderDist") as? Int ?? 24
         let rdSlider = NSSlider(value: Double(rdVal), minValue: 8, maxValue: 40,
                                 target: self, action: #selector(renderDistChanged(_:)))
@@ -455,7 +497,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // #238 Difficulty: Easy = no bad guys at all, Normal = the usual night
         // monsters, Hard = lots more of them. Per-world, live + persisted.
         let diffLabel = NSTextField(labelWithString: "Difficulty")
-        diffLabel.font = .systemFont(ofSize: mfs(24)); diffLabel.textColor = .white
+        diffLabel.font = .systemFont(ofSize: mfs(14)); diffLabel.textColor = .white
         let diffSeg = NSSegmentedControl(labels: ["Easy", "Normal", "Hard"],
                                          trackingMode: .selectOne,
                                          target: self, action: #selector(difficultyChanged(_:)))
@@ -465,7 +507,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // ---- Audio toggles (#3: music + ambience on/off, live + persisted) ----
         let auTitle = NSTextField(labelWithString: "Audio")
-        auTitle.font = .boldSystemFont(ofSize: mfs(30)); auTitle.textColor = .white
+        auTitle.font = .boldSystemFont(ofSize: mfs(18)); auTitle.textColor = .white
         let auStack = NSStackView(views: [
             volumeSliderRow("Music Volume", key: "audMusicVol", sel: #selector(musicVolChanged(_:))),
             volumeSliderRow("Sound Volume", key: "audSoundVol", sel: #selector(soundVolChanged(_:))),
@@ -481,15 +523,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // off-screen at any window height: a pinned title at the top, the options
         // in a SCROLL VIEW in the middle (scroll when they overflow), and a pinned
         // action bar (Keep Playing / Save & Go to Menu) at the bottom.
-        // #205: TWO columns so the (now larger-text) options are about half as
-        // tall. Left = the Effects list (the bulk); right = Text Size, Show HUD,
-        // Render Distance, and Audio.
+        // Wide windows use two columns. Compact windows put Text Size first in
+        // one vertical column, so it remains the first reachable scroll item.
         let leftCol = NSStackView(views: [fxTitle, fxStack])
         leftCol.orientation = .vertical; leftCol.spacing = 14; leftCol.alignment = .leading
         let rightCol = NSStackView(views: [sliderRow, showHUD, rdRow, diffRow, auTitle, auStack])
         rightCol.orientation = .vertical; rightCol.spacing = 16; rightCol.alignment = .leading
-        let optionsStack = NSStackView(views: [leftCol, rightCol])
-        optionsStack.orientation = .horizontal; optionsStack.spacing = 48; optionsStack.alignment = .top
+        let optionsStack = NSStackView(views: policy.twoOptionColumns ? [leftCol, rightCol] : [rightCol, leftCol])
+        optionsStack.orientation = policy.twoOptionColumns ? .horizontal : .vertical
+        optionsStack.spacing = policy.twoOptionColumns ? 36 : 20
+        optionsStack.alignment = policy.twoOptionColumns ? .top : .leading
         optionsStack.translatesAutoresizingMaskIntoConstraints = false
 
         let scroll = NSScrollView()
@@ -503,51 +546,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         doc.addSubview(optionsStack)
         scroll.documentView = doc
 
-        // #205: two rows of actions, pinned at the bottom. Top: World Map +
-        // Customize Character. Bottom: Keep Playing + Save & Go to Menu.
-        let topActions = NSStackView(views: [mapBtn, charBtn])
-        topActions.orientation = .horizontal; topActions.spacing = 16; topActions.distribution = .fillEqually
-        let bottomActions = NSStackView(views: [resume, menuBtn])
-        bottomActions.orientation = .horizontal; bottomActions.spacing = 16; bottomActions.distribution = .fillEqually
-        let actionBar = NSStackView(views: [topActions, bottomActions])
-        actionBar.orientation = .vertical; actionBar.spacing = 12; actionBar.alignment = .centerX
+        // Four pinned actions: a 2x2 grid when labels fit, one stack on narrow
+        // windows at large text. The button chrome stays fixed; only text scales.
+        let actionBar: NSStackView
+        if policy.stackedActions {
+            let buttons = [mapBtn, charBtn, resume, menuBtn]
+            actionBar = NSStackView(views: buttons)
+            actionBar.orientation = .vertical
+            actionBar.spacing = 8
+            actionBar.alignment = .leading
+            for button in buttons {
+                button.widthAnchor.constraint(equalTo: actionBar.widthAnchor).isActive = true
+            }
+        } else {
+            let topActions = NSStackView(views: [mapBtn, charBtn])
+            topActions.orientation = .horizontal; topActions.spacing = 12; topActions.distribution = .fillEqually
+            let bottomActions = NSStackView(views: [resume, menuBtn])
+            bottomActions.orientation = .horizontal; bottomActions.spacing = 12; bottomActions.distribution = .fillEqually
+            actionBar = NSStackView(views: [topActions, bottomActions])
+            actionBar.orientation = .vertical; actionBar.spacing = 8; actionBar.alignment = .centerX
+            topActions.widthAnchor.constraint(equalTo: actionBar.widthAnchor).isActive = true
+            bottomActions.widthAnchor.constraint(equalTo: actionBar.widthAnchor).isActive = true
+        }
         actionBar.translatesAutoresizingMaskIntoConstraints = false
-        topActions.widthAnchor.constraint(equalTo: bottomActions.widthAnchor).isActive = true
+        ov.addSubview(title)
+        ov.addSubview(scroll)
+        ov.addSubview(actionBar)
 
-        // #205: the whole menu floats CENTERED (title + options + actions as one
-        // group), not bottom-anchored. The options scroll only if the group would
-        // exceed the screen, so nothing clips at any window size.
-        let menuGroup = NSStackView(views: [title, scroll, actionBar])
-        menuGroup.orientation = .vertical; menuGroup.spacing = 18; menuGroup.alignment = .centerX
-        menuGroup.translatesAutoresizingMaskIntoConstraints = false
-        ov.addSubview(menuGroup)
-
-        // Preferred width (yields to the 0.94*ov cap on narrow windows).
-        let scrollW = scroll.widthAnchor.constraint(equalToConstant: 860)
+        // Preferred widths yield to hard edge bounds on compact windows.
+        let scrollW = scroll.widthAnchor.constraint(equalToConstant: policy.twoOptionColumns ? 900 : 520)
         scrollW.priority = .defaultHigh; scrollW.isActive = true
-        // Height fits the content, but stays capped so the whole centered group
-        // always fits on screen (room left for the title + the two action rows).
-        let scrollH = scroll.heightAnchor.constraint(equalTo: doc.heightAnchor)
-        scrollH.priority = .defaultHigh; scrollH.isActive = true
+        let actionW = actionBar.widthAnchor.constraint(equalToConstant: policy.stackedActions ? 460 : 820)
+        actionW.priority = .defaultHigh; actionW.isActive = true
         NSLayoutConstraint.activate([
-            menuGroup.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
-            menuGroup.centerYAnchor.constraint(equalTo: ov.centerYAnchor),
-            menuGroup.topAnchor.constraint(greaterThanOrEqualTo: ov.topAnchor, constant: 20),
-            menuGroup.bottomAnchor.constraint(lessThanOrEqualTo: ov.bottomAnchor, constant: -20),
+            title.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
+            title.topAnchor.constraint(equalTo: ov.topAnchor, constant: 16),
 
-            scroll.widthAnchor.constraint(lessThanOrEqualTo: ov.widthAnchor, multiplier: 0.94),
-            scroll.heightAnchor.constraint(lessThanOrEqualTo: ov.heightAnchor, constant: -250),
+            actionBar.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
+            actionBar.leadingAnchor.constraint(greaterThanOrEqualTo: ov.leadingAnchor, constant: 16),
+            actionBar.trailingAnchor.constraint(lessThanOrEqualTo: ov.trailingAnchor, constant: -16),
+            actionBar.bottomAnchor.constraint(equalTo: ov.bottomAnchor, constant: -16),
+
+            scroll.centerXAnchor.constraint(equalTo: ov.centerXAnchor),
+            scroll.leadingAnchor.constraint(greaterThanOrEqualTo: ov.leadingAnchor, constant: 16),
+            scroll.trailingAnchor.constraint(lessThanOrEqualTo: ov.trailingAnchor, constant: -16),
+            scroll.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 12),
+            scroll.bottomAnchor.constraint(equalTo: actionBar.topAnchor, constant: -12),
 
             // Vertical-only scroll; options get a left/right margin so the
             // checkboxes on the left column are never clipped at the edge.
             doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            optionsStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 6),
-            optionsStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -6),
-            optionsStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 30),
-            optionsStack.trailingAnchor.constraint(lessThanOrEqualTo: doc.trailingAnchor, constant: -24),
+            optionsStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: -6),
+            optionsStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: 6),
+            optionsStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 16),
+            optionsStack.trailingAnchor.constraint(lessThanOrEqualTo: doc.trailingAnchor, constant: -16),
         ])
         container.addSubview(ov)
         pauseOverlay = ov
+        ov.layoutSubtreeIfNeeded()
     }
     private func pauseButton(_ t: String, _ sel: Selector) -> NSButton {
         let b = NSButton(title: t, target: self, action: sel)
@@ -558,14 +614,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.layer?.cornerRadius = 12
         b.contentTintColor = .white
         b.attributedTitle = NSAttributedString(string: t, attributes: [
-            .font: NSFont.boldSystemFont(ofSize: mfs(30)),
+            .font: NSFont.boldSystemFont(ofSize: mfs(18)),
             .foregroundColor: NSColor.white,
         ])
         b.translatesAutoresizingMaskIntoConstraints = false
-        // #208: 300 was tight for "Customize Character" at the #205 30pt font; give
-        // long labels comfortable padding (rows are fill-equally so pairs match).
-        b.widthAnchor.constraint(greaterThanOrEqualToConstant: 380).isActive = true
-        b.heightAnchor.constraint(equalToConstant: mfs(52)).isActive = true
+        b.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
         return b
     }
     // ---- world map (#182) ----
@@ -772,13 +825,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud?.hudScale = v
         UserDefaults.standard.set(Double(v), forKey: AppDelegate.kHUDScaleKey)
         updateHUDScaleLabel()
-        // #206: menu text follows the slider too. Rebuild the overlay once the
-        // drag ends (rebuilding on every tick would churn the whole panel).
-        let dragging = NSApp.currentEvent?.type == .leftMouseDragged
-        if !dragging, pauseOverlay != nil {
-            pauseOverlay?.removeFromSuperview(); pauseOverlay = nil
-            buildPauseOverlay()
-        }
+        // The slider is non-continuous; defer one coalesced rebuild until after
+        // AppKit has finished tracking and dispatching this control action.
+        rebuildPauseOverlayDeferred()
     }
     // #: Show HUD checkbox → live HUD + persisted.
     @objc private func hudVisibleChanged(_ sender: NSButton) {
@@ -794,7 +843,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // #: a labeled 0..1 volume slider row (independent music vs sounds).
     private func volumeSliderRow(_ title: String, key: String, sel: Selector) -> NSStackView {
         let lbl = NSTextField(labelWithString: title)
-        lbl.font = .systemFont(ofSize: mfs(24)); lbl.textColor = .white
+        lbl.font = .systemFont(ofSize: mfs(14)); lbl.textColor = .white
         let v = UserDefaults.standard.object(forKey: key) as? Double ?? 1.0
         let s = NSSlider(value: v, minValue: 0.0, maxValue: 1.0, target: self, action: sel)
         s.translatesAutoresizingMaskIntoConstraints = false
@@ -825,7 +874,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.state = on ? .on : .off
         b.contentTintColor = .white
         b.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: mfs(26)), .foregroundColor: NSColor.white,
+            .font: NSFont.systemFont(ofSize: mfs(14)), .foregroundColor: NSColor.white,
         ])
         return b
     }
@@ -845,7 +894,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.state = on ? .on : .off
         b.contentTintColor = .white
         b.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: mfs(26)), .foregroundColor: NSColor.white,
+            .font: NSFont.systemFont(ofSize: mfs(14)), .foregroundColor: NSColor.white,
         ])
         return b
     }
@@ -1088,6 +1137,10 @@ final class LoadingView: NSView {
 // frames without a window, and exits 0. Lets ci/check.sh exercise the Swift<->
 // C++ boundary on a machine with no display.
 if CommandLine.arguments.contains("--selftest") {
+    guard pauseLayoutPolicySelfTest() else {
+        print("SELFTEST FAIL: pause layout policy")
+        exit(1)
+    }
     let ok = runHeadlessSelfTest()
     exit(ok ? 0 : 1)
 }
