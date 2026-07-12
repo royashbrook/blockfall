@@ -6,6 +6,7 @@ fn creature_animation_id(
     home_x: i32,
     home_z: i32,
     npc_id: i32,
+    color: V3,
     entity_index: usize,
 ) -> u32 {
     if model != 20 {
@@ -15,7 +16,11 @@ fn creature_animation_id(
     for byte in given.bytes() {
         id = (id ^ u32::from(byte)).wrapping_mul(16_777_619);
     }
-    for value in [home_x as u32, home_z as u32, npc_id as u32] {
+    // Names repeat within a city and most residents share home + role. Clothing
+    // is generated from the per-villager stable hash, so its exact bits finish
+    // the identity without tying animation state to render order or position.
+    for value in [home_x as u32, home_z as u32, npc_id as u32,
+                  color.x.to_bits(), color.y.to_bits(), color.z.to_bits()] {
         id = (id ^ value).wrapping_mul(16_777_619);
     }
     id.max(1)
@@ -387,6 +392,7 @@ impl<'c> World<'c> {
                 cr.home_x,
                 cr.home_z,
                 cr.npc_id,
+                cr.color,
                 entity_index,
             );
             self.entities.push(bf_entity_draw {
@@ -715,13 +721,19 @@ impl<'c> World<'c> {
 #[cfg(test)]
 mod animation_identity_tests {
     use super::creature_animation_id;
+    use crate::world::V3;
 
     #[test]
     fn villager_animation_identity_ignores_render_order_and_position() {
-        let a = creature_animation_id(20, "Pip", 120, -44, 4, 0);
-        let reordered = creature_animation_id(20, "Pip", 120, -44, 4, 31);
-        let neighbour = creature_animation_id(20, "Juno", 121, -44, 4, 0);
+        let green = V3::new(0.2, 0.7, 0.3);
+        let a = creature_animation_id(20, "Pip", 120, -44, 4, green, 0);
+        let reordered = creature_animation_id(20, "Pip", 120, -44, 4, green, 31);
+        let neighbour = creature_animation_id(20, "Juno", 121, -44, 4, green, 0);
+        let same_name_role_home = creature_animation_id(
+            20, "Pip", 120, -44, 4, V3::new(0.3, 0.6, 0.4), 1,
+        );
         assert_eq!(a, reordered, "villager gait must not follow its frame index");
         assert_ne!(a, neighbour, "nearby villagers need distinct gait history");
+        assert_ne!(a, same_name_role_home, "repeated names must not share gait history");
     }
 }

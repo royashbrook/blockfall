@@ -345,6 +345,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     var fpsSamples: [Double] = []
     var frameMsSamples: [Double] = []
     var engineMsSamples: [Double] = []
+    var updateMsSamples: [Double] = []
+    var acquireMsSamples: [Double] = []
     var encodeMsSamples: [Double] = []
     var gpuMsSamples: [Double] = []
     var drawSamples: [UInt64] = []
@@ -361,6 +363,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     struct PerfFrameStats {
         var frameMs: Double
         var engineMs: Double
+        var updateMs: Double
+        var acquireMs: Double
         var encodeMs: Double
         var gpuMs: Double
         var draws: UInt64
@@ -397,12 +401,14 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         input.look_pitch_delta = pitch   // #52 shot mode tilts down to frame ground props
         let engineStart = CACurrentMediaTime()
         _ = bf_frame_begin(e, &input, dt)
+        let updateMs = (CACurrentMediaTime() - engineStart) * 1000.0
         // Elevated structure-review fixtures must not fall to the ground while
         // their chunks settle. This is opt-in and only affects the headless harness.
         if freezeShotCamera, let pv = shotCameraEnv {
             bf_debug_set_camera(e, pv[0], pv[1], pv[2], pv[3], pv[4])
         }
         var f = bf_render_frame(); _ = bf_frame_acquire_render(e, &f)
+        let acquireMs = (CACurrentMediaTime() - engineStart) * 1000.0 - updateMs
         var entityRoles = bf_entity_role_action_view()
         _ = bf_entity_role_actions(e, &entityRoles)
         let engineMs = (CACurrentMediaTime() - engineStart) * 1000.0
@@ -891,6 +897,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         return PerfFrameStats(
             frameMs: (CACurrentMediaTime() - frameStart) * 1000.0,
             engineMs: engineMs,
+            updateMs: updateMs,
+            acquireMs: acquireMs,
             encodeMs: encodeMs,
             gpuMs: gpuMs,
             draws: UInt64(f.draw_count),
@@ -997,6 +1005,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         if s.frameMs > 0 { fpsSamples.append(1000.0 / s.frameMs) }
         frameMsSamples.append(s.frameMs)
         engineMsSamples.append(s.engineMs)
+        updateMsSamples.append(s.updateMs)
+        acquireMsSamples.append(s.acquireMs)
         encodeMsSamples.append(s.encodeMs)
         if s.gpuMs > 0 { gpuMsSamples.append(s.gpuMs) }
         drawSamples.append(s.draws)
@@ -1032,6 +1042,19 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     let entitiesMedian = medianU(entitySamples)
     let entityPartsMedian = medianU(entityPartSamples)
     let entityTrianglesMedian = medianU(entityTriangleSamples)
+    func upperPct(_ xs: [Double], _ p: Double) -> Double {
+        let s = xs.sorted()
+        return s.isEmpty ? 0 : s[max(0, min(s.count - 1, Int(Double(s.count - 1) * p)))]
+    }
+    let frameMsP99 = upperPct(frameMsSamples, 0.99)
+    let frameMsMax = frameMsSamples.max() ?? 0
+    let engineMsP99 = upperPct(engineMsSamples, 0.99)
+    let engineMsMax = engineMsSamples.max() ?? 0
+    let updateMsP99 = upperPct(updateMsSamples, 0.99)
+    let updateMsMax = updateMsSamples.max() ?? 0
+    let acquireMsP99 = upperPct(acquireMsSamples, 0.99)
+    let acquireMsMax = acquireMsSamples.max() ?? 0
+    let hitchFrames = frameMsSamples.filter { $0 >= 33.333 }.count
     let regStats = registry.stats()
     let passFps = median >= 60.0 && low1 >= 30.0
     let passMem = peakMem < 10_000.0
@@ -1040,6 +1063,10 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                  gpuMsMedian, drawsMedian, indicesMedian, entitiesMedian, entityPartsMedian,
                  entityTrianglesMedian, peakMem,
                  (passFps && passMem) ? "PASS (dev box)" : "below gate"))
+    print(String(format: "HITCH: frame p99 %.2f ms max %.2f ms (%d >=33.3ms); engine p99 %.2f ms max %.2f ms",
+                 frameMsP99, frameMsMax, hitchFrames, engineMsP99, engineMsMax))
+    print(String(format: "ENGINE PHASES: update p99 %.2f ms max %.2f ms; acquire/remesh p99 %.2f ms max %.2f ms",
+                 updateMsP99, updateMsMax, acquireMsP99, acquireMsMax))
 
     if let path = jsonPath {
         let json = """
@@ -1047,7 +1074,12 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         "frames": \(fpsSamples.count), "fps_median": \(String(format:"%.1f",median)), \
         "fps_1pct_low": \(String(format:"%.1f",low1)), "peak_mem_mb": \(String(format:"%.0f",peakMem)), \
         "frame_ms_median": \(String(format:"%.3f",frameMsMedian)), \
+        "frame_ms_p99": \(String(format:"%.3f",frameMsP99)), "frame_ms_max": \(String(format:"%.3f",frameMsMax)), \
+        "hitch_frames_33ms": \(hitchFrames), \
         "engine_ms_median": \(String(format:"%.3f",engineMsMedian)), \
+        "engine_ms_p99": \(String(format:"%.3f",engineMsP99)), "engine_ms_max": \(String(format:"%.3f",engineMsMax)), \
+        "update_ms_p99": \(String(format:"%.3f",updateMsP99)), "update_ms_max": \(String(format:"%.3f",updateMsMax)), \
+        "acquire_ms_p99": \(String(format:"%.3f",acquireMsP99)), "acquire_ms_max": \(String(format:"%.3f",acquireMsMax)), \
         "encode_ms_median": \(String(format:"%.3f",encodeMsMedian)), \
         "gpu_ms_median": \(String(format:"%.3f",gpuMsMedian)), \
         "draws_median": \(drawsMedian), "shadow_draws_median": \(shadowDrawsMedian), \

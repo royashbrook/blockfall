@@ -14,6 +14,27 @@ opening and saving it with this build upgrades its persisted data.
 
 ## Playtest follow-up repairs
 
+### July 12 gait and frame-hitch follow-up
+
+- Villager animation identity now includes the per-person stable clothing hash.
+  Repeated names in the same home/role can no longer share one gait-history slot.
+- Ambient tree regrowth uses resident chunks only. Its five-second maintenance
+  tick can no longer synchronously generate missing vertical chunks on the frame thread.
+- The performance harness reports p99/max frame, engine-update, and acquire times,
+  plus the number of frames over 33.3 ms; median FPS alone hid the original stalls.
+
+Manual validation:
+
+1. Follow several villagers through a city, especially two ordinary residents walking
+   near each other. Arms and legs must keep a continuous phase with no trembling or snap.
+2. Roam continuously for at least two minutes, crossing chunk boundaries and turning at
+   random. Repeat with effects disabled and minimum render distance. There should be no
+   periodic whole-game halt around the five-second regrowth cadence.
+3. Run `build/Blockfall.app/Contents/MacOS/Blockfall --perftest 20`. The `HITCH` and
+   `ENGINE PHASES` lines must remain bounded. The accepted moving run reduced worst engine
+   time from `250–505 ms` to `7.01 ms`; worst total frame was `35.09 ms`, with no quality
+   switches and a passing same-machine perf comparison.
+
 The first live pass found four follow-up defects, now covered by this build:
 
 - Solo pause and the world map hold simulation state completely. Villager comic

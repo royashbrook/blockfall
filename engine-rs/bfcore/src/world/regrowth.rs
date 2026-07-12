@@ -1,6 +1,25 @@
 use super::*;
 
 impl<'c> World<'c> {
+    /// Highest solid block in an already-loaded column. Regrowth is ambient
+    /// maintenance and must never invoke procedural generation on the frame thread.
+    fn resident_surface_top(&self, wx: i32, wz: i32) -> i32 {
+        let wx = Self::wrap_block(wx);
+        let wz = Self::wrap_block(wz);
+        let lx = Self::mod16(wx) as usize;
+        let lz = Self::mod16(wz) as usize;
+        for cy in (CY_MIN..=CY_MAX).rev() {
+            let cc = Self::to_chunk(IVec3 { x: wx, y: cy * KCHUNK_DIM, z: wz });
+            let Some(chunk) = self.store.get(cc) else { continue };
+            for ly in (0..KCHUNK_DIM).rev() {
+                if Self::solid_block(chunk.get(lx, ly as usize, lz)) {
+                    return cy * KCHUNK_DIM + ly;
+                }
+            }
+        }
+        NO_FLOOR
+    }
+
     pub(super) fn grow_small_tree(&mut self, wx: i32, surf: i32, wz: i32) {
         const LOG: BlockId = 21;
         const LEAFB: BlockId = 5;
@@ -48,16 +67,10 @@ impl<'c> World<'c> {
             attempt += 1;
             let wx = px + (self.rand01() * 96.0) as i32 - 48;
             let wz = pz + (self.rand01() * 96.0) as i32 - 48;
-            if !self
-                .store
-                .is_resident(Self::to_chunk(IVec3 { x: wx, y: 0, z: wz }))
-            {
-                continue;
-            }
             if self.region_sat(Self::to_chunk(IVec3 { x: wx, y: 0, z: wz })) < 0.5 {
                 continue;
             }
-            let surf = self.surface_top(wx, wz);
+            let surf = self.resident_surface_top(wx, wz);
             if surf == NO_FLOOR {
                 continue;
             }
@@ -98,5 +111,20 @@ impl<'c> World<'c> {
             self.grow_small_tree(wx, surf, wz);
             grew += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resident_surface_query_never_generates_missing_columns() {
+        let mut world = World::new(None);
+        world.set_block_internal(IVec3 { x: 4, y: 37, z: 6 }, GRASS);
+        let resident_before = world.store.resident_count();
+        assert_eq!(world.resident_surface_top(4, 6), 37);
+        assert_eq!(world.resident_surface_top(400, 600), NO_FLOOR);
+        assert_eq!(world.store.resident_count(), resident_before);
     }
 }
