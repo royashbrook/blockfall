@@ -12,6 +12,43 @@ Before opening an old world, duplicate its folder under
 `~/Library/Application Support/Blockfall/worlds/` and test only the copy;
 opening and saving it with this build upgrades its persisted data.
 
+## Playtest follow-up repairs
+
+The first live pass found four follow-up defects, now covered by this build:
+
+- Solo pause and the world map hold simulation state completely. Villager comic
+  chatter uses the same paused clock instead of continuing on wall time.
+- Pause-menu typography uses the same 1–2x multiplier and comparable base sizes
+  as the HUD. The Text Size control no longer rebuilds its own view while tracking;
+  title/actions stay pinned and compact windows use scrollable responsive columns.
+- `world.meta` now preserves the automatic world clock. A pre-fix save has no time
+  trailer and therefore still opens at the legacy dawn fallback once; save it with
+  this build before testing the next reload.
+- A villager walks to the clear cell west of the communal bench for collision and
+  pathfinding, but the seated render pose is aligned on the seat, faces back toward
+  the room, and omits the otherwise floating full-voxel contact shadow.
+
+Communal benches and artisan workstations are villager routine props, not player
+crafting interfaces. Players can inspect, hold, place, and break them; their active
+use is intentionally shown by the matching resident.
+
+### Follow-up manual regression
+
+1. Wait for a two-line villager comic bubble, press `Esc`, and leave the game paused
+   for at least 10 seconds. The speaker/line, world clock, villagers, creatures, sun,
+   and caravan must not advance. Resume and confirm they continue normally. Repeat
+   once from the world map. Multiplayer intentionally does not pause the shared world.
+2. In the pause menu, try Text Size at `1.0x`, `1.5x`, and `2.0x`. At each size,
+   close/reopen the menu, click the slider track, drag the knob, and resize down to
+   the 560×440 minimum. Text Size and all four action buttons must remain visible or
+   vertically reachable; fonts must not grow again per reopen or jump during tracking.
+3. Let automatic time reach a clearly non-dawn phase, use **Save & Go to Menu**, then
+   reload. The HUD must return to the same phase/time, not 06:00 dawn. Perform the
+   first save with this build so the optional `BFTM` trailer exists.
+4. Observe an Elder/resident use the communal bench. The collision body approaches
+   from the west, but the visible body must sit on the wooden seat facing outward;
+   it must not squat beside the bench or cast a floating shadow above it.
+
 ## What changed
 
 - Beds are one coherent low furniture mesh with legs, rails, quilt, pillow, and
@@ -66,12 +103,12 @@ cargo test --release
 
 Expected suite totals at this feature head:
 
-- library: 151 passed, 6 manual/diagnostic tests ignored
+- library: 152 passed, 6 manual/diagnostic tests ignored
 - co-op: 2 passed
 - map: 12 passed
 - network: 4 passed
 - perf: 0 passed, 1 manual probe ignored
-- world integration: 55 passed
+- world integration: 56 passed
 
 ## Fast manual smoke test
 
@@ -91,7 +128,7 @@ Allow 30–45 minutes.
    headboard, pillow/quilt, low height, and correct orientation against a wall.
 5. Observe villagers for several minutes. Look for work travel and visible tool
    use, plus look/gesture/greet/chat/sit/sweep actions. Pair chats must face each
-   other and end cleanly.
+   other and end cleanly; a sitting villager must be visibly on the bench seat.
 6. Press `M`, then zoom all the way out. HOME should be centred in the full-planet
    view; Town and City use distinct icons. A dashed route appears once at least two
    developed settlements have been discovered.
@@ -100,8 +137,9 @@ Allow 30–45 minutes.
 8. Press `T` until `[ALWAYS NIGHT]` appears (normally twice: auto → day → night).
    Check forge glow, hostile emissive parts, readable silhouettes, and floppy
    animation.
-9. Save, leave to the title screen, and reload. Recheck settlement class, stations,
-   props, road, caravan progress, and trade availability.
+9. At a clearly non-dawn time, save, leave to the title screen, and reload. Confirm
+   the same time-of-day phase, then recheck settlement class, stations, props, road,
+   caravan progress, and trade availability.
 10. Press backslash during useful world views. Screenshots land in
     `~/blockfall-shots/`. Use a macOS screenshot for map/dialogue/trade overlays.
 
