@@ -1203,12 +1203,16 @@ func runCritterGallery(savePath: String) -> Bool {
         var totalTriangles = 0
         if motionMode {
             let phases: [Float] = [0, .pi * 0.5, .pi, .pi * 1.5]
+            var moving = bf_entity_role_action()
+            moving._pad = 1
             for i in ents.indices {
                 withUnsafePointer(to: &ents[i]) { p in
-                    entR.encode(enc, viewProj: viewProj, entities: p, count: 1,
-                                animationTime: phases[i], gaitPhase: phases[i], gaitSpeed: 1.2,
-                                animationHash: 0.25,
-                                shapeOverride: shapeOverride)
+                    withUnsafePointer(to: &moving) { rp in
+                        entR.encode(enc, viewProj: viewProj, entities: p, count: 1,
+                                    animationTime: phases[i], gaitPhase: phases[i], gaitSpeed: 1.2,
+                                    animationHash: 0.25, shapeOverride: shapeOverride,
+                                    roleActions: rp, roleActionCount: 1)
+                    }
                 }
                 totalEntities += entR.lastEntityCount
                 totalParts += entR.lastBodyPartDraws

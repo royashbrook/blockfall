@@ -208,12 +208,9 @@ final class EntityRenderer {
         var lastScale:  Float
         var lastSeen:   Float   // wall-clock time last observed
         var hitAt:      Float   // wall-clock time the last hit fired (-1 = none)
-        // #131 movement-matched animation. We track the entity's last ground
-        // position and an accumulated GAIT phase. The walk cycle (legs) is driven by
-        // this gait phase, which advances in proportion to the distance the creature
-        // actually moved this frame, so the feet do not slide and the creature goes
-        // idle (legs hold) when it stops. We do NOT have a velocity field in the
-        // entity ABI, so speed is derived from the per-frame position delta.
+        // Most creatures remain movement-matched from sampled ground position.
+        // Villagers instead use gaitSpeed as a 0...1 locomotion blend selected by
+        // the engine's semantic moving flag; their authored clip has fixed timing.
         var lastX:      Float
         var lastZ:      Float
         var gait:       Float   // accumulated gait phase (radians)
@@ -232,9 +229,13 @@ final class EntityRenderer {
     // threading a new parameter through every drawKindN signature.
     var curFlash: SIMD3<Float> = .zero   // additive color toward white/red
     var curFlashAmt: Float = 0           // 0..1 strength (for emissive parts)
-    // #212: smoothed ground speed of the entity being drawn, so a drawKind can gate
-    // a walk cycle (legs swing while moving, plant while idle). Set per entity below.
+    // Locomotion strength for the entity being drawn: measured speed for legacy
+    // species, authored state-machine blend for villagers.
     var curGaitSpeed: Float = 0
+    // Wall-clock phase stays separate from the locomotion clip, so blinking and
+    // breathing continue while a planted walk phase is held.
+    var curAmbientPhase: Float = 0
+    var curEntityMoving = false
     // #254 v28: role/action metadata for the entity currently being drawn. This
     // comes from the additive sidecar, never from bf_entity_draw's frozen bytes.
     var curEntityRole: UInt32 = 0
@@ -565,10 +566,12 @@ final class EntityRenderer {
                 curEntityRole = a.role
                 curEntityAction = a.action
                 curEntityActionProgress = max(0, min(1, a.progress))
+                curEntityMoving = (a._pad & 1) != 0
             } else {
                 curEntityRole = 0
                 curEntityAction = 0
                 curEntityActionProgress = 0
+                curEntityMoving = false
             }
             let pos = SIMD3<Float>(e.position.x, e.position.y, e.position.z)
             // #192: camera-relative position for all part matrices (see vpRel above).
@@ -590,6 +593,7 @@ final class EntityRenderer {
             // Ambient (wall-clock) phase: drives the always-on idle breath pulse so
             // a stopped creature still looks alive even though its legs hold.
             let ambient   = t + phaseHash * 3.14159
+            curAmbientPhase = ambient
 
             // #131 MOVEMENT-MATCHED WALK CYCLE. `phase` (consumed by every drawKindN
             // for the leg/gait swing) is now driven by the creature's ACTUAL ground
@@ -638,24 +642,33 @@ final class EntityRenderer {
                     h.lastScale = e.scale
                     h.lastSeen  = t
 
-                    // --- gait: distance moved this frame -> ground speed -> cadence.
                     let dx = pos.x - h.lastX
                     let dz = pos.z - h.lastZ
-                    let inst = sqrt(dx * dx + dz * dz) / max(frameDt, 1e-4)
-                    // Smooth the speed a little so a single jittery frame doesn't make
-                    // the legs stutter; this is a cheap exponential follow.
-                    h.gaitSpeed += (inst - h.gaitSpeed) * min(1.0, frameDt * 12.0)
-                    // Cadence: radians of gait per second at the measured speed. ~2
-                    // strides/sec per block/sec reads right for these small creatures.
-                    // Below a tiny threshold the gait holds (feet planted = idle).
-                    let cadence: Float = (h.gaitSpeed > 0.05) ? (h.gaitSpeed * 2.2) : 0.0
-                    h.gait += cadence * frameDt
+                    if e.kind == 20 {
+                        // #270: locomotion is an animation state, not inverse
+                        // kinematics reconstructed from render-frame displacement.
+                        // Blend across short simulation stalls and play the authored
+                        // cycle at a stable cadence while the engine says "moving".
+                        let target: Float = curEntityMoving ? 1 : 0
+                        let response: Float = target > h.gaitSpeed ? 9 : 5
+                        h.gaitSpeed += (target - h.gaitSpeed) * min(1, frameDt * response)
+                        if h.gaitSpeed > 0.01 {
+                            h.gait += frameDt * 8.5
+                        } else if !curEntityMoving {
+                            h.gait = 0
+                        }
+                    } else {
+                        let inst = sqrt(dx * dx + dz * dz) / max(frameDt, 1e-4)
+                        h.gaitSpeed += (inst - h.gaitSpeed) * min(1.0, frameDt * 12.0)
+                        let cadence: Float = (h.gaitSpeed > 0.05) ? (h.gaitSpeed * 2.2) : 0.0
+                        h.gait += cadence * frameDt
+                    }
                     h.lastX = pos.x
                     h.lastZ = pos.z
                     // Use the gait phase (plus the per-entity hash offset so a crowd
                     // doesn't step in sync) for the walk cycle this frame.
                     phase = h.gait + phaseHash * 3.14159
-                    curGaitSpeed = h.gaitSpeed   // #212 expose speed for the walk cycle
+                    curGaitSpeed = e.kind == 20 ? h.gaitSpeed * 1.3 : h.gaitSpeed
 
                     if h.hitAt >= 0, t - h.hitAt < hitDuration {
                         let p = (t - h.hitAt) / hitDuration
@@ -749,6 +762,7 @@ final class EntityRenderer {
             curEntityRole = 0
             curEntityAction = 0
             curEntityActionProgress = 0
+            curEntityMoving = false
             curPlayerAppearance = nil
         }
     }

@@ -249,6 +249,7 @@ pub struct bf_entity_role_action {
     pub role: u32,
     pub action: u32,
     pub progress: f32,
+    /// Reserved sidecar flags. Bit 0 is set while engine locomotion is active.
     pub _pad: u32,
 }
 

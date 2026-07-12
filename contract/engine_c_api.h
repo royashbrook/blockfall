@@ -238,7 +238,7 @@ typedef struct bf_entity_role_action {
     uint32_t role;
     uint32_t action;
     float    progress;       /* 0..1 within the current action */
-    uint32_t _pad;
+    uint32_t _pad;           /* bit 0: engine locomotion is active */
 } bf_entity_role_action;
 
 typedef struct bf_entity_role_action_view {

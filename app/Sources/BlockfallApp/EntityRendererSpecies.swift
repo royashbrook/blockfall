@@ -2,6 +2,76 @@ import MetalKit
 import simd
 import CBlockcore
 
+// Eight deliberately authored key poses make up the villager walk clip. Runtime
+// code only selects, advances, and blends this performance; simulation position
+// deltas never pose the limbs. Smoothstep interpolation preserves strong contact,
+// down, passing, and up poses without a mechanical sine-wave gait.
+private struct VillagerWalkPose {
+    var legL, legR, ankleL, ankleR: Float
+    var armL, armR, elbowL, elbowR, wristL, wristR: Float
+    var bodyRoll, bodyPitch, lift, squash, headRoll, headPitch: Float
+
+    static func mix(_ a: Self, _ b: Self, _ t: Float) -> Self {
+        func m(_ x: Float, _ y: Float) -> Float { x + (y - x) * t }
+        return Self(
+            legL: m(a.legL, b.legL), legR: m(a.legR, b.legR),
+            ankleL: m(a.ankleL, b.ankleL), ankleR: m(a.ankleR, b.ankleR),
+            armL: m(a.armL, b.armL), armR: m(a.armR, b.armR),
+            elbowL: m(a.elbowL, b.elbowL), elbowR: m(a.elbowR, b.elbowR),
+            wristL: m(a.wristL, b.wristL), wristR: m(a.wristR, b.wristR),
+            bodyRoll: m(a.bodyRoll, b.bodyRoll), bodyPitch: m(a.bodyPitch, b.bodyPitch),
+            lift: m(a.lift, b.lift), squash: m(a.squash, b.squash),
+            headRoll: m(a.headRoll, b.headRoll), headPitch: m(a.headPitch, b.headPitch))
+    }
+}
+
+private let villagerWalkFrames: [VillagerWalkPose] = [
+    // left contact, down, passing, up; then the mirrored right-foot half.
+    .init(legL: 0.82, legR: -0.62, ankleL: -0.30, ankleR: 0.42,
+          armL: -0.76, armR: 0.64, elbowL: 0.12, elbowR: -0.42,
+          wristL: -0.04, wristR: 0.22, bodyRoll: 0.050, bodyPitch: -0.045,
+          lift: 0.00, squash: 0.035, headRoll: -0.045, headPitch: 0.025),
+    .init(legL: 0.55, legR: -0.38, ankleL: -0.16, ankleR: 0.28,
+          armL: -0.58, armR: 0.52, elbowL: 0.22, elbowR: -0.50,
+          wristL: -0.10, wristR: 0.26, bodyRoll: 0.070, bodyPitch: 0.020,
+          lift: -0.018, squash: 0.080, headRoll: -0.070, headPitch: -0.020),
+    .init(legL: -0.12, legR: 0.18, ankleL: 0.22, ankleR: -0.12,
+          armL: -0.08, armR: 0.18, elbowL: 0.38, elbowR: -0.28,
+          wristL: -0.20, wristR: 0.12, bodyRoll: 0.010, bodyPitch: -0.020,
+          lift: 0.040, squash: 0.010, headRoll: 0.025, headPitch: 0.055),
+    .init(legL: -0.62, legR: 0.70, ankleL: 0.40, ankleR: -0.26,
+          armL: 0.62, armR: -0.70, elbowL: 0.48, elbowR: -0.08,
+          wristL: -0.24, wristR: 0.02, bodyRoll: -0.045, bodyPitch: -0.060,
+          lift: 0.082, squash: 0.000, headRoll: 0.065, headPitch: 0.020),
+    .init(legL: -0.62, legR: 0.82, ankleL: 0.42, ankleR: -0.30,
+          armL: 0.64, armR: -0.76, elbowL: 0.42, elbowR: -0.12,
+          wristL: -0.22, wristR: 0.04, bodyRoll: -0.050, bodyPitch: -0.045,
+          lift: 0.00, squash: 0.035, headRoll: 0.045, headPitch: 0.025),
+    .init(legL: -0.38, legR: 0.55, ankleL: 0.28, ankleR: -0.16,
+          armL: 0.52, armR: -0.58, elbowL: 0.50, elbowR: -0.22,
+          wristL: -0.26, wristR: 0.10, bodyRoll: -0.070, bodyPitch: 0.020,
+          lift: -0.018, squash: 0.080, headRoll: 0.070, headPitch: -0.020),
+    .init(legL: 0.18, legR: -0.12, ankleL: -0.12, ankleR: 0.22,
+          armL: 0.18, armR: -0.08, elbowL: 0.28, elbowR: -0.38,
+          wristL: -0.12, wristR: 0.20, bodyRoll: -0.010, bodyPitch: -0.020,
+          lift: 0.040, squash: 0.010, headRoll: -0.025, headPitch: 0.055),
+    .init(legL: 0.70, legR: -0.62, ankleL: -0.26, ankleR: 0.40,
+          armL: -0.70, armR: 0.62, elbowL: 0.08, elbowR: -0.48,
+          wristL: -0.02, wristR: 0.24, bodyRoll: 0.045, bodyPitch: -0.060,
+          lift: 0.082, squash: 0.000, headRoll: -0.065, headPitch: 0.020),
+]
+
+private func villagerWalkPose(_ phase: Float) -> VillagerWalkPose {
+    let tau = Float.pi * 2
+    var cycle = phase.truncatingRemainder(dividingBy: tau) / tau
+    if cycle < 0 { cycle += 1 }
+    let frame = cycle * Float(villagerWalkFrames.count)
+    let i = Int(frame) % villagerWalkFrames.count
+    let u = frame - floor(frame)
+    let eased = u * u * (3 - 2 * u)
+    return .mix(villagerWalkFrames[i], villagerWalkFrames[(i + 1) % villagerWalkFrames.count], eased)
+}
+
 extension EntityRenderer {
     // =========================================================================
     // Shared animation helpers
@@ -3930,13 +4000,13 @@ extension EntityRenderer {
         let cheekCol = SIMD3<Float>(0.96, 0.62, 0.56)   // rosy cheeks
 
         // ---- ANIMATION PHASES ----
-        let blinkPhase  = phase + hash * 4.7
-        let breathPhase = phase * 0.40 + hash * 1.6
-        // Gentle idle plus a floppy, movement-gated walk. The cubic-ish stride
-        // eases through centre instead of snapping the limbs between extremes.
+        let blinkPhase  = curAmbientPhase + hash * 4.7
+        let breathPhase = curAmbientPhase * 0.40 + hash * 1.6
+        // Idle life stays on wall-clock time. Locomotion comes from the authored
+        // eight-pose clip sampled below, never a frame-to-frame kinematic solve.
         let swaySpeed: Float = 1.1
-        let armSway   = sin(phase * swaySpeed + hash * 2.0) * 0.16   // soft arm swing
-        let leanAngle = sin(phase * swaySpeed * 0.5 + hash) * 0.025  // tiny body lean
+        let armSway   = sin(curAmbientPhase * swaySpeed + hash * 2.0) * 0.16
+        let leanAngle = sin(curAmbientPhase * swaySpeed * 0.5 + hash) * 0.025
         // #253/#254: the engine-authored work action drives every profession.
         // Three deterministic tool strokes span a shift; no wall-clock guess is
         // involved, so stills and motion strips reproduce the same pose.
@@ -3971,28 +4041,23 @@ extension EntityRenderer {
             default: return (0, 0, 0)
             }
         }()
-        // #212 WALK CYCLE. Gate leg/arm swing on the measured ground speed so a moving
-        // villager actually STRIDES (no more sliding) and a standing one plants its
-        // feet and falls back to the gentle idle sway.
+        // #270 authored walk clip. `curGaitSpeed` is a state-machine blend for
+        // villagers, not measured render displacement.
         let walkAmt = poseActive ? 0 : min(1.0, curGaitSpeed / 1.3)
-        let strideWave = sin(phase)
-        let easedStride = strideWave * (0.78 + 0.22 * abs(strideWave))
-        let rubberEcho = sin(phase - 0.38) * 0.16 * walkAmt
-        let stride  = (easedStride * 0.98 + rubberEcho) * walkAmt
+        let walk = villagerWalkPose(phase)
         let armAngL = poseActive ? workArms.0
-            : armSway * (1 - walkAmt) + (-stride * 1.1) * walkAmt
+            : armSway * (1 - walkAmt) + walk.armL * walkAmt
         let armAngR = poseActive ? workArms.1
-            : -armSway * (1 - walkAmt) + (stride * 1.1) * walkAmt
-        let footfall = abs(cos(phase))
-        let stepSquash = footfall * footfall * 0.075 * walkAmt
-        let cartoonLift = (1 - footfall) * s * 0.075 * walkAmt
+            : -armSway * (1 - walkAmt) + walk.armR * walkAmt
+        let stepSquash = walk.squash * walkAmt
+        let cartoonLift = walk.lift * s * walkAmt
 
         let breatheY   = breatheYOffset(breathPhase, scale: s)
         let eyeBlinkSY = blinkScale(blinkPhase)
-        let walkLean   = cos(phase) * 0.055 * walkAmt
+        let walkLean   = walk.bodyRoll * walkAmt
         let workLean: Float = poseActive ? workArms.2 : 0
         let bodyLean   = EntityRenderer.rotZ(leanAngle + walkLean)
-            * EntityRenderer.rotX(-walkLean * 0.65 + workLean)
+            * EntityRenderer.rotX(walk.bodyPitch * walkAmt + workLean)
 
         // ---- PROPORTIONS (cute, slightly stocky person) ----
         // #212: a per-villager vertical stretch (from the stable seed) on legs + torso,
@@ -4056,11 +4121,10 @@ extension EntityRenderer {
         }
         let hipL = SIMD3<Float>(-tW * 0.24, hipY, 0)
         let hipR = SIMD3<Float>( tW * 0.24, hipY, 0)
-        let ankleLag = cos(phase - 0.45) * 0.20 * walkAmt
-        let legAngL: Float = sitting ? 1.05 : stride
-        let legAngR: Float = sitting ? 1.05 : -stride
-        let ankleL: Float = sitting ? -0.85 : -stride * 0.30 + ankleLag
-        let ankleR: Float = sitting ? -0.85 : stride * 0.30 - ankleLag
+        let legAngL: Float = sitting ? 1.05 : walk.legL * walkAmt
+        let legAngR: Float = sitting ? 1.05 : walk.legR * walkAmt
+        let ankleL: Float = sitting ? -0.85 : walk.ankleL * walkAmt
+        let ankleR: Float = sitting ? -0.85 : walk.ankleR * walkAmt
         drawCube(enc: enc, viewProj: viewProj, model: legM(hipL, legAngL),
                  rgb: pantsCol, sat: sat, shape: .cylinder)
         drawCube(enc: enc, viewProj: viewProj, model: legM(hipR, legAngR),
@@ -4128,20 +4192,19 @@ extension EntityRenderer {
                 * EntityRenderer.trans(SIMD3(0, -upperArmH, 0))
                 * EntityRenderer.scaleM(SIMD3(armW * 1.02, armW * 1.02, armD * 1.02))
         }
-        let elbowLag = cos(phase - 0.62) * 0.48 * walkAmt
-        let idleElbow = sin(phase * 0.7 + hash) * 0.05 * (1 - walkAmt)
+        let idleElbow = sin(curAmbientPhase * 0.7 + hash) * 0.05 * (1 - walkAmt)
         let poseElbowL: Float = socialPose ? (sweeping ? -0.38 : -0.24)
             : (curEntityRole == 2 ? -0.42 : -0.22)
         let poseElbowR: Float = socialPose ? (sweeping ? -0.48 : -0.30)
             : (curEntityRole == 3 ? -0.40 : -0.12)
         let elbowL: Float = poseActive ? poseElbowL
-            : elbowLag + idleElbow
+            : walk.elbowL * walkAmt + idleElbow
         let elbowR: Float = poseActive ? poseElbowR
-            : -elbowLag - idleElbow
+            : walk.elbowR * walkAmt - idleElbow
         let wristL: Float = poseActive ? (sweeping ? 0.20 : 0.10)
-            : -elbowL * 0.55 + sin(phase - 1.05) * 0.18 * walkAmt
+            : walk.wristL * walkAmt - idleElbow * 0.4
         let wristR: Float = poseActive ? (sweeping ? -0.18 : 0.05)
-            : -elbowR * 0.55 - sin(phase - 1.05) * 0.18 * walkAmt
+            : walk.wristR * walkAmt + idleElbow * 0.4
         drawCube(enc: enc, viewProj: viewProj,
                  model: upperArmM(shoulderXL, armAngL),
                  rgb: tunicCol, sat: sat, shape: .cylinder)
@@ -4252,10 +4315,9 @@ extension EntityRenderer {
         let headY: Float = tH * 0.50 + nkH + hH * 0.50
         let headZ: Float = 0
         let headPivot = SIMD3<Float>(0, tH * 0.50 + nkH, 0)
-        let headLagZ = -walkLean * 1.35
-            + sin(phase - 0.70) * 0.075 * walkAmt
-            + sin(phase * 0.55 + hash) * 0.018 * (1 - walkAmt)
-        let headLagX = cos(phase - 0.45) * 0.065 * walkAmt
+        let headLagZ = walk.headRoll * walkAmt
+            + sin(curAmbientPhase * 0.55 + hash) * 0.018 * (1 - walkAmt)
+        let headLagX = walk.headPitch * walkAmt
         let socialHeadY: Float = curEntityAction == 5 ? sin(curEntityActionProgress * .pi * 2) * 0.52 : 0
         let socialNod: Float = (curEntityAction == 7 || curEntityAction == 8)
             ? sin(curEntityActionProgress * .pi * 4) * 0.10 : 0

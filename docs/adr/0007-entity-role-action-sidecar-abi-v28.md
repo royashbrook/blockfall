@@ -18,7 +18,7 @@ typedef struct bf_entity_role_action {
     uint32_t role;
     uint32_t action;   /* 1 idle, 2 travel, 3 work, 4 return home */
     float    progress;
-    uint32_t _pad;
+    uint32_t _pad;     /* bit 0: engine locomotion is active */
 } bf_entity_role_action;
 
 typedef struct bf_entity_role_action_view {

@@ -433,7 +433,10 @@ impl<'c> World<'c> {
                     } else {
                         0.0
                     },
-                    _pad: 0,
+                    // bit 0 is the engine-authored locomotion state. The renderer
+                    // selects/blends a walk clip from this instead of deriving limb
+                    // poses from noisy render-frame position deltas (#270).
+                    _pad: u32::from(cr.ai.speed > 0.05),
                 }
             } else {
                 bf_entity_role_action::default()

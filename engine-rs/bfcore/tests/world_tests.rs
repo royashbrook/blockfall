@@ -1875,17 +1875,33 @@ fn woodcutter_walks_to_station_works_and_returns_home() {
     assert_eq!(w.debug_villager_routine_action(worker), 1, "shift starts idle");
 
     let mut sequence = vec![1u32];
+    let mut locomotion_flag_seen = false;
     for _ in 0..600 {
         w.update(&zero, 0.05);
         let action = w.debug_villager_routine_action(worker);
         if sequence.last().copied() != Some(action) {
             sequence.push(action);
         }
+        if action == 2 && !locomotion_flag_seen {
+            let mut frame = empty_frame();
+            let mut draws = Vec::new();
+            let mut shadows = Vec::new();
+            let mut props = Vec::new();
+            w.build_frame(&mut frame, &mut draws, &mut shadows, &mut props, 0.0);
+            locomotion_flag_seen = w
+                .entity_role_actions()
+                .iter()
+                .any(|entry| entry.role == 4 && entry._pad & 1 != 0);
+        }
         if action == 3 {
             break;
         }
     }
     assert_eq!(&sequence[..3], &[1, 2, 3], "idle -> station travel -> work");
+    assert!(
+        locomotion_flag_seen,
+        "travel sidecar selects the authored walk clip"
+    );
     let (x, y, z) = w.debug_creature_pos(worker);
     assert!((x - 11.5).abs() < 0.06 && (y - 8.0).abs() < 0.06 && (z - 12.5).abs() < 0.06,
             "worker occupies the west work cell: ({x:.2},{y:.2},{z:.2})");
