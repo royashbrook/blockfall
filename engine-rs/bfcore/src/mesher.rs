@@ -1352,14 +1352,14 @@ fn emit_loot_barrel(
     }
 
     let plates = [
-        (6, 10, 7, 12, 1, 2, IRON),
-        (6, 10, 7, 12, 14, 15, IRON),
-        (1, 2, 7, 12, 6, 10, IRON),
-        (14, 15, 7, 12, 6, 10, IRON),
-        (7, 9, 9, 11, 0, 1, GLOW),
-        (7, 9, 9, 11, 15, 16, GLOW),
-        (0, 1, 9, 11, 7, 9, GLOW),
-        (15, 16, 9, 11, 7, 9, GLOW),
+        (6, 10, 7, 10, 0, 1, IRON),
+        (6, 10, 7, 10, 15, 16, IRON),
+        (0, 1, 7, 10, 6, 10, IRON),
+        (15, 16, 7, 10, 6, 10, IRON),
+        (7, 9, 11, 13, 0, 1, GLOW),
+        (7, 9, 11, 13, 15, 16, GLOW),
+        (0, 1, 11, 13, 7, 9, GLOW),
+        (15, 16, 11, 13, 7, 9, GLOW),
         (6, 10, 15, 16, 6, 10, GLOW),
     ];
     for &(xlo, xhi, ylo, yhi, zlo, zhi, mat) in &plates {
@@ -3122,6 +3122,12 @@ mod tests {
                 .all(|v| v[11] == 15),
             "filled loot crests use maximum block light"
         );
+        let glow_min_y = verts
+            .iter()
+            .filter(|(_, material)| *material == 7)
+            .map(|(position, _)| position[1])
+            .fold(f32::MAX, f32::min);
+        assert!((glow_min_y - (8.0 + 11.0 / 16.0)).abs() < 1e-4);
 
         store.loot_barrels_filled = false;
         let (empty_res, empty_vtx, _) =

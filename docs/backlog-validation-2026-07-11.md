@@ -435,7 +435,9 @@ negative `(x,z)` values are equivalent to their canonical `0–32767` values.
   bright emissive crest lights; take its final item and they must turn fully off, then
   deposit one item and they must relight. The treasure-hall barrel is at
   `(6621, 18, 30886)`. Save/reload both an empty and non-empty barrel, and break one;
-  all existing chest inventory and persistence behavior must remain intact.
+  all existing chest inventory and persistence behavior must remain intact. Slowly orbit
+  all four faces at daylight and dusk: lock plates, the middle hoop, and lights must stay
+  depth-stable with no flicker where their edges meet.
 - Grand tower: anchor `(-1243, 19, 3048)`, canonical x `31525`. Enter the south door,
   follow all 24 supported steps through both landings, and open the summit chest.
   Its encounter is the existing bounded three-defender danger band.
