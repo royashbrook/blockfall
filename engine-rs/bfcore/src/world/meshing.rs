@@ -402,7 +402,7 @@ impl<'c> World<'c> {
         }
     }
 
-    fn submit_mesh_job(&mut self, cc: ChunkCoord) {
+    fn mesh_snapshot(&self, cc: ChunkCoord) -> SnapStore {
         let mut chunks: HashMap<ChunkCoord, PaletteChunk> = HashMap::new();
         let add = |w: &mut HashMap<ChunkCoord, PaletteChunk>, c: ChunkCoord| {
             if let Some(ch) = self.store.get(c) {
@@ -445,6 +445,34 @@ impl<'c> World<'c> {
         for d in dirs {
             add(&mut chunks, d);
         }
+        let mut filled_loot_barrels = HashSet::new();
+        if let Some(chunk) = chunks.get(&cc) {
+            for z in 0..KCHUNK_DIM as usize {
+                for y in 0..KCHUNK_DIM as usize {
+                    for x in 0..KCHUNK_DIM as usize {
+                        if chunk.get(x, y, z) != CHEST {
+                            continue;
+                        }
+                        let w = IVec3 {
+                            x: cc.x * KCHUNK_DIM + x as i32,
+                            y: cc.y * KCHUNK_DIM + y as i32,
+                            z: cc.z * KCHUNK_DIM + z as i32,
+                        };
+                        if self.chest_has_contents(w) {
+                            filled_loot_barrels.insert((w.x, w.y, w.z));
+                        }
+                    }
+                }
+            }
+        }
+        SnapStore {
+            chunks,
+            filled_loot_barrels,
+        }
+    }
+
+    fn submit_mesh_job(&mut self, cc: ChunkCoord) {
+        let snap = self.mesh_snapshot(cc);
         let tx = match self.mesh_tx.as_ref() {
             Some(t) => t.clone(),
             None => return,
@@ -456,7 +484,6 @@ impl<'c> World<'c> {
         self.mesh_inflight.insert(cc);
         let mesher = GreedyMesher::new();
         let job = move || {
-            let snap = SnapStore { chunks };
             let (mr, vbytes, ibytes) = mesher.mesh(cc, &snap, false);
             let empty = mr.empty || mr.index_count == 0;
             let _ = tx.send(MeshJobResult {
@@ -539,7 +566,8 @@ impl<'c> World<'c> {
     fn remesh_one(&mut self, cc: ChunkCoord) {
         let props = self.scan_chunk_props(cc);
         let has_water = self.chunk_has_water(cc);
-        let (mr, vbytes, ibytes) = self.mesher.mesh(cc, &self.store, false);
+        let snap = self.mesh_snapshot(cc);
+        let (mr, vbytes, ibytes) = self.mesher.mesh(cc, &snap, false);
         if let Some(rec) = self.meshes.get(&cc) {
             if rec.has_buffers {
                 self.gpu_free(rec.vbuf.handle);

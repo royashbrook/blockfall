@@ -252,11 +252,19 @@ impl mesher::ChunkStore for ChunkStore {
 // cross-chunk lookups it needs from these seven entries.
 struct SnapStore {
     chunks: HashMap<ChunkCoord, PaletteChunk>,
+    filled_loot_barrels: HashSet<(i32, i32, i32)>,
 }
 impl mesher::ChunkStore for SnapStore {
     type Chunk = PaletteChunk;
     fn get(&self, c: ChunkCoord) -> Option<&PaletteChunk> {
         self.chunks.get(&c)
+    }
+    fn loot_barrel_filled(&self, c: ChunkCoord, x: usize, y: usize, z: usize) -> bool {
+        self.filled_loot_barrels.contains(&(
+            c.x * KCHUNK_DIM + x as i32,
+            c.y * KCHUNK_DIM + y as i32,
+            c.z * KCHUNK_DIM + z as i32,
+        ))
     }
 }
 

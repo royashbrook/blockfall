@@ -17,6 +17,12 @@ impl Default for ChestData {
     }
 }
 
+impl ChestData {
+    fn has_contents(&self) -> bool {
+        self.slots.iter().any(|slot| !slot.is_empty())
+    }
+}
+
 impl<'c> World<'c> {
     // splitmix64 finaliser: a stable, seed+position-derived hash for deterministic
     // loot. Self-contained so it does not perturb self.rng.
@@ -118,6 +124,27 @@ impl<'c> World<'c> {
         }
     }
 
+    // Meshing can answer this without materializing unopened chest state: untouched
+    // barrels use the same deterministic roll they will receive on first open.
+    pub(super) fn chest_has_contents(&self, w: IVec3) -> bool {
+        let w = Self::canon_block(w);
+        self.chests
+            .get(&(w.x, w.y, w.z))
+            .filter(|data| data.filled)
+            .map(ChestData::has_contents)
+            .unwrap_or_else(|| self.roll_chest_loot(w).iter().any(|slot| !slot.is_empty()))
+    }
+
+    fn dirty_chest_if_occupancy_changed(&mut self, w: IVec3, was_nonempty: bool) {
+        let w = Self::canon_block(w);
+        if self.chest_has_contents(w) == was_nonempty {
+            return;
+        }
+        let cc = Self::canon_chunk(Self::to_chunk(w));
+        self.mark_dirty(cc);
+        self.urgent_dirty.insert(cc);
+    }
+
     pub(super) fn spill_chest_on_break(&mut self, t: IVec3) {
         if self.last_chest_open == Some(t) {
             self.last_chest_open = None;
@@ -185,6 +212,7 @@ impl<'c> World<'c> {
         }
         self.ensure_chest(w);
         let key = (w.x, w.y, w.z);
+        let was_nonempty = self.chest_has_contents(w);
         let src = match self.chests.get(&key) {
             Some(c) => c.slots[slot],
             None => return false,
@@ -218,6 +246,7 @@ impl<'c> World<'c> {
             }
             let nm = self.item_name(src.item);
             self.notify_quest("collect_item", &nm);
+            self.dirty_chest_if_occupancy_changed(w, was_nonempty);
         }
         moved
     }
@@ -228,6 +257,7 @@ impl<'c> World<'c> {
         }
         self.ensure_chest(w);
         let key = (w.x, w.y, w.z);
+        let was_nonempty = self.chest_has_contents(w);
         let held = match self.inv.as_ref() {
             Some(i) => i.get(inv_slot),
             None => return false,
@@ -279,6 +309,7 @@ impl<'c> World<'c> {
                     inv.set(inv_slot, s);
                 }
             }
+            self.dirty_chest_if_occupancy_changed(w, was_nonempty);
         }
         moved
     }
@@ -294,5 +325,81 @@ impl<'c> World<'c> {
 
     pub fn close_chest(&mut self) {
         self.last_chest_open = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CONTENT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../content");
+
+    #[test]
+    fn chest_mesh_dirties_only_when_empty_state_changes() {
+        let mut content = ContentRegistry::new();
+        assert!(content.load(CONTENT));
+        let mut world = World::new(None);
+        world.set_content(&content);
+        let pos = IVec3 { x: 8, y: 8, z: 8 };
+        world.set_block_internal(pos, CHEST);
+        let item = world.item_id_by_name("dirt");
+        assert_ne!(item, 0);
+
+        let mut data = ChestData {
+            slots: [ItemStack::default(); CHEST_SLOTS],
+            filled: true,
+        };
+        data.slots[0] = ItemStack {
+            item,
+            count: 1,
+            durability: 0xFFFF,
+        };
+        data.slots[1] = data.slots[0];
+        world.chests.insert((pos.x, pos.y, pos.z), data);
+        let cc = World::to_chunk(pos);
+
+        world.dirty.clear();
+        world.urgent_dirty.clear();
+        assert!(world.chest_take(pos, 0));
+        assert!(!world.dirty.contains(&cc), "still-filled barrel does not remesh");
+
+        assert!(world.chest_take(pos, 1));
+        assert!(world.dirty.contains(&cc));
+        assert!(world.urgent_dirty.contains(&cc));
+
+        world.dirty.clear();
+        world.urgent_dirty.clear();
+        let inv_slot = (0..BF_INVENTORY_SLOTS)
+            .find(|&slot| world.inv.as_ref().unwrap().get(slot).item == item)
+            .expect("taken item is in inventory");
+        assert!(world.chest_deposit(pos, inv_slot));
+        assert!(world.dirty.contains(&cc), "first deposit lights an empty barrel");
+
+        world.dirty.clear();
+        world.urgent_dirty.clear();
+        world.debug_give(item, 1);
+        let inv_slot = (0..BF_INVENTORY_SLOTS)
+            .find(|&slot| world.inv.as_ref().unwrap().get(slot).item == item)
+            .expect("given item is in inventory");
+        assert!(world.chest_deposit(pos, inv_slot));
+        assert!(!world.dirty.contains(&cc), "filled-to-filled deposit does not remesh");
+    }
+
+    #[test]
+    fn unopened_seed11_boss_barrel_reports_contents_before_materializing() {
+        let mut content = ContentRegistry::new();
+        assert!(content.load(CONTENT));
+        let mut world = World::new(None);
+        world.set_content(&content);
+        world.seed = 11;
+        let pos = IVec3 {
+            x: 6621,
+            y: 18,
+            z: 30886,
+        };
+        assert!(world.chest_has_contents(pos));
+        assert!(!world.chests.contains_key(&(pos.x, pos.y, pos.z)));
+        world.ensure_chest(pos);
+        assert!(world.chest_has_contents(pos));
     }
 }

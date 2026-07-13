@@ -431,9 +431,11 @@ negative `(x,z)` values are equivalent to their canonical `0–32767` values.
   Survival it spawns one hostile scale-2 content boss; in Hard Creative the same boss
   appears but cannot hunt or damage the observer.
 - Those containers now read as **Loot Barrels**: bowed octagonal oak casks with three
-  iron hoops, a lock crest on every cardinal face, and a small emissive loot mark. The
-  treasure-hall barrel is at `(6621, 18, 30886)`. Open it, take/deposit loot, save/reload,
-  and break it; all existing chest inventory and persistence behavior must remain intact.
+  iron hoops and a lock crest on every cardinal face. A barrel containing anything has
+  bright emissive crest lights; take its final item and they must turn fully off, then
+  deposit one item and they must relight. The treasure-hall barrel is at
+  `(6621, 18, 30886)`. Save/reload both an empty and non-empty barrel, and break one;
+  all existing chest inventory and persistence behavior must remain intact.
 - Grand tower: anchor `(-1243, 19, 3048)`, canonical x `31525`. Enter the south door,
   follow all 24 supported steps through both landings, and open the summit chest.
   Its encounter is the existing bounded three-defender danger band.

@@ -65,6 +65,11 @@ pub trait ChunkStore {
     type Chunk: Chunk;
     // IChunkStore::get returns a nullable pointer; None == not resident == air.
     fn get(&self, c: ChunkCoord) -> Option<&Self::Chunk>;
+    // Runtime worlds override this for contents-aware loot-barrel crests. Generic
+    // stores keep the original filled appearance unless they carry chest state.
+    fn loot_barrel_filled(&self, _c: ChunkCoord, _x: usize, _y: usize, _z: usize) -> bool {
+        true
+    }
 }
 
 // ============================================================================
@@ -1281,7 +1286,15 @@ fn emit_octagonal_frustum_16(
 // Block id 31 keeps all chest inventory/save semantics, but its persistent chunk
 // silhouette is now an unmistakable round loot cask: bowed oak body, three iron
 // hoops, cardinal lock plates and a restrained emissive crest visible from any side.
-fn emit_loot_barrel(bx: i32, by: i32, bz: i32, sky: u8, blk: u8, buf: &mut MeshBuffers) -> bool {
+fn emit_loot_barrel(
+    bx: i32,
+    by: i32,
+    bz: i32,
+    sky: u8,
+    blk: u8,
+    filled: bool,
+    buf: &mut MeshBuffers,
+) -> bool {
     const VERTICES: usize = 456;
     const INDICES: usize = 660;
     if buf.vtx_cap - buf.vtx.len() < VERTICES * VERTEX_SIZE
@@ -1350,9 +1363,10 @@ fn emit_loot_barrel(bx: i32, by: i32, bz: i32, sky: u8, blk: u8, buf: &mut MeshB
         (6, 10, 15, 16, 6, 10, GLOW),
     ];
     for &(xlo, xhi, ylo, yhi, zlo, zhi, mat) in &plates {
-        let part_blk = if mat == GLOW { blk.max(14) } else { blk };
+        let part_mat = if mat == GLOW && !filled { IRON } else { mat };
+        let part_blk = if mat == GLOW && filled { 15 } else { blk };
         if !emit_cuboid_16(
-            bx, by, bz, xlo, xhi, ylo, yhi, zlo, zhi, mat, sky, part_blk, buf,
+            bx, by, bz, xlo, xhi, ylo, yhi, zlo, zhi, part_mat, sky, part_blk, buf,
         ) {
             return false;
         }
@@ -2473,7 +2487,13 @@ impl GreedyMesher {
                     if is_loot_barrel(here) {
                         let bsky = chunk.sky_light(x as usize, y as usize, z as usize);
                         let bblk = chunk.block_light(x as usize, y as usize, z as usize);
-                        if !emit_loot_barrel(x, y, z, bsky, bblk, &mut buf) {
+                        let filled = store.loot_barrel_filled(
+                            c,
+                            x as usize,
+                            y as usize,
+                            z as usize,
+                        );
+                        if !emit_loot_barrel(x, y, z, bsky, bblk, filled, &mut buf) {
                             buf.full = true;
                             return finalize(buf, false);
                         }
@@ -2661,11 +2681,13 @@ mod tests {
 
     struct TestStore {
         chunks: HashMap<ChunkCoord, TestChunk>,
+        loot_barrels_filled: bool,
     }
     impl TestStore {
         fn new() -> Self {
             TestStore {
                 chunks: HashMap::new(),
+                loot_barrels_filled: true,
             }
         }
     }
@@ -2673,6 +2695,9 @@ mod tests {
         type Chunk = TestChunk;
         fn get(&self, c: ChunkCoord) -> Option<&TestChunk> {
             self.chunks.get(&c)
+        }
+        fn loot_barrel_filled(&self, _c: ChunkCoord, _x: usize, _y: usize, _z: usize) -> bool {
+            self.loot_barrels_filled
         }
     }
 
@@ -3094,9 +3119,17 @@ mod tests {
         assert!(
             vtx.chunks_exact(VERTEX_SIZE)
                 .filter(|v| u16::from_le_bytes([v[8], v[9]]) == 7)
-                .all(|v| v[11] >= 14),
-            "loot crests stay visibly emissive in an unlit barrel cell"
+                .all(|v| v[11] == 15),
+            "filled loot crests use maximum block light"
         );
+
+        store.loot_barrels_filled = false;
+        let (empty_res, empty_vtx, _) =
+            GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+        let empty_verts = decode_position_and_mat(&empty_vtx);
+        assert_eq!(empty_res.index_count, res.index_count);
+        assert_eq!(empty_verts.iter().filter(|(_, m)| *m == 7).count(), 0);
+        assert_eq!(empty_verts.iter().filter(|(_, m)| *m == 53).count(), 312);
 
         for axis in 0..3 {
             let (lo, hi) = verts
@@ -3114,7 +3147,7 @@ mod tests {
         );
 
         let mut short = MeshBuffers::new(456 * VERTEX_SIZE - 1, 660 * INDEX_SIZE);
-        assert!(!emit_loot_barrel(0, 0, 0, 15, 0, &mut short));
+        assert!(!emit_loot_barrel(0, 0, 0, 15, 0, true, &mut short));
         assert!(short.vtx.is_empty() && short.idx.is_empty());
     }
 
