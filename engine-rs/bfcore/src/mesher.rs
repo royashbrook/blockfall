@@ -1208,6 +1208,7 @@ fn emit_octagonal_frustum_16(
     yhi: u32,
     cap_bottom: bool,
     cap_top: bool,
+    cap_inner: Option<&[(u32, u32); 8]>,
     mat: BlockId,
     sky: u8,
     blk: u8,
@@ -1267,6 +1268,26 @@ fn emit_octagonal_frustum_16(
             let n = (i + 1) & 7;
             let (ax, az) = points[i];
             let (bx2, bz2) = points[n];
+            if let Some(inner) = cap_inner {
+                let (iax, iaz) = inner[i];
+                let (ibx, ibz) = inner[n];
+                if top {
+                    buf.quad(
+                        &vert(bx2, fy, bz2, normal, bx2, bz2),
+                        &vert(ax, fy, az, normal, ax, az),
+                        &vert(iax, fy, iaz, normal, iax, iaz),
+                        &vert(ibx, fy, ibz, normal, ibx, ibz),
+                    );
+                } else {
+                    buf.quad(
+                        &vert(ax, fy, az, normal, ax, az),
+                        &vert(bx2, fy, bz2, normal, bx2, bz2),
+                        &vert(ibx, fy, ibz, normal, ibx, ibz),
+                        &vert(iax, fy, iaz, normal, iax, iaz),
+                    );
+                }
+                continue;
+            }
             let (p1, p2) = if top {
                 ((bx2, bz2), (ax, az))
             } else {
@@ -1295,8 +1316,8 @@ fn emit_loot_barrel(
     filled: bool,
     buf: &mut MeshBuffers,
 ) -> bool {
-    const VERTICES: usize = 456;
-    const INDICES: usize = 660;
+    const VERTICES: usize = 648;
+    const INDICES: usize = 948;
     if buf.vtx_cap - buf.vtx.len() < VERTICES * VERTEX_SIZE
         || buf.idx_cap - buf.idx.len() < INDICES * INDEX_SIZE
     {
@@ -1337,17 +1358,30 @@ fn emit_loot_barrel(
     ];
 
     emit_octagonal_frustum_16(
-        bx, by, bz, &NARROW, &WIDE, 0, 5, true, false, CHEST, sky, blk, buf,
+        bx, by, bz, &NARROW, &WIDE, 0, 5, true, false, None, CHEST, sky, blk, buf,
     );
     emit_octagonal_frustum_16(
-        bx, by, bz, &WIDE, &WIDE, 5, 11, false, false, CHEST, sky, blk, buf,
+        bx, by, bz, &WIDE, &WIDE, 5, 11, false, false, None, CHEST, sky, blk, buf,
     );
     emit_octagonal_frustum_16(
-        bx, by, bz, &WIDE, &NARROW, 11, 15, false, true, CHEST, sky, blk, buf,
+        bx, by, bz, &WIDE, &NARROW, 11, 15, false, true, None, CHEST, sky, blk, buf,
     );
-    for &(ylo, yhi) in &[(3, 4), (10, 11), (14, 15)] {
+    for &(ylo, yhi, inner) in &[(3, 4, &WIDE), (10, 11, &WIDE), (14, 15, &NARROW)] {
         emit_octagonal_frustum_16(
-            bx, by, bz, &HOOP, &HOOP, ylo, yhi, false, false, IRON, sky, blk, buf,
+            bx,
+            by,
+            bz,
+            &HOOP,
+            &HOOP,
+            ylo,
+            yhi,
+            true,
+            true,
+            Some(inner),
+            IRON,
+            sky,
+            blk,
+            buf,
         );
     }
 
@@ -3111,10 +3145,10 @@ mod tests {
 
         let (res, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
         let verts = decode_position_and_mat(&vtx);
-        assert_eq!(res.index_count, 660);
-        assert_eq!(res.vertex_bytes, 456 * VERTEX_SIZE as u32);
+        assert_eq!(res.index_count, 948);
+        assert_eq!(res.vertex_bytes, 648 * VERTEX_SIZE as u32);
         assert_eq!(verts.iter().filter(|(_, m)| *m == CHEST).count(), 144);
-        assert_eq!(verts.iter().filter(|(_, m)| *m == 53).count(), 192);
+        assert_eq!(verts.iter().filter(|(_, m)| *m == 53).count(), 384);
         assert_eq!(verts.iter().filter(|(_, m)| *m == 7).count(), 120);
         assert!(
             vtx.chunks_exact(VERTEX_SIZE)
@@ -3135,7 +3169,7 @@ mod tests {
         let empty_verts = decode_position_and_mat(&empty_vtx);
         assert_eq!(empty_res.index_count, res.index_count);
         assert_eq!(empty_verts.iter().filter(|(_, m)| *m == 7).count(), 0);
-        assert_eq!(empty_verts.iter().filter(|(_, m)| *m == 53).count(), 312);
+        assert_eq!(empty_verts.iter().filter(|(_, m)| *m == 53).count(), 504);
 
         for axis in 0..3 {
             let (lo, hi) = verts
@@ -3152,9 +3186,35 @@ mod tests {
             "the oak body is faceted, never a full-cube corner"
         );
 
-        let mut short = MeshBuffers::new(456 * VERTEX_SIZE - 1, 660 * INDEX_SIZE);
+        let mut short = MeshBuffers::new(648 * VERTEX_SIZE - 1, 948 * INDEX_SIZE);
         assert!(!emit_loot_barrel(0, 0, 0, 15, 0, true, &mut short));
         assert!(short.vtx.is_empty() && short.idx.is_empty());
+    }
+
+    #[test]
+    fn loot_barrel_hoops_are_closed_bands() {
+        let mut buf = MeshBuffers::new(648 * VERTEX_SIZE, 948 * INDEX_SIZE);
+        assert!(emit_loot_barrel(0, 0, 0, 15, 0, true, &mut buf));
+
+        let mut hoop_faces = [false; 6];
+        for vertex in buf.vtx.chunks_exact(VERTEX_SIZE) {
+            if u16::from_le_bytes([vertex[8], vertex[9]]) != 53 {
+                continue;
+            }
+            let normal_uv = u32::from_le_bytes([vertex[4], vertex[5], vertex[6], vertex[7]]);
+            if normal_uv & 0x7 != BF_NY_POS && normal_uv & 0x7 != BF_NY_NEG {
+                continue;
+            }
+            let packed = u32::from_le_bytes([vertex[0], vertex[1], vertex[2], vertex[3]]);
+            let fy = ((packed >> 22) & 0xF) as usize;
+            if let Some(index) = [3, 4, 10, 11, 14, 15].iter().position(|&y| y == fy) {
+                hoop_faces[index] = true;
+            }
+        }
+        assert!(
+            hoop_faces.into_iter().all(|present| present),
+            "every hoop has a top and bottom annular face instead of a zero-thickness side sheet"
+        );
     }
 
     #[test]
