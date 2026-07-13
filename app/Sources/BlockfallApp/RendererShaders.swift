@@ -3551,10 +3551,11 @@ extension Renderer {
         // #180 horizon curvature: props/trees must bend with the terrain or distant
         // canopies float above the sunken ground.
         o.position = u.viewProj * float4(horizonBend(world, u.camPosH), 1.0);
-        // Leaf spheres overlap to form one canopy. Keep their tone flat so the
-        // winning shell at an overlap cannot flash between different facet shades
-        // as a distant camera turns. Oak/birch still differ in the model palette.
-        o.nrm = isLeaf ? float3(0.0) : nm;
+        // Leaf spheres overlap to form one canopy. Keep only the magnitude of the
+        // analytic vertical normal: camera yaw cannot change it, and abs keeps two
+        // vertically overlapping shells close in tone. This restores soft lobe
+        // definition without bringing back view-dependent facet flashes (#279).
+        o.nrm = isLeaf ? float3(0.0, abs(nm.y) * 0.55, 0.0) : nm;
         // flat colour, drained by region saturation, scaled by day brightness
         float3 base = float3(cu.color);
         // Per-instance variety: flower blooms (rows 0/1, cuboid 1) take a palette

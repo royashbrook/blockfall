@@ -828,7 +828,9 @@ func runHeadlessSelfTest() -> Bool {
           Renderer.propRowVertexCounts[berryRow] == 5 * 144
     else { return false }
     guard Renderer.shaderSource.contains("float leafPhase = float(inst.position.x) * 0.18"),
-          Renderer.shaderSource.contains("base *= 1.0 + 0.04 * sin(leafPhase);")
+          Renderer.shaderSource.contains("base *= 1.0 + 0.04 * sin(leafPhase);"),
+          Renderer.shaderSource.contains(
+              "o.nrm = isLeaf ? float3(0.0, abs(nm.y) * 0.55, 0.0) : nm;")
     else { return false }
     var cfg = bf_engine_config()
     cfg.abi_version = BF_ABI_VERSION
