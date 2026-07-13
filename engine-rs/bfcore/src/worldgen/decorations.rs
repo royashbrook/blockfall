@@ -33,6 +33,13 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
                     continue;
                 }
 
+                // #280: the height field is the pre-carve surface. Cave entrances
+                // remove that support before decorations run, so never root a tree
+                // in one of their open columns.
+                if cave_entrance_depth(td.root_wx, td.root_wz, seed) > 0 {
+                    continue;
+                }
+
                 // Skip trees whose root falls inside a structure's no-tree clearance
                 // zone so trunks / canopies never intersect a building (#143).
                 if tree_blocked_by_structure(td.root_wx, td.root_wz, seed) {
