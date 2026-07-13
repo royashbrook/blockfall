@@ -3533,6 +3533,46 @@ fn pine_tree_fells_with_canopy() {
     assert_eq!(w.debug_block_at(bx, 9, bz), 0, "pine trunk felled");
 }
 
+#[test]
+fn breaking_tree_support_fells_matching_canopy() {
+    for (log, leaf) in [(21, 5), (22, 27), (49, 48)] {
+        let (_c, mut w) = debris_world();
+        let (bx, bz) = (8, 8);
+        for y in 8..=11 {
+            w.debug_edit(bx, y, bz, log);
+        }
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                w.debug_edit(bx + dx, 12, bz + dz, leaf);
+            }
+        }
+
+        w.debug_break_block(bx, 7, bz);
+
+        for y in 8..=11 {
+            assert_eq!(w.debug_block_at(bx, y, bz), 0, "log {log} stayed at y={y}");
+        }
+        assert_eq!(w.debug_block_at(bx + 1, 12, bz), 0, "leaf {leaf} stayed aloft");
+    }
+}
+
+#[test]
+fn breaking_support_leaves_structural_logs_standing() {
+    let (_c, mut w) = debris_world();
+    let (bx, bz) = (8, 8);
+    for y in 8..=11 {
+        w.debug_edit(bx, y, bz, 21);
+    }
+    w.debug_edit(bx + 1, 12, bz, 27); // Wrong-species leaf is not this timber's canopy.
+
+    w.debug_break_block(bx, 7, bz);
+
+    for y in 8..=11 {
+        assert_eq!(w.debug_block_at(bx, y, bz), 21, "structural log fell at y={y}");
+    }
+    assert_eq!(w.debug_block_at(bx + 1, 12, bz), 27);
+}
+
 // ============================================================================
 // #179 looping world: seam behaviour of the live sim (wrap, physics, AI, render).
 // ============================================================================

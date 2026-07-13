@@ -287,6 +287,11 @@ impl<'c> World<'c> {
                 self.spawn_debris_burst(above, ab, adrop);
                 self.set_block_internal(above, AIR);
             }
+            // #281: natural trees lose their root support like sand/gravel, but a
+            // bare structural timber must remain part of its building.
+            if Self::is_log(ab) && self.has_matching_tree_canopy(above) {
+                self.fell_tree(above);
+            }
             self.apply_gravity_above(t);
             self.flow_water(t);
         }

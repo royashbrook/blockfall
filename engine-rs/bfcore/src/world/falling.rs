@@ -109,6 +109,53 @@ impl<'c> World<'c> {
         }
     }
 
+    pub(super) fn has_matching_tree_canopy(&self, base: IVec3) -> bool {
+        let (log, leaf) = match self.block_at(base) {
+            21 => (21, 5),
+            22 => (22, 27),
+            49 => (49, 48),
+            _ => return false,
+        };
+        let mut stack = vec![base];
+        let mut seen = HashSet::from([(base.x, base.y, base.z)]);
+        let mut checked = 0;
+        while let Some(w) = stack.pop() {
+            if checked >= 12 {
+                break;
+            }
+            checked += 1;
+            for dx in -3..=3 {
+                for dy in -1..=4 {
+                    for dz in -3..=3 {
+                        if self.block_at(IVec3 {
+                            x: w.x + dx,
+                            y: w.y + dy,
+                            z: w.z + dz,
+                        }) == leaf
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            for dx in -1..=1 {
+                for dy in 0..=1 {
+                    for dz in -1..=1 {
+                        let n = IVec3 {
+                            x: w.x + dx,
+                            y: w.y + dy,
+                            z: w.z + dz,
+                        };
+                        if self.block_at(n) == log && seen.insert((n.x, n.y, n.z)) {
+                            stack.push(n);
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     pub(super) fn fell_tree(&mut self, base: IVec3) {
         let mut logs: Vec<IVec3> = Vec::new();
         let mut stack: Vec<IVec3> = vec![base];
