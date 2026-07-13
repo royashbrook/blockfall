@@ -917,8 +917,13 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             // #136 fold in the god-ray intensity slider. Default is 0 to match the live
             // perf-first shipping default; BF_GODRAY_STR=0.5/1 opts into quality A/Bs.
             let grFrac = Float(ProcessInfo.processInfo.environment["BF_GODRAY_STR"] ?? "0") ?? 0
-            var onStrength = godOff ? 0 : dayT * Renderer.kGodRayStrength * max(0, min(1, grFrac))
-            if debug { onStrength = -max(onStrength, 0.85) }   // sentinel: output raw shaft term
+            let baseRayStrength = godOff
+                ? 0
+                : dayT * Renderer.kGodRayStrength * max(0, min(1, grFrac))
+            var onStrength = baseRayStrength * flareGate.rayVisibility
+            if debug && flareGate.rayVisibility > 0 {
+                onStrength = -max(baseRayStrength, 0.85) * flareGate.rayVisibility
+            }
             let onFlare: Float = flareOff ? 0 : flareGate.strength   // #132
             composite(into: output, godStrength: onStrength, flareStrength: onFlare)
             // pixel-aligned OFF baseline: both god rays AND flare off (so the AB diff is

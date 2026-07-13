@@ -788,6 +788,21 @@ func runWashoutTest() -> Bool {
 
 func runHeadlessSelfTest() -> Bool {
     guard bf_abi_version() == BF_ABI_VERSION else { return false }
+    // #274: a sun behind the camera must disable the radial pass instead of
+    // feeding its (-1,-1) sentinel to the shader as a false top-left light source.
+    let projection = Renderer.perspective(fovy: 1.0, aspect: 1.0, near: 0.1, far: 1000)
+    let frontSun = Renderer.sunFlareGate(viewProj: projection, camPos: .zero,
+                                         sunDir: SIMD3<Float>(0, 0, 1), dayT: 1)
+    let edgeSun = Renderer.sunFlareGate(viewProj: projection, camPos: .zero,
+                                        sunDir: SIMD3<Float>(-0.6, 0, 1), dayT: 1)
+    let outsideSun = Renderer.sunFlareGate(viewProj: projection, camPos: .zero,
+                                           sunDir: SIMD3<Float>(-0.8, 0, 1), dayT: 1)
+    let backSun = Renderer.sunFlareGate(viewProj: projection, camPos: .zero,
+                                        sunDir: SIMD3<Float>(0, 0, -1), dayT: 1)
+    guard frontSun.rayVisibility == 1,
+          edgeSun.rayVisibility > 0, edgeSun.rayVisibility < 1,
+          outsideSun.rayVisibility == 0,
+          backSun.rayVisibility == 0 else { return false }
     // #265: each exposed oak/birch leaf voxel must expand to exactly one sphere,
     // with seed brightness kept off leaves. Extra parts/tones overlap in depth and
     // make distant canopy colours pop on camera yaw.

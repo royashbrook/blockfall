@@ -1697,6 +1697,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                                           camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z),
                                           sunDir: SIMD3<Float>(sun.x, sun.y, sun.z), dayT: dayT)
             sunUVx = g.uv.x; sunUVy = g.uv.y
+            grStrength *= g.rayVisibility
             if gfxLensFlare {                              // #132 lens-flare toggle
                 flareStr = g.strength * (1 - frame.camera.underground)
             }
@@ -2624,39 +2625,41 @@ final class Renderer: NSObject, MTKViewDelegate {
     // BEFORE it reaches the shader. The directional sun has no world position, so we place
     // it a long way down the toSun ray from the camera and project that point. Returns:
     //   onScreenUV : the sun's screen-space uv (matches compositeFrag's top-left uv), or
-    //                (-1,-1) when the sun is behind the camera / off-screen.
+    //                (-1,-1) when the sun is behind the camera.
     //   strength   : the master flare strength, 0..1, folding:
     //                  - daylight  (0 at night so the flare is impossible after dark)
     //                  - in-front-of-camera (flare needs the sun roughly ahead)
     //                  - look-at-sun: peaks when the sun sits near screen centre, fades
     //                    to 0 toward the screen edge (looking away -> no flare).
-    // The shader still does the occlusion (scene-depth) test and the per-element draw; this
-    // just kills the whole pass cheaply when it cannot possibly contribute.
+    //   rayVisibility: continuous 1..0 fade through the small edge margin used by the
+    //                  radial shaft pass. This is separate from centred flare strength.
+    // The shader still does the occlusion (scene-depth) test and the per-element draw; these
+    // gates kill the whole pass cheaply when it cannot possibly contribute.
     static func sunFlareGate(viewProj: simd_float4x4, camPos: SIMD3<Float>,
                              sunDir: SIMD3<Float>, dayT: Float)
-        -> (uv: SIMD2<Float>, strength: Float) {
+        -> (uv: SIMD2<Float>, strength: Float, rayVisibility: Float) {
         // toSun points from the scene toward the sun (sunDir points downward from the sun).
         let toSun = simd_normalize(-sunDir)
         // A far point along the sun ray; projecting it gives the sun's screen position.
         let sunWorld = camPos + toSun * 1.0e6
         let clip = viewProj * SIMD4<Float>(sunWorld.x, sunWorld.y, sunWorld.z, 1.0)
         // Behind the camera (w <= 0): the sun is not in front, no flare.
-        if clip.w <= 1e-4 { return (SIMD2<Float>(-1, -1), 0) }
+        if clip.w <= 1e-4 { return (SIMD2<Float>(-1, -1), 0, 0) }
         let ndc = SIMD2<Float>(clip.x / clip.w, clip.y / clip.w)
         // Metal top-left uv: x maps [-1,1]->[0,1]; y is flipped.
         let uv = SIMD2<Float>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5))
-        // Off-screen (with a small margin so ghosts entering frame are not popped): no flare.
+        // Fade shafts continuously through a small off-screen margin. A hard Boolean
+        // cutoff here made a slow camera turn pop the entire effect in one frame.
         let m: Float = 0.15
-        if uv.x < -m || uv.x > 1 + m || uv.y < -m || uv.y > 1 + m {
-            return (uv, 0)
-        }
+        let outside = max(0, max(max(-uv.x, uv.x - 1), max(-uv.y, uv.y - 1)))
+        let rayVisibility = max(0, min(1, 1 - outside / m))
         // Look-at-sun: how close the sun is to the screen centre (0..1). Strongest when you
         // look straight at the sun, fading smoothly to the edges so a sun in the corner only
         // gives a faint flare and one off-screen gives none.
         let off = simd_length(SIMD2<Float>(uv.x - 0.5, uv.y - 0.5)) * 2.0   // 0 centre .. ~1.4 corner
         let centred = max(0.0, 1.0 - off / kFlareEdgeFade)
         let look = centred * centred * (3.0 - 2.0 * centred)   // smoothstep-ish ease
-        return (uv, dayT * look)
+        return (uv, dayT * look, rayVisibility)
     }
 
     static func perspective(fovy: Float, aspect: Float, near: Float, far: Float) -> simd_float4x4 {

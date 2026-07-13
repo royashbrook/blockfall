@@ -2711,7 +2711,8 @@ extension Renderer {
         float volStrength = vu.sunColor.w;
         // #119 DEBUG: a NEGATIVE strength (harness sentinel, BF_GR_DEBUG=1) outputs the raw
         // shaft in-scatter as grayscale so the beam structure is unmistakable headless.
-        bool volDebug = (volStrength < -0.5);
+        // Any negative value is the harness sentinel; its magnitude may be edge-faded.
+        bool volDebug = (volStrength < 0.0);
         if (volDebug) volStrength = -volStrength;
         if (volStrength > 0.001) {
             float inscatter, litFrac;
