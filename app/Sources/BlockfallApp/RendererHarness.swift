@@ -803,6 +803,13 @@ func runHeadlessSelfTest() -> Bool {
           edgeSun.rayVisibility > 0, edgeSun.rayVisibility < 1,
           outsideSun.rayVisibility == 0,
           backSun.rayVisibility == 0 else { return false }
+    // #274: ray brightness must be monotonic with radial visibility. The removed
+    // 4*l*(1-l) term made half-occluded paths brighter than clear ones, drawing a
+    // bright line directly behind every tree/roof that should cast a dark corridor.
+    guard Renderer.shaderSource.contains(
+              "float shaftRaw = smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac);"),
+          !Renderer.shaderSource.contains("4.0 * litFrac * (1.0 - litFrac)")
+    else { return false }
     // #265: each exposed oak/birch leaf voxel must expand to exactly one sphere,
     // with seed brightness kept off leaves. Extra parts/tones overlap in depth and
     // make distant canopy colours pop on camera yaw.

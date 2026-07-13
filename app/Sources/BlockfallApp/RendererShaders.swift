@@ -2612,13 +2612,12 @@ extension Renderer {
         // GR_SHAFT_GAMMA > 1 then CRUSHES the partly-lit midtones toward black so the
         // broad smooth glare dies and the shadow corridors read as crisp dark gaps
         // between bright beams (graphic, cel-shaded shafts, not a soft halo).
-        // Uniform open sky is sun glow, not a shaft (the sun disc / optional flare
-        // already cover it). Keep only mixed open/occluded radial visibility, which
-        // is where silhouettes actually carve crepuscular beams. Besides reading
-        // more like rays, this removes the enormous shallow phase halo whose 8-bit
-        // quantization exposed screen-sized tonal rectangles.
-        float beamSignal = 4.0 * litFrac * (1.0 - litFrac);
-        float shaftRaw = smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, beamSignal);
+        // More occlusion must never make a ray brighter. The previous symmetric
+        // 4*l*(1-l) term peaked at half visibility, turning every tree/roof shadow
+        // corridor into a bright line on the side away from the sun. Shape the
+        // visibility monotonically instead: clear radial paths stay bright and
+        // silhouettes carve dark corridors through them.
+        float shaftRaw = smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac);
         float shaft    = pow(shaftRaw, GR_SHAFT_GAMMA);
         // #132 DISTINCT BEAMS: sharpen the shaft around its mid-value with a contrast
         // curve so the smooth in-scatter SEGMENTS into separated bright cores and dark
