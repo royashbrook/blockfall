@@ -173,7 +173,7 @@ extension Renderer {
 
     // AmbientSprite: 32 bytes, matches Swift AmbientSpritePod.
     struct AmbientSprite {
-        float4 posW;    // xyz=world pos, w=size
+        float4 posW;    // xyz=world pos; w=bird world radius or tiny-mote size
         float4 color;   // rgb=HDR colour (>1 ok), a=alpha
     };
 
@@ -184,7 +184,7 @@ extension Renderer {
         float    timeOfDay;
         float    wallClock;
         float    horizonOn;  // #180 horizon curvature enable (0 = flat)
-        float    pad1;
+        float    aspect;
     };
 
     // PrecipParticle: 16 bytes, matches Swift PrecipParticlePod.
@@ -3147,9 +3147,8 @@ extension Renderer {
     // The vertex shader reconstructs which sprite and which corner from
     // vertex_id: sprite = vid / 6, corner = vid % 6.
     //
-    // Birds: large (~1 world unit), dark silhouette, drawn at fixed sky
-    //        height — we skip depth testing effect by always writing to
-    //        a far position, so they sit in the sky.
+    // Birds: rounded procedural cartoon billboards, depth-tested against the
+    //        world and turned along their camera-relative sky loops.
     // Fireflies: tiny emissive warm-green, HDR > 1, depth-tested so they
     //            hide behind terrain. They bloom via the existing bloom pass.
     // =========================================================
@@ -3158,8 +3157,20 @@ extension Renderer {
         float4 position [[position]];
         float4 color;    // rgba (HDR allowed)
         float2 uv;       // normalised quad UV (−1..1)
-        uint   isBird [[flat]];  // 1=bird (screen-facing, no depth), 0=firefly
+        float  flap [[flat]];
+        uint   isBird [[flat]];
     };
+
+    float alEllipse(float2 p, float2 center, float2 radius, float angle) {
+        float2 q = p - center;
+        float cs = cos(angle), sn = sin(angle);
+        q = float2(cs * q.x + sn * q.y, -sn * q.x + cs * q.y);
+        return length(q / radius);
+    }
+
+    float alMask(float d, float feather) {
+        return 1.0 - smoothstep(1.0 - feather, 1.0 + feather, d);
+    }
 
     vertex ALVOut ambientLifeVert(uint vid [[vertex_id]],
                                    device const AmbientSprite* sprites [[buffer(0)]],
@@ -3177,53 +3188,124 @@ extension Renderer {
         };
         float2 corner = corners[ci];
 
-        float size   = sp.posW.w;   // screen-space half-size in clip units
+        float size = sp.posW.w;
+        bool isBird = size > 0.5;
         // #180 horizon curvature: fireflies hug the ground and birds share the same
         // sky, so both bend with the terrain (a distant firefly must not float).
         float4 camH = float4(au.camPosW.xyz, au.horizonOn);
-        float4 clipCenter = au.viewProj * float4(horizonBend(sp.posW.xyz, camH), 1.0);
+        float3 centerW = horizonBend(sp.posW.xyz, camH);
+        float4 clipCenter = au.viewProj * float4(centerW, 1.0);
 
-        // Billboard: offset in clip space so the quad always faces the camera.
-        // We scale the offset by size / clipCenter.w to keep it view-independent.
-        float screenSize = size / max(clipCenter.w, 0.001);
-        float4 pos = clipCenter + float4(corner.x * screenSize,
-                                          corner.y * screenSize * 1.5, // slight vertical stretch for birds
-                                          0.0, 0.0);
+        // A bird's loop tangent projected into screen space gives it a stable head-
+        // first travel direction. Other motes preserve their old upright tiny quad.
+        float aspect = max(au.aspect, 0.001);
+        float2 forward = float2(1.0, 0.0);
+        if (isBird) {
+            float3 radial = sp.posW.xyz - au.camPosW.xyz;
+            radial.y = 0.0;
+            float invRadius = rsqrt(max(dot(radial.xz, radial.xz), 0.0001));
+            float3 tangent = float3(-radial.z * invRadius, 0.0, radial.x * invRadius);
+            float3 aheadW = horizonBend(sp.posW.xyz + tangent, camH);
+            float4 clipAhead = au.viewProj * float4(aheadW, 1.0);
+            float2 centerNdc = clipCenter.xy / max(abs(clipCenter.w), 0.001);
+            float2 aheadNdc = clipAhead.xy / max(abs(clipAhead.w), 0.001);
+            float2 deltaPixels = (aheadNdc - centerNdc) * float2(aspect, 1.0);
+            if (dot(deltaPixels, deltaPixels) > 0.000001) forward = normalize(deltaPixels);
+        }
+        float2 up = float2(-forward.y, forward.x);
+        float2 orientedPixels = forward * corner.x + up * corner.y;
+        float2 orientedCorner = isBird
+            ? float2(orientedPixels.x / aspect, orientedPixels.y)
+            : float2(corner.x, corner.y * 1.5);
+        // Birds use a world-sized billboard so they remain readable at their 28-60
+        // block loops. Tiny motes keep the old falloff and therefore their old size.
+        float screenSize = isBird ? size : size / max(abs(clipCenter.w), 0.001);
+        float4 pos = clipCenter + float4(orientedCorner * screenSize, 0.0, 0.0);
 
         ALVOut o;
         o.position = pos;
         o.color    = sp.color;
         o.uv       = corner;
-        // Determine bird vs firefly by size: birds have size > 0.5, fireflies < 0.5
-        o.isBird   = (size > 0.5) ? 1u : 0u;
+        o.flap = sin(au.wallClock * (5.1 + fmod(float(si), 3.0) * 0.35)
+                     + float(si) * 1.91);
+        o.isBird = isBird ? 1u : 0u;
         return o;
     }
 
     fragment float4 ambientLifeFrag(ALVOut in [[stage_in]]) {
-        // Soft circular mask (both birds and fireflies are round/dot)
-        float d = dot(in.uv, in.uv);
-        if (d > 1.0) discard_fragment();
-
         float alpha = in.color.a;
 
         if (in.isBird == 1u) {
-            // Bird silhouette: simple V-wing shape using the UV.
-            // Wing tips: |x| > |y|*1.5 → draw, else discard for the body gap.
-            float wingMask = step(abs(in.uv.y) * 1.6, abs(in.uv.x));
-            // Also mask off the inner part to make a V (not a full disc)
-            float innerGap = 1.0 - step(abs(in.uv.y) * 0.6, d);
-            float mask = wingMask * (1.0 - innerGap * 0.5);
-            if (mask < 0.1) discard_fragment();
-            // Soft edge
-            float edge = 1.0 - smoothstep(0.60, 1.0, d);
-            return float4(in.color.rgb * edge * mask, alpha * edge * mask);
+            float2 uv = in.uv;
+            float flap = in.flap;
+
+            // Rounded tail feathers and floppy wings keep the silhouette cohesive;
+            // everything overlaps the plump body instead of floating beside it.
+            float tailTopD = alEllipse(uv, float2(-0.54,  0.13), float2(0.37, 0.12),  0.34);
+            float tailBotD = alEllipse(uv, float2(-0.54, -0.13), float2(0.37, 0.12), -0.34);
+            float bodyD = alEllipse(uv, float2(-0.05, -0.03), float2(0.57, 0.31), 0.0);
+            float headD = alEllipse(uv, float2(0.47, 0.03), float2(0.27, 0.26), 0.0);
+            float backWingD = alEllipse(uv, float2(-0.10, -flap * 0.18),
+                                        float2(0.38, 0.15), -flap * 0.58);
+            float frontWingD = alEllipse(uv, float2(-0.02, flap * 0.27),
+                                         float2(0.45, 0.17 + abs(flap) * 0.04), flap * 0.72);
+
+            float tail = max(alMask(tailTopD, 0.06), alMask(tailBotD, 0.06));
+            float body = alMask(bodyD, 0.045);
+            float head = alMask(headD, 0.05);
+            float backWing = alMask(backWingD, 0.055);
+            float frontWing = alMask(frontWingD, 0.055);
+
+            // Pointed yellow beak with a slightly larger dark surround.
+            float2 bp = uv - float2(0.64, 0.035);
+            float beakReach = 1.0 - clamp(bp.x / 0.33, 0.0, 1.0);
+            float beakX = smoothstep(-0.02, 0.02, bp.x)
+                        * (1.0 - smoothstep(0.29, 0.33, bp.x));
+            float beak = beakX
+                       * (1.0 - smoothstep(0.125 * beakReach, 0.16 * beakReach + 0.012, abs(bp.y)));
+            float beakOutline = smoothstep(-0.035, 0.005, bp.x)
+                              * (1.0 - smoothstep(0.32, 0.36, bp.x))
+                              * (1.0 - smoothstep(0.16 * beakReach, 0.20 * beakReach + 0.016, abs(bp.y)));
+
+            float outline = max(max(alMask(tailTopD / 1.16, 0.035), alMask(tailBotD / 1.16, 0.035)),
+                                max(alMask(bodyD / 1.13, 0.035), alMask(headD / 1.14, 0.035)));
+            outline = max(outline, max(alMask(backWingD / 1.15, 0.035),
+                                       alMask(frontWingD / 1.14, 0.035)));
+            outline = max(outline, beakOutline);
+            if (outline < 0.01) discard_fragment();
+
+            float3 base = in.color.rgb;
+            float3 ink = float3(0.055, 0.035, 0.055);
+            float3 col = ink;
+            col = mix(col, base * 0.52, backWing);
+            col = mix(col, base * 0.68, tail);
+            col = mix(col, base, body);
+            float bellyD = alEllipse(uv, float2(0.10, -0.15), float2(0.34, 0.14), -0.08);
+            float belly = alMask(bellyD, 0.06) * body;
+            col = mix(col, mix(base, float3(1.0, 0.91, 0.72), 0.72), belly);
+            col = mix(col, base * 0.92, head);
+            col = mix(col, mix(base, float3(1.0), 0.23), frontWing);
+            col = mix(col, float3(1.0, 0.67, 0.08), beak);
+
+            // One oversized eye supplies the intentionally funny cartoon read.
+            float eye = alMask(alEllipse(uv, float2(0.52, 0.085), float2(0.095, 0.105), 0.0), 0.08) * head;
+            float pupil = alMask(alEllipse(uv, float2(0.555, 0.082), float2(0.041, 0.055), 0.0), 0.10) * eye;
+            col = mix(col, float3(1.0, 0.97, 0.84), eye);
+            col = mix(col, ink, pupil);
+
+            return float4(col, alpha * outline);
         } else {
+            float d = dot(in.uv, in.uv);
+            if (d > 1.0) discard_fragment();
             // Firefly: gaussian glow dot.  Multiply out to HDR levels for bloom.
             float glow = exp(-d * 3.5);
             // Outer halo (broader, dimmer)
             float halo = exp(-d * 1.2) * 0.35;
             float total = glow + halo;
-            return float4(in.color.rgb * total, alpha * total);
+            // Standard alpha makes the CPU-authored fade meaningful. At a firefly's
+            // centre, even its dim phase remains HDR green (>1 after blending), while
+            // the clamp keeps peak blink alpha from exceeding one.
+            return float4(in.color.rgb * total, clamp(alpha * total, 0.0, 1.0));
         }
     }
 

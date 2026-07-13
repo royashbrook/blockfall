@@ -502,6 +502,21 @@ review colour/scale. Those fixtures validate geometry, silhouette, pose, part
 budget, and emissive placement. Validate gameplay-authored size and palette from
 live natural spawns.
 
+### Ambient sky birds
+
+Stand outdoors in full daylight for 30 seconds and look across, then above, the
+treeline. At most seven sparse birds should cross at varied heights and speeds. Each
+must read as one plump cartoon animal—rounded body and head, oversized eye, beak,
+tail, and overlapping floppy wings—not the old faint V mark or detached shapes.
+They should turn along their loops, flap smoothly, disappear behind roofs/trees, and
+fade away around dusk. At night, confirm the existing fireflies still glow and bloom.
+
+For a fixed three-bird geometry check, run:
+
+```bash
+BF_SELFTEST_BIRDS=1 "$BIN" --screenshot "$OUT/ambient-birds.png"
+```
+
 ## Deterministic headless visual checks
 
 After a fresh release build:

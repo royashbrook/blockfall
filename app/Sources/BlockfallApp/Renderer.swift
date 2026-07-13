@@ -653,16 +653,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         do { compositePipeline = try device.makeRenderPipelineState(descriptor: cpd) }
         catch { fatalError("composite pipeline failed: \(error)") }
 
-        // ---- Ambient life (birds / fireflies): additive blended point sprites --
+        // ---- Ambient life (birds / fireflies): alpha-blended billboards --------
         let ald = MTLRenderPipelineDescriptor()
         ald.vertexFunction   = lib.makeFunction(name: "ambientLifeVert")
         ald.fragmentFunction = lib.makeFunction(name: "ambientLifeFrag")
         ald.colorAttachments[0].pixelFormat = .rgba16Float
         ald.colorAttachments[0].isBlendingEnabled             = true
-        ald.colorAttachments[0].sourceRGBBlendFactor          = .one
-        ald.colorAttachments[0].destinationRGBBlendFactor     = .one   // additive
+        ald.colorAttachments[0].sourceRGBBlendFactor          = .sourceAlpha
+        ald.colorAttachments[0].destinationRGBBlendFactor     = .oneMinusSourceAlpha
         ald.colorAttachments[0].sourceAlphaBlendFactor        = .one
-        ald.colorAttachments[0].destinationAlphaBlendFactor   = .zero
+        ald.colorAttachments[0].destinationAlphaBlendFactor   = .oneMinusSourceAlpha
         ald.depthAttachmentPixelFormat = .depth32Float
         do { ambientLifePipeline = try device.makeRenderPipelineState(descriptor: ald) }
         catch { fatalError("ambient life pipeline failed: \(error)") }
@@ -701,11 +701,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         viewModelArmBuf = device.makeBuffer(bytes: arm, length: arm.count * MemoryLayout<PropCuboidGPU>.stride,
                                             options: .storageModeShared)
 
-        // Birds: no depth test (sky sprites). Fireflies: less-equal depth test.
-        // We handle both in one pipeline; fireflies use depth, birds skip via discard logic.
+        // Ambient life hides behind terrain and structures but never writes depth.
         let aldd = MTLDepthStencilDescriptor()
         aldd.depthCompareFunction = .lessEqual
-        aldd.isDepthWriteEnabled  = false   // additive sprites never write depth
+        aldd.isDepthWriteEnabled  = false
         ambientLifeDepthState = device.makeDepthStencilState(descriptor: aldd)
 
         // Allocate the CPU-writable sprite buffer (updated every frame)
@@ -1531,7 +1530,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                     timeOfDay:  frame.camera.time_of_day,
                     wallClock:  wallClock,
                     horizonOn:  1,   // #180 birds/fireflies bend with the terrain
-                    pad1:       0)
+                    aspect:     Float(view.drawableSize.width / max(view.drawableSize.height, 1)))
                 enc.setVertexBuffer(ambientLifeBuffer, offset: 0, index: 0)
                 enc.setVertexBytes(&alU, length: MemoryLayout<AmbientLifeUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: spriteCount * 6)
@@ -2203,7 +2202,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         let nightT = max(0, 1.0 - dayT * 2.0)   // 0 during day, >0 during dusk/night
 
         // Spawn budget
-        let birdCount: Int     = Int((dayT * dayT * 12).rounded())    // 0..12 birds by day
+        // Keep all seven cheap slots while any daylight remains; each one fades on
+        // its own threshold below, avoiding count-rounding pops at dusk.
+        let birdCount: Int     = dayT > 0 ? 7 : 0                     // 0 or 7 sparse birds
         let fireflyCount: Int  = Int((nightT * nightT * 40).rounded()) // 0..40 fireflies by night
         let pollenCount: Int   = gfxPollen ? Int((dayT * 16).rounded()) : 0   // 0..16 motes by day (#45, toggle)
         // Grey ash motes: density scales with how drained the player's region is, so
@@ -2215,21 +2216,35 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         let ptr = ambientLifeBuffer.contents().bindMemory(to: AmbientSpritePod.self, capacity: kMaxAmbientSprites)
 
-        // --- Birds (daytime, sky sprites, large) ---
+        // --- Birds (daytime, sparse camera-relative sky loops) ---
         for i in 0..<birdCount {
             let fi = Float(i)
-            // Each bird orbits the player slowly at a random angle offset
-            let angle = wallClock * 0.06 + fi * 2.399              // golden-angle spacing
-            let radius = 30.0 + sin(fi * 1.618 + wallClock * 0.02) * 18.0
-            let height = camPos.y + 22.0 + sin(fi * 0.9 + wallClock * 0.07) * 6.0
+            // Golden-angle phases and slightly different loop speeds keep them from
+            // reading as one rigid flock. The shader derives travel direction from
+            // this orbit and turns each cartoon bird along its path.
+            let speed = 0.040 + Float(i % 4) * 0.009
+            let phase = fi * 2.399
+            let angle = wallClock * speed + phase + sin(wallClock * 0.055 + fi * 1.7) * 0.16
+            let radius = 28.0 + Float((i * 11) % 31) + sin(wallClock * 0.035 + fi) * 3.0
+            let height = camPos.y + 19.0 + Float((i * 7) % 18)
+                + sin(fi * 0.9 + wallClock * (0.09 + fi * 0.004)) * 4.0
             let bx = camPos.x + cos(angle) * radius
             let bz = camPos.z + sin(angle) * radius
             let by = height
-            // Fade birds out at dawn/dusk edges
-            let birdAlpha = min(1.0, dayT * 3.0)
+            // Staggered continuous fade: later birds disappear earlier, while the
+            // final one approaches zero before dayLight itself reaches zero.
+            let fadeStart = Float(i) * 0.018
+            let birdAlpha = max(0, min(1, (dayT - fadeStart) * 4.0))
+            let body: SIMD3<Float>
+            switch i % 4 {
+            case 0: body = SIMD3(0.12, 0.57, 0.67)   // teal jay
+            case 1: body = SIMD3(0.88, 0.31, 0.25)   // tomato cardinal
+            case 2: body = SIMD3(0.55, 0.32, 0.78)   // purple oddball
+            default: body = SIMD3(0.88, 0.60, 0.13)  // golden goof
+            }
             ptr[i] = AmbientSpritePod(
-                posW:  SIMD4<Float>(bx, by, bz, 0.9),                        // w=size
-                color: SIMD4<Float>(0.15, 0.12, 0.10, birdAlpha * 0.85))    // dark silhouette
+                posW:  SIMD4<Float>(bx, by, bz, 1.55 + Float(i % 3) * 0.18),
+                color: SIMD4<Float>(body.x, body.y, body.z, birdAlpha * 0.96))
         }
 
         // --- Fireflies (nighttime, near-ground, small emissive) ---

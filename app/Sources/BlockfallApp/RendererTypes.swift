@@ -339,12 +339,12 @@ struct PrecipUniforms {
     var pad0:      Float         = 0                       // 4
 }
 
-/// Uniforms for the ambient-life sprite pass (birds / fireflies). 32 bytes.
+/// Uniforms for the ambient-life sprite pass (birds / fireflies). 96 bytes.
 struct AmbientLifeUniforms {
     var viewProj:      simd_float4x4 = .init(diagonal: .one)   // 64 bytes — camera VP
     var camPosW:       SIMD4<Float>  = .zero                   // 16 bytes — world cam pos
     var timeOfDay:     Float         = 0                       // 4 — 0..1 day cycle
     var wallClock:     Float         = 0                       // 4 — animation time
     var horizonOn:     Float         = 0   // #180 horizon curvature enable (0 = flat)
-    var pad1:          Float         = 0
+    var aspect:        Float         = 1                       // drawable width / height
 }
