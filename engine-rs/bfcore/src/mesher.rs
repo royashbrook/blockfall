@@ -515,6 +515,7 @@ fn is_glass(id: BlockId) -> bool {
 // swings to the side. Drawn by emit_door, never cube-meshed.
 const DOOR_CLOSED: BlockId = 33;
 const DOOR_OPEN: BlockId = 50;
+const CHEST: BlockId = 31;
 const WOOD_BEAM: BlockId = 51;
 const BED: BlockId = 52;
 const CHOPPING_BLOCK: BlockId = 56;
@@ -544,6 +545,11 @@ fn is_door_frame(id: BlockId) -> bool {
 #[inline]
 fn is_bed(id: BlockId) -> bool {
     id == BED
+}
+
+#[inline]
+fn is_loot_barrel(id: BlockId) -> bool {
+    id == CHEST
 }
 
 #[inline]
@@ -588,6 +594,7 @@ fn is_opaque(id: BlockId) -> bool {
         && !is_glass(id)
         && !is_door(id)
         && !is_wood_beam(id)
+        && !is_loot_barrel(id)
         && !is_bed(id)
         && !is_chopping_block(id)
         && !is_artisan_workstation(id)
@@ -612,6 +619,7 @@ fn is_occluder(id: BlockId) -> bool {
         && !is_glass(id)
         && !is_door(id)
         && !is_wood_beam(id)
+        && !is_loot_barrel(id)
         && !is_bed(id)
         && !is_chopping_block(id)
         && !is_artisan_workstation(id)
@@ -1178,6 +1186,177 @@ fn emit_cuboid_16(
         &vert(xhi, ylo, zhi, BF_NY_NEG, 1, 1),
         &vert(xlo, ylo, zhi, BF_NY_NEG, 0, 1),
     );
+    true
+}
+
+// One faceted cask section. Points run clockwise around X/Z; lower/upper may
+// differ, which gives the loot barrel its bowed wooden sides without another
+// render path or per-instance state.
+#[allow(clippy::too_many_arguments)]
+fn emit_octagonal_frustum_16(
+    bx: i32,
+    by: i32,
+    bz: i32,
+    lower: &[(u32, u32); 8],
+    upper: &[(u32, u32); 8],
+    ylo: u32,
+    yhi: u32,
+    cap_bottom: bool,
+    cap_top: bool,
+    mat: BlockId,
+    sky: u8,
+    blk: u8,
+    buf: &mut MeshBuffers,
+) {
+    const AO: u32 = 3;
+    let (x, y, z) = (bx as u32, by as u32, bz as u32);
+    let vert = |fx: u32, fy: u32, fz: u32, normal: u32, u: u32, v: u32| -> BFVertex {
+        let px = x + (fx >> 4);
+        let py = y + (fy >> 4);
+        let pz = z + (fz >> 4);
+        BFVertex {
+            pos_packed: bf_pack_pos(px, py, pz, fx & 0xF, fy & 0xF, fz & 0xF),
+            normal_uv: bf_pack_normal_uv(normal, AO, u, v),
+            material_id: mat,
+            sky_light: sky,
+            block_light: blk,
+            reserved: bf_pack_pos_hi(px, py, pz),
+        }
+    };
+
+    for i in 0..8 {
+        let n = (i + 1) & 7;
+        let (lx0, lz0) = lower[i];
+        let (lx1, lz1) = lower[n];
+        let (ux0, uz0) = upper[i];
+        let (ux1, uz1) = upper[n];
+        let dx = (lx0 + lx1 + ux0 + ux1) as i32 - 32;
+        let dz = (lz0 + lz1 + uz0 + uz1) as i32 - 32;
+        let normal = if dx.abs() >= dz.abs() {
+            if dx >= 0 {
+                BF_NX_POS
+            } else {
+                BF_NX_NEG
+            }
+        } else if dz >= 0 {
+            BF_NZ_POS
+        } else {
+            BF_NZ_NEG
+        };
+        buf.quad(
+            &vert(lx0, ylo, lz0, normal, 0, 0),
+            &vert(ux0, yhi, uz0, normal, 0, 1),
+            &vert(ux1, yhi, uz1, normal, 1, 1),
+            &vert(lx1, ylo, lz1, normal, 1, 0),
+        );
+    }
+
+    for &(top, points, fy, normal) in &[
+        (false, lower, ylo, BF_NY_NEG),
+        (true, upper, yhi, BF_NY_POS),
+    ] {
+        if (top && !cap_top) || (!top && !cap_bottom) {
+            continue;
+        }
+        for i in 0..8 {
+            let n = (i + 1) & 7;
+            let (ax, az) = points[i];
+            let (bx2, bz2) = points[n];
+            let (p1, p2) = if top {
+                ((bx2, bz2), (ax, az))
+            } else {
+                ((ax, az), (bx2, bz2))
+            };
+            let base = buf.vtx_count;
+            buf.write_vertex(&vert(8, fy, 8, normal, 8, 8));
+            buf.write_vertex(&vert(p1.0, fy, p1.1, normal, p1.0, p1.1));
+            buf.write_vertex(&vert(p2.0, fy, p2.1, normal, p2.0, p2.1));
+            buf.write_index(base);
+            buf.write_index(base + 1);
+            buf.write_index(base + 2);
+        }
+    }
+}
+
+// Block id 31 keeps all chest inventory/save semantics, but its persistent chunk
+// silhouette is now an unmistakable round loot cask: bowed oak body, three iron
+// hoops, cardinal lock plates and a restrained emissive crest visible from any side.
+fn emit_loot_barrel(bx: i32, by: i32, bz: i32, sky: u8, blk: u8, buf: &mut MeshBuffers) -> bool {
+    const VERTICES: usize = 456;
+    const INDICES: usize = 660;
+    if buf.vtx_cap - buf.vtx.len() < VERTICES * VERTEX_SIZE
+        || buf.idx_cap - buf.idx.len() < INDICES * INDEX_SIZE
+    {
+        return false;
+    }
+
+    const IRON: BlockId = 53;
+    const GLOW: BlockId = 7;
+    const NARROW: [(u32, u32); 8] = [
+        (5, 2),
+        (11, 2),
+        (14, 5),
+        (14, 11),
+        (11, 14),
+        (5, 14),
+        (2, 11),
+        (2, 5),
+    ];
+    const WIDE: [(u32, u32); 8] = [
+        (4, 1),
+        (12, 1),
+        (15, 4),
+        (15, 12),
+        (12, 15),
+        (4, 15),
+        (1, 12),
+        (1, 4),
+    ];
+    const HOOP: [(u32, u32); 8] = [
+        (4, 0),
+        (12, 0),
+        (16, 4),
+        (16, 12),
+        (12, 16),
+        (4, 16),
+        (0, 12),
+        (0, 4),
+    ];
+
+    emit_octagonal_frustum_16(
+        bx, by, bz, &NARROW, &WIDE, 0, 5, true, false, CHEST, sky, blk, buf,
+    );
+    emit_octagonal_frustum_16(
+        bx, by, bz, &WIDE, &WIDE, 5, 11, false, false, CHEST, sky, blk, buf,
+    );
+    emit_octagonal_frustum_16(
+        bx, by, bz, &WIDE, &NARROW, 11, 15, false, true, CHEST, sky, blk, buf,
+    );
+    for &(ylo, yhi) in &[(3, 4), (10, 11), (14, 15)] {
+        emit_octagonal_frustum_16(
+            bx, by, bz, &HOOP, &HOOP, ylo, yhi, false, false, IRON, sky, blk, buf,
+        );
+    }
+
+    let plates = [
+        (6, 10, 7, 12, 1, 2, IRON),
+        (6, 10, 7, 12, 14, 15, IRON),
+        (1, 2, 7, 12, 6, 10, IRON),
+        (14, 15, 7, 12, 6, 10, IRON),
+        (7, 9, 9, 11, 0, 1, GLOW),
+        (7, 9, 9, 11, 15, 16, GLOW),
+        (0, 1, 9, 11, 7, 9, GLOW),
+        (15, 16, 9, 11, 7, 9, GLOW),
+        (6, 10, 15, 16, 6, 10, GLOW),
+    ];
+    for &(xlo, xhi, ylo, yhi, zlo, zhi, mat) in &plates {
+        let part_blk = if mat == GLOW { blk.max(14) } else { blk };
+        if !emit_cuboid_16(
+            bx, by, bz, xlo, xhi, ylo, yhi, zlo, zhi, mat, sky, part_blk, buf,
+        ) {
+            return false;
+        }
+    }
     true
 }
 
@@ -2291,6 +2470,16 @@ impl GreedyMesher {
                         continue;
                     }
 
+                    if is_loot_barrel(here) {
+                        let bsky = chunk.sky_light(x as usize, y as usize, z as usize);
+                        let bblk = chunk.block_light(x as usize, y as usize, z as usize);
+                        if !emit_loot_barrel(x, y, z, bsky, bblk, &mut buf) {
+                            buf.full = true;
+                            return finalize(buf, false);
+                        }
+                        continue;
+                    }
+
                     // #244 beds: two stateless BED cells become one finished furniture
                     // mesh. The low X/Z endpoint owns both cells, preventing duplicate
                     // geometry and the internal full-block seam. An orphan still draws
@@ -2879,6 +3068,54 @@ mod tests {
             verts.iter().any(|(p, m)| *m == 53 && p[1] < 9.0),
             "iron blade is embedded down in the split log"
         );
+    }
+
+    #[test]
+    fn chest_is_a_persistent_round_loot_barrel_with_visible_lock_crests() {
+        assert!(!is_opaque(CHEST));
+        assert!(!is_occluder(CHEST));
+        assert!(
+            !is_prop(CHEST),
+            "loot barrels stay in persistent chunk meshes"
+        );
+
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(8, 8, 8, CHEST);
+        store.chunks.insert(ChunkCoord::default(), ch);
+
+        let (res, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+        let verts = decode_position_and_mat(&vtx);
+        assert_eq!(res.index_count, 660);
+        assert_eq!(res.vertex_bytes, 456 * VERTEX_SIZE as u32);
+        assert_eq!(verts.iter().filter(|(_, m)| *m == CHEST).count(), 144);
+        assert_eq!(verts.iter().filter(|(_, m)| *m == 53).count(), 192);
+        assert_eq!(verts.iter().filter(|(_, m)| *m == 7).count(), 120);
+        assert!(
+            vtx.chunks_exact(VERTEX_SIZE)
+                .filter(|v| u16::from_le_bytes([v[8], v[9]]) == 7)
+                .all(|v| v[11] >= 14),
+            "loot crests stay visibly emissive in an unlit barrel cell"
+        );
+
+        for axis in 0..3 {
+            let (lo, hi) = verts
+                .iter()
+                .map(|(p, _)| p[axis])
+                .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+            assert!((lo - 8.0).abs() < 1e-4 && (hi - 9.0).abs() < 1e-4);
+        }
+        assert!(
+            verts.iter().filter(|(_, m)| *m == CHEST).all(|(p, _)| {
+                !((p[0] - 8.0).abs() < 1e-4 && (p[2] - 8.0).abs() < 1e-4)
+                    && !((p[0] - 9.0).abs() < 1e-4 && (p[2] - 9.0).abs() < 1e-4)
+            }),
+            "the oak body is faceted, never a full-cube corner"
+        );
+
+        let mut short = MeshBuffers::new(456 * VERTEX_SIZE - 1, 660 * INDEX_SIZE);
+        assert!(!emit_loot_barrel(0, 0, 0, 15, 0, &mut short));
+        assert!(short.vtx.is_empty() && short.idx.is_empty());
     }
 
     #[test]

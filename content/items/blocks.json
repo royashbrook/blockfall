@@ -21,7 +21,7 @@
   { "id": 20, "name": "wool_block", "display_name": "Wool Block", "max_stack": 64, "places_block": "wool_block" },
   { "id": 21, "name": "mossy_stone", "display_name": "Mossy Stone", "max_stack": 64, "places_block": "mossy_stone" },
   { "id": 22, "name": "crafting_table", "display_name": "Crafting Table", "max_stack": 1, "places_block": "crafting_table" },
-  { "id": 23, "name": "chest", "display_name": "Chest", "max_stack": 1, "places_block": "chest" },
+  { "id": 23, "name": "chest", "display_name": "Loot Barrel", "max_stack": 1, "places_block": "chest" },
   { "id": 24, "name": "torch", "display_name": "Torch", "max_stack": 64, "places_block": "torch" },
   { "id": 25, "name": "oak_door", "display_name": "Oak Door", "max_stack": 16, "places_block": "oak_door" },
   { "id": 26, "name": "beacon_block", "display_name": "Beacon", "max_stack": 1, "places_block": "beacon_block" },

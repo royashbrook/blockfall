@@ -665,43 +665,23 @@ extension Renderer {
             }
         }
 
-        // ---- CHEST (31) --------------------------------------------------------
-        // Wood box: SIDE faces show a lid-seam line across the upper third + a
-        // metal latch clasp centred on the face.  TOP face = lid planks with a
-        // clasp hinge bar across the middle.  BOTTOM = plain wood planks.
+        // ---- LOOT BARREL (31) --------------------------------------------------
+        // The mesher supplies the bowed octagonal body, real iron hoops and lock
+        // crests. This branch only paints oak staves; the old box-lid seam/clasp
+        // pattern made every curved facet look like a fragment of the former chest.
         if (matID == 31u) {
-            float grain  = noise2(float2(uv.x * 4.5, worldPos.y * 0.9 + vH * 2.0)) * 0.55
-                         + noise2(float2(uv.x * 10.0, worldPos.y * 2.2 + vH * 1.4)) * 0.45;
-            float seam   = 1.0 - step(0.92, fract(uv.x * 2.8));
-            float woodBri = mix(0.84, 1.14, grain) * mix(0.80, 1.0, seam);
+            float grain = noise2(float2(uv.x * 5.0, worldPos.y * 1.3 + vH * 2.0)) * 0.62
+                        + noise2(float2(uv.x * 11.0, worldPos.y * 3.0 + vH * 1.4)) * 0.38;
+            float staveEdge = smoothstep(0.40, 0.50, abs(fract(uv.x * 4.0) - 0.5));
+            float woodBri = mix(0.82, 1.14, grain) * mix(1.0, 0.78, staveEdge);
 
             if (isTop) {
-                // Lid planks + a hinge bar across the middle
-                float2 lidUV = fract(worldPos.xz);
-                float plankS = 1.0 - step(0.92, fract(lidUV.x * 2.5));
-                float hinge  = smoothstep(0.04, 0.0, abs(lidUV.y - 0.5));   // dark line at centre
-                float bri    = woodBri * mix(0.78, 1.0, plankS) * (1.0 - hinge * 0.45);
-                return float3(clamp(bri, 0.72, 1.16));
+                float ring = smoothstep(0.34, 0.40, length(fract(worldPos.xz) - 0.5));
+                woodBri *= mix(1.0, 0.82, ring);
             } else if (isBot) {
-                return float3(clamp(woodBri, 0.78, 1.12));
-            } else {
-                // Side: lid seam at ~70% of height (upper third = lid)
-                float localY = fract(worldPos.y);
-                float lidSeam = smoothstep(0.04, 0.0, abs(localY - 0.68));   // 1 = on seam
-                // Metal clasp: small rectangular bright patch at centre-bottom of lid band
-                float cx  = fract(uv.x);   // 0..1 across face
-                float cy  = localY;
-                float claspX = smoothstep(0.04, 0.0, abs(cx - 0.5));        // centred in X
-                float claspY = smoothstep(0.02, 0.0, abs(cy - 0.60));       // just below seam
-                float clasp  = claspX * claspY;
-                // Lid slightly brighter than body
-                float lidBri  = mix(woodBri, woodBri * 1.10, step(0.68, localY));
-                float bri     = lidBri * (1.0 - lidSeam * 0.40);
-                // Clasp is iron-grey: pull colour toward neutral brightness
-                float3 col    = float3(clamp(bri, 0.70, 1.16));
-                col           = mix(col, float3(0.88), clasp * 0.70);
-                return clamp(col, 0.70, 1.16);
+                woodBri *= 0.90;
             }
+            return float3(clamp(woodBri, 0.68, 1.16));
         }
 
         // ---- TORCH (32) --------------------------------------------------------
@@ -1773,7 +1753,18 @@ extension Renderer {
         return o;
     }
 
-    static float cloudFbm(float2 p) { return fbm2(p); }
+    // Cloud-only FBM rotates each octave away from the value-noise lattice. Keeping
+    // the same three noise reads preserves the old cost, while removing the large
+    // axis-aligned interpolation cells that read as changing sky squares on a slow turn.
+    static float cloudFbm(float2 p) {
+        float2 p1 = float2(0.80 * p.x - 0.60 * p.y,
+                           0.60 * p.x + 0.80 * p.y);
+        float2 p2 = float2(0.36 * p.x + 0.93 * p.y,
+                          -0.93 * p.x + 0.36 * p.y);
+        return noise2(p1) * 0.46
+             + noise2(p2 * 1.9 + float2(3.7, 1.1)) * 0.34
+             + noise2(p * 3.8 + float2(1.3, 5.7)) * 0.20;
+    }
 
     // ===================================================================
     // #47 VOLUMETRIC CLOUDS — bold/toy-styled raymarched cumulus.
@@ -2060,7 +2051,7 @@ extension Renderer {
             // lobes (bold puffs, not speckle) and one medium octave rounds their edges. A
             // tight smoothstep on a low threshold carves defined, opaque puff cores (bold
             // toy cumulus) instead of the thin translucent haze the old sheet showed.
-            float broad = cloudFbm(cuv * 0.85);
+            float broad = cloudFbm(cuv);
             float soft  = cloudFbm(cuv * 1.90 + float2(7.3, -3.9));
             float field = broad * 0.72 + soft * 0.28;
             // #162 COVERAGE CONTROL: the smoothstep threshold slides with the weather
@@ -2069,9 +2060,11 @@ extension Renderer {
             // the threshold so the field closes into a near-continuous overcast sheet.
             // The band stays narrow (defined puff edges, no aliasing) at every cover.
             float lo    = mix(0.68, 0.16, cover);
-            float mask  = smoothstep(lo, lo + 0.12, field);
+            float mask  = smoothstep(lo, lo + 0.20, field);
             // Horizon fade (the slab edge does not hard-line) plus a soft fade toward zenith.
-            mask *= smoothstep(0.14, 0.34, ray.y) * smoothstep(1.02, 0.62, ray.y);
+            // smoothstep requires ordered edges; the old reversed call was undefined.
+            mask *= smoothstep(0.14, 0.34, ray.y)
+                  * (1.0 - smoothstep(0.62, 1.02, ray.y));
             // Bold lit crown / cool shadow base, warmed at sunrise/sunset. Sun-facing puffs
             // read brighter via a gentle continuous gradient (no banding, no quantize).
             float3 cloudTop  = mix(float3(0.95, 0.97, 1.00), float3(1.00, 0.84, 0.62), sunsetT * 0.55);
@@ -2586,6 +2579,16 @@ extension Renderer {
 
         float farR       = vu.camPosW.w;
         float voxMaxDist = vu.voxOrigin.w;
+        // The occupancy texture is a finite world-space box, not the radial
+        // `farR` advertised by the old fade. In particular its sky ceiling is y=63,
+        // and low render distances can be narrower than this 140-block view march.
+        // Keep both the air sample AND its sunward shadow segment inside the real
+        // box, feathering the last eight blocks. Otherwise marchSunOcclusion leaves
+        // the box and reports fully lit, projecting its axis-aligned ceiling/edges as
+        // hard rectangles that slide when the camera turns.
+        float3 sunDelta = toSun * (voxMaxDist + 0.05);
+        float3 safeLo = max(float3(0.0), -sunDelta);
+        float3 safeHi = min(vu.voxDims.xyz, vu.voxDims.xyz - sunDelta);
         // Accumulate the LIT length and the TOTAL marched length separately, so the
         // raw signal is a lit FRACTION in [0,1] (how much of the air toward the sun
         // along this ray is sunlit). Normalising this way decouples the strength from
@@ -2598,13 +2601,19 @@ extension Renderer {
         float t = stepLen * dither;
         for (int i = 0; i < GR_STEPS; ++i) {
             float3 sp = camP + viewDir * t;
-            float dc  = length(sp - camP);
+            float dc  = t;
+            float3 gp = sp - vu.voxOrigin.xyz;
+            float3 edge3 = min(gp - safeLo, safeHi - gp);
+            float boxEdge = min(edge3.x, min(edge3.y, edge3.z));
+            float coverage = smoothstep(0.0, 8.0, boxEdge)
+                           * (1.0 - smoothstep(farR * 0.85, farR, dc));
             // Same world occupancy march as the cast shadows (no shadow map).
-            float lit = volShadowLit(occ, occCoarse, vu.voxOrigin.xyz, vu.voxDims.xyz,
-                                     sp, toSun, voxMaxDist);
-            // Fade contribution out toward the coverage edge so no hard boundary
-            // shows where the occupancy grid ends.
-            float coverage = 1.0 - smoothstep(farR * 0.85, farR, dc);
+            // Outside the usable box there is no trustworthy occlusion data, so
+            // contribute nothing and skip the DDA entirely.
+            float lit = coverage > 0.0
+                      ? volShadowLit(occ, occCoarse, vu.voxOrigin.xyz, vu.voxDims.xyz,
+                                     sp, toSun, voxMaxDist)
+                      : 0.0;
             litLen += lit * coverage * stepLen;
             totLen += stepLen;
             t += stepLen;
@@ -3019,9 +3028,13 @@ extension Renderer {
                 edge *= smoothstep(0.28, 0.55, effGap);
                 float minN = min(min(lL, lR), min(lU, lD));
                 edge *= 1.0 - smoothstep(0.35, 0.80, lc - minN);
-                // Fade the ink in the far haze so the distant render edge does not get a
-                // busy net of lines (keeps the vista readable, matches the terrain fog).
-                float farFade = 1.0 - smoothstep(CEL_FAR * 0.6, CEL_FAR * 0.92, lc);
+                // Fade ink after the 192-block far-detail transition and finish before
+                // atmospheric fog begins at 290. Beams, leaves, and roof trim become
+                // sub-pixel in this band at the capped internal resolution; keeping a
+                // full-strength depth outline made their coverage blink on slow turns.
+                // celLinearizeDepth uses its historical .20/420 detector range;
+                // 313..363 maps to roughly 192..290 in the scene's .05/512 projection.
+                float farFade = 1.0 - smoothstep(313.0, 363.0, lc);
                 // #136 scale the ink darkness by the cel-outline intensity slider (0..1).
                 tonemapped *= (1.0 - edge * CEL_OUTLINE_DARK * pu.celOutlineStr * farFade);
             }

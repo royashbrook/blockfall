@@ -29,7 +29,7 @@ private let kItemTable: [UInt16: ItemInfo] = [
     20: .init(name: "Wool",          color: itemColor(0.92, 0.92, 0.92)),
     21: .init(name: "Mossy Stone",   color: itemColor(0.42, 0.52, 0.36)),
     22: .init(name: "Crafting Table",color: itemColor(0.60, 0.42, 0.24)),
-    23: .init(name: "Chest",         color: itemColor(0.62, 0.45, 0.24)),
+    23: .init(name: "Loot Barrel",    color: itemColor(0.62, 0.45, 0.24)),
     24: .init(name: "Torch",         color: itemColor(0.95, 0.72, 0.30)),
     25: .init(name: "Oak Door",      color: itemColor(0.56, 0.40, 0.22)),
     26: .init(name: "Beacon",        color: itemColor(0.40, 0.85, 0.90)),
@@ -110,7 +110,7 @@ func itemDescription(id: UInt16) -> String {
     case 20: return "Soft wool block. Colourful and bouncy-looking."
     case 21: return "Old stone covered in moss. Found deep underground or in ruins."
     case 22: return "A workbench! Place it to unlock 3×3 crafting for tools and swords."
-    case 23: return "A storage chest. Open it to keep your stuff safe."
+    case 23: return "A sturdy loot barrel. Open it to keep your stuff safe."
     case 24: return "Place it to light up dark caves and keep monsters away at night."
     case 25: return "A wooden door. Walk through it — it opens when you push it."
     case 26: return "A powerful beacon block. Placing it restores colour to drained regions!"

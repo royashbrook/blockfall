@@ -271,6 +271,8 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         .split(separator: ",").compactMap { Float($0.trimmingCharacters(in: .whitespaces)) }
     let freezeShotCamera = ProcessInfo.processInfo.environment["BF_SHOT_FREEZE_CAMERA"] == "1"
         && shotCameraEnv?.count == 5
+    let requireStableShot = shotPath != nil
+        && ProcessInfo.processInfo.environment["BF_SHOT_REQUIRE_STABLE"] == "1"
 
     // ---- Engine ------------------------------------------------------------
     var cfg = bf_engine_config()
@@ -291,6 +293,11 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
     // under review (e.g. a desert spawn for a dune-relief check). Default 2026.
     let worldSeed = UInt64(ProcessInfo.processInfo.environment["BF_SHOT_SEED"] ?? "") ?? 2026
     _ = bf_world_new(e, worldSeed)
+    // Optional bounded render distance for fixtures that request the stable-stream gate.
+    if shotPath != nil,
+       let shotRD = UInt32(ProcessInfo.processInfo.environment["BF_SHOT_RENDER_DISTANCE"] ?? "") {
+        bf_set_render_distance(e, max(4, min(24, shotRD)))
+    }
     if let value = Int32(ProcessInfo.processInfo.environment["BF_SHOT_DIFFICULTY"] ?? "") {
         bf_set_difficulty(e, value)
     }
@@ -979,8 +986,52 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             let frames = 60
             for _ in 0..<frames { renderOneFrame(yaw: total / Float(frames), forward: noWalk ? 0 : 1.0) }
         }
-        for _ in 0..<24  { renderOneFrame(yaw: 0, forward: noWalk ? 0 : 1.0) } // settle
-        let shotStats = renderOneFrame(yaw: 0, forward: noWalk ? 0 : 1.0)
+        // Opt-in deterministic barrier for bounded fixtures. A fixed frame count
+        // is not a barrier (separate processes produced 13k..147k props at one camera),
+        // but a dense 24-chunk forest may never become quiet enough for a practical
+        // capture. BF_SHOT_REQUIRE_STABLE=1 therefore fails loudly when requested;
+        // normal screenshots retain the live renderer's immediate behavior.
+        if requireStableShot {
+            let streamDeadline = CACurrentMediaTime()
+                + (Double(ProcessInfo.processInfo.environment["BF_SHOT_STREAM_TIMEOUT"] ?? "30") ?? 30)
+            var streamStableSince: CFTimeInterval?
+            var streamReady = false
+            var streamActive: Int32 = 0
+            var streamTarget: Int32 = 0
+            var streamBacklog: UInt32 = .max
+            var lastDraws = UInt64.max
+            var lastProps = UInt64.max
+            var lastIndices = UInt64.max
+            while CACurrentMediaTime() < streamDeadline {
+                let stats = renderOneFrame(yaw: 0, forward: 0)
+                guard bf_debug_stream_status(e, &streamActive, &streamTarget, &streamBacklog) != 0 else {
+                    print("FAIL: screenshot stream status unavailable")
+                    return false
+                }
+                let sameVisible = stats.draws == lastDraws
+                    && stats.props == lastProps
+                    && stats.terrainIndices == lastIndices
+                if streamActive == streamTarget && sameVisible {
+                    let now = CACurrentMediaTime()
+                    if streamStableSince == nil { streamStableSince = now }
+                    if now - streamStableSince! >= 2.0 {
+                        streamReady = true
+                        break
+                    }
+                } else {
+                    streamStableSince = nil
+                }
+                lastDraws = stats.draws
+                lastProps = stats.props
+                lastIndices = stats.terrainIndices
+            }
+            guard streamReady else {
+                print("FAIL: screenshot streaming timed out (active=\(streamActive)/\(streamTarget), backlog=\(streamBacklog))")
+                return false
+            }
+        }
+        for _ in 0..<24  { renderOneFrame(yaw: 0, forward: 0) } // stay behind the completed stream barrier
+        let shotStats = renderOneFrame(yaw: 0, forward: 0)
         print("shot: prop instances in final frame = \(lastShotPropN)")
         print("shot: entities=\(shotStats.entities) body_parts=\(shotStats.entityPartDraws) triangles=\(shotStats.entityTriangles)")
         // #116 diagnostic (env-gated, harmless): dump camera + entity positions so a verification

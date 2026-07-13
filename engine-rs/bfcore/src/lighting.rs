@@ -36,6 +36,7 @@ pub fn light_snow_overlay(b: BlockId) -> bool {
 pub fn light_opaque(b: BlockId) -> bool {
     b != 0
         && b != 9
+        && b != 31
         && b != 51
         && b != 52
         && b != 56
@@ -372,6 +373,20 @@ mod tests {
             15,
             "low furniture must not cast a full-cube shadow"
         );
+    }
+
+    #[test]
+    fn loot_barrel_is_sky_light_pass_through() {
+        let mut store = ChunkStore::new();
+        let cc = ChunkCoord { x: 0, y: 0, z: 0 };
+        let mut ch = PaletteChunk::new(cc, 0);
+        ch.set(8, 8, 8, 31);
+        store.insert(ch);
+
+        light_chunk(&mut store, cc);
+        let ch = store.get(cc).unwrap();
+        assert_eq!(ch.sky_light(8, 8, 8), 15, "barrel mesh reads cell light");
+        assert_eq!(ch.sky_light(8, 7, 8), 15, "round barrel cast a cube shadow");
     }
 
     #[test]

@@ -1439,7 +1439,7 @@ final class HUDView: NSView {
         NSColor.systemYellow.withAlphaComponent(0.6).setStroke()
         cpp.lineWidth = 2; cpp.stroke()
 
-        drawText("Treasure Chest", at: NSPoint(x: chestX, y: chestY + slot + 16),
+        drawText("Loot Barrel", at: NSPoint(x: chestX, y: chestY + slot + 16),
                  size: fs(20), color: .systemYellow, bold: true)
 
         var crects = [NSRect]()
@@ -1480,7 +1480,7 @@ final class HUDView: NSView {
         }
 
         // Hints at the bottom.
-        drawText("Click a chest item to take it   •   click a backpack item to store it",
+        drawText("Click a barrel item to take it   •   click a backpack item to store it",
                  at: NSPoint(x: originX, y: hy - 30), size: fs(13), color: .white, bold: true)
         drawText("Press Esc to close",
                  at: NSPoint(x: originX, y: 18), size: fs(12), color: .white, bold: false)

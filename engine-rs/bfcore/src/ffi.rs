@@ -1245,6 +1245,32 @@ pub unsafe extern "C" fn bf_debug_set_camera(
     }
 }
 
+/// Report whether deterministic screenshot streaming has fully converged.
+/// Returns 0 before a world exists, otherwise fills any non-null outputs and
+/// returns 1. Debug/harness-only; gameplay never waits on this gate.
+#[no_mangle]
+pub unsafe extern "C" fn bf_debug_stream_status(
+    e: bf_engine,
+    active_radius: *mut i32,
+    target_radius: *mut i32,
+    backlog: *mut u32,
+) -> u8 {
+    let e = match engine_ref(e) {
+        Some(e) if e.world_ready => e,
+        _ => return 0,
+    };
+    if let Some(out) = active_radius.as_mut() {
+        *out = e.world.debug_stream_active_radius();
+    }
+    if let Some(out) = target_radius.as_mut() {
+        *out = e.world.debug_stream_target_radius();
+    }
+    if let Some(out) = backlog.as_mut() {
+        *out = e.world.debug_stream_backlog().min(u32::MAX as usize) as u32;
+    }
+    1
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

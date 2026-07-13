@@ -373,14 +373,23 @@ extension HUDView {
             }
         case .chest:
             if kind == .top {
-                speckle(in: r, count: 3, color: dark, size: r.width * 0.05)
+                // Cask lid: concentric iron rim plus the bright loot crest.
+                let rim = NSBezierPath(ovalIn: r.insetBy(dx: r.width * 0.12, dy: r.height * 0.12))
+                rim.lineWidth = 1.2; dark.setStroke(); rim.stroke()
+                fillCircle(NSPoint(x: r.midX, y: r.midY), r.width * 0.08,
+                           lighten(shaded, 0.85), outline: dark)
             } else {
-                // Lid seam across the upper third + a small latch in the centre.
-                let seamY = r.minY + r.height * 0.62
-                tick(NSPoint(x: r.minX, y: seamY), NSPoint(x: r.maxX, y: seamY), dark, width: 1.2)
-                let latch = NSRect(x: r.midX - r.width * 0.07, y: seamY - r.height * 0.10,
-                                   width: r.width * 0.14, height: r.height * 0.18)
-                shade(shaded, 0.55).setFill(); NSBezierPath(rect: latch).fill()
+                // Vertical staves, two dark hoops and a bright central lock crest.
+                for fx in [0.34, 0.66] {
+                    let x = r.minX + r.width * CGFloat(fx)
+                    tick(NSPoint(x: x, y: r.minY), NSPoint(x: x, y: r.maxY), dark, width: 0.8)
+                }
+                for fy in [0.28, 0.74] {
+                    let y = r.minY + r.height * CGFloat(fy)
+                    tick(NSPoint(x: r.minX, y: y), NSPoint(x: r.maxX, y: y), dark, width: 1.5)
+                }
+                fillCircle(NSPoint(x: r.midX, y: r.midY), r.width * 0.08,
+                           lighten(shaded, 0.85), outline: dark)
             }
         case .glow:
             // Bright with a sparkle/facet motif (lamp / crystal / beacon / glow).

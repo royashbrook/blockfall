@@ -112,7 +112,9 @@ The next live pass repaired six more presentation regressions:
    and moustache must remain on the facial surface rather than floating in front of it.
 6. Stand still near a leafy tree and berry bushes. Turn in one- or two-degree increments
    across roughly 15 degrees. Lighting/detail must remain attached to the same leaf masses;
-   berries must not flicker from zero to several because of overlapping geometry.
+   berries must not flicker from zero to several because of overlapping geometry. Do this
+   in one live session after the view has settled: separate `--shot` processes have separate
+   async mesh residency and are not a valid yaw comparison.
 7. Customize two players with deliberately different skin, shirt, hair style/colour,
    eyes/colour, nose, mouth, head, and body. Host a LAN game and join from the second
    Mac. Each remote body must match its owner's editor portrait while the local arm
@@ -132,12 +134,11 @@ BF_AVATARS=1 BF_CEL=1 "$BIN" --critters "$OUT/player-avatars.png"
 BF_CRITTER_MOTION=1 BF_CRITTER_KIND=20 BF_CEL=1 \
   "$BIN" --critters "$OUT/villager-motion.png"
 
-for SPEC in "3.14159 180" "3.22886 185" "3.31613 190"; do
-  set -- $SPEC
-  BF_SHOT_SEED=10 BF_SHOT_POS="170,13,62,$1,-0.12" \
-    BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
-    BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/foliage-yaw-$2.png"
-done
+# One deterministic reference frame. Use the live-session turn above for yaw stability.
+BF_SHOT_SEED=10 BF_SHOT_RENDER_DISTANCE=8 \
+  BF_SHOT_POS="170,13,62,3.22886,-0.12" \
+  BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
+  BF_SHOT_HELD=0 BF_CEL=1 "$BIN" --shot "$OUT/foliage-reference.png"
 
 BF_ENTITY_STRESS=1 BF_ENTITY_SHAPE=box \
   BF_METAL_PERF_JSON="$OUT/entity-box.json" \
@@ -429,6 +430,10 @@ negative `(x,z)` values are equivalent to their canonical `0–32767` values.
   four beacon towers, climbable east curtain walk, and two high-tier chests. In
   Survival it spawns one hostile scale-2 content boss; in Hard Creative the same boss
   appears but cannot hunt or damage the observer.
+- Those containers now read as **Loot Barrels**: bowed octagonal oak casks with three
+  iron hoops, a lock crest on every cardinal face, and a small emissive loot mark. The
+  treasure-hall barrel is at `(6621, 18, 30886)`. Open it, take/deposit loot, save/reload,
+  and break it; all existing chest inventory and persistence behavior must remain intact.
 - Grand tower: anchor `(-1243, 19, 3048)`, canonical x `31525`. Enter the south door,
   follow all 24 supported steps through both landings, and open the summit chest.
   Its encounter is the existing bounded three-defender danger band.
@@ -468,6 +473,20 @@ Creative remains peaceful, and switching to Easy removes hostile creatures.
 For each representative species, confirm its original size, palette, face, gait,
 and silhouette still read immediately. At night, emissive eyes/cores must remain
 visible. Slime keeps its existing squash baseline.
+
+### Slow-turn sky and distance check
+
+Use one loaded live session and turn one or two degrees at a time. The large sky
+patches are the cloud layer; they should have rounded, feathered boundaries rather
+than axis-aligned square cells. The horizontal anamorphic bar is Lens Flare, not a
+god ray, and should disappear when Lens Flare is disabled. With clouds and Lens Flare
+off, enable God Rays at render distances 8 and 24: shafts must fade before the finite
+shadow-volume ceiling/edges, never expose a moving rectangular plane. Distant roof
+trim and foliage should lose cel ink gradually from 192–290 blocks instead of blinking
+as sub-pixel outlines. If comparing headless frames, use `BF_SHOT_REQUIRE_STABLE=1`
+with a bounded `BF_SHOT_RENDER_DISTANCE` (4 is enough for close prop fixtures); the
+gate fails rather than saving a partial visible scene when it cannot settle before
+`BF_SHOT_STREAM_TIMEOUT`.
 
 The deterministic `--critters` harness below deliberately normalizes non-villager
 scale and cycles toy review colours; `BF_SHOT_TESTCREATURE` also uses a fixed

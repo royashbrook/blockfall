@@ -727,6 +727,11 @@ BF_API void bf_set_difficulty(bf_engine e, int32_t difficulty);
 BF_API void bf_debug_set_camera(bf_engine e, float px, float py, float pz,
                                 float yaw, float pitch);
 
+/* [MAIN][DEBUG] Current async streaming state for deterministic capture gates.
+ * Returns 0 before a world exists; output pointers may be NULL. */
+BF_API uint8_t bf_debug_stream_status(bf_engine e, int32_t* active_radius,
+                                      int32_t* target_radius, uint32_t* backlog);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

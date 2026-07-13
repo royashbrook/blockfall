@@ -16,7 +16,7 @@
   {
     "id": 31,
     "name": "chest",
-    "display_name": "Chest",
+    "display_name": "Loot Barrel",
     "hardness": 10,
     "required_tier": 0,
     "preferred_tool": "axe",
