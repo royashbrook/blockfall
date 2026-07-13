@@ -715,6 +715,18 @@ func runWashoutTest() -> Bool {
 
 func runHeadlessSelfTest() -> Bool {
     guard bf_abi_version() == BF_ABI_VERSION else { return false }
+    // #265: each exposed oak/birch leaf voxel must expand to exactly one sphere,
+    // with seed brightness kept off leaves. Extra parts/tones overlap in depth and
+    // make distant canopy colours pop on camera yaw.
+    for type in [UInt32(5), UInt32(27)] {
+        let row = Renderer.propRow(for: type)
+        guard row >= 0,
+              Renderer.propRowVertexCounts[row] == Renderer.propRowVertsPerShape[row]
+        else { return false }
+    }
+    guard Renderer.shaderSource.contains("float leafPhase = float(inst.position.x) * 0.18"),
+          Renderer.shaderSource.contains("base *= 1.0 + 0.04 * sin(leafPhase);")
+    else { return false }
     var cfg = bf_engine_config()
     cfg.abi_version = BF_ABI_VERSION
     cfg.role = BF_ROLE_SINGLEPLAYER
@@ -734,6 +746,6 @@ func runHeadlessSelfTest() -> Bool {
         if frame.hud.health != 20.0 { return false }
         bf_frame_end(e)
     }
-    print("OK: swift<->c++ self-test (5 frames, hud populated)")
+    print("OK: swift<->c++ self-test (5 frames, hud populated; canopy shells stable)")
     return true
 }

@@ -3333,6 +3333,7 @@ extension Renderer {
                 : (inst.type == 21u) ? 14 : (inst.type == 22u) ? 15  // #62 trunk (oak, birch)
                 : (inst.type == 48u) ? 16 : (inst.type == 49u) ? 17   // #62 pine needles(16), pine trunk(17)
                 : -1;
+        bool isLeaf = (row == 12 || row == 13);
         bool isTrunk = (row == 14 || row == 15 || row == 17);
         uint vertsPerShape = max(1u, uint(u.params.w + 0.5));
         uint cuboidIdx = vid / vertsPerShape;
@@ -3468,7 +3469,10 @@ extension Renderer {
         // #180 horizon curvature: props/trees must bend with the terrain or distant
         // canopies float above the sunken ground.
         o.position = u.viewProj * float4(horizonBend(world, u.camPosH), 1.0);
-        o.nrm = nm;
+        // Leaf spheres overlap to form one canopy. Keep their tone flat so the
+        // winning shell at an overlap cannot flash between different facet shades
+        // as a distant camera turns. Oak/birch still differ in the model palette.
+        o.nrm = isLeaf ? float3(0.0) : nm;
         // flat colour, drained by region saturation, scaled by day brightness
         float3 base = float3(cu.color);
         // Per-instance variety: flower blooms (rows 0/1, cuboid 1) take a palette
@@ -3476,13 +3480,17 @@ extension Renderer {
         // grass/flowers don't look stamped from one mould.
         if ((row == 0 || row == 1) && cuboidIdx == 1u) base = kFlowerPalette[inst.seed % 6u];
         if (row == 2 && cuboidIdx == 1u) base = kMushroomPalette[inst.seed % 4u];  // mushroom cap variety
-        // #62: foliage gets a per-puff green/gold hue shift so the canopy is mottled
-        // and natural rather than one flat green.
-        if (row == 12 || row == 13) {
-            float gv = float(inst.seed % 7u) / 6.0;     // 0..1
-            base *= float3(0.90 + 0.16 * gv, 0.97 + 0.07 * gv, 0.86 + 0.06 * gv);
+        // Leaves use a broad world-space tint: enough texture to keep a canopy from
+        // going flat, but adjacent voxels differ by <1%, so an overlap cannot flash.
+        // Seed jitter stays on isolated props only.
+        if (isLeaf) {
+            float leafPhase = float(inst.position.x) * 0.18
+                            + float(inst.position.y) * 0.10
+                            + float(inst.position.z) * 0.14;
+            base *= 1.0 + 0.04 * sin(leafPhase);
+        } else {
+            base *= 0.90 + 0.20 * (float((inst.seed >> 5u) & 255u) / 255.0);
         }
-        base *= 0.90 + 0.20 * (float((inst.seed >> 5u) & 255u) / 255.0);
         float lum = dot(base, float3(0.30, 0.59, 0.11));
         float3 drained = float3(0.22, 0.25, 0.32) * (0.45 + lum * 0.85);
         o.col = (drained + (base - drained) * clamp(inst.sat, 0.0, 1.0)) * u.params.x;
