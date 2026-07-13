@@ -76,7 +76,13 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var heldItemCount = 0
     private var lastHeldItem = -1
     private var swingPulse: Double = -100          // #: time of last mine/place/attack (tool swing)
-    private var propInstanceBuffer: MTLBuffer?   // per-frame: the bf_prop_instance list (tiny)
+    // CPU writes the prop list every frame. Keep one shared buffer per GPU frame in
+    // flight; overwriting a single buffer made static trees/bushes read a later frame's
+    // instances while an older command buffer was still drawing them.
+    static let propInstanceBufferRingSize = 3
+    private let inFlightSemaphore = DispatchSemaphore(value: Renderer.propInstanceBufferRingSize)
+    private var propInstanceBuffers = [MTLBuffer?](
+        repeating: nil, count: Renderer.propInstanceBufferRingSize)
     private var propDrawBuckets = Array(repeating: [bf_prop_instance](), count: Renderer.propRowCount)
 
     // ---- Graphics effect toggles (pause-menu Options) ------------------------
@@ -1339,6 +1345,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Must release the acquired frame even on this early-out, or `borrowed`
         // sticks true and every later acquire returns the same frame forever.
         guard let cmd = queue.makeCommandBuffer() else { bf_frame_end(e); return }
+        // currentDrawable normally limits the layer to three outstanding presents, but
+        // it is not a lifetime fence across drawable reconfiguration. Make the three-slot
+        // dynamic-buffer contract explicit and release a slot only on GPU completion.
+        inFlightSemaphore.wait()
 
         // PASS 1 (the camera-following shadow-map cascade render) is RETIRED. World-space
         // voxel shadows need no shadow geometry pass: the occupancy 3D texture was uploaded
@@ -1460,10 +1470,13 @@ final class Renderer: NSObject, MTKViewDelegate {
                 }
                 let stride = MemoryLayout<bf_prop_instance>.stride
                 let need = batchedPropN * stride
-                if propInstanceBuffer == nil || propInstanceBuffer!.length < need {
-                    propInstanceBuffer = device.makeBuffer(length: max(need, 64 * 1024), options: .storageModeShared)
+                let propBufferSlot = Renderer.propInstanceBufferSlot(for: frameCounter)
+                if propInstanceBuffers[propBufferSlot] == nil
+                    || propInstanceBuffers[propBufferSlot]!.length < need {
+                    propInstanceBuffers[propBufferSlot] = device.makeBuffer(
+                        length: max(need, 64 * 1024), options: .storageModeShared)
                 }
-                if let ib = propInstanceBuffer, batchedPropN > 0 {
+                if let ib = propInstanceBuffers[propBufferSlot], batchedPropN > 0 {
                     let dayBright = 0.30 + 0.70 * Renderer.dayLight(frame.camera.time_of_day)
                     let pu2 = PropUniforms(viewProj: viewProj,
                                            params: SIMD4<Float>(dayBright, wallClock, gfxFoliage ? 1 : 0, 0),
@@ -1852,8 +1865,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         // the HUD is invisible. Requires view.presentsWithTransaction = true.
         // This path is unchanged regardless of whether MetalFX is active.
         let encodedFrame = frameCounter
-        cmd.addCompletedHandler { [registry] _ in
+        cmd.addCompletedHandler { [registry, inFlightSemaphore] _ in
             registry.markFrameCompleted(encodedFrame)
+            inFlightSemaphore.signal()
         }
         if view.presentsWithTransaction {
             cmd.commit()
@@ -2481,6 +2495,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     static let propTypeRows: [UInt32] = [36, 37, 39, 40, 38, 41, 42, 43, 44, 45, 46, 47,
                                          5, 27, 21, 22, 48, 49]
     static let propRowCount = propTypeRows.count
+
+    static func propInstanceBufferSlot(for frame: Int) -> Int {
+        frame % propInstanceBufferRingSize
+    }
 
     static func propRow(for type: UInt32) -> Int {
         switch type {

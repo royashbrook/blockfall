@@ -818,6 +818,11 @@ func runWashoutTest() -> Bool {
 
 func runHeadlessSelfTest() -> Bool {
     guard bf_abi_version() == BF_ABI_VERSION else { return false }
+    // Static world props are uploaded through a three-frame ring. Reusing one shared
+    // buffer lets the CPU overwrite instances while an older GPU frame still reads it.
+    guard Renderer.propInstanceBufferRingSize == 3,
+          (0..<6).map({ Renderer.propInstanceBufferSlot(for: $0) }) == [0, 1, 2, 0, 1, 2]
+    else { return false }
     // #274: a sun behind the camera must disable the radial pass instead of
     // feeding its (-1,-1) sentinel to the shader as a false top-left light source.
     let projection = Renderer.perspective(fovy: 1.0, aspect: 1.0, near: 0.1, far: 1000)
