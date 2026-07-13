@@ -3557,6 +3557,52 @@ fn breaking_tree_support_fells_matching_canopy() {
 }
 
 #[test]
+fn breaking_support_fells_max_generated_tree_log_budget() {
+    let (_c, mut w) = debris_world();
+    let (bx, bz) = (8, 8);
+    for y in 8..=23 {
+        w.debug_edit(bx, y, bz, 21); // Maximum generated giant-oak trunk: 16 logs.
+    }
+    let branches = [(1, 0), (-1, 0), (0, 1)];
+    for (dx, dz) in branches {
+        for step in 1..=3 {
+            let y = 20 + (step + 1) / 2;
+            w.debug_edit(bx + dx * step, y, bz + dz * step, 21);
+        }
+    }
+    for dx in -1..=1 {
+        for dz in -1..=1 {
+            w.debug_edit(bx + dx, 24, bz + dz, 5);
+        }
+    }
+
+    w.debug_break_block(bx, 7, bz);
+
+    for y in 8..=23 {
+        assert_eq!(
+            w.debug_block_at(bx, y, bz),
+            0,
+            "upper trunk stayed at y={y}"
+        );
+    }
+    for (dx, dz) in branches {
+        for step in 1..=3 {
+            let y = 20 + (step + 1) / 2;
+            assert_eq!(
+                w.debug_block_at(bx + dx * step, y, bz + dz * step),
+                0,
+                "branch ({dx},{dz}) stayed at step {step}"
+            );
+        }
+    }
+    assert_eq!(
+        w.debug_block_at(bx + 1, 24, bz),
+        0,
+        "canopy stayed aloft"
+    );
+}
+
+#[test]
 fn breaking_support_leaves_structural_logs_standing() {
     let (_c, mut w) = debris_world();
     let (bx, bz) = (8, 8);

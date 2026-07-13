@@ -1,5 +1,9 @@
 use super::*;
 
+// Worldgen's largest tree has 16 trunk logs plus three 3-log branches (25).
+// Keep the walk bounded, with a little room for joined branch geometry.
+const MAX_NATURAL_TREE_LOGS: usize = 32;
+
 #[derive(Clone)]
 pub(super) struct FallingBlock {
     pub(super) pos: V3,
@@ -120,7 +124,7 @@ impl<'c> World<'c> {
         let mut seen = HashSet::from([(base.x, base.y, base.z)]);
         let mut checked = 0;
         while let Some(w) = stack.pop() {
-            if checked >= 12 {
+            if checked >= MAX_NATURAL_TREE_LOGS {
                 break;
             }
             checked += 1;
@@ -162,7 +166,7 @@ impl<'c> World<'c> {
         let mut seen: HashSet<(i32, i32, i32)> = HashSet::new();
         seen.insert((base.x, base.y, base.z));
         while let Some(w) = stack.pop() {
-            if logs.len() >= 12 {
+            if logs.len() >= MAX_NATURAL_TREE_LOGS {
                 break;
             }
             logs.push(w);
