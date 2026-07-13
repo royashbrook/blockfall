@@ -480,8 +480,11 @@ Use one loaded live session and turn one or two degrees at a time. The large sky
 patches are the cloud layer; they should have rounded, feathered boundaries rather
 than axis-aligned square cells. The horizontal anamorphic bar is Lens Flare, not a
 god ray, and should disappear when Lens Flare is disabled. With clouds and Lens Flare
-off, enable God Rays at render distances 8 and 24: shafts must fade before the finite
-shadow-volume ceiling/edges, never expose a moving rectangular plane. Distant roof
+off, enable God Rays at render distances 8 and 24 and test both 50% and 100% intensity
+(0% is not a ray test): shafts must continue smoothly beyond the finite shadow volume,
+never exposing its ceiling or sides as a moving rectangular plane. The issue-274 live
+before/after references are `artifacts/playtest-2026-07-12/godray-tiles-live-before.png`
+and `godray-tiles-live-after.png`. Distant roof
 trim and foliage should lose cel ink gradually from 192–290 blocks instead of blinking
 as sub-pixel outlines. If comparing headless frames, use `BF_SHOT_REQUIRE_STABLE=1`
 with a bounded `BF_SHOT_RENDER_DISTANCE` (4 is enough for close prop fixtures); the

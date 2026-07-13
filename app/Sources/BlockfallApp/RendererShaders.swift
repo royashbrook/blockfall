@@ -2577,18 +2577,20 @@ extension Renderer {
         float lane = float((int(pixPos.x) & 1) | ((int(pixPos.y) & 1) << 1));
         float dither = (lane + ignQ) * 0.25;
 
-        float farR       = vu.camPosW.w;
         float voxMaxDist = vu.voxOrigin.w;
         // The occupancy texture is a finite world-space box, not the radial
-        // `farR` advertised by the old fade. In particular its sky ceiling is y=63,
-        // and low render distances can be narrower than this 140-block view march.
-        // Keep both the air sample AND its sunward shadow segment inside the real
-        // box, feathering the last eight blocks. Otherwise marchSunOcclusion leaves
-        // the box and reports fully lit, projecting its axis-aligned ceiling/edges as
-        // hard rectangles that slide when the camera turns.
+        // volume advertised by the view march. Keep both the air sample AND its
+        // sunward shadow segment inside that box when querying visibility. Once a
+        // view ray leaves it, carry its last valid visibility through the remaining
+        // atmosphere instead of fading to zero (which projected the box ceiling and
+        // sides as the large rectangles visible around the sun).
         float3 sunDelta = toSun * (voxMaxDist + 0.05);
         float3 safeLo = max(float3(0.0), -sunDelta);
         float3 safeHi = min(vu.voxDims.xyz, vu.voxDims.xyz - sunDelta);
+        float3 camGrid = camP - vu.voxOrigin.xyz;
+        float3 camEdge = min(camGrid - safeLo, safeHi - camGrid);
+        bool traceVisibility = min(camEdge.x, min(camEdge.y, camEdge.z)) >= 0.0;
+        float lit = 1.0;
         // Accumulate the LIT length and the TOTAL marched length separately, so the
         // raw signal is a lit FRACTION in [0,1] (how much of the air toward the sun
         // along this ray is sunlit). Normalising this way decouples the strength from
@@ -2601,20 +2603,19 @@ extension Renderer {
         float t = stepLen * dither;
         for (int i = 0; i < GR_STEPS; ++i) {
             float3 sp = camP + viewDir * t;
-            float dc  = t;
-            float3 gp = sp - vu.voxOrigin.xyz;
-            float3 edge3 = min(gp - safeLo, safeHi - gp);
-            float boxEdge = min(edge3.x, min(edge3.y, edge3.z));
-            float coverage = smoothstep(0.0, 8.0, boxEdge)
-                           * (1.0 - smoothstep(farR * 0.85, farR, dc));
-            // Same world occupancy march as the cast shadows (no shadow map).
-            // Outside the usable box there is no trustworthy occlusion data, so
-            // contribute nothing and skip the DDA entirely.
-            float lit = coverage > 0.0
-                      ? volShadowLit(occ, occCoarse, vu.voxOrigin.xyz, vu.voxDims.xyz,
-                                     sp, toSun, voxMaxDist)
-                      : 0.0;
-            litLen += lit * coverage * stepLen;
+            if (traceVisibility) {
+                float3 gp = sp - vu.voxOrigin.xyz;
+                float3 edge3 = min(gp - safeLo, safeHi - gp);
+                if (min(edge3.x, min(edge3.y, edge3.z)) >= 0.0) {
+                    // Same world occupancy march as the cast shadows (no shadow map).
+                    lit = volShadowLit(occ, occCoarse, vu.voxOrigin.xyz, vu.voxDims.xyz,
+                                       sp, toSun, voxMaxDist);
+                } else {
+                    // The box is convex: a ray that starts inside cannot re-enter.
+                    traceVisibility = false;
+                }
+            }
+            litLen += lit * stepLen;
             totLen += stepLen;
             t += stepLen;
         }
