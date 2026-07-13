@@ -150,6 +150,55 @@ fn world_mine_place_loop() {
     );
 }
 
+// A boundary face belongs to the chunk on the other side of the edited voxel.
+// Both meshes must therefore be replaced before the draw list is exposed; publishing
+// them as separate worker results briefly opened a see-through seam at local z=15.
+#[test]
+fn boundary_edit_remeshes_both_chunks_before_draw() {
+    let mut w = World::new(None);
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.generate_test_world();
+    w.debug_set_camera(8.5, 12.0, 15.5, 0.0, -0.3);
+
+    let mut draws = Vec::new();
+    let mut shadow = Vec::new();
+    let mut props = Vec::new();
+    let mut frame = empty_frame();
+    // The flat fixture has 25 chunks and the normal synchronous mesh budget is 12.
+    for _ in 0..3 {
+        w.build_frame(&mut frame, &mut draws, &mut shadow, &mut props, 0.0);
+    }
+    let handles = |draws: &[bf_draw_item], z: i32| {
+        draws
+            .iter()
+            .find(|d| {
+                d.chunk_origin.x == 0 && d.chunk_origin.y == 0 && d.chunk_origin.z == z
+            })
+            .map(|d| (d.vertex_buffer, d.index_buffer))
+            .unwrap_or_else(|| panic!("missing flat-world chunk at z={z}"))
+    };
+    let before_edited = handles(&draws, 0);
+    let before_neighbour = handles(&draws, 16);
+
+    // Match the live worker-pool path, then remove the z=15 surface block. The edit
+    // dirties its own chunk and the +z neighbour whose -z face becomes visible.
+    w.debug_set_sync_streaming(false);
+    w.debug_edit(8, 7, 15, world::AIR);
+    w.build_frame(&mut frame, &mut draws, &mut shadow, &mut props, 0.0);
+
+    assert_ne!(
+        handles(&draws, 0),
+        before_edited,
+        "edited chunk remeshed before draw"
+    );
+    assert_ne!(
+        handles(&draws, 16),
+        before_neighbour,
+        "boundary neighbour remeshed before the same draw"
+    );
+}
+
 // ============================================================================
 // World-space sun-shadow occupancy grid (ABI v19). Verifies the exported
 // occupancy: solid terrain casts, air does not, an edit updates it and bumps the

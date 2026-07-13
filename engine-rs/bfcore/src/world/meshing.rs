@@ -221,8 +221,10 @@ impl<'c> World<'c> {
         // Player-edit remeshes first, outside the fresh-first scoring and the remesh
         // cap below. The main queue deliberately favors fresh meshes so streaming fill
         // wins, but with continuous streaming that starved edit remeshes: a broken
-        // block stayed visible long after its voxel was air. Edits are sparse, so a
-        // small dedicated budget keeps them instant without hurting fill.
+        // block stayed visible long after its voxel was air. Process this bounded lane
+        // synchronously so a boundary edit cannot publish one chunk before the neighbour
+        // that supplies its newly exposed face. An older worker result is harmless: the
+        // edit bumped mesh_version, so upload_mesh_result rejects it when it arrives.
         if !self.urgent_dirty.is_empty() {
             let urgent: Vec<ChunkCoord> = self.urgent_dirty.drain().collect();
             let mut done_urgent = 0;
@@ -233,12 +235,6 @@ impl<'c> World<'c> {
                 }
                 if !self.store.is_resident(cc) {
                     self.dirty.remove(&cc);
-                    continue;
-                }
-                if async_mode && self.mesh_inflight.contains(&cc) {
-                    // An older-version job is in flight; keep this urgent so the
-                    // fresh remesh runs next tick instead of rejoining the slow queue.
-                    self.urgent_dirty.insert(cc);
                     continue;
                 }
                 self.dirty.remove(&cc);
@@ -267,11 +263,7 @@ impl<'c> World<'c> {
                         }
                     }
                 }
-                if async_mode {
-                    self.submit_mesh_job(cc);
-                } else {
-                    self.remesh_one(cc);
-                }
+                self.remesh_one(cc);
             }
         }
 
@@ -606,5 +598,34 @@ impl<'c> World<'c> {
         rec.ibuf = ib;
         rec.index_count = mr.index_count;
         rec.has_buffers = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn urgent_remesh_does_not_wait_for_stale_inflight_job() {
+        let mut world = World::new(None);
+        world.set_allocator(bf_gpu_allocator {
+            user: std::ptr::null_mut(),
+            alloc: None,
+            free_: None,
+        });
+        let cc = ChunkCoord { x: 0, y: 0, z: 0 };
+        world.store.get_or_create(cc).set(8, 7, 8, GRASS);
+        world.mark_dirty(cc);
+        world.urgent_dirty.insert(cc);
+        // Simulate an older snapshot still registered with the live worker pool.
+        world.mesh_inflight.insert(cc);
+
+        world.remesh_dirty();
+
+        assert!(!world.urgent_dirty.contains(&cc));
+        assert!(
+            world.meshes.contains_key(&cc),
+            "urgent remesh ran synchronously despite the stale worker"
+        );
     }
 }
