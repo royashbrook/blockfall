@@ -1316,8 +1316,8 @@ fn emit_loot_barrel(
     filled: bool,
     buf: &mut MeshBuffers,
 ) -> bool {
-    const VERTICES: usize = 648;
-    const INDICES: usize = 948;
+    const VERTICES: usize = 712;
+    const INDICES: usize = 1044;
     if buf.vtx_cap - buf.vtx.len() < VERTICES * VERTEX_SIZE
         || buf.idx_cap - buf.idx.len() < INDICES * INDEX_SIZE
     {
@@ -1335,6 +1335,16 @@ fn emit_loot_barrel(
         (5, 14),
         (2, 11),
         (2, 5),
+    ];
+    const INNER: [(u32, u32); 8] = [
+        (6, 3),
+        (10, 3),
+        (13, 6),
+        (13, 10),
+        (10, 13),
+        (6, 13),
+        (3, 10),
+        (3, 6),
     ];
     const WIDE: [(u32, u32); 8] = [
         (4, 1),
@@ -1366,18 +1376,41 @@ fn emit_loot_barrel(
     emit_octagonal_frustum_16(
         bx, by, bz, &WIDE, &NARROW, 11, 15, false, true, None, CHEST, sky, blk, buf,
     );
-    for &(ylo, yhi, inner) in &[(3, 4, &WIDE), (10, 11, &WIDE), (14, 15, &NARROW)] {
+    for &(ylo, crown, yhi, lower_edge, upper_edge) in &[
+        (2, 3, 4, &NARROW, &WIDE),
+        (9, 10, 11, &WIDE, &WIDE),
+        (13, 14, 15, &WIDE, &NARROW),
+    ] {
+        // The top tube closes against the existing oak lid; another +Y cap at
+        // y=15 would overlap that lid and bring the orbit flicker back.
+        let cap_top = yhi < 15;
+        emit_octagonal_frustum_16(
+            bx,
+            by,
+            bz,
+            lower_edge,
+            &HOOP,
+            ylo,
+            crown,
+            true,
+            false,
+            Some(&INNER),
+            IRON,
+            sky,
+            blk,
+            buf,
+        );
         emit_octagonal_frustum_16(
             bx,
             by,
             bz,
             &HOOP,
-            &HOOP,
-            ylo,
+            upper_edge,
+            crown,
             yhi,
-            true,
-            true,
-            Some(inner),
+            false,
+            cap_top,
+            Some(&INNER),
             IRON,
             sky,
             blk,
@@ -1386,10 +1419,10 @@ fn emit_loot_barrel(
     }
 
     let plates = [
-        (6, 10, 7, 10, 0, 1, IRON),
-        (6, 10, 7, 10, 15, 16, IRON),
-        (0, 1, 7, 10, 6, 10, IRON),
-        (15, 16, 7, 10, 6, 10, IRON),
+        (6, 10, 6, 9, 0, 1, IRON),
+        (6, 10, 6, 9, 15, 16, IRON),
+        (0, 1, 6, 9, 6, 10, IRON),
+        (15, 16, 6, 9, 6, 10, IRON),
         (7, 9, 11, 13, 0, 1, GLOW),
         (7, 9, 11, 13, 15, 16, GLOW),
         (0, 1, 11, 13, 7, 9, GLOW),
@@ -3145,10 +3178,10 @@ mod tests {
 
         let (res, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
         let verts = decode_position_and_mat(&vtx);
-        assert_eq!(res.index_count, 948);
-        assert_eq!(res.vertex_bytes, 648 * VERTEX_SIZE as u32);
+        assert_eq!(res.index_count, 1044);
+        assert_eq!(res.vertex_bytes, 712 * VERTEX_SIZE as u32);
         assert_eq!(verts.iter().filter(|(_, m)| *m == CHEST).count(), 144);
-        assert_eq!(verts.iter().filter(|(_, m)| *m == 53).count(), 384);
+        assert_eq!(verts.iter().filter(|(_, m)| *m == 53).count(), 448);
         assert_eq!(verts.iter().filter(|(_, m)| *m == 7).count(), 120);
         assert!(
             vtx.chunks_exact(VERTEX_SIZE)
@@ -3169,7 +3202,7 @@ mod tests {
         let empty_verts = decode_position_and_mat(&empty_vtx);
         assert_eq!(empty_res.index_count, res.index_count);
         assert_eq!(empty_verts.iter().filter(|(_, m)| *m == 7).count(), 0);
-        assert_eq!(empty_verts.iter().filter(|(_, m)| *m == 53).count(), 504);
+        assert_eq!(empty_verts.iter().filter(|(_, m)| *m == 53).count(), 568);
 
         for axis in 0..3 {
             let (lo, hi) = verts
@@ -3186,17 +3219,17 @@ mod tests {
             "the oak body is faceted, never a full-cube corner"
         );
 
-        let mut short = MeshBuffers::new(648 * VERTEX_SIZE - 1, 948 * INDEX_SIZE);
+        let mut short = MeshBuffers::new(712 * VERTEX_SIZE - 1, 1044 * INDEX_SIZE);
         assert!(!emit_loot_barrel(0, 0, 0, 15, 0, true, &mut short));
         assert!(short.vtx.is_empty() && short.idx.is_empty());
     }
 
     #[test]
     fn loot_barrel_hoops_are_closed_bands() {
-        let mut buf = MeshBuffers::new(648 * VERTEX_SIZE, 948 * INDEX_SIZE);
+        let mut buf = MeshBuffers::new(712 * VERTEX_SIZE, 1044 * INDEX_SIZE);
         assert!(emit_loot_barrel(0, 0, 0, 15, 0, true, &mut buf));
 
-        let mut hoop_faces = [false; 6];
+        let mut hoop_faces = [false; 5];
         for vertex in buf.vtx.chunks_exact(VERTEX_SIZE) {
             if u16::from_le_bytes([vertex[8], vertex[9]]) != 53 {
                 continue;
@@ -3207,14 +3240,32 @@ mod tests {
             }
             let packed = u32::from_le_bytes([vertex[0], vertex[1], vertex[2], vertex[3]]);
             let fy = ((packed >> 22) & 0xF) as usize;
-            if let Some(index) = [3, 4, 10, 11, 14, 15].iter().position(|&y| y == fy) {
+            if let Some(index) = [2, 4, 9, 11, 13].iter().position(|&y| y == fy) {
                 hoop_faces[index] = true;
             }
         }
         assert!(
             hoop_faces.into_iter().all(|present| present),
-            "every hoop has a top and bottom annular face instead of a zero-thickness side sheet"
+            "every exposed hoop end has an annular face; the top hoop closes against the oak lid"
         );
+    }
+
+    #[test]
+    fn loot_barrel_hoops_swell_from_inset_edges_to_rounded_crowns() {
+        let mut buf = MeshBuffers::new(712 * VERTEX_SIZE, 1044 * INDEX_SIZE);
+        assert!(emit_loot_barrel(0, 0, 0, 15, 0, true, &mut buf));
+        let verts = decode_position_and_mat(&buf.vtx);
+        let extent_at = |y: f32| {
+            verts
+                .iter()
+                .filter(|(p, mat)| *mat == 53 && (p[1] - y).abs() < 1e-4)
+                .flat_map(|(p, _)| [p[0], p[2]])
+                .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)))
+        };
+
+        assert_eq!(extent_at(2.0 / 16.0), (2.0 / 16.0, 14.0 / 16.0));
+        assert_eq!(extent_at(3.0 / 16.0), (0.0, 1.0));
+        assert_eq!(extent_at(4.0 / 16.0), (1.0 / 16.0, 15.0 / 16.0));
     }
 
     #[test]
