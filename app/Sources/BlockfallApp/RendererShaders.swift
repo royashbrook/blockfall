@@ -2574,7 +2574,7 @@ extension Renderer {
         float2 sunUV = float2(vu.camPosW.w, vu.voxDims.w);
         float2 rayStep = (sunUV - uv) * (0.92 / float(GR_STEPS));
         float2 sampleUV = uv + rayStep * dither;
-        float litLen = 0.0, totLen = 0.0;
+        float litLen = 0.0, litSqLen = 0.0, totLen = 0.0;
         float weight = 1.0;
         for (int i = 0; i < GR_STEPS; ++i) {
             sampleUV += rayStep;
@@ -2583,10 +2583,13 @@ extension Renderer {
             // tree/roof silhouettes before the radial integration.
             float openSky = smoothstep(0.995, 0.9999, sd);
             litLen += openSky * weight;
+            litSqLen += openSky * openSky * weight;
             totLen += weight;
             weight *= 0.965;
         }
         float litFrac = (totLen > 1e-4) ? (litLen / totLen) : 0.0;   // 0..1
+        float visibilityVar = (totLen > 1e-4)
+            ? max(0.0, litSqLen / totLen - litFrac * litFrac) : 0.0;
 
         // #147 DENOISE THE LIT FRACTION (before the steep shaping). The jittered march
         // leaves a little high-frequency variance in litFrac; the floor/gamma/contrast curves
@@ -2603,6 +2606,11 @@ extension Renderer {
                      + quad_shuffle_xor(litFrac, 2u)
                      + quad_shuffle_xor(litFrac, 3u)) * 0.25;
         litFrac = clamp(lfq, 0.0, 1.0);
+        float vvq = (visibilityVar
+                     + quad_shuffle_xor(visibilityVar, 1u)
+                     + quad_shuffle_xor(visibilityVar, 2u)
+                     + quad_shuffle_xor(visibilityVar, 3u)) * 0.25;
+        visibilityVar = max(0.0, vvq);
 
         // A floor cut that keeps ONLY the shaft cores: it suppresses the broad,
         // uniform low-level glow (the "fog wash" failure mode and the ground-wash
@@ -2612,12 +2620,13 @@ extension Renderer {
         // GR_SHAFT_GAMMA > 1 then CRUSHES the partly-lit midtones toward black so the
         // broad smooth glare dies and the shadow corridors read as crisp dark gaps
         // between bright beams (graphic, cel-shaded shafts, not a soft halo).
-        // More occlusion must never make a ray brighter. The previous symmetric
-        // 4*l*(1-l) term peaked at half visibility, turning every tree/roof shadow
-        // corridor into a bright line on the side away from the sun. Shape the
-        // visibility monotonically instead: clear radial paths stay bright and
-        // silhouettes carve dark corridors through them.
-        float shaftRaw = smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac);
+        // More occlusion must never make a carved ray brighter. The previous
+        // 4*l*(1-l) term peaked at half visibility, turning every shadow corridor
+        // into a bright line. Weighted variance limits the effect to paths that
+        // actually mix sky and silhouette, so uniform clear sky cannot restore the
+        // broad phase halo while visibility inside a real beam stays monotonic.
+        float mixedVisibility = smoothstep(0.002, 0.025, visibilityVar);
+        float shaftRaw = smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac) * mixedVisibility;
         float shaft    = pow(shaftRaw, GR_SHAFT_GAMMA);
         // #132 DISTINCT BEAMS: sharpen the shaft around its mid-value with a contrast
         // curve so the smooth in-scatter SEGMENTS into separated bright cores and dark

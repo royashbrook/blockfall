@@ -807,7 +807,9 @@ func runHeadlessSelfTest() -> Bool {
     // 4*l*(1-l) term made half-occluded paths brighter than clear ones, drawing a
     // bright line directly behind every tree/roof that should cast a dark corridor.
     guard Renderer.shaderSource.contains(
-              "float shaftRaw = smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac);"),
+              "float mixedVisibility = smoothstep(0.002, 0.025, visibilityVar);"),
+          Renderer.shaderSource.contains(
+              "smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac) * mixedVisibility;"),
           !Renderer.shaderSource.contains("4.0 * litFrac * (1.0 - litFrac)")
     else { return false }
     // #265: each exposed oak/birch leaf voxel must expand to exactly one sphere,
