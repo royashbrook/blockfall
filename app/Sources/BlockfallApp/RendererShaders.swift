@@ -84,13 +84,13 @@ extension Renderer {
         float celOutlineStr; // #136 cel ink-outline intensity (0..1) scaling CEL_OUTLINE_DARK
     };
 
-    // VolUniforms (240 bytes) — #119 volumetric god-ray raymarch, composite buffer(1).
+    // VolUniforms (240 bytes) — #119 radial screen-depth god rays, composite buffer(1).
     // Must EXACTLY match the Swift VolUniforms struct.
     struct VolUniforms {
         float4x4 invViewProj;    // clip -> world
-        float4   voxOrigin;      // xyz = shadow grid origin (world block coords), w = march distance
-        float4   voxDims;        // xyz = grid dims (voxels), w = soft-shadow flag
-        float4   camPosW;        // xyz = camera world pos, w = far coverage radius
+        float4   voxOrigin;      // reserved legacy fields
+        float4   voxDims;        // xyz reserved, w = projected sun UV.y
+        float4   camPosW;        // xyz = camera world pos, w = projected sun UV.x
         float4   sunDir;         // xyz = sun dir (downward), w unused
         float4   sunColor;       // rgb = sun colour, w = volumetric strength (0 = off)
     };
@@ -2375,7 +2375,7 @@ extension Renderer {
     //  is now environmental world-space particles; see the precip* shaders below.)
 
     // =========================================================
-    // #119 VOLUMETRIC GOD RAYS — shadow-map raymarch helpers
+    // #119 VOLUMETRIC GOD RAYS — screen-depth radial march helpers
     //
     //   GR_STEPS    : samples per ray. Higher = smoother shafts, more GPU. The dither
     //                 below lets a modest count look banding-free. PERF KNOB.
@@ -2507,18 +2507,7 @@ extension Renderer {
         return (1.0 - g2) / (4.0 * 3.14159265 * pow(max(denom, 1e-4), 1.5));
     }
 
-    // Sun-lit test for one world-space god-ray step: march the SAME world occupancy
-    // grid the terrain shadows use, from this step's world point toward the sun.
-    // Returns 1 = lit, 0 = shadowed. Using the same voxel volume means the god-ray
-    // occlusion matches the cast shadows exactly and the shadow map is fully retired.
-    static float volShadowLit(texture3d<uint, access::read> occ,
-                              texture3d<uint, access::read> coarse,
-                              float3 gridOrigin, float3 gridDims,
-                              float3 worldP, float3 toSun, float maxDist) {
-        return marchSunOcclusion(occ, coarse, gridOrigin, gridDims, worldP, toSun, maxDist);
-    }
-
-    // #167 GOD-RAY MARCH CORE. The full shadow march + shaft shaping for one ray,
+    // #167 GOD-RAY MARCH CORE. The screen-depth radial march + shaft shaping for one ray,
     // shared by the half-res pre-pass (godrayHalfFrag, the fast path the live renderer
     // uses) and the legacy inline path inside compositeFrag (kept for the headless
     // harness call sites, which signal it with vu.sunDir.w == 0). Returns:
@@ -2531,10 +2520,9 @@ extension Renderer {
     // the conservative near depth covers the coarse pixel's whole 2x2 footprint.
     static float3 grInscatter(float2 uv, float2 pixPos, float2 dilateTexel,
                               depth2d<float, access::sample> sceneDepth,
-                              texture3d<uint, access::read> occ,
-                              texture3d<uint, access::read> occCoarse,
                               constant VolUniforms& vu) {
         constexpr sampler sD(filter::nearest, address::clamp_to_edge);
+        constexpr sampler sRay(filter::linear, address::clamp_to_edge);
         // Reconstruct this pixel's world position from depth (clip -> world).
         // FSVOut uv is Metal top-left; NDC y is flipped, z in [0,1] on Metal.
         float d = sceneDepth.sample(sD, uv);
@@ -2555,7 +2543,6 @@ extension Renderer {
         // March only up to the visible surface (so shafts respect occlusion) and
         // cap at GR_MAXDIST (keeps every sample inside the far cascade + bounds cost).
         float marchLen = min(hitDist, GR_MAXDIST);
-        float stepLen  = marchLen / float(GR_STEPS);
 
         // toSun points from the scene toward the sun (sunDir points downward).
         float3 toSun = normalize(-vu.sunDir.xyz);
@@ -2577,47 +2564,27 @@ extension Renderer {
         float lane = float((int(pixPos.x) & 1) | ((int(pixPos.y) & 1) << 1));
         float dither = (lane + ignQ) * 0.25;
 
-        float voxMaxDist = vu.voxOrigin.w;
-        // The occupancy texture is a finite world-space box, not the radial
-        // volume advertised by the view march. Keep both the air sample AND its
-        // sunward shadow segment inside that box when querying visibility. Once a
-        // view ray leaves it, carry its last valid visibility through the remaining
-        // atmosphere instead of fading to zero (which projected the box ceiling and
-        // sides as the large rectangles visible around the sun).
-        float3 sunDelta = toSun * (voxMaxDist + 0.05);
-        float3 safeLo = max(float3(0.0), -sunDelta);
-        float3 safeHi = min(vu.voxDims.xyz, vu.voxDims.xyz - sunDelta);
-        float3 camGrid = camP - vu.voxOrigin.xyz;
-        float3 camEdge = min(camGrid - safeLo, safeHi - camGrid);
-        bool traceVisibility = min(camEdge.x, min(camEdge.y, camEdge.z)) >= 0.0;
-        float lit = 1.0;
-        // Accumulate the LIT length and the TOTAL marched length separately, so the
-        // raw signal is a lit FRACTION in [0,1] (how much of the air toward the sun
-        // along this ray is sunlit). Normalising this way decouples the strength from
-        // the ray length, so short ground rays and long sky rays are on the same
-        // scale and a single threshold reads consistently.
+        // #274: use a classic screen-space radial visibility march. The previous
+        // world-volume version exposed both the finite occupancy box and individual
+        // voxel cells as huge axis-aligned rectangles around a low sun. Scene depth
+        // already contains the exact visible silhouettes needed to carve stylized
+        // shafts; marching it toward the projected sun is cheaper, continuous, and
+        // has no finite 3D box that can project onto the sky. The CPU packs sun UV in
+        // camPosW.w / voxDims.w for this ray-only uniform.
+        float2 sunUV = float2(vu.camPosW.w, vu.voxDims.w);
+        float2 rayStep = (sunUV - uv) * (0.92 / float(GR_STEPS));
+        float2 sampleUV = uv + rayStep * dither;
         float litLen = 0.0, totLen = 0.0;
-        // #188: full-step stratified start (see the quad jitter above). The per-pixel
-        // variance the full shift used to leave behind is integrated away by the quad
-        // averages below, because the four lanes now cover the step uniformly.
-        float t = stepLen * dither;
+        float weight = 1.0;
         for (int i = 0; i < GR_STEPS; ++i) {
-            float3 sp = camP + viewDir * t;
-            if (traceVisibility) {
-                float3 gp = sp - vu.voxOrigin.xyz;
-                float3 edge3 = min(gp - safeLo, safeHi - gp);
-                if (min(edge3.x, min(edge3.y, edge3.z)) >= 0.0) {
-                    // Same world occupancy march as the cast shadows (no shadow map).
-                    lit = volShadowLit(occ, occCoarse, vu.voxOrigin.xyz, vu.voxDims.xyz,
-                                       sp, toSun, voxMaxDist);
-                } else {
-                    // The box is convex: a ray that starts inside cannot re-enter.
-                    traceVisibility = false;
-                }
-            }
-            litLen += lit * stepLen;
-            totLen += stepLen;
-            t += stepLen;
+            sampleUV += rayStep;
+            float sd = sceneDepth.sample(sRay, sampleUV);
+            // Linear depth filtering plus a narrow clear-depth ramp antialiases
+            // tree/roof silhouettes before the radial integration.
+            float openSky = smoothstep(0.995, 0.9999, sd);
+            litLen += openSky * weight;
+            totLen += weight;
+            weight *= 0.965;
         }
         float litFrac = (totLen > 1e-4) ? (litLen / totLen) : 0.0;   // 0..1
 
@@ -2645,7 +2612,13 @@ extension Renderer {
         // GR_SHAFT_GAMMA > 1 then CRUSHES the partly-lit midtones toward black so the
         // broad smooth glare dies and the shadow corridors read as crisp dark gaps
         // between bright beams (graphic, cel-shaded shafts, not a soft halo).
-        float shaftRaw = smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac);
+        // Uniform open sky is sun glow, not a shaft (the sun disc / optional flare
+        // already cover it). Keep only mixed open/occluded radial visibility, which
+        // is where silhouettes actually carve crepuscular beams. Besides reading
+        // more like rays, this removes the enormous shallow phase halo whose 8-bit
+        // quantization exposed screen-sized tonal rectangles.
+        float beamSignal = 4.0 * litFrac * (1.0 - litFrac);
+        float shaftRaw = smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, beamSignal);
         float shaft    = pow(shaftRaw, GR_SHAFT_GAMMA);
         // #132 DISTINCT BEAMS: sharpen the shaft around its mid-value with a contrast
         // curve so the smooth in-scatter SEGMENTS into separated bright cores and dark
@@ -2670,16 +2643,14 @@ extension Renderer {
         return float3(inscatter, litFrac, hitDist);
     }
 
-    // #167 LOW-RES GOD-RAY PRE-PASS. Runs the expensive shadow march at a fraction
+    // #167 LOW-RES GOD-RAY PRE-PASS. Runs the radial depth march at a fraction
     // of the scene resolution (kGodRayDownscale = 4, so 16x fewer marched pixels)
     // into a small rgba16Float target; compositeFrag then does a depth-aware
     // (bilateral) upsample so shaft edges stay crisp against foreground geometry.
     //   r = inscatter, g = litFrac (BF_GR_DEBUG), b = hit distance (the depth key).
     fragment float4 godrayHalfFrag(FSVOut in [[stage_in]],
                                    constant VolUniforms& vu [[buffer(1)]],
-                                   depth2d<float, access::sample> sceneDepth [[texture(2)]],
-                                   texture3d<uint, access::read> occ         [[texture(3)]],
-                                   texture3d<uint, access::read> occCoarse   [[texture(4)]]) {
+                                   depth2d<float, access::sample> sceneDepth [[texture(2)]]) {
         // Dilate the depth over one coarse texel. vu.sunDir.w carries the downscale
         // factor (2 = half res, 4 = quarter res), so the conservative near depth
         // covers this coarse pixel's whole NxN scene footprint (no shaft leak over
@@ -2691,7 +2662,7 @@ extension Renderer {
         // over silhouettes as a bright halo).
         float2 dilate = 2.0 * max(vu.sunDir.w, 1.0)
                         / float2(sceneDepth.get_width(), sceneDepth.get_height());
-        float3 r = grInscatter(in.uv, in.position.xy, dilate, sceneDepth, occ, occCoarse, vu);
+        float3 r = grInscatter(in.uv, in.position.xy, dilate, sceneDepth, vu);
         // #188: store UNIT in-scatter (per marchLen^2), normalised by THIS lane's own
         // march length BEFORE the quad average. A quad straddling a silhouette mixes
         // short foreground marches with long sky marches; averaging raw in-scatter
@@ -2720,8 +2691,6 @@ extension Renderer {
                                   constant PostUniforms& pu [[buffer(0)]],
                                   constant VolUniforms&  vu [[buffer(1)]],
                                   depth2d<float, access::sample> sceneDepth [[texture(2)]],
-                                  texture3d<uint, access::read> occ         [[texture(3)]],
-                                  texture3d<uint, access::read> occCoarse   [[texture(4)]],
                                   texture2d<float> godrayTex                [[texture(5)]]) {
         constexpr sampler s(filter::linear, address::clamp_to_edge);
         constexpr sampler sDepth(filter::nearest, address::clamp_to_edge);
@@ -2800,8 +2769,7 @@ extension Renderer {
                 // call sites take this path (they do not encode the pre-pass); the
                 // live renderer always sets vu.sunDir.w to the downscale factor.
                 float2 dilate = 1.0 / float2(sceneDepth.get_width(), sceneDepth.get_height());
-                float3 r = grInscatter(in.uv, in.position.xy, dilate,
-                                       sceneDepth, occ, occCoarse, vu);
+                float3 r = grInscatter(in.uv, in.position.xy, dilate, sceneDepth, vu);
                 inscatter = r.x; litFrac = r.y;
             }
 
@@ -3043,6 +3011,17 @@ extension Renderer {
 
         // Gamma: drawable is bgra8Unorm (no hardware sRGB), apply manual gamma 2.2.
         tonemapped = pow(clamp(tonemapped, 0.0, 1.0), float3(1.0 / 2.2));
+
+        // #274: the broad, shallow god-ray gradient spans many pixels per 8-bit
+        // output level. Without quantization dither those levels become the large
+        // screen-aligned squares/steps seen around the dawn sun even when the ray
+        // visibility itself is smooth. Stable interleaved-gradient noise breaks only
+        // the final LSB; it is too small to read as grain and is free when rays are off.
+        if (volStrength > 0.001) {
+            float q = fract(52.9829189 * fract(dot(in.position.xy,
+                                                  float2(0.06711056, 0.00583715))));
+            tonemapped = clamp(tonemapped + (q - 0.5) * (1.25 / 255.0), 0.0, 1.0);
+        }
 
         return float4(tonemapped, 1.0);
     }

@@ -452,7 +452,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         return 8.0
     }()
-    // Coverage radius used only to fade the god-ray contribution near the grid edge.
+    // Coverage radius used by world-space terrain/prop shadow uniforms.
     private let kShadowFarR:  Float = 384
     // #119 THE GOD-RAY TUNING KNOB. Overall strength of the volumetric light shafts at
     // full daylight; daylight + the toggle scale it down further (0 = off). Raise for
@@ -463,7 +463,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // Halved again after playtest (the 1.5 ceiling still read too strong even at the 0.5 default).
     // Ceiling 1.5 with the 0.5 default gives ~0.75 effective; slider at 100% = 1.5 (the prior default).
     static let kGodRayStrength: Float = 1.5
-    // #167 god-ray march downscale: the shadow march runs at scene/N resolution and
+    // #167 god-ray march downscale: the radial depth march runs at scene/N resolution and
     // the composite upsamples it depth-aware. 4 = quarter res (16x fewer marched
     // pixels). #188: the overcast "cubing" was NOT a resolution problem (half res
     // did not fix it), it was aliased crepuscular shafts over a flat cloudy sky;
@@ -637,7 +637,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         do { bloomBlurVPipeline = try device.makeRenderPipelineState(descriptor: bvd) }
         catch { fatalError("bloom blurV pipeline failed: \(error)") }
 
-        // ---- #167 God-ray pre-pass (shadow march at half res, ~4x fewer rays) --
+        // ---- #167 God-ray pre-pass (radial depth march at low res) -------------
         let grd = MTLRenderPipelineDescriptor()
         grd.vertexFunction   = lib.makeFunction(name: "fullscreenVert")
         grd.fragmentFunction = lib.makeFunction(name: "godrayHalfFrag")
@@ -1676,13 +1676,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         case 2:  precipPacked = -1.0   // snow
         default: precipPacked =  0.0   // clear
         }
-        // God rays (#119): volumetric light shafts via a shadow-map raymarch in the
-        // composite pass (replaces the old screen-space sun halo). The single strength
+        // God rays (#119): stylized shafts from a radial screen-depth visibility march.
+        // The single strength
         // knob folds the toggle (gfxGodRays) AND daylight (dayLight) so it is zero at
         // night and zero when the player turns it off. THE TUNING KNOB is kGodRayStrength.
         let dayT  = Renderer.dayLight(frame.camera.time_of_day)
         var grStrength: Float = 0
-        if gfxGodRays && haveShadowVol {                  // #: god-ray toggle
+        if gfxGodRays {                                   // #: god-ray toggle
             // #136 fold in the intensity slider (0..1) so the rays scale from off to the
             // kGodRayStrength ceiling; defaults to 0.5 = half the old full-strength look.
             grStrength = dayT * (1 - frame.camera.underground) * Renderer.kGodRayStrength * gfxGodRayStr
@@ -1693,12 +1693,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         // skipped entirely (free when toggled off, off-screen, or at night via dayT).
         var flareStr: Float = 0
         var sunUVx: Float = 0, sunUVy: Float = 0
-        if gfxLensFlare {                                 // #132 lens-flare toggle
+        if gfxLensFlare || grStrength > 0 {
             let g = Renderer.sunFlareGate(viewProj: viewProj,
                                           camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z),
                                           sunDir: SIMD3<Float>(sun.x, sun.y, sun.z), dayT: dayT)
             sunUVx = g.uv.x; sunUVy = g.uv.y
-            flareStr = g.strength * (1 - frame.camera.underground)
+            if gfxLensFlare {                              // #132 lens-flare toggle
+                flareStr = g.strength * (1 - frame.camera.underground)
+            }
         }
         // #136 bloom intensity slider (0..1). Maps the default 0.5 to the prior fixed
         // look (0.08 add) and 1.0 to double it: bloomAdd = 0.16 * gfxBloomStr.
@@ -1712,18 +1714,19 @@ final class Renderer: NSObject, MTKViewDelegate {
         // #136 cel ink-outline intensity slider (0..1) scales CEL_OUTLINE_DARK in the
         // composite. Only meaningful when cel-shade is on; 0 = no outline, 1 = current look.
         pu.celOutlineStr = gfxCelShade ? gfxCelOutlineStr : 0
-        // #119 volumetric uniforms shared by every composite call site this frame. The god-ray
-        // occlusion now marches the SAME world occupancy grid the cast shadows use (no shadow map).
+        // #119 radial-depth uniforms shared by every composite call site this frame.
+        var rayVoxDims = voxDimsU
+        rayVoxDims.w = sunUVy
         var vu = VolUniforms(
             invViewProj:    viewProj.inverse,
             voxOrigin:      voxOriginU,
-            voxDims:        voxDimsU,
-            camPosW:        SIMD4<Float>(camPosW.x, camPosW.y, camPosW.z, kShadowFarR),
+            voxDims:        rayVoxDims,
+            camPosW:        SIMD4<Float>(camPosW.x, camPosW.y, camPosW.z, sunUVx),
             sunDir:         SIMD4<Float>(sun.x, sun.y, sun.z, 0),
             sunColor:       SIMD4<Float>(1.0, 0.6 + 0.35 * dayT, 0.3 + 0.5 * dayT, grStrength))
 
         // =====================================================================
-        // PASS 3b (#167): God-ray pre-pass. The GR_STEPS shadow march runs at
+        // PASS 3b (#167): God-ray pre-pass. The GR_STEPS radial depth march runs at
         // scene/kGodRayDownscale resolution (quarter res = 16x fewer marched
         // pixels); the composite then upsamples it depth-aware so shaft edges
         // stay crisp. sunDir.w carries the downscale factor and tells
@@ -1743,8 +1746,6 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setCullMode(.none)
                 enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                 enc.setFragmentTexture(hdrDepth, index: 2)
-                if let occ = shadowVolTex { enc.setFragmentTexture(occ, index: 3) }
-                if let occc = shadowVolCoarseTex { enc.setFragmentTexture(occc, index: 4) }
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 enc.endEncoding()
             }
@@ -1779,8 +1780,6 @@ final class Renderer: NSObject, MTKViewDelegate {
                 enc.setFragmentTexture(hdrColor,    index: 0)
                 enc.setFragmentTexture(bloomBright, index: 1)
                 enc.setFragmentTexture(hdrDepth,    index: 2)   // #119 scene depth for the raymarch
-                if let occ = shadowVolTex { enc.setFragmentTexture(occ, index: 3) }  // world occupancy grid (fine)
-                if let occc = shadowVolCoarseTex { enc.setFragmentTexture(occc, index: 4) }  // coarse mip
                 if let grTex = godrayTex { enc.setFragmentTexture(grTex, index: 5) }  // #167 half-res god-ray in-scatter
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
@@ -1807,8 +1806,6 @@ final class Renderer: NSObject, MTKViewDelegate {
                     enc.setFragmentTexture(hdrColor,    index: 0)
                     enc.setFragmentTexture(bloomBright, index: 1)
                     enc.setFragmentTexture(hdrDepth,    index: 2)   // #119 scene depth for the raymarch
-                    if let occ = shadowVolTex { enc.setFragmentTexture(occ, index: 3) }  // world occupancy grid (fine)
-                    if let occc = shadowVolCoarseTex { enc.setFragmentTexture(occc, index: 4) }  // coarse mip
                     if let grTex = godrayTex { enc.setFragmentTexture(grTex, index: 5) }  // #167 half-res god-ray in-scatter
                     enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                     enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
@@ -1840,8 +1837,6 @@ final class Renderer: NSObject, MTKViewDelegate {
                     enc.setFragmentTexture(hdrColor,    index: 0)
                     enc.setFragmentTexture(bloomBright, index: 1)
                     enc.setFragmentTexture(hdrDepth,    index: 2)   // #119 scene depth for the raymarch
-                    if let occ = shadowVolTex { enc.setFragmentTexture(occ, index: 3) }  // world occupancy grid (fine)
-                    if let occc = shadowVolCoarseTex { enc.setFragmentTexture(occc, index: 4) }  // coarse mip
                     if let grTex = godrayTex { enc.setFragmentTexture(grTex, index: 5) }  // #167 half-res god-ray in-scatter
                     enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                     enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)

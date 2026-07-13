@@ -50,6 +50,41 @@ private func writeTexturePNG(_ tex: MTLTexture, to path: String) {
     print("wrote shot: \(path)")
 }
 
+// Maximum coherent horizontal/vertical step in the ray-only A/B difference over
+// the sky. The broken #274 shader scored ~0.60 byte levels because one boundary
+// continued for hundreds of pixels; the depth-radial path stays below 0.06 at the
+// reported camera. Random final-LSB dither averages away instead of hiding an edge.
+private func godRayAxisEdgeScore(_ on: MTLTexture, _ off: MTLTexture) -> (Float, Float)? {
+    guard on.width == off.width, on.height == off.height else { return nil }
+    let w = on.width, h = on.height, row = w * 4
+    var a = [UInt8](repeating: 0, count: row * h)
+    var b = [UInt8](repeating: 0, count: row * h)
+    let region = MTLRegionMake2D(0, 0, w, h)
+    on.getBytes(&a, bytesPerRow: row, from: region, mipmapLevel: 0)
+    off.getBytes(&b, bytesPerRow: row, from: region, mipmapLevel: 0)
+    func delta(_ x: Int, _ y: Int) -> Float {
+        let i = y * row + x * 4
+        return Float(Int(a[i]) - Int(b[i])
+                   + Int(a[i + 1]) - Int(b[i + 1])
+                   + Int(a[i + 2]) - Int(b[i + 2])) / 3
+    }
+    let x0 = w * 8 / 100, x1 = w * 92 / 100
+    let y0 = h * 8 / 100, y1 = h * 62 / 100
+    var vertical: Float = 0
+    for x in x0..<(x1 - 1) {
+        var sum: Float = 0
+        for y in y0..<y1 { sum += delta(x + 1, y) - delta(x, y) }
+        vertical = max(vertical, abs(sum / Float(y1 - y0)))
+    }
+    var horizontal: Float = 0
+    for y in y0..<(y1 - 1) {
+        var sum: Float = 0
+        for x in x0..<x1 { sum += delta(x, y + 1) - delta(x, y) }
+        horizontal = max(horizontal, abs(sum / Float(x1 - x0)))
+    }
+    return (vertical, horizontal)
+}
+
 // Build a coarse occupancy mip: cell (cx,cy,cz) is 1 if ANY voxel in its co^3 block of
 // the fine grid casts a shadow. Used for empty-space skipping in the DDA march so open-air
 // rays step `co` voxels at a time. Shared by the live renderer and the offscreen tests.
@@ -827,12 +862,14 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             // the normal shot (ON or OFF) and, in AB mode, a second OFF pass into outputOff.
             func composite(into target: MTLTexture, godStrength: Float, flareStrength: Float,
                            forceInline: Bool = false) {
-                // God-ray occlusion marches the SAME world occupancy grid the shadows use.
+                // Pack the projected sun UV for the radial scene-depth march.
+                var rayVoxDims = shadowVol?.voxDims ?? .zero
+                rayVoxDims.w = flareGate.uv.y
                 var vu = VolUniforms(
                     invViewProj:    viewProj.inverse,
                     voxOrigin:      shadowVol?.voxOrigin ?? .zero,
-                    voxDims:        shadowVol?.voxDims ?? .zero,
-                    camPosW:        SIMD4<Float>(camPosW.x, camPosW.y, camPosW.z, 384.0),
+                    voxDims:        rayVoxDims,
+                    camPosW:        SIMD4<Float>(camPosW.x, camPosW.y, camPosW.z, flareGate.uv.x),
                     sunDir:         SIMD4<Float>(sun.x, sun.y, sun.z, 0),
                     sunColor:       SIMD4<Float>(1.0, 0.6 + 0.35 * dayT, 0.3 + 0.5 * dayT, godStrength))
                 // #167 half-res god-ray pre-pass (same architecture as the live renderer):
@@ -851,7 +888,6 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                         enc.setRenderPipelineState(grp); enc.setDepthStencilState(noDepthState); enc.setCullMode(.none)
                         enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                         enc.setFragmentTexture(hdrDepth, index: 2)
-                        if let sv = shadowVol { enc.setFragmentTexture(sv.tex, index: 3); enc.setFragmentTexture(sv.coarse, index: 4) }
                         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                         enc.endEncoding()
                     }
@@ -873,7 +909,6 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 pu.lensFlareStr = flareStrength   // #132 lens flare in --shot
                 enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
                 enc.setFragmentTexture(hdrDepth,  index: 2)
-                if let sv = shadowVol { enc.setFragmentTexture(sv.tex, index: 3); enc.setFragmentTexture(sv.coarse, index: 4) }  // world occupancy grid + coarse
                 enc.setFragmentTexture(godrayTex, index: 5)   // #167 half-res god-ray in-scatter
                 enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -1043,6 +1078,17 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         if abMode {
             let offPath = shot.hasSuffix(".png") ? String(shot.dropLast(4)) + "_off.png" : shot + "_off"
             writeTexturePNG(outputOff, to: offPath)
+        }
+        if ProcessInfo.processInfo.environment["BF_GR_EDGE_TEST"] == "1" {
+            guard abMode, let score = godRayAxisEdgeScore(output, outputOff) else {
+                print("FAIL: BF_GR_EDGE_TEST requires BF_SHOT_AB=1")
+                return false
+            }
+            print(String(format: "god-ray axis edge: vertical=%.3f horizontal=%.3f", score.0, score.1))
+            guard max(score.0, score.1) < 0.20 else {
+                print("FAIL: coherent rectangular god-ray edge")
+                return false
+            }
         }
         return true
     }

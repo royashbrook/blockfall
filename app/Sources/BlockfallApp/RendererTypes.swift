@@ -76,14 +76,13 @@ struct PostUniforms {
 }
 
 /// #119 Volumetric god-ray uniforms — composite pass, buffer(1).
-/// Everything the shadow-map raymarch needs: clip->world reconstruction, the two sun
-/// shadow cascades (same maps fmain uses), camera pos + cascade radii, sun dir + colour,
-/// and the single strength knob (0 = fully off). 240 bytes; layout matches the MSL struct.
+/// The radial screen-depth march needs clip->world reconstruction, camera + projected
+/// sun position, sun direction/colour, and the strength knob. 240 bytes; layout matches MSL.
 struct VolUniforms {
     var invViewProj:    simd_float4x4 = matrix_identity_float4x4  // clip -> world
-    var voxOrigin:      SIMD4<Float> = .zero   // xyz = shadow grid origin (world block coords), w = march distance
-    var voxDims:        SIMD4<Float> = .zero   // xyz = grid dims (voxels), w = soft-shadow flag
-    var camPosW:        SIMD4<Float> = .zero   // xyz = camera world pos, w = far coverage radius
+    var voxOrigin:      SIMD4<Float> = .zero   // reserved legacy fields
+    var voxDims:        SIMD4<Float> = .zero   // xyz reserved, w = projected sun UV.y
+    var camPosW:        SIMD4<Float> = .zero   // xyz = camera world pos, w = projected sun UV.x
     var sunDir:         SIMD4<Float> = .zero   // xyz = sun dir (points downward), w = 1 when the
                                                // half-res god-ray texture is bound (#167); 0 = inline march
     var sunColor:       SIMD4<Float> = .zero   // rgb = sun colour, w = volumetric strength (0 = off)
