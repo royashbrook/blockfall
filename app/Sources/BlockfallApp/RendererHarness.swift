@@ -812,6 +812,14 @@ func runHeadlessSelfTest() -> Bool {
               Renderer.propRowVertexCounts[row] == Renderer.propRowVertsPerShape[row]
         else { return false }
     }
+    // #265: the bush's two leafy masses and three exposed berries all use the
+    // intended smooth sphere budget. A missing type-42 shape mapping silently
+    // falls back to 36-vertex boxes and buries the berries inside the body.
+    let berryRow = Renderer.propRow(for: 42)
+    guard berryRow >= 0,
+          Renderer.propRowVertsPerShape[berryRow] == 144,
+          Renderer.propRowVertexCounts[berryRow] == 5 * 144
+    else { return false }
     guard Renderer.shaderSource.contains("float leafPhase = float(inst.position.x) * 0.18"),
           Renderer.shaderSource.contains("base *= 1.0 + 0.04 * sin(leafPhase);")
     else { return false }

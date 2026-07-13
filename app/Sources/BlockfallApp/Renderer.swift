@@ -2379,7 +2379,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 // slight camera turn no longer hides the whole berry set inside
                 // the two overlapping leaf spheres (#265).
                 (SIMD3(0.34, 0.36, 0.76), SIMD3(0.055, 0.055, 0.055), berry),
-                (SIMD3(0.72, 0.28, 0.42), SIMD3(0.055, 0.055, 0.055), berry),
+                (SIMD3(0.78, 0.28, 0.42), SIMD3(0.060, 0.060, 0.060), berry),
                 (SIMD3(0.48, 0.49, 0.29), SIMD3(0.055, 0.055, 0.055), berry),
             ]
         case 43:       // reed / cattail — TWO blocks tall, fuller clump, taller brown poof
@@ -2470,7 +2470,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // cylinders. Everything else stays a box.
     private static func propPartShape(_ type: UInt32) -> Float {
         switch type {
-        case 5, 27: return 1   // oak/birch foliage → sphere
+        case 5, 27, 42: return 1   // oak/birch foliage and berry bushes → sphere
         case 48:    return 2   // pine needles → cone (conifer look)
         case 21, 22, 49: return 3  // oak/birch/pine trunk → cylinder
         default:     return 0  // box
