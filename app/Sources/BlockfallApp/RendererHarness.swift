@@ -77,7 +77,9 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
     let ambientDepthState: MTLDepthStencilState? = {
         guard birdFixture else { return nil }
         let d = MTLDepthStencilDescriptor()
-        d.depthCompareFunction = .lessEqual
+        // The fixture is a silhouette sheet, independent of whatever asynchronous
+        // terrain happened to stream into this render-selftest frame.
+        d.depthCompareFunction = .always
         d.isDepthWriteEnabled = false
         return device.makeDepthStencilState(descriptor: d)
     }()
@@ -233,29 +235,24 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
             enc.setDepthStencilState(depthState)
             entR.encode(enc, viewProj: viewProj, entities: frame.entities, count: Int(frame.entity_count))
             if let ambientPipeline, let ambientDepthState, let birdFixtureBuffer {
-                var fixtureFwd = SIMD3<Float>(camFwdST.x, 0, camFwdST.z)
-                if simd_length_squared(fixtureFwd) < 0.001 { fixtureFwd = SIMD3(0, 0, -1) }
-                fixtureFwd = simd_normalize(fixtureFwd)
-                let fixtureRight = SIMD3<Float>(-fixtureFwd.z, 0, fixtureFwd.x)
-                // Use the ABI camera position directly. The older row-form inverse
-                // reconstruction above is retained for its existing render path but
-                // is not reliable enough to anchor a deterministic fixture.
-                let fixtureCam = SIMD3<Float>(frame.camera.position.x,
-                                              frame.camera.position.y,
-                                              frame.camera.position.z)
-                let center = fixtureCam + fixtureFwd * 18 + SIMD3<Float>(0, 7, 0)
+                // Synthetic forward-facing camera keeps all three birds centred and
+                // separated. The previous live-camera fixture could stack or clip
+                // them depending on the streamed world's starting pitch.
+                let fixtureCam = SIMD3<Float>.zero
+                let fixtureViewProj = Renderer.perspective(
+                    fovy: 1.0, aspect: Float(W) / Float(H), near: 0.05, far: 50)
                 let ptr = birdFixtureBuffer.contents().bindMemory(to: AmbientSpritePod.self, capacity: 3)
                 ptr[0] = AmbientSpritePod(
-                    posW: SIMD4<Float>(center + fixtureRight * -6 + SIMD3<Float>(0, 1, 0), 2.2),
+                    posW: SIMD4<Float>(-3.0, 0.7, -9.0, 0.9),
                     color: SIMD4<Float>(0.12, 0.57, 0.67, 0.96))
                 ptr[1] = AmbientSpritePod(
-                    posW: SIMD4<Float>(center + SIMD3<Float>(0, 3, 0), 2.2),
+                    posW: SIMD4<Float>(0.0, 0.0, -8.0, 1.1),
                     color: SIMD4<Float>(0.88, 0.31, 0.25, 0.96))
                 ptr[2] = AmbientSpritePod(
-                    posW: SIMD4<Float>(center + fixtureRight * 6, 2.2),
+                    posW: SIMD4<Float>(3.0, -0.7, -9.0, 0.9),
                     color: SIMD4<Float>(0.55, 0.32, 0.78, 0.96))
                 var au = AmbientLifeUniforms(
-                    viewProj: viewProj,
+                    viewProj: fixtureViewProj,
                     camPosW: SIMD4<Float>(fixtureCam.x, fixtureCam.y, fixtureCam.z, 0),
                     timeOfDay: 0.5,
                     wallClock: 1.35,
