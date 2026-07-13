@@ -1377,7 +1377,10 @@ fn emit_loot_barrel(
         bx, by, bz, &WIDE, &NARROW, 11, 15, false, true, None, CHEST, sky, blk, buf,
     );
     for &(ylo, crown, yhi, lower_edge, upper_edge) in &[
-        (2, 3, 4, &NARROW, &WIDE),
+        // Start the bottom hoop outside the bowed oak shell. NARROW -> HOOP
+        // crossed the NARROW -> WIDE body between y=2 and y=3, so tiny camera
+        // turns changed which surface owned the same pixels.
+        (2, 3, 4, &WIDE, &WIDE),
         (9, 10, 11, &WIDE, &WIDE),
         (13, 14, 15, &WIDE, &NARROW),
     ] {
@@ -3263,7 +3266,7 @@ mod tests {
                 .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)))
         };
 
-        assert_eq!(extent_at(2.0 / 16.0), (2.0 / 16.0, 14.0 / 16.0));
+        assert_eq!(extent_at(2.0 / 16.0), (1.0 / 16.0, 15.0 / 16.0));
         assert_eq!(extent_at(3.0 / 16.0), (0.0, 1.0));
         assert_eq!(extent_at(4.0 / 16.0), (1.0 / 16.0, 15.0 / 16.0));
     }
