@@ -380,6 +380,36 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
     let frac = Double(terrain) / Double(W*H)
     print(String(format: "OK: render self-test — %.1f%% of pixels are terrain (drew chunk meshes)", frac*100))
 
+    if birdFixture {
+        var birdPixels = [0, 0, 0]
+        for y in 0..<H {
+            let fy = Float(y) / Float(H)
+            for x in 0..<W {
+                let fx = Float(x) / Float(W)
+                let i = (y * W + x) * 4
+                let b = Int(px[i]), g = Int(px[i + 1]), r = Int(px[i + 2])
+                if fx >= 0.18, fx < 0.36, fy >= 0.37, fy < 0.50,
+                   g > r + 25, b > r + 35 {
+                    birdPixels[0] += 1
+                }
+                if fx >= 0.40, fx < 0.60, fy >= 0.44, fy < 0.57,
+                   r > 190, r > g + 20, r > b + 20 {
+                    birdPixels[1] += 1
+                }
+                if fx >= 0.64, fx < 0.82, fy >= 0.50, fy < 0.65,
+                   b > 160, b > r + 20, b > g + 40 {
+                    birdPixels[2] += 1
+                }
+            }
+        }
+        let requiredArea = max(12, W * H / 30_000)
+        guard birdPixels.allSatisfy({ $0 >= requiredArea }) else {
+            print("bird fixture missing/offscreen: colored areas=\(birdPixels), required=\(requiredArea)")
+            return false
+        }
+        print("OK: bird fixture visible — colored areas=\(birdPixels)")
+    }
+
     if let path = savePath {
         var rgba = [UInt8](repeating: 0, count: W*H*4)
         for i in stride(from: 0, to: px.count, by: 4) {
