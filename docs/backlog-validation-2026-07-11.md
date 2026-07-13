@@ -153,6 +153,115 @@ The accepted same-machine result was `246.7 -> 244.5` median FPS (`-0.9%`),
 `114.4 -> 102.1` 1%-low (`-10.8%`), frame time `+0.9%`, and GPU time
 `+5.9%`; the comparator passed with 26,920 shaped entity triangles.
 
+## July 13 visual-stability and tree-support follow-up
+
+Use one settled live session for slow-turn comparisons. Separate `--shot` processes can
+have different asynchronous terrain residency and are not evidence of view instability.
+
+### God-ray occlusion (#274)
+
+1. Load the latest save near `(32333, 13, 767)`, face northeast at dawn, and also inspect
+   the roof/tree edges around `(32337, 12, 779)`.
+2. Disable Clouds and Lens Flare. Test God Rays at both 50% and 100% while turning slowly
+   enough to move the sun behind trunks, leaves, and roof edges.
+3. Pass when there is no square ray volume, increasing occlusion never creates a brighter
+   line, blockers carve dark corridors through the rays, and fully open or fully blocked
+   paths do not add a broad sky wash.
+
+Run the deterministic rectangular-edge gate after a fresh release build:
+
+```bash
+BIN="$PWD/build/Blockfall.app/Contents/MacOS/Blockfall"
+OUT="$PWD/artifacts/playtest-2026-07-12"
+BF_SHOT_SEED=480181 \
+  BF_SHOT_POS="32385,15,32671,-2.552,0.50" \
+  BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
+  BF_SHOT_TOD=0 BF_SHOT_HELD=0 BF_GODRAY_STR=1 \
+  BF_SHOT_NOFLARE=1 BF_CLOUDS=0 BF_CEL=0 \
+  BF_SHOT_RENDER_DISTANCE=8 BF_SHOT_AB=1 BF_GR_EDGE_TEST=1 \
+  "$BIN" --shot "$OUT/godray-edge.png"
+```
+
+The command also writes `godray-edge_off.png`. Both axis scores must be below `0.20`
+and visible ray signal must exceed `0.05`; the accepted result was vertical `0.042`,
+horizontal `0.047`, signal `0.307`. Setting `BF_GODRAY_STR=0` is the negative control:
+it must fail with signal `0.000`. The headless A/B catches coherent rectangles and a
+disabled ray path; live slow turning remains the decisive inverse-shadow check.
+
+### Berries and cel canopy definition (#265, #279)
+
+1. Stand near `(32340, 13, 762)`, facing northeast in the daytime forest.
+2. After streaming settles, turn one or two degrees at a time through about 15 degrees,
+   first with Cel Shading on and then off.
+3. Pass when the exposed berry count does not blink, canopy mass and shading remain
+   attached to the same tree, and cel mode retains restrained rounded definition rather
+   than becoming a flat green cutout or flashing facets.
+4. Run `"$BIN" --selftest` for the deterministic canopy-shell geometry gate, and keep the
+   earlier foliage reference command for a fixed visual comparison.
+
+### Loot-barrel depth and state (#276, #277)
+
+1. In seed 11, visit the treasure-hall barrel at `(6621, 18, 30886)`.
+2. Continuously orbit all four sides from low, eye-level, and slightly high views, in
+   daylight and dusk. The lower, middle, and upper hoops must never penetrate the bowed
+   oak shell, swap depth ownership, cross a glowing stud, or flicker.
+3. A filled barrel's crest lights must remain bright. Remove the final item to turn them
+   fully off, then deposit one item to relight them. Save/reload both states and break one
+   barrel to confirm existing inventory behavior remains intact.
+4. Run the focused mesh gates:
+
+```bash
+cargo test --manifest-path engine-rs/bfcore/Cargo.toml \
+  loot_barrel_hoops_are_closed_bands
+cargo test --manifest-path engine-rs/bfcore/Cargo.toml \
+  loot_barrel_hoops_swell_from_inset_edges_to_rounded_crowns
+```
+
+### Sinkhole trees and support felling (#280, #281)
+
+Worldgen changes only affect never-generated chunks. Use a new seed-76099 world, or
+chunks that the old build never generated; an existing floating tree is not repaired
+retroactively.
+
+1. Revisit the reported sinkhole around `(32470, 23, 912)` and deterministic root
+   `(32501, 883)`. No trunk may begin over the carved cave opening; ordinary supported
+   trees nearby must remain. Swamps deliberately keep supported trees where entrance
+   noise exists but no entrance is carved.
+2. Break the grass or dirt directly beneath a natural oak, birch, pine, and giant oak.
+   The entire matching trunk and branches must enter the existing falling-debris path,
+   the canopy must clear, and no upper crown may hover.
+3. As a control, break the support below a structural log post with no matching nearby
+   canopy. It must remain standing. This is guarded tree felling, not generic gravity for
+   every timber used by a building.
+4. Run the focused gates:
+
+```bash
+cargo test --manifest-path engine-rs/bfcore/Cargo.toml \
+  no_tree_roots_over_cave_entrances
+cargo test --manifest-path engine-rs/bfcore/Cargo.toml \
+  swamp_tree_keeps_support_when_entrance_noise_is_present
+cargo test --manifest-path engine-rs/bfcore/Cargo.toml \
+  breaking_tree_support_fells_matching_canopy
+cargo test --manifest-path engine-rs/bfcore/Cargo.toml \
+  breaking_support_fells_max_generated_tree_log_budget
+cargo test --manifest-path engine-rs/bfcore/Cargo.toml \
+  breaking_support_leaves_structural_logs_standing
+```
+
+A compact oak appearing on loaded, restored grass can be intentional ambient regrowth:
+the first maintenance pass occurs after three seconds, then every five seconds, and can
+add up to two trees within 48 blocks. It must persist after turning away and back. A tall
+biome tree that changes only with camera angle, disappears again, or does not persist is
+still a streaming/render defect.
+
+### Ambient birds (#278)
+
+Use the live checklist below and also confirm birds are absent in caves, underwater, and
+at night. `BF_SELFTEST_BIRDS=1` now renders a centered, terrain-independent three-bird
+fixture. It validates connected geometry and pose only; live play validates sparse
+density, terrain occlusion, looping, and dusk disappearance. The fixture fails if any of
+the three expected colored bird areas is missing or projected offscreen.
+
 ## What changed
 
 - Beds are one coherent low furniture mesh with legs, rails, quilt, pillow, and
@@ -207,12 +316,12 @@ cargo test --release
 
 Expected suite totals at this feature head:
 
-- library: 152 passed, 6 manual/diagnostic tests ignored
+- library: 170 passed, 6 manual/diagnostic tests ignored
 - co-op: 2 passed
 - map: 12 passed
 - network: 4 passed
 - perf: 0 passed, 1 manual probe ignored
-- world integration: 56 passed
+- world integration: 60 passed
 
 ## Fast manual smoke test
 
@@ -436,8 +545,8 @@ negative `(x,z)` values are equivalent to their canonical `0–32767` values.
   deposit one item and they must relight. The treasure-hall barrel is at
   `(6621, 18, 30886)`. Save/reload both an empty and non-empty barrel, and break one;
   all existing chest inventory and persistence behavior must remain intact. Slowly orbit
-  all four faces at daylight and dusk: lock plates, the middle hoop, and lights must stay
-  depth-stable with no flicker where their edges meet.
+  all four faces at daylight and dusk: lock plates, lower/middle/upper hoops, and lights
+  must stay depth-stable with no flicker where their edges meet.
 - Grand tower: anchor `(-1243, 19, 3048)`, canonical x `31525`. Enter the south door,
   follow all 24 supported steps through both landings, and open the summit chest.
   Its encounter is the existing bounded three-defender danger band.
@@ -516,6 +625,9 @@ For a fixed three-bird geometry check, run:
 ```bash
 BF_SELFTEST_BIRDS=1 "$BIN" --screenshot "$OUT/ambient-birds.png"
 ```
+
+This fixture is centered and terrain-independent; use it for connected silhouette and
+pose only. Live play remains the terrain-occlusion, density, looping, and dusk gate.
 
 ## Deterministic headless visual checks
 
@@ -800,6 +912,13 @@ real fix: natural City growth is no longer redundantly overlaid during streaming
 and L-shaped roads cull chunks against their two actual segments instead of their
 large filled bounding rectangle.
 
+A July 13 moving-scene smoke run under heavy host CPU contention still passed the
+absolute gate at 125.8 FPS median, 43.8 FPS 1% low, 2.626 ms GPU, and zero frames
+over 33.3 ms. It was not accepted as a replacement A/B: the legacy moving harness
+rendered 5–10% more geometry than the saved reference and its median comparator
+failed (`-15.5%`) while GPU time and 1% low improved. Keep the persisted July 11
+same-machine comparison above as the accepted normal-scene evidence.
+
 Then run the deterministic 32-villager stress A/B with the same current binary:
 
 ```bash
@@ -833,6 +952,17 @@ The final fixed-camera result is persisted in
   2.429 ms GPU, 20,520 entity triangles
 - delta: median `-3.1%`, 1% low `-1.7%`, frame `+3.2%`, GPU `+3.5%`;
   `perf compare OK`
+
+The July 13 final visual-follow-up rerun is persisted in
+`docs/evidence/entity-stress-box-2026-07-13.json` and
+`docs/evidence/entity-stress-model-2026-07-13.json`:
+
+- box control: 167.7 FPS median, 111.8 FPS 1% low, 5.965 ms frame,
+  1.859 ms GPU, 10,344 entity triangles
+- shaped model: 160.3 FPS median, 115.0 FPS 1% low, 6.240 ms frame,
+  1.980 ms GPU, 35,680 entity triangles
+- delta: median `-4.4%`, 1% low `+2.9%`, frame `+4.6%`, GPU `+6.5%`;
+  `perf compare OK`, with zero frames over 33.3 ms in either run
 
 The final M1 Air gate is a 10-minute run with median ≥60 FPS, 1% low ≥30 FPS,
 and no sustained memory growth:
