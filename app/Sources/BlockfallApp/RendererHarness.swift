@@ -807,8 +807,55 @@ func runWashoutTest() -> Bool {
     print(String(format: "    night-spec gate: day glint %.3f (want >0.05), night glint %.3f (want ~0): %@",
                  dayGlint, nightGlint, specGateOK ? "OK" : "FAIL"))
 
+    // A neutral HDR shadow swatch that remains barely visible after the base grade.
+    // Run it through the shipping composite with cel ink disabled: cel colour grading
+    // may stylize it, but must not clamp real shaded geometry to exact black (#285).
+    func celShadowByte(_ celShade: Float, hdr: Double = 0.06) -> UInt8 {
+        guard let cmd = queue.makeCommandBuffer() else { return 0 }
+        let clear = MTLRenderPassDescriptor()
+        clear.colorAttachments[0].texture = hdrColor
+        clear.colorAttachments[0].loadAction = .clear
+        clear.colorAttachments[0].clearColor = MTLClearColor(red: hdr, green: hdr, blue: hdr, alpha: 1)
+        clear.colorAttachments[0].storeAction = .store
+        clear.depthAttachment.texture = hdrDepth
+        clear.depthAttachment.loadAction = .clear
+        clear.depthAttachment.clearDepth = 1
+        clear.depthAttachment.storeAction = .store
+        cmd.makeRenderCommandEncoder(descriptor: clear)?.endEncoding()
+
+        let rp = MTLRenderPassDescriptor()
+        rp.colorAttachments[0].texture = output
+        rp.colorAttachments[0].loadAction = .dontCare
+        rp.colorAttachments[0].storeAction = .store
+        if let enc = cmd.makeRenderCommandEncoder(descriptor: rp) {
+            enc.setRenderPipelineState(compPipe); enc.setDepthStencilState(noDepthState); enc.setCullMode(.none)
+            enc.setFragmentTexture(hdrColor, index: 0); enc.setFragmentTexture(hdrColor, index: 1)
+            enc.setFragmentTexture(hdrDepth, index: 2)
+            enc.setFragmentSamplerState(washoutVolSampler, index: 0)
+            var pu = PostUniforms(bloomStrength: 0, vignetteStr: 0, satBoost: 1.18,
+                                  rainStrength: 0, wallClockSecs: 0)
+            pu.celShade = celShade; pu.celOutlineStr = 0
+            enc.setFragmentBytes(&pu, length: MemoryLayout<PostUniforms>.stride, index: 0)
+            var vu = VolUniforms()
+            enc.setFragmentBytes(&vu, length: MemoryLayout<VolUniforms>.stride, index: 1)
+            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+            enc.endEncoding()
+        }
+        cmd.commit(); cmd.waitUntilCompleted()
+        var pixel = [UInt8](repeating: 0, count: 4)
+        output.getBytes(&pixel, bytesPerRow: 4,
+                        from: MTLRegionMake2D(W / 2, H / 2, 1, 1), mipmapLevel: 0)
+        return max(pixel[0], max(pixel[1], pixel[2]))
+    }
+    let baseShadow = celShadowByte(0), celShadow = celShadowByte(1)
+    let deepCelShadow = celShadowByte(1, hdr: 0.02)
+    let celShadowOK = baseShadow > 0
+        && celShadow >= max(1, baseShadow / 2)
+        && deepCelShadow > 0
+    print("    cel shadow detail: base \(baseShadow), cel/no-ink \(celShadow), deep \(deepCelShadow): \(celShadowOK ? "OK" : "FAIL")")
+
     let thresh = 0.30, caveThresh = 0.30, deltaThresh = 0.12
-    let pass = worstWash < thresh && caveMaxLuma < caveThresh && maxLumaDelta < deltaThresh && specGateOK
+    let pass = worstWash < thresh && caveMaxLuma < caveThresh && maxLumaDelta < deltaThresh && specGateOK && celShadowOK
     print(String(format: "%@ washout test — worst washed %.1f%% (%@); turn-brightening Δluma %.1f%% (%@, max %.0f%%); cave sky max-luma %.0f%%",
                  pass ? "OK:" : "FAIL:", worstWash*100, worstAt, maxLumaDelta*100, maxLumaDeltaAt, deltaThresh*100, caveMaxLuma*100))
     return pass

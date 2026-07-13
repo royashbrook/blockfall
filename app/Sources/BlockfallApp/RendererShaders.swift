@@ -2474,8 +2474,9 @@ extension Renderer {
     //                        sensitive to small depth steps); HIGHER = only bold edges.
     //   CEL_NEAR / CEL_FAR : the linearization range (matches the perspective depth split
     //                        the scene uses; only the ratio matters for edge detection).
-    //   CEL_SAT / CEL_CON  : extra saturation / contrast applied ONLY when cel-shade is on,
-    //                        so the palette reads graphic and bold (tasteful, not neon).
+    //   CEL_SAT             : extra saturation applied ONLY when cel-shade is on,
+    //                         so the palette reads graphic and bold (tasteful, not neon).
+    //   CEL_SHADOW_TOE      : fraction of the pre-contrast colour retained in deep shade.
     constant float CEL_OUTLINE_PX   = 1.3;
     constant float CEL_OUTLINE_DARK = 0.82;
     // #186 follow-up: raised 0.022 -> 0.075. The #180 horizon bend makes the terrain a
@@ -2488,7 +2489,7 @@ extension Renderer {
     constant float CEL_NEAR         = 0.20;
     constant float CEL_FAR          = 420.0;
     constant float CEL_SAT          = 1.16;
-    constant float CEL_CON          = 1.10;
+    constant float CEL_SHADOW_TOE   = 0.35;
 
     // Linearize a Metal [0,1] depth sample to a view-space-ish distance. The exact
     // projection constants do not matter for edge detection (we only compare relative
@@ -2903,17 +2904,21 @@ extension Renderer {
         float lumSat = dot(tonemapped, float3(0.2126, 0.7152, 0.0722));
         tonemapped   = mix(float3(lumSat), tonemapped, pu.satBoost);
         // Light contrast only.
+        float3 preContrast = tonemapped;
         tonemapped   = clamp((tonemapped - 0.5) * 1.06 + 0.5, 0.0, 1.0);
 
-        // #130 PUNCHIER PALETTE. When cel-shade is on, add a modest extra saturation +
-        // contrast lift on top of the base grade so colours read graphic and bold. Kept
-        // tasteful (CEL_SAT 1.16, CEL_CON 1.10) so it pops without going neon, and applied
-        // BEFORE the vignette / Grey wash so those still behave. Multiplicative contrast
-        // about 0.5 cannot brighten the mean, so it cannot reintroduce a washout.
+        // #130 PUNCHIER PALETTE. When cel-shade is on, add modest saturation on top of
+        // the base grade so colours read graphic and bold. Do not add another contrast
+        // pass here: the base grade above already supplies it, and stacking a second
+        // clamp crushed shaded foliage and structures to exact black as the view changed
+        // (#285). Applied before the vignette / Grey wash so those still behave.
         if (pu.celShade > 0.5) {
             float lumC = dot(tonemapped, float3(0.2126, 0.7152, 0.0722));
             tonemapped = mix(float3(lumC), tonemapped, CEL_SAT);
-            tonemapped = clamp((tonemapped - 0.5) * CEL_CON + 0.5, 0.0, 1.0);
+            // Preserve a small toe from the unclipped grade. Zero stays zero, while
+            // low nonzero material colours retain enough information to read as shaded
+            // geometry instead of view-angle-dependent black holes.
+            tonemapped = max(tonemapped, preContrast * CEL_SHADOW_TOE);
         }
 
         // Vignette: smooth falloff toward screen edges
