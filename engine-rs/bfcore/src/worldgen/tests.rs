@@ -2109,7 +2109,9 @@ mod worldgen_tests {
                 if h <= SEA_LEVEL {
                     continue;
                 }
-                if cave_entrance_depth(td.root_wx, td.root_wz, seed) > 0 {
+                if dom != Biome::Swamp
+                    && cave_entrance_depth(td.root_wx, td.root_wz, seed) > 0
+                {
                     continue;
                 }
                 let trunk_height = worldgen_trunk_fit_to_ceiling(h, canopy_dy_max(td.canopy_shape), td.trunk_height);
@@ -2460,7 +2462,9 @@ mod worldgen_tests {
                 if h <= SEA_LEVEL {
                     continue;
                 }
-                if cave_entrance_depth(td.root_wx, td.root_wz, seed) > 0 {
+                if dom != Biome::Swamp
+                    && cave_entrance_depth(td.root_wx, td.root_wz, seed) > 0
+                {
                     continue;
                 }
                 let trunk_height = worldgen_trunk_fit_to_ceiling(h, canopy_dy_max(td.canopy_shape), td.trunk_height);
@@ -3130,6 +3134,51 @@ mod worldgen_tests {
             td.root_wx,
             td.root_wz
         );
+    }
+
+    #[test]
+    fn swamp_tree_keeps_support_when_entrance_noise_is_present() {
+        const SEED: u64 = 11;
+        let (ccx, ccz) = tree_cell(2032, 53);
+        let td = tree_for_cell(ccx, ccz, SEED);
+        assert!(td.present);
+        assert_eq!((td.root_wx, td.root_wz), (2032, 53));
+        assert_eq!(
+            voronoi_biome(td.root_wx, td.root_wz, SEED),
+            Biome::Swamp
+        );
+        assert!(!tree_blocked_by_structure(td.root_wx, td.root_wz, SEED));
+        let h = surface_height(td.root_wx, td.root_wz, SEED);
+        assert_eq!(h, 9);
+        assert!(h > SEA_LEVEL);
+        assert!(cave_entrance_depth(td.root_wx, td.root_wz, SEED) > 0);
+        assert!(
+            worldgen_trunk_fit_to_ceiling(
+                h,
+                canopy_dy_max(td.canopy_shape),
+                td.trunk_height,
+            ) > 0
+        );
+
+        let mut g = TerrainGen::new();
+        g.seed(SEED);
+        let generated_block = |wx: i32, wy: i32, wz: i32| {
+            let c = ChunkCoord {
+                x: wx.div_euclid(K_CHUNK_DIM),
+                y: wy.div_euclid(K_CHUNK_DIM),
+                z: wz.div_euclid(K_CHUNK_DIM),
+            };
+            let mut chunk = DenseChunk::new(AIR);
+            g.generate(c, &mut chunk);
+            chunk.get(
+                wx.rem_euclid(K_CHUNK_DIM),
+                wy.rem_euclid(K_CHUNK_DIM),
+                wz.rem_euclid(K_CHUNK_DIM),
+            )
+        };
+
+        assert_ne!(generated_block(td.root_wx, h, td.root_wz), AIR);
+        assert_eq!(generated_block(td.root_wx, h + 1, td.root_wz), td.log_id);
     }
 
     // #181 diagnostic visual (ignored, not part of the gate): renders top-down

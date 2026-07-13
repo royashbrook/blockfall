@@ -33,10 +33,12 @@ fn place_decorations<C: Chunk>(c: ChunkCoord, chunk: &mut C, seed: u64, anchor_c
                     continue;
                 }
 
-                // #280: the height field is the pre-carve surface. Cave entrances
-                // remove that support before decorations run, so never root a tree
-                // in one of their open columns.
-                if cave_entrance_depth(td.root_wx, td.root_wz, seed) > 0 {
+                // #280: the height field is the pre-carve surface. Outside swamps,
+                // cave entrances remove that support before decorations run, so
+                // mirror the terrain carve predicate before rooting a tree.
+                if dom != Biome::Swamp
+                    && cave_entrance_depth(td.root_wx, td.root_wz, seed) > 0
+                {
                     continue;
                 }
 
