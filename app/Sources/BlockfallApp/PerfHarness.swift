@@ -54,7 +54,7 @@ private func writeTexturePNG(_ tex: MTLTexture, to path: String) {
 // the sky. The broken #274 shader scored ~0.60 byte levels because one boundary
 // continued for hundreds of pixels; the depth-radial path stays below 0.06 at the
 // reported camera. Random final-LSB dither averages away instead of hiding an edge.
-private func godRayAxisEdgeScore(_ on: MTLTexture, _ off: MTLTexture) -> (Float, Float)? {
+private func godRayAxisEdgeScore(_ on: MTLTexture, _ off: MTLTexture) -> (Float, Float, Float)? {
     guard on.width == off.width, on.height == off.height else { return nil }
     let w = on.width, h = on.height, row = w * 4
     var a = [UInt8](repeating: 0, count: row * h)
@@ -82,7 +82,12 @@ private func godRayAxisEdgeScore(_ on: MTLTexture, _ off: MTLTexture) -> (Float,
         for x in x0..<x1 { sum += delta(x, y + 1) - delta(x, y) }
         horizontal = max(horizontal, abs(sum / Float(x1 - x0)))
     }
-    return (vertical, horizontal)
+    var signal: Float = 0
+    for y in y0..<y1 {
+        for x in x0..<x1 { signal += abs(delta(x, y)) }
+    }
+    signal /= Float((x1 - x0) * (y1 - y0))
+    return (vertical, horizontal, signal)
 }
 
 // Build a coarse occupancy mip: cell (cx,cy,cz) is 1 if ANY voxel in its co^3 block of
@@ -1089,7 +1094,11 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 print("FAIL: BF_GR_EDGE_TEST requires BF_SHOT_AB=1")
                 return false
             }
-            print(String(format: "god-ray axis edge: vertical=%.3f horizontal=%.3f", score.0, score.1))
+            print(String(format: "god-ray axis edge: vertical=%.3f horizontal=%.3f signal=%.3f", score.0, score.1, score.2))
+            guard score.2 > 0.05 else {
+                print("FAIL: god-ray A/B has no visible contribution")
+                return false
+            }
             guard max(score.0, score.1) < 0.20 else {
                 print("FAIL: coherent rectangular god-ray edge")
                 return false
