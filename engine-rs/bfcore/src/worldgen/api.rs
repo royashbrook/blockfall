@@ -696,7 +696,17 @@ pub fn worldgen_villager_home_scan(seed: u64) -> VillagerHomeScan {
                     wz_min,
                     cells: std::mem::take(&mut cells),
                 };
-                place_hut(ax, az, hh, seed, &mut g, wx_min, wy_min, wz_min);
+                place_hut(
+                    ax,
+                    az,
+                    hh,
+                    settlement_hashed_door_dir(SETTLEMENT_BUILDING_HUT, hh),
+                    seed,
+                    &mut g,
+                    wx_min,
+                    wy_min,
+                    wz_min,
+                );
                 cells = g.cells;
             }
         }

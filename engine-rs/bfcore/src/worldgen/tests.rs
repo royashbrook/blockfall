@@ -1252,6 +1252,188 @@ mod worldgen_tests {
         }
     }
 
+    #[test]
+    fn seed_11_village_paths_reach_inward_facing_doors_on_walkable_grades() {
+        let seed = 11;
+        let village = struct_for_cell(505, 28, seed);
+        assert_eq!(
+            (village.typ, village.anchor_wx, village.anchor_wz),
+            (STRUCT_VILLAGE, 32361, 1845),
+            "fixture must remain the reported hilly seed-11 village"
+        );
+        let cells = stamp_structure_order(&village, seed, false);
+        assert_eq!(
+            cells,
+            stamp_structure_order(&village, seed, true),
+            "village entrances changed with chunk generation order"
+        );
+        let at = |x: i32, y: i32, z: i32| cells.get(&(x, y, z)).copied().unwrap_or(AIR);
+
+        let wanted = VILLAGE_MIN_BUILDINGS
+            + ((village.cell_hash >> 10) as usize
+                % (VILLAGE_MAX_BUILDINGS - VILLAGE_MIN_BUILDINGS + 1));
+        let (sites, n_sites) = settlement_sites(village.cell_hash, wanted, false);
+        let mut homes = 0;
+        for (i, site) in sites.iter().take(n_sites).enumerate() {
+            let h = fmix64(
+                village.cell_hash
+                    ^ ((i as u64)
+                        .wrapping_mul(0x2545F4914F6CDD1D)
+                        .wrapping_add(71)),
+            );
+            let Some(entrance) = settlement_home_entrance(
+                village.anchor_wx,
+                village.anchor_wz,
+                *site,
+                h,
+                seed,
+            ) else {
+                continue;
+            };
+            homes += 1;
+
+            let outward = match entrance.door_dir {
+                0 => (1, 0),
+                1 => (-1, 0),
+                2 => (0, 1),
+                _ => (0, -1),
+            };
+            assert!(
+                site.dx * outward.0 + site.dz * outward.1 < 0,
+                "home at {},{} does not face the village",
+                site.dx,
+                site.dz
+            );
+            let approach_x = village.anchor_wx + entrance.approach_dx;
+            let approach_z = village.anchor_wz + entrance.approach_dz;
+            let door_x = approach_x - outward.0;
+            let door_z = approach_z - outward.1;
+            for y in (entrance.floor_y + 1)..=(entrance.floor_y + 2) {
+                assert_eq!(at(door_x, y, door_z), OAK_DOOR, "door moved off its path");
+                assert_eq!(
+                    at(approach_x, y, approach_z),
+                    AIR,
+                    "door approach is blocked at y={y}"
+                );
+            }
+            let expected_road = if struct_surface(approach_x, approach_z, seed)
+                < SEA_LEVEL + 1
+            {
+                OAK_PLANKS
+            } else {
+                COBBLESTONE
+            };
+            assert_eq!(
+                at(approach_x, entrance.floor_y, approach_z),
+                expected_road,
+                "path does not reach the exterior doorstep at {approach_x},{},{approach_z} for site {},{} dir {}",
+                entrance.floor_y,
+                site.dx,
+                site.dz,
+                entrance.door_dir
+            );
+
+            let profile = settlement_home_road_profile(
+                village.anchor_wx,
+                village.anchor_wz,
+                entrance,
+                seed,
+            );
+            assert_eq!(
+                profile.last().copied(),
+                Some((
+                    entrance.approach_dx,
+                    entrance.approach_dz,
+                    entrance.floor_y,
+                )),
+                "graded road does not end at the doorstep"
+            );
+            for step in profile.windows(2) {
+                assert_eq!(
+                    (step[1].0 - step[0].0).abs() + (step[1].1 - step[0].1).abs(),
+                    1,
+                    "road contains a horizontal gap"
+                );
+                assert!(
+                    (step[1].2 - step[0].2).abs() <= 1,
+                    "road grade jumps from {} to {}",
+                    step[0].2,
+                    step[1].2
+                );
+            }
+            assert_eq!(
+                profile[0].2,
+                struct_surface(village.anchor_wx, village.anchor_wz, seed)
+                    .max(SEA_LEVEL + 1),
+                "graded road moved its unstamped village-junction endpoint"
+            );
+            for &(dx, dz, road_y) in profile.iter().skip(1) {
+                let wx = village.anchor_wx + dx;
+                let wz = village.anchor_wz + dz;
+                let expected = if struct_surface(wx, wz, seed) < SEA_LEVEL + 1 {
+                    OAK_PLANKS
+                } else {
+                    COBBLESTONE
+                };
+                assert_eq!(
+                    at(wx, road_y, wz),
+                    expected,
+                    "final stamped path is missing or overwritten at {wx},{road_y},{wz}"
+                );
+                let local = (wx - village.anchor_wx, wz - village.anchor_wz);
+                let authored_station = SETTLEMENT_WORKSTATIONS
+                    .iter()
+                    .chain(SETTLEMENT_SOCIAL_PROPS.iter())
+                    .any(|&(dx, dz, _)| local == (dx, dz));
+                if !authored_station {
+                    assert_eq!(
+                        at(wx, road_y + 1, wz),
+                        AIR,
+                        "final path headroom is blocked at {wx},{},{wz}",
+                        road_y + 1
+                    );
+                    assert_eq!(
+                        at(wx, road_y + 2, wz),
+                        AIR,
+                        "final path headroom is blocked at {wx},{},{wz}",
+                        road_y + 2
+                    );
+                }
+            }
+        }
+        assert!(homes >= 4, "fixture did not exercise enough village homes");
+
+        // This reported village's cabin happens to sit east/west. Exercise the
+        // rotated cabin doorway directly so future layouts can safely face north.
+        let (cx, cz, h) = (8, 8, 0x292u64);
+        let (rx, rz) = settlement_home_half_extents(SETTLEMENT_BUILDING_CABIN, h).unwrap();
+        let floor = settlement_home_floor(cx, cz, rx, rz, seed);
+        let wy_min = seam_floordiv_pub(floor, K_CHUNK_DIM) * K_CHUNK_DIM;
+        let mut cabin = GridChunk {
+            wx_min: 0,
+            wy_min,
+            wz_min: 0,
+            cells: std::collections::HashMap::new(),
+        };
+        place_cabin(cx, cz, h, 3, seed, &mut cabin, 0, wy_min, 0);
+        for y in (floor + 1)..=(floor + 2) {
+            assert_eq!(
+                cabin.cells.get(&(cx, y, cz - rz)),
+                Some(&OAK_DOOR),
+                "north-facing cabin door missing"
+            );
+            assert_eq!(
+                cabin
+                    .cells
+                    .get(&(cx, y, cz - rz + 1))
+                    .copied()
+                    .unwrap_or(AIR),
+                AIR,
+                "rotated cabin partition blocks its doorway"
+            );
+        }
+    }
+
     fn stamp_city_core_order(
         ax: i32,
         az: i32,

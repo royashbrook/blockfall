@@ -684,21 +684,41 @@ fn place_pitched_roof<C: Chunk>(
     }
 }
 
-fn place_cabin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
-    let hx = if (h >> 2) & 1 != 0 { 3 } else { 2 };
-    let hz = 2;
+fn settlement_home_half_extents(kind: i32, h: u64) -> Option<(i32, i32)> {
+    match kind {
+        SETTLEMENT_BUILDING_CABIN => Some((if (h >> 2) & 1 != 0 { 3 } else { 2 }, 2)),
+        SETTLEMENT_BUILDING_HUT => Some((
+            2 + ((h >> 5) & 1) as i32,
+            2 + ((h >> 6) & 1) as i32,
+        )),
+        _ => None,
+    }
+}
 
-    let mut floor_h = -1000000;
-    for dz in -hz..=hz {
-        for dx in -hx..=hx {
-            let sh = struct_surface(ax + dx, az + dz, seed);
-            if sh > floor_h {
-                floor_h = sh;
-            }
+fn settlement_home_floor(cx: i32, cz: i32, rx: i32, rz: i32, seed: u64) -> i32 {
+    let mut floor = i32::MIN;
+    for dz in -rz..=rz {
+        for dx in -rx..=rx {
+            floor = floor.max(struct_surface(cx + dx, cz + dz, seed));
         }
     }
+    floor.max(SEA_LEVEL + 1)
+}
+
+fn place_cabin<C: Chunk>(
+    ax: i32,
+    az: i32,
+    h: u64,
+    door_dir: i32,
+    seed: u64,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+) {
+    let (hx, hz) = settlement_home_half_extents(SETTLEMENT_BUILDING_CABIN, h).unwrap();
     // #228: waterside cabins ride a stilted deck too.
-    let floor_h = floor_h.max(SEA_LEVEL + 1);
+    let floor_h = settlement_home_floor(ax, az, hx, hz, seed);
 
     let cobble = ((h >> 5) & 1) != 0;
     let wall = if cobble { COBBLESTONE } else { OAK_PLANKS };
@@ -706,8 +726,12 @@ fn place_cabin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_
     let wall_h = 3;
     let wall_top = floor_h + wall_h;
 
-    let door_east = ((h >> 6) & 1) != 0;
-    let door_dx = if door_east { hx } else { -hx };
+    let (door_dx, door_dz) = match door_dir {
+        0 => (hx, 0),
+        1 => (-hx, 0),
+        2 => (0, hz),
+        _ => (0, -hz),
+    };
 
     for dz in -hz..=hz {
         for dx in -hx..=hx {
@@ -724,7 +748,7 @@ fn place_cabin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_
             }
             let corner = on_x && on_z;
 
-            let is_door = dx == door_dx && dz == 0;
+            let is_door = dx == door_dx && dz == door_dz;
 
             let window = !corner && (((dx + dz) & 1) == 0);
             for wy in (floor_h + 1)..=wall_top {
@@ -749,12 +773,25 @@ fn place_cabin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_
     }
 
     if hx == 3 {
-        for dz in -hz..=hz {
-            if dz == 0 {
-                continue;
+        if door_dx != 0 {
+            for dz in -hz..=hz {
+                if dz == 0 {
+                    continue;
+                }
+                for wy in (floor_h + 1)..=wall_top {
+                    struct_set(chunk, ax, wy, az + dz, wx_min, wy_min, wz_min, wall);
+                }
             }
-            for wy in (floor_h + 1)..=wall_top {
-                struct_set(chunk, ax, wy, az + dz, wx_min, wy_min, wz_min, wall);
+        } else {
+            // Keep the same two-room cabin when the entrance rotates to a Z wall,
+            // but rotate its open centre aisle with the doorway.
+            for dx in -hx..=hx {
+                if dx == 0 {
+                    continue;
+                }
+                for wy in (floor_h + 1)..=wall_top {
+                    struct_set(chunk, ax + dx, wy, az, wx_min, wy_min, wz_min, wall);
+                }
             }
         }
     }
@@ -775,24 +812,48 @@ fn place_cabin<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_
     // ((dx + dz) even). We choose a dz whose flanking wall is solid at the torch
     // height: prefer dz = -1, fall back to +1, and if both flanking cells are window
     // slots at eye height drop the torch to floor + 1 where the wall is always solid.
-    let door_solid_at = |dz: i32, wy: i32| -> bool {
-        let is_window = ((door_dx + dz) & 1) == 0;
+    let door_solid_at = |tangent: i32, wy: i32| -> bool {
+        let (wall_dx, wall_dz) = if door_dx != 0 {
+            (door_dx, tangent)
+        } else {
+            (tangent, door_dz)
+        };
+        let is_window = ((wall_dx + wall_dz) & 1) == 0;
         !(is_window && wy == floor_h + 2)
     };
-    let (torch_dz, torch_wy) = if door_solid_at(-1, floor_h + 2) {
+    let (torch_tangent, torch_wy) = if door_solid_at(-1, floor_h + 2) {
         (-1, floor_h + 2)
     } else if door_solid_at(1, floor_h + 2) {
         (1, floor_h + 2)
     } else {
         (-1, floor_h + 1)
     };
-    struct_set(chunk, ax + door_dx - door_dx.signum(), torch_wy, az + torch_dz, wx_min, wy_min, wz_min, TORCH);
+    let (torch_dx, torch_dz) = if door_dx != 0 {
+        (door_dx - door_dx.signum(), torch_tangent)
+    } else {
+        (torch_tangent, door_dz - door_dz.signum())
+    };
+    struct_set(
+        chunk,
+        ax + torch_dx,
+        torch_wy,
+        az + torch_dz,
+        wx_min,
+        wy_min,
+        wz_min,
+        TORCH,
+    );
     struct_set(chunk, ax, floor_h + 1, az, wx_min, wy_min, wz_min, GLOW_BLOCK);
 
     {
-        let chim_dx = -door_dx;
+        let chim_side = if (h >> 7) & 1 != 0 { 1 } else { -1 };
+        let (chim_dx, chim_dz) = if door_dx != 0 {
+            (-door_dx, chim_side * hz)
+        } else {
+            (chim_side * hx, -door_dz)
+        };
         let chim_x = ax + chim_dx;
-        let chim_z = az + if (h >> 7) & 1 != 0 { hz } else { -hz };
+        let chim_z = az + chim_dz;
         let ridge_top = wall_top + 1 + (hz + 1);
         let chim_top = ridge_top + 2;
         struct_fill_col(chunk, chim_x, chim_z, chim_top, seed, wx_min, wy_min, wz_min, COBBLESTONE);
@@ -1048,27 +1109,27 @@ fn place_cairn<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_
 // slope (no floaters). Everything is derived from (cx, cz, hh) so generation is
 // deterministic per cell. Roof eaves reach at most 4 blocks from the anchor, matching
 // SETTLEMENT_BUILDING_REACH and staying well within STRUCT_MAX_REACH_XZ.
-fn place_hut<C: Chunk>(cx: i32, cz: i32, hh: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
+fn place_hut<C: Chunk>(
+    cx: i32,
+    cz: i32,
+    hh: u64,
+    dir: i32,
+    seed: u64,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+) {
     // Footprint half extents: 2 (5 wide) or 3 (6 wide) on each axis, varied per home.
-    let rx = 2 + ((hh >> 5) & 1) as i32; // 2 or 3 -> 5 or 6 wide in X
-    let rz = 2 + ((hh >> 6) & 1) as i32; // 2 or 3 -> 5 or 6 wide in Z
+    let (rx, rz) = settlement_home_half_extents(SETTLEMENT_BUILDING_HUT, hh).unwrap();
 
     // Foundation reference: the highest terrain column under the footprint so the
     // floor is level; per column we still fill the gap down to that column's own
     // terrain so the home conforms to a slope without floating.
-    let mut floor_h = -1000000;
-    for dz in -rz..=rz {
-        for dx in -rx..=rx {
-            let sh = struct_surface(cx + dx, cz + dz, seed);
-            if sh > floor_h {
-                floor_h = sh;
-            }
-        }
-    }
     // #228: never sink a home into the sea. A waterside footprint raises the
     // floor to just above sea level; the per-column fill below then builds plank
     // stilts from the sea floor up, so the house stands on a deck.
-    floor_h = floor_h.max(SEA_LEVEL + 1);
+    let floor_h = settlement_home_floor(cx, cz, rx, rz, seed);
 
     // Material palette varies per home so a village does not look stamped from one
     // mould: timber, cobble, stone, or birch shells, each with a matching roof.
@@ -1094,7 +1155,6 @@ fn place_hut<C: Chunk>(cx: i32, cz: i32, hh: u64, seed: u64, chunk: &mut C, wx_m
 
     // Door wall: 0 = +X, 1 = -X, 2 = +Z, 3 = -Z. The door sits in the middle of
     // that wall (offset 0 along the wall), so the opening is always flanked by wall.
-    let dir = ((hh >> 1) & 0x3) as i32;
 
     // Build the four walls. A wall cell is on the perimeter ring of the footprint.
     for dz in -rz..=rz {
@@ -1206,6 +1266,55 @@ const SETTLEMENT_EMPTY_SITE: SettlementSite = SettlementSite {
     dz: 0,
     kind: SETTLEMENT_BUILDING_HUT,
 };
+
+#[derive(Clone, Copy)]
+struct SettlementEntrance {
+    door_dir: i32,
+    approach_dx: i32,
+    approach_dz: i32,
+    floor_y: i32,
+}
+
+fn settlement_hashed_door_dir(kind: i32, h: u64) -> i32 {
+    if kind == SETTLEMENT_BUILDING_CABIN {
+        if (h >> 6) & 1 != 0 { 0 } else { 1 }
+    } else {
+        ((h >> 1) & 0x3) as i32
+    }
+}
+
+fn settlement_inward_door_dir(site: SettlementSite) -> i32 {
+    if site.dx.abs() >= site.dz.abs() {
+        if site.dx >= 0 { 1 } else { 0 }
+    } else if site.dz >= 0 {
+        3
+    } else {
+        2
+    }
+}
+
+fn settlement_home_entrance(
+    ax: i32,
+    az: i32,
+    site: SettlementSite,
+    h: u64,
+    seed: u64,
+) -> Option<SettlementEntrance> {
+    let (rx, rz) = settlement_home_half_extents(site.kind, h)?;
+    let door_dir = settlement_inward_door_dir(site);
+    let (approach_x, approach_z) = match door_dir {
+        0 => (rx + 1, 0),
+        1 => (-rx - 1, 0),
+        2 => (0, rz + 1),
+        _ => (0, -rz - 1),
+    };
+    Some(SettlementEntrance {
+        door_dir,
+        approach_dx: site.dx + approach_x,
+        approach_dz: site.dz + approach_z,
+        floor_y: settlement_home_floor(ax + site.dx, az + site.dz, rx, rz, seed),
+    })
+}
 
 const SETTLEMENT_DIRS: [[i32; 2]; 16] = [
     [4, 0],
@@ -1360,11 +1469,173 @@ fn place_settlement_road<C: Chunk>(
     }
 }
 
+fn settlement_home_road_profile(
+    ax: i32,
+    az: i32,
+    entrance: SettlementEntrance,
+    seed: u64,
+) -> Vec<(i32, i32, i32)> {
+    let mut points = vec![(0, 0)];
+    let doorway_run = 4;
+    let (branch_x, branch_z) = match entrance.door_dir {
+        0 | 1 => (
+            entrance.approach_dx - entrance.approach_dx.signum() * doorway_run,
+            entrance.approach_dz,
+        ),
+        _ => (
+            entrance.approach_dx,
+            entrance.approach_dz - entrance.approach_dz.signum() * doorway_run,
+        ),
+    };
+    let mut x: i32 = 0;
+    let mut z: i32 = 0;
+    if entrance.door_dir >= 2 {
+        // The communal bench and broom occupy the north/south centreline. Fan a
+        // Z-facing home's path around them before aiming toward its own branch.
+        let lane_x = if branch_x < 0 { -2 } else { 1 };
+        while x != lane_x {
+            x += (lane_x - x).signum();
+            points.push((x, z));
+        }
+        let bypass_z = entrance.approach_dz.signum() * 7;
+        while z != bypass_z {
+            z += entrance.approach_dz.signum();
+            points.push((x, z));
+        }
+    }
+
+    // A balanced Manhattan line fans paths toward their homes instead of laying
+    // every route over the same two village axes. The last four cells remain a
+    // straight, head-on doorway approach.
+    let (fan_x, fan_z) = (x, z);
+    let (fan_dx, fan_dz) = (branch_x - fan_x, branch_z - fan_z);
+    while x != branch_x || z != branch_z {
+        if x == branch_x {
+            z += (branch_z - z).signum();
+        } else if z == branch_z {
+            x += (branch_x - x).signum();
+        } else {
+            let next_x = x + (branch_x - x).signum();
+            let next_z = z + (branch_z - z).signum();
+            let x_error = ((next_x - fan_x) as i64 * fan_dz as i64
+                - (z - fan_z) as i64 * fan_dx as i64)
+                .abs();
+            let z_error = ((x - fan_x) as i64 * fan_dz as i64
+                - (next_z - fan_z) as i64 * fan_dx as i64)
+                .abs();
+            if x_error <= z_error {
+                x = next_x;
+            } else {
+                z = next_z;
+            }
+        }
+        points.push((x, z));
+    }
+    while x != entrance.approach_dx {
+        x += (entrance.approach_dx - x).signum();
+        points.push((x, z));
+    }
+    while z != entrance.approach_dz {
+        z += (entrance.approach_dz - z).signum();
+        points.push((x, z));
+    }
+
+    let mut profile: Vec<_> = points
+        .into_iter()
+        .map(|(dx, dz)| {
+            (
+                dx,
+                dz,
+                struct_surface(ax + dx, az + dz, seed).max(SEA_LEVEL + 1),
+            )
+        })
+        .collect();
+    let last = profile.len() - 1;
+    let start_y = profile[0].2;
+    profile[last].2 = entrance.floor_y;
+
+    // Pin the village junction and doorstep, cut only unavoidable peaks, then
+    // raise valleys just enough to keep every step walkable.
+    for (i, point) in profile.iter_mut().enumerate().take(last).skip(1) {
+        point.2 = point
+            .2
+            .min(start_y + i as i32)
+            .min(entrance.floor_y + (last - i) as i32);
+    }
+    for i in 1..profile.len() {
+        profile[i].2 = profile[i].2.max(profile[i - 1].2 - 1);
+    }
+    // The real village junction is terrain-pinned and is not restamped by this
+    // helper, so never let the theoretical back-pass raise profile[0].
+    for i in (1..last).rev() {
+        profile[i].2 = profile[i].2.max(profile[i + 1].2 - 1);
+    }
+    profile
+}
+
+#[allow(clippy::too_many_arguments)]
+fn settlement_pave_profiled<C: Chunk>(
+    chunk: &mut C,
+    wx: i32,
+    road_y: i32,
+    wz: i32,
+    seed: u64,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+    b: BlockId,
+) {
+    let natural = struct_surface(wx, wz, seed);
+    let wet = natural < SEA_LEVEL + 1;
+    let road_block = if wet { OAK_PLANKS } else { b };
+    if wet {
+        for wy in (SEA_LEVEL + 1)..=road_y {
+            struct_set(chunk, wx, wy, wz, wx_min, wy_min, wz_min, road_block);
+        }
+    } else {
+        struct_fill_col(
+            chunk, wx, wz, road_y, seed, wx_min, wy_min, wz_min, road_block,
+        );
+        struct_set(chunk, wx, road_y, wz, wx_min, wy_min, wz_min, road_block);
+    }
+    for wy in (road_y + 1)..=(natural.max(road_y) + 2) {
+        struct_clear(chunk, wx, wy, wz, wx_min, wy_min, wz_min);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn place_settlement_home_road<C: Chunk>(
+    ax: i32,
+    az: i32,
+    entrance: SettlementEntrance,
+    seed: u64,
+    chunk: &mut C,
+    wx_min: i32,
+    wy_min: i32,
+    wz_min: i32,
+    b: BlockId,
+) {
+    for &(dx, dz, road_y) in settlement_home_road_profile(ax, az, entrance, seed).iter().skip(1) {
+        settlement_pave_profiled(
+            chunk,
+            ax + dx,
+            road_y,
+            az + dz,
+            seed,
+            wx_min,
+            wy_min,
+            wz_min,
+            b,
+        );
+    }
+}
+
 fn place_settlement_building<C: Chunk>(
     ax: i32,
     az: i32,
     site: SettlementSite,
     h: u64,
+    door_dir: i32,
     seed: u64,
     chunk: &mut C,
     wx_min: i32,
@@ -1374,9 +1645,13 @@ fn place_settlement_building<C: Chunk>(
     let bx = ax + site.dx;
     let bz = az + site.dz;
     match site.kind {
-        SETTLEMENT_BUILDING_CABIN => place_cabin(bx, bz, h, seed, chunk, wx_min, wy_min, wz_min),
+        SETTLEMENT_BUILDING_CABIN => place_cabin(
+            bx, bz, h, door_dir, seed, chunk, wx_min, wy_min, wz_min,
+        ),
         SETTLEMENT_BUILDING_WELL => place_well(bx, bz, h, seed, chunk, wx_min, wy_min, wz_min),
-        _ => place_hut(bx, bz, h, seed, chunk, wx_min, wy_min, wz_min),
+        _ => place_hut(
+            bx, bz, h, door_dir, seed, chunk, wx_min, wy_min, wz_min,
+        ),
     }
 }
 
@@ -1496,11 +1771,42 @@ fn place_village<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, w
     let (sites, n_sites) = settlement_sites(h, wanted, false);
     for (i, site) in sites.iter().take(n_sites).enumerate() {
         let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x2545F4914F6CDD1D).wrapping_add(71)));
-        place_settlement_road(ax, az, site.dx, site.dz, hh, seed, chunk, wx_min, wy_min, wz_min, COBBLESTONE);
+        if let Some(entrance) = settlement_home_entrance(ax, az, *site, hh, seed) {
+            place_settlement_home_road(
+                ax,
+                az,
+                entrance,
+                seed,
+                chunk,
+                wx_min,
+                wy_min,
+                wz_min,
+                COBBLESTONE,
+            );
+        } else {
+            place_settlement_road(
+                ax,
+                az,
+                site.dx,
+                site.dz,
+                hh,
+                seed,
+                chunk,
+                wx_min,
+                wy_min,
+                wz_min,
+                COBBLESTONE,
+            );
+        }
     }
     for (i, site) in sites.iter().take(n_sites).enumerate() {
         let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x2545F4914F6CDD1D).wrapping_add(71)));
-        place_settlement_building(ax, az, *site, hh, seed, chunk, wx_min, wy_min, wz_min);
+        let door_dir = settlement_home_entrance(ax, az, *site, hh, seed)
+            .map(|entrance| entrance.door_dir)
+            .unwrap_or_else(|| settlement_hashed_door_dir(site.kind, hh));
+        place_settlement_building(
+            ax, az, *site, hh, door_dir, seed, chunk, wx_min, wy_min, wz_min,
+        );
     }
     place_settlement_workstations(
         ax, az, seed, chunk, wx_min, wy_min, wz_min, COBBLESTONE, None,
@@ -2542,7 +2848,18 @@ fn place_city<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
     }
     for (i, site) in sites.iter().take(n_sites).enumerate() {
         let hh = fmix64(h ^ ((i as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(131)));
-        place_settlement_building(ax, az, *site, hh, seed, chunk, wx_min, wy_min, wz_min);
+        place_settlement_building(
+            ax,
+            az,
+            *site,
+            hh,
+            settlement_hashed_door_dir(site.kind, hh),
+            seed,
+            chunk,
+            wx_min,
+            wy_min,
+            wz_min,
+        );
     }
     let city_floor = place_city_core(ax, az, h, seed, chunk, wx_min, wy_min, wz_min);
     place_settlement_workstations(
@@ -2557,7 +2874,17 @@ fn place_city<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
 
 fn place_structure<C: Chunk>(sd: &StructDesc, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
     match sd.typ {
-        x if x == STRUCT_CABIN => place_cabin(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
+        x if x == STRUCT_CABIN => place_cabin(
+            sd.anchor_wx,
+            sd.anchor_wz,
+            sd.cell_hash,
+            settlement_hashed_door_dir(SETTLEMENT_BUILDING_CABIN, sd.cell_hash),
+            seed,
+            chunk,
+            wx_min,
+            wy_min,
+            wz_min,
+        ),
         x if x == STRUCT_OBELISK => place_obelisk(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
         x if x == STRUCT_CAMP => place_camp(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
         x if x == STRUCT_WATCHTOWER => place_watchtower(sd.anchor_wx, sd.anchor_wz, sd.cell_hash, seed, chunk, wx_min, wy_min, wz_min),
