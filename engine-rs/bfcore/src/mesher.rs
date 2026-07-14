@@ -1739,8 +1739,8 @@ fn emit_social_prop(
         (10, 13, 0, 6, 3, 6, 21),
         (10, 13, 0, 6, 10, 13, 21),
         (2, 14, 6, 9, 2, 14, 4),
-        (12, 14, 8, 16, 2, 5, 21),
-        (12, 14, 8, 16, 11, 14, 21),
+        (14, 16, 8, 16, 2, 5, 21),
+        (14, 16, 8, 16, 11, 14, 21),
         (12, 14, 10, 13, 3, 13, 4),
         (12, 14, 14, 16, 3, 13, 4),
         (3, 12, 9, 11, 2, 4, 4),
@@ -3349,6 +3349,9 @@ mod tests {
             ch.set(8, 8, 8, id);
             store.chunks.insert(ChunkCoord::default(), ch);
             let (res, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+            if id == COMMUNAL_BENCH {
+                assert_no_different_material_coplanar_faces(id, &vtx);
+            }
             let verts = decode_position_and_mat(&vtx);
             assert_eq!(res.index_count, cuboids * 36);
             assert_eq!(res.vertex_bytes, cuboids * 24 * VERTEX_SIZE as u32);
