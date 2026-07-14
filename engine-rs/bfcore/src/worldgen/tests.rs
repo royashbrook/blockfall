@@ -121,7 +121,11 @@ mod worldgen_tests {
             let mut first_layout = Vec::new();
             for h in [11u64, 42, 1234] {
                 let wanted = min_buildings + ((h >> 10) as usize % (max_buildings - min_buildings + 1));
-                let (sites, n) = settlement_sites(h, wanted, city);
+                let (sites, n) = if city {
+                    city_sites(h, wanted)
+                } else {
+                    settlement_sites(h, wanted, false)
+                };
                 assert_eq!(n, wanted, "city={city} h={h}: layout did not fill requested sites");
 
                 let mut min_x = i32::MAX;
@@ -446,10 +450,22 @@ mod worldgen_tests {
                     assert_eq!(cells.get(&(sx - 1, wy, sz)).copied().unwrap_or(AIR), AIR);
                 }
 
+                let &(owner_dx, owner_dz, _) = if typ == STRUCT_CITY {
+                    CITY_SOCIAL_PROPS.iter().find(|&&(_, _, b)| b == block).unwrap()
+                } else {
+                    SETTLEMENT_SOCIAL_PROPS.iter().find(|&&(_, _, b)| b == block).unwrap()
+                };
+                let owner_sx = anchor + owner_dx;
+                let owner_sz = anchor + owner_dz;
+                let owner_sy = if typ == STRUCT_CITY {
+                    city_floor_height(anchor, anchor, seed) + 1
+                } else {
+                    sy
+                };
                 let (wx_min, wy_min, wz_min) = (
-                    seam_floordiv_pub(sx, K_CHUNK_DIM) * K_CHUNK_DIM,
-                    seam_floordiv_pub(sy, K_CHUNK_DIM) * K_CHUNK_DIM,
-                    seam_floordiv_pub(sz, K_CHUNK_DIM) * K_CHUNK_DIM,
+                    seam_floordiv_pub(owner_sx, K_CHUNK_DIM) * K_CHUNK_DIM,
+                    seam_floordiv_pub(owner_sy, K_CHUNK_DIM) * K_CHUNK_DIM,
+                    seam_floordiv_pub(owner_sz, K_CHUNK_DIM) * K_CHUNK_DIM,
                 );
                 let mut owner = GridChunk {
                     wx_min,
@@ -458,7 +474,7 @@ mod worldgen_tests {
                     cells: std::collections::HashMap::new(),
                 };
                 place_structure(&sd, seed, &mut owner, wx_min, wy_min, wz_min);
-                assert_eq!(owner.cells.get(&(sx, sy, sz)), Some(&block));
+                assert_eq!(owner.cells.get(&(owner_sx, owner_sy, owner_sz)), Some(&block));
             }
         }
         assert_eq!(anchor % K_CHUNK_DIM, 0, "props own an X-seam voxel");
@@ -1443,6 +1459,7 @@ mod worldgen_tests {
     ) -> std::collections::HashMap<(i32, i32, i32), BlockId> {
         let reach = CITY_WALL_R + 2; // tower roof eaves
         let base = struct_surface(ax, az, seed);
+        let floor_y = city_floor_height(ax, az, seed);
         let mut windows = Vec::new();
         for cy in seam_floordiv_pub(base - 16, K_CHUNK_DIM)
             ..=seam_floordiv_pub(base + 16, K_CHUNK_DIM)
@@ -1478,7 +1495,7 @@ mod worldgen_tests {
                 wz_min,
                 cells: std::mem::take(&mut cells),
             };
-            place_city_core(ax, az, h, seed, &mut g, wx_min, wy_min, wz_min);
+            place_city_core(ax, az, h, seed, floor_y, &mut g, wx_min, wy_min, wz_min);
             cells = g.cells;
         }
         cells
@@ -1655,6 +1672,583 @@ mod worldgen_tests {
 
     fn stamp_structure(sd: &StructDesc, seed: u64) -> std::collections::HashMap<(i32, i32, i32), BlockId> {
         stamp_structure_order(sd, seed, false)
+    }
+
+    #[test]
+    fn city_arteries_and_home_branches_are_walkable_distinct_and_order_safe() {
+        let seed = 11;
+        let city = StructDesc {
+            anchor_wx: 15,
+            anchor_wz: -17,
+            typ: STRUCT_CITY,
+            cell_hash: fmix64(seed ^ 0x291_C17),
+            present: true,
+        };
+        let cells = stamp_structure_order(&city, seed, false);
+        assert_eq!(
+            cells,
+            stamp_structure_order(&city, seed, true),
+            "city streets changed with chunk generation order"
+        );
+        let at = |wx: i32, wy: i32, wz: i32| cells.get(&(wx, wy, wz)).copied().unwrap_or(AIR);
+        let (ax, az) = (city.anchor_wx, city.anchor_wz);
+        let city_floor = city_floor_height(ax, az, seed);
+        let mut arterial_cells = std::collections::HashSet::new();
+
+        for dir in CITY_CARDINALS {
+            let profile = city_arterial_profile(ax, az, dir, city_floor, seed);
+            assert_eq!(profile.first().unwrap().2, city_floor);
+            assert_eq!(
+                profile.last().unwrap().0.abs().max(profile.last().unwrap().1.abs()),
+                CITY_ARTERIAL_R,
+                "arterial did not extend visibly beyond the wall"
+            );
+            for step in profile.windows(2) {
+                assert_eq!(
+                    (step[1].0 - step[0].0).abs() + (step[1].1 - step[0].1).abs(),
+                    1,
+                    "arterial contains a horizontal gap"
+                );
+                assert!(
+                    (step[1].2 - step[0].2).abs() <= 1,
+                    "arterial grade jumps from {} to {}",
+                    step[0].2,
+                    step[1].2
+                );
+            }
+            for &(dx, dz, road_y) in &profile {
+                for lane in -1..=1 {
+                    let (lane_x, lane_z) = if dir.0 != 0 { (0, lane) } else { (lane, 0) };
+                    let (local_x, local_z) = (dx + lane_x, dz + lane_z);
+                    arterial_cells.insert((local_x, local_z));
+                    let (wx, wz) = (ax + local_x, az + local_z);
+                    let expected = if dx.abs().max(dz.abs()) == CITY_WALL_R {
+                        STONE_BRICK
+                    } else if struct_surface(wx, wz, seed) < SEA_LEVEL + 1 {
+                        OAK_PLANKS
+                    } else {
+                        STONE_BRICK
+                    };
+                    assert_eq!(
+                        at(wx, road_y, wz),
+                        expected,
+                        "three-wide arterial missing at {wx},{road_y},{wz}"
+                    );
+                    for head_y in (road_y + 1)..=(road_y + 2) {
+                        assert_eq!(
+                            at(wx, head_y, wz),
+                            AIR,
+                            "arterial headroom blocked at {wx},{head_y},{wz}"
+                        );
+                    }
+                }
+            }
+        }
+
+        for &(dx, dz, _) in &CITY_SOCIAL_PROPS {
+            assert!(
+                dx.abs() > 1 && dz.abs() > 1,
+                "city social prop still blocks a three-wide avenue"
+            );
+        }
+
+        let wanted = CITY_MIN_BUILDINGS
+            + ((city.cell_hash >> 10) as usize % (CITY_MAX_BUILDINGS - CITY_MIN_BUILDINGS + 1));
+        let (sites, n_sites) = city_sites(city.cell_hash, wanted);
+        let road_plan = shared_city_road_plan(
+            ax, az, city.cell_hash, seed, &sites[..n_sites],
+        );
+        assert_eq!(road_plan.branches.len(), n_sites);
+        let mut homes = 0;
+        for (i, site) in sites.iter().take(n_sites).enumerate() {
+            let h = fmix64(
+                city.cell_hash
+                    ^ ((i as u64)
+                        .wrapping_mul(0x9E3779B97F4A7C15)
+                        .wrapping_add(131)),
+            );
+            let Some((rx, rz)) = settlement_home_half_extents(site.kind, h) else {
+                continue;
+            };
+            let (mut entrance, _, _) = city_site_road_target(ax, az, *site, h, seed);
+            entrance.floor_y = road_plan.branches[i].floor_y;
+            homes += 1;
+
+            for &(road_x, road_z) in &arterial_cells {
+                assert!(
+                    (road_x - site.dx).abs() > rx + 1 || (road_z - site.dz).abs() > rz + 1,
+                    "arterial intersects the home footprint at {},{}",
+                    site.dx,
+                    site.dz
+                );
+            }
+
+            let outward = match entrance.door_dir {
+                0 => (1, 0),
+                1 => (-1, 0),
+                2 => (0, 1),
+                _ => (0, -1),
+            };
+            let arterial_dir = city_arterial_dir(*site);
+            if arterial_dir.0 != 0 {
+                assert_eq!(outward.0, 0);
+                assert!(site.dz * outward.1 < 0, "city home does not face its arterial");
+            } else {
+                assert_eq!(outward.1, 0);
+                assert!(site.dx * outward.0 < 0, "city home does not face its arterial");
+            }
+            let approach = (ax + entrance.approach_dx, az + entrance.approach_dz);
+            let door = (approach.0 - outward.0, approach.1 - outward.1);
+            for wy in (entrance.floor_y + 1)..=(entrance.floor_y + 2) {
+                assert_eq!(at(door.0, wy, door.1), OAK_DOOR, "city door moved off branch");
+                assert_eq!(at(approach.0, wy, approach.1), AIR, "city doorstep blocked");
+            }
+
+            let branch = &road_plan.branches[i].profile;
+            assert!(arterial_cells.contains(&(branch[0].0, branch[0].1)));
+            assert_eq!(
+                branch.last().copied(),
+                Some((entrance.approach_dx, entrance.approach_dz, entrance.floor_y)),
+                "city branch missed its doorstep"
+            );
+            let branch_cells: std::collections::HashSet<_> =
+                branch.iter().map(|&(dx, dz, _)| (dx, dz)).collect();
+            assert_eq!(branch_cells.len(), branch.len(), "city branch doubles back over itself");
+            for &(dx, dz, _) in branch {
+                for (other_i, other) in sites.iter().take(n_sites).enumerate() {
+                    if other_i == i {
+                        continue;
+                    }
+                    let other_h = fmix64(
+                        city.cell_hash
+                            ^ ((other_i as u64)
+                                .wrapping_mul(0x9E3779B97F4A7C15)
+                                .wrapping_add(131)),
+                    );
+                    let Some((other_rx, other_rz)) = settlement_home_half_extents(other.kind, other_h) else {
+                        continue;
+                    };
+                    assert!(
+                        (dx - other.dx).abs() > other_rx + 1
+                            || (dz - other.dz).abs() > other_rz + 1,
+                        "branch for {},{} crosses home footprint at {},{}",
+                        site.dx,
+                        site.dz,
+                        other.dx,
+                        other.dz
+                    );
+                }
+            }
+            for step in branch.windows(2) {
+                assert_eq!(
+                    (step[1].0 - step[0].0).abs() + (step[1].1 - step[0].1).abs(),
+                    1,
+                    "city branch contains a horizontal gap"
+                );
+                assert!(
+                    (step[1].2 - step[0].2).abs() <= 1,
+                    "city branch grade jumps from {} to {}",
+                    step[0].2,
+                    step[1].2
+                );
+            }
+            for &(dx, dz, road_y) in branch.iter().skip(1) {
+                let (wx, wz) = (ax + dx, az + dz);
+                let expected = if struct_surface(wx, wz, seed) < SEA_LEVEL + 1 {
+                    OAK_PLANKS
+                } else {
+                    STONE_BRICK
+                };
+                assert_eq!(
+                    at(wx, road_y, wz),
+                    expected,
+                    "city branch missing or overwritten at {wx},{road_y},{wz}"
+                );
+                assert_eq!(
+                    at(wx, road_y + 1, wz),
+                    AIR,
+                    "city branch foot space blocked at {wx},{},{wz} for home {},{}",
+                    road_y + 1,
+                    site.dx,
+                    site.dz
+                );
+                assert_eq!(
+                    at(wx, road_y + 2, wz),
+                    AIR,
+                    "city branch head space blocked at {wx},{},{wz} for home {},{}",
+                    road_y + 2,
+                    site.dx,
+                    site.dz
+                );
+            }
+            let perpendicular = if entrance.door_dir < 2 { (0, 1) } else { (1, 0) };
+            for &(dx, dz, _) in branch.iter().rev().take(4) {
+                assert!(!branch_cells.contains(&(dx + perpendicular.0, dz + perpendicular.1)));
+                assert!(!branch_cells.contains(&(dx - perpendicular.0, dz - perpendicular.1)));
+            }
+        }
+        assert!(homes >= 10, "city fixture did not exercise enough homes");
+    }
+
+    #[test]
+    fn city_cut_lots_keep_floors_chimneys_and_well_frames() {
+        fn stamp_terraced_site(
+            ax: i32,
+            az: i32,
+            site: SettlementSite,
+            h: u64,
+            seed: u64,
+        ) -> (std::collections::HashMap<(i32, i32, i32), BlockId>, i32) {
+            let (rx, rz) = city_lot_pad_half_extents(site, h);
+            let (cx, cz) = (ax + site.dx, az + site.dz);
+            let mut min_natural = i32::MAX;
+            let mut max_natural = i32::MIN;
+            for dz in -rz..=rz {
+                for dx in -rx..=rx {
+                    let natural = struct_surface(cx + dx, cz + dz, seed);
+                    min_natural = min_natural.min(natural);
+                    max_natural = max_natural.max(natural);
+                }
+            }
+            let floor_y = (min_natural - 2).max(SEA_LEVEL + 1);
+            assert!(floor_y < min_natural, "fixture no longer forces a cut lot");
+
+            let mut cells = std::collections::HashMap::new();
+            for cy in seam_floordiv_pub(floor_y - 1, K_CHUNK_DIM)
+                ..=seam_floordiv_pub(max_natural + 10, K_CHUNK_DIM)
+            {
+                for cz_chunk in seam_floordiv_pub(cz - rz, K_CHUNK_DIM)
+                    ..=seam_floordiv_pub(cz + rz, K_CHUNK_DIM)
+                {
+                    for cx_chunk in seam_floordiv_pub(cx - rx, K_CHUNK_DIM)
+                        ..=seam_floordiv_pub(cx + rx, K_CHUNK_DIM)
+                    {
+                        let wx_min = cx_chunk * K_CHUNK_DIM;
+                        let wy_min = cy * K_CHUNK_DIM;
+                        let wz_min = cz_chunk * K_CHUNK_DIM;
+                        let mut chunk = GridChunk {
+                            wx_min,
+                            wy_min,
+                            wz_min,
+                            cells: std::mem::take(&mut cells),
+                        };
+                        place_city_lot_pad(
+                            ax, az, site, h, floor_y, seed, &mut chunk, wx_min, wy_min,
+                            wz_min,
+                        );
+                        place_settlement_building(
+                            ax,
+                            az,
+                            site,
+                            h,
+                            city_arterial_door_dir(site),
+                            Some(floor_y),
+                            seed,
+                            &mut chunk,
+                            wx_min,
+                            wy_min,
+                            wz_min,
+                        );
+                        cells = chunk.cells;
+                    }
+                }
+            }
+            (cells, floor_y)
+        }
+
+        let seed = 42;
+        let (ax, az) = (7344, -6154);
+        let city_hash = 11145531227176300170;
+        let wanted = CITY_MIN_BUILDINGS
+            + ((city_hash >> 10) as usize
+                % (CITY_MAX_BUILDINGS - CITY_MIN_BUILDINGS + 1));
+        let (sites, n_sites) = city_sites(city_hash, wanted);
+        let plan = build_city_road_plan(ax, az, city_hash, seed, &sites[..n_sites]);
+
+        let cut_site = sites[0];
+        let cut_h = fmix64(city_hash ^ 131);
+        let (natural_entrance, _, _) = city_site_road_target(ax, az, cut_site, cut_h, seed);
+        assert_eq!(cut_site.kind, SETTLEMENT_BUILDING_HUT);
+        assert_eq!((natural_entrance.floor_y, plan.branches[0].floor_y), (46, 37));
+        let city = StructDesc {
+            anchor_wx: ax,
+            anchor_wz: az,
+            typ: STRUCT_CITY,
+            cell_hash: city_hash,
+            present: true,
+        };
+        let city_cells = stamp_structure_order(&city, seed, false);
+        assert_eq!(city_cells, stamp_structure_order(&city, seed, true));
+        let cut_floor = plan.branches[0].floor_y;
+        let (cut_x, cut_z) = (ax + cut_site.dx, az + cut_site.dz);
+        let city_at = |x: i32, y: i32, z: i32| {
+            city_cells.get(&(x, y, z)).copied().unwrap_or(AIR)
+        };
+        assert_eq!(city_at(cut_x, cut_floor, cut_z), OAK_PLANKS);
+        assert_eq!(city_at(cut_x, cut_floor + 1, cut_z), AIR);
+        assert_eq!(city_at(cut_x, cut_floor + 2, cut_z), AIR);
+        assert_eq!(city_at(cut_x, cut_floor + 3, cut_z), GLOW_BLOCK);
+
+        let site_hash = |i: usize| {
+            fmix64(
+                city_hash
+                    ^ ((i as u64)
+                        .wrapping_mul(0x9E3779B97F4A7C15)
+                        .wrapping_add(131)),
+            )
+        };
+        let cabin_i = sites[..n_sites]
+            .iter()
+            .position(|site| site.kind == SETTLEMENT_BUILDING_CABIN)
+            .unwrap();
+        let cabin = sites[cabin_i];
+        let cabin_h = site_hash(cabin_i);
+        let (cabin_cells, cabin_floor) = stamp_terraced_site(ax, az, cabin, cabin_h, seed);
+        let cabin_at = |x: i32, y: i32, z: i32| {
+            cabin_cells.get(&(x, y, z)).copied().unwrap_or(AIR)
+        };
+        let (cabin_x, cabin_z) = (ax + cabin.dx, az + cabin.dz);
+        let (hx, hz) = settlement_home_half_extents(cabin.kind, cabin_h).unwrap();
+        assert_eq!(cabin_at(cabin_x, cabin_floor, cabin_z), OAK_PLANKS);
+        assert_eq!(cabin_at(cabin_x + hx + 1, cabin_floor + 1, cabin_z), AIR);
+        let door_dir = city_arterial_door_dir(cabin);
+        let (door_dx, door_dz) = match door_dir {
+            0 => (hx, 0),
+            1 => (-hx, 0),
+            2 => (0, hz),
+            _ => (0, -hz),
+        };
+        let chimney_side = if (cabin_h >> 7) & 1 != 0 { 1 } else { -1 };
+        let (chimney_dx, chimney_dz) = if door_dx != 0 {
+            (-door_dx, chimney_side * hz)
+        } else {
+            (chimney_side * hx, -door_dz)
+        };
+        let chimney_top = cabin_floor + 3 + 1 + (hz + 1) + 2;
+        assert_eq!(
+            cabin_at(cabin_x + chimney_dx, chimney_top, cabin_z + chimney_dz),
+            COBBLESTONE
+        );
+
+        let well_i = sites[..n_sites]
+            .iter()
+            .position(|site| site.kind == SETTLEMENT_BUILDING_WELL)
+            .unwrap();
+        let well = sites[well_i];
+        let (well_cells, well_floor) =
+            stamp_terraced_site(ax, az, well, site_hash(well_i), seed);
+        let well_at = |x: i32, y: i32, z: i32| {
+            well_cells.get(&(x, y, z)).copied().unwrap_or(AIR)
+        };
+        let (well_x, well_z) = (ax + well.dx, az + well.dz);
+        assert_eq!(well_at(well_x + 2, well_floor, well_z), COBBLESTONE);
+        assert_eq!(well_at(well_x + 2, well_floor + 1, well_z), AIR);
+        assert_eq!(well_at(well_x + 1, well_floor + 1, well_z), STONE_BRICK);
+        for wy in (well_floor + 1)..=(well_floor + 3) {
+            assert_eq!(well_at(well_x + 1, wy, well_z + 1), WOOD_BEAM);
+        }
+        assert_eq!(well_at(well_x, well_floor, well_z), WATER);
+        assert_eq!(well_at(well_x, well_floor + 1, well_z), WOOD_BEAM);
+        assert_eq!(well_at(well_x, well_floor - 1, well_z), MARKER_BLOCK);
+    }
+
+    #[test]
+    fn city_road_planner_invariants_hold_across_hashes() {
+        for case in 0..96u64 {
+            for (seed_case, seed) in [11u64, 42, 99].into_iter().enumerate() {
+            let ax = 15 + case as i32 * 73 + seed_case as i32 * 29;
+            let az = -17 - case as i32 * 61 - seed_case as i32 * 37;
+            let city_hash = fmix64(0x291_C17 ^ case.wrapping_mul(0x9E3779B97F4A7C15));
+            let wanted = CITY_MIN_BUILDINGS
+                + ((city_hash >> 10) as usize
+                    % (CITY_MAX_BUILDINGS - CITY_MIN_BUILDINGS + 1));
+            let (sites, n_sites) = city_sites(city_hash, wanted);
+            let sites = &sites[..n_sites];
+            let plan = build_city_road_plan(ax, az, city_hash, seed, sites);
+            assert_eq!(plan.branches.len(), n_sites, "case {case}: site lost its spur");
+            assert_eq!(plan.floor_y, city_floor_height(ax, az, seed));
+
+            let footprints: Vec<_> = sites
+                .iter()
+                .enumerate()
+                .map(|(i, site)| {
+                    let h = fmix64(
+                        city_hash
+                            ^ ((i as u64)
+                                .wrapping_mul(0x9E3779B97F4A7C15)
+                                .wrapping_add(131)),
+                    );
+                    let (rx, rz) = city_lot_pad_half_extents(*site, h);
+                    (site.dx - rx, site.dx + rx, site.dz - rz, site.dz + rz)
+                })
+                .collect();
+            let mut arterial_cells = Vec::new();
+            for (dir, profile) in CITY_CARDINALS.into_iter().zip(&plan.arteries) {
+                assert_eq!(
+                    profile,
+                    &city_arterial_profile(ax, az, dir, plan.floor_y, seed),
+                    "case {case}, seed {seed}: cached arterial changed"
+                );
+                for &(dx, dz, _) in profile {
+                    for lane in -1..=1 {
+                        arterial_cells.push(if dir.0 != 0 {
+                            (dx, dz + lane)
+                        } else {
+                            (dx + lane, dz)
+                        });
+                    }
+                }
+            }
+            for (site_index, &(min_x, max_x, min_z, max_z)) in footprints.iter().enumerate() {
+                assert!(
+                    arterial_cells.iter().all(|&(x, z)| {
+                        x < min_x || x > max_x || z < min_z || z > max_z
+                    }),
+                    "case {case}: arterial crosses site {site_index}"
+                );
+            }
+
+            let mut attachments = Vec::new();
+            for (i, branch) in plan.branches.iter().enumerate() {
+                let site = sites[i];
+                let h = fmix64(
+                    city_hash
+                        ^ ((i as u64)
+                            .wrapping_mul(0x9E3779B97F4A7C15)
+                            .wrapping_add(131)),
+                );
+                let (mut entrance, doorway_run, own_solid) =
+                    city_site_road_target(ax, az, site, h, seed);
+                let natural_floor = entrance.floor_y;
+                entrance.floor_y = branch.floor_y;
+                let profile = &branch.profile;
+                let attachment = (profile[0].0, profile[0].1);
+                let dir = city_arterial_dir(site);
+                let expected_attachment = if dir.0 != 0 {
+                    (site.dx, site.dz.signum())
+                } else {
+                    (site.dx.signum(), site.dz)
+                };
+                assert_eq!(attachment, expected_attachment, "case {case}: spur moved stations");
+                assert!(city_point_on_artery(attachment));
+                assert!(!attachments.contains(&attachment), "case {case}: duplicate attachment");
+                attachments.push(attachment);
+                let steps = profile.len() as i32 - 1;
+                assert_eq!(
+                    branch.floor_y,
+                    natural_floor.clamp(profile[0].2 - steps, profile[0].2 + steps),
+                    "case {case}, seed {seed}: lot terrace exceeded its direct grade budget"
+                );
+                assert_eq!(
+                    profile.last().copied(),
+                    Some((entrance.approach_dx, entrance.approach_dz, entrance.floor_y))
+                );
+                assert!(
+                    profile.iter().skip(1).all(|&(dx, dz, _)| {
+                        !city_point_on_artery((dx, dz))
+                    }),
+                    "case {case}: spur regraded an arterial lane"
+                );
+
+                let mut cells = Vec::new();
+                let mut previous_dir = None;
+                let mut turns = 0;
+                for step in profile.windows(2) {
+                    let direction = (step[1].0 - step[0].0, step[1].1 - step[0].1);
+                    assert_eq!(direction.0.abs() + direction.1.abs(), 1);
+                    assert!((step[1].2 - step[0].2).abs() <= 1);
+                    if previous_dir.is_some() && previous_dir != Some(direction) {
+                        turns += 1;
+                    }
+                    previous_dir = Some(direction);
+                }
+                assert_eq!(turns, 0, "case {case}, seed {seed}: spur has turns");
+                for &(dx, dz, _) in profile {
+                    assert!(!cells.contains(&(dx, dz)), "case {case}: spur doubles back");
+                    cells.push((dx, dz));
+                    assert!(dx.abs() > CITY_WALL_R || dz.abs() > CITY_WALL_R);
+                    for (other_i, &(min_x, max_x, min_z, max_z)) in
+                        footprints.iter().enumerate()
+                    {
+                        let bounds = if other_i == i {
+                            own_solid
+                        } else {
+                            (min_x, max_x, min_z, max_z)
+                        };
+                        assert!(
+                            dx < bounds.0 || dx > bounds.1 || dz < bounds.2 || dz > bounds.3,
+                            "case {case}: spur {i} crosses site {other_i}"
+                        );
+                    }
+                }
+
+                let perpendicular = if entrance.door_dir < 2 { (0, 1) } else { (1, 0) };
+                let corridor_start = profile.len() - doorway_run as usize;
+                for &(dx, dz, _) in &profile[corridor_start..] {
+                    for side in [-1, 1] {
+                        let shoulder =
+                            (dx + perpendicular.0 * side, dz + perpendicular.1 * side);
+                        assert!(!cells[..corridor_start].contains(&shoulder));
+                        assert!(
+                            shoulder.0.abs() > CITY_WALL_R
+                                || shoulder.1.abs() > CITY_WALL_R
+                        );
+                        for (other_i, &(min_x, max_x, min_z, max_z)) in
+                            footprints.iter().enumerate()
+                        {
+                            let bounds = if other_i == i {
+                                own_solid
+                            } else {
+                                (min_x, max_x, min_z, max_z)
+                            };
+                            assert!(
+                                shoulder.0 < bounds.0
+                                    || shoulder.0 > bounds.1
+                                    || shoulder.1 < bounds.2
+                                    || shoulder.1 > bounds.3
+                            );
+                        }
+                        for (other_i, other) in plan.branches.iter().enumerate() {
+                            if other_i != i {
+                                assert!(!other.profile.iter().any(|&(x, z, _)| (x, z) == shoulder));
+                            }
+                        }
+                    }
+                }
+
+                if settlement_home_half_extents(site.kind, h).is_some() {
+                    let outward = match entrance.door_dir {
+                        0 => (1, 0),
+                        1 => (-1, 0),
+                        2 => (0, 1),
+                        _ => (0, -1),
+                    };
+                    let dir = city_arterial_dir(site);
+                    if dir.0 != 0 {
+                        assert_eq!(outward.0, 0);
+                        assert!(site.dz * outward.1 < 0);
+                    } else {
+                        assert_eq!(outward.1, 0);
+                        assert!(site.dx * outward.0 < 0);
+                    }
+                }
+            }
+
+            for a in 0..plan.branches.len() {
+                for b in (a + 1)..plan.branches.len() {
+                    for &(ax, az, _) in &plan.branches[a].profile {
+                        if plan.branches[b]
+                            .profile
+                            .iter()
+                            .any(|&(bx, bz, _)| (ax, az) == (bx, bz))
+                        {
+                            assert!(city_point_on_artery((ax, az)));
+                        }
+                    }
+                }
+            }
+        }
+        }
     }
 
     #[test]

@@ -224,6 +224,16 @@ impl RoadRoute {
             profile.push(worldgen::worldgen_road_surface(x, z, seed).0);
         }
 
+        if let Some([start_settlement, end_settlement]) = settlements {
+            profile[0] =
+                worldgen::worldgen_city_floor_at(start_settlement.0, start_settlement.1, seed)
+                    .unwrap_or(profile[0]);
+            let last = profile.len() - 1;
+            profile[last] =
+                worldgen::worldgen_city_floor_at(end_settlement.0, end_settlement.1, seed)
+                    .unwrap_or(profile[last]);
+        }
+
         // Pin both settlement gates, cut only peaks that cannot be approached at a
         // one-block grade, then raise valleys just enough to make the whole profile
         // 1-Lipschitz. This is the smallest deterministic cut/fill profile that keeps
@@ -1261,8 +1271,16 @@ mod tests {
             }
             let (sx, sz, sy) = a.profile_point(0).unwrap();
             let (ex, ez, ey) = a.profile_point(a.profile.len() - 1).unwrap();
-            assert_eq!(sy, worldgen::worldgen_road_surface(sx, sz, seed).0);
-            assert_eq!(ey, worldgen::worldgen_road_surface(ex, ez, seed).0);
+            assert_eq!(
+                sy,
+                worldgen::worldgen_city_floor_at(ax, az, seed)
+                    .unwrap_or(worldgen::worldgen_road_surface(sx, sz, seed).0)
+            );
+            assert_eq!(
+                ey,
+                worldgen::worldgen_city_floor_at(bx, bz, seed)
+                    .unwrap_or(worldgen::worldgen_road_surface(ex, ez, seed).0)
+            );
         }
     }
 

@@ -339,6 +339,13 @@ pub fn worldgen_is_city(typ: i32) -> bool {
     typ == STRUCT_CITY
 }
 
+/// Authored civic floor for a procedural city anchor. Regional roads query this
+/// only for their two settlement endpoints so a city gate meets its levelled
+/// arterial street without adding structure scans to the per-road-cell hot path.
+pub fn worldgen_city_floor_at(ax: i32, az: i32, seed: u64) -> Option<i32> {
+    worldgen_city_near(ax, az, 0, seed).map(|_| city_floor_height(ax, az, seed))
+}
+
 /// #201: dominant biome index at a world column (0 Plains, 1 Forest, 2 Mountains,
 /// 3 Desert, 4 Snowy, 5 Swamp, 6 Beach), for biome-culture villager looks.
 pub fn worldgen_biome_at(wx: i32, wz: i32, seed: u64) -> u8 {
