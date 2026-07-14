@@ -519,16 +519,16 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
         // probes (washout / world-fixed / ground-night) build their own uniforms and
         // stay flat by the .zero default, so their camera-invariance assertions are
         // untouched by this camera-dependent visual warp.
-        // #180 horizon curvature camera. NOT camPosW: that -(R*t) extraction from the
-        // view matrix is only exact near the coordinate origin; in the toroidal frames
-        // #179 emits near the world seam (|coords| up to 32768) its error grows to
-        // hundreds of blocks, which pushed every d^2 drop to the cap (entities sank,
-        // terrain over-curved). Unproject screen-centre at the near plane instead:
-        // exact for whatever frame the engine built the view matrix in.
-        let hInv = viewProj.inverse
-        let hNear = hInv * SIMD4<Float>(0, 0, 0, 1)
-        let horizonCamH = SIMD4<Float>(hNear.x / hNear.w, hNear.y / hNear.w, hNear.z / hNear.w, 1)
+        // #180/#286: direct engine camera position, never recovered by inverting
+        // the ill-conditioned absolute view-projection at torus-scale coordinates.
+        let cameraWorld = SIMD3<Float>(f.camera.position.x,
+                                       f.camera.position.y,
+                                       f.camera.position.z)
+        let horizonCamH = SIMD4<Float>(cameraWorld.x, cameraWorld.y, cameraWorld.z, 1)
         windU.camPosH = horizonCamH
+        // #286: keep the harness on the live camera-relative terrain/prop path so
+        // fixed-position yaw shots exercise the precision fix instead of the old bug.
+        let viewProjRel = Renderer.cameraRelativeViewProj(projection: proj, view: viewM)
         let encodeStart = CACurrentMediaTime()
         let cmd = queue.makeCommandBuffer()!
 
@@ -597,7 +597,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 let d = f.draws[i]
                 guard d.index_count > 0, let vb = registry.lookup(d.vertex_buffer),
                       let ib = registry.lookup(d.index_buffer) else { continue }
-                var u = Uniforms(viewProj: viewProj,
+                var u = Uniforms(viewProj: viewProjRel,
                     chunkOrigin: SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, f.camera.time_of_day),
                     lightViewProj: matrix_identity_float4x4,
@@ -631,7 +631,7 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
                 }
                 if let ib = propInstBuf, batchedPropN > 0 {
                     let dayBright = 0.30 + 0.70 * Renderer.dayLight(f.camera.time_of_day)
-                    let pu2 = PropUniforms(viewProj: viewProj, params: SIMD4<Float>(dayBright, Float(wallClock), 0, 0),
+                    let pu2 = PropUniforms(viewProj: viewProjRel, params: SIMD4<Float>(dayBright, Float(wallClock), 0, 0),
                                            camPosH: horizonCamH)   // #180 horizon curvature
                     enc.setRenderPipelineState(pp); enc.setDepthStencilState(depthState); enc.setCullMode(.none)
                     enc.setVertexBuffer(propModelTable, offset: 0, index: 2)
@@ -1076,6 +1076,28 @@ func runPerfTest(seconds: Double, jsonPath: String?, shotPath: String? = nil) ->
             }
         }
         for _ in 0..<24  { renderOneFrame(yaw: 0, forward: 0) } // stay behind the completed stream barrier
+        // #286 deterministic same-process yaw evidence. Comma-separated degree
+        // offsets are applied from the settled starting view and captured without
+        // walking, so async residency cannot masquerade as view-angle instability.
+        // Example: BF_SHOT_YAW_SEQUENCE="0,1,2,3" (do not combine with
+        // BF_SHOT_FREEZE_CAMERA, which intentionally cancels every turn input).
+        if let spec = ProcessInfo.processInfo.environment["BF_SHOT_YAW_SEQUENCE"] {
+            guard !freezeShotCamera else {
+                print("FAIL: BF_SHOT_YAW_SEQUENCE is incompatible with BF_SHOT_FREEZE_CAMERA")
+                return false
+            }
+            let targets = spec.split(separator: ",").compactMap { Float($0) }
+            var applied: Float = 0
+            for (index, target) in targets.enumerated() {
+                let delta = (target - applied) * Float.pi / 180
+                for _ in 0..<8 { renderOneFrame(yaw: delta / 8, forward: 0) }
+                let sweepPath = shot.hasSuffix(".png")
+                    ? String(shot.dropLast(4)) + "_yaw\(index).png"
+                    : shot + "_yaw\(index).png"
+                writeTexturePNG(output, to: sweepPath)
+                applied = target
+            }
+        }
         let shotStats = renderOneFrame(yaw: 0, forward: 0)
         print("shot: prop instances in final frame = \(lastShotPropN)")
         print("shot: entities=\(shotStats.entities) body_parts=\(shotStats.entityPartDraws) triangles=\(shotStats.entityTriangles)")

@@ -1307,17 +1307,23 @@ final class Renderer: NSObject, MTKViewDelegate {
             -(viewM.columns.2.x * vt.x + viewM.columns.2.y * vt.y + viewM.columns.2.z * vt.z),
             0)
 
-        // #180 horizon curvature: camera pos + enable flag (w=1) for the world-space
-        // vertex shaders. The live game is always on the curved path (BF_HORIZON=0
-        // bakes k=0, so the drop is a no-op when disabled).
-        // NOT camPosW: that -(R*t) view-matrix extraction is only exact near the
-        // coordinate origin; in the toroidal frames #179 emits near the world seam
-        // its error reaches hundreds of blocks, which drove every d^2 drop to the
-        // cap. Unproject screen-centre at the near plane instead: exact for
-        // whatever frame the engine built the view matrix in.
-        let hNear = viewProj.inverse * SIMD4<Float>(0, 0, 0, 1)
-        let horizonCamH = SIMD4<Float>(hNear.x / hNear.w, hNear.y / hNear.w, hNear.z / hNear.w, 1)
+        // #180/#286: use the engine's authoritative camera position directly.
+        // Recovering it by inverting an absolute ~32K float matrix is itself
+        // ill-conditioned during yaw—the exact failure camera-relative projection
+        // exists to avoid. The engine builds `view` from this same ABI position.
+        let cameraWorld = SIMD3<Float>(frame.camera.position.x,
+                                       frame.camera.position.y,
+                                       frame.camera.position.z)
+        let horizonCamH = SIMD4<Float>(cameraWorld.x, cameraWorld.y, cameraWorld.z, 1)
         windU.camPosH = horizonCamH
+        // #286: terrain furnishings and GPU props contain details as small as
+        // 1/16 block (and smaller interpenetration offsets). Projecting their
+        // absolute ~32K torus coordinates makes those details compete with fp32
+        // rounding as the view rotates. Match the proven entity path (#192):
+        // remove the camera before local detail is added, then project with a VP
+        // whose input space is camera-relative. Absolute world positions remain
+        // available in the shaders for wind, fog, materials and voxel shadows.
+        let viewProjRel = Renderer.cameraRelativeViewProj(projection: proj, view: viewM)
 
         // ---- #13: Multiplayer compass — find other connected players --------
         // Scan the render frame for remote-player entities (kind == 100) and,
@@ -1440,7 +1446,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                       let vbuf = bufs[d.vertex_buffer],
                       let ibuf = bufs[d.index_buffer] else { continue }
                 var u = Uniforms(
-                    viewProj:      viewProj,
+                    viewProj:      viewProjRel,
                     chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime:    SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
                     lightViewProj: matrix_identity_float4x4,
@@ -1478,7 +1484,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 }
                 if let ib = propInstanceBuffers[propBufferSlot], batchedPropN > 0 {
                     let dayBright = 0.30 + 0.70 * Renderer.dayLight(frame.camera.time_of_day)
-                    let pu2 = PropUniforms(viewProj: viewProj,
+                    let pu2 = PropUniforms(viewProj: viewProjRel,
                                            params: SIMD4<Float>(dayBright, wallClock, gfxFoliage ? 1 : 0, 0),
                                            camPosH: horizonCamH)   // #180 horizon curvature
                     enc.setRenderPipelineState(propPipeline)
@@ -1572,7 +1578,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                       let vbuf = bufs[d.vertex_buffer],
                       let ibuf = bufs[d.index_buffer] else { continue }
                 var u = Uniforms(
-                    viewProj:      viewProj,
+                    viewProj:      viewProjRel,
                     chunkOrigin:   SIMD4<Float>(Float(d.chunk_origin.x), Float(d.chunk_origin.y), Float(d.chunk_origin.z), d.dim_saturation),
                     sunDirTime:    SIMD4<Float>(sun.x, sun.y, sun.z, frame.camera.time_of_day),
                     lightViewProj: matrix_identity_float4x4,
@@ -2596,6 +2602,17 @@ final class Renderer: NSObject, MTKViewDelegate {
     }
 
     // MARK: Matrix helpers
+
+    // Builds a view-projection that accepts camera-relative positions without ever
+    // multiplying/cancelling the absolute view translation. Shader callers subtract
+    // the camera from the large object origin BEFORE adding fine local geometry;
+    // subtracting after assembly has already lost the precision (#192/#286).
+    static func cameraRelativeViewProj(projection: simd_float4x4,
+                                       view: simd_float4x4) -> simd_float4x4 {
+        var rotationOnlyView = view
+        rotationOnlyView.columns.3 = SIMD4<Float>(0, 0, 0, 1)
+        return projection * rotationOnlyView
+    }
 
     // bf_mat4 (column-major float[16]) -> simd_float4x4
     static func mat(_ m: bf_mat4) -> simd_float4x4 {

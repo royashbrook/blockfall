@@ -908,7 +908,13 @@ extension Renderer {
         // #230: terrain samples the drop from the chunk's bilinear corner patch
         // (see horizonDropAt) so long greedy edges and their t-vertices agree
         // exactly — no more hairline cracks for the cel ink to ink (#219).
-        float3 bent = swayedWorld;
+        // #286 camera-relative projection: subtract the large torus-scale camera
+        // from the integer chunk origin BEFORE adding local/sub-block detail.
+        // `swayedWorld - camera` is not equivalent: that absolute addition has
+        // already quantised the 1/16 geometry at ~32K. Keep swayedWorld absolute
+        // for world-fixed fragment effects, but rasterize this precise relative copy.
+        float3 bent = (u.chunkOrigin.xyz - wu.camPosH.xyz)
+                    + float3(x, y, z) + float3(sway.x, 0.0, sway.y);
         {
             float2 c0  = u.chunkOrigin.xz;
             float2 cam = wu.camPosH.xz;
@@ -3561,10 +3567,16 @@ extension Renderer {
             float sway = sin(t * 1.6 + ph) + 0.35 * sin(t * 3.1 + ph * 1.7);
             lp.x += sway * max(0.0, lp.y - 0.05) * 0.22;   // height-rooted bend
         }
-        float3 world = float3(inst.position) + lp;
-        // #180 horizon curvature: props/trees must bend with the terrain or distant
-        // canopies float above the sunken ground.
-        o.position = u.viewProj * float4(horizonBend(world, u.camPosH), 1.0);
+        // #286 camera-relative projection. Remove the ~32K instance origin before
+        // adding fine model detail, otherwise camera yaw re-quantises small berries,
+        // branches and overlapping prop parts. Horizon curvature uses the same
+        // camera-relative delta; absolute instance coordinates above still drive
+        // stable wind and colour hashes.
+        float3 bentRel = (float3(inst.position) - u.camPosH.xyz) + lp;
+        float2 hd = bentRel.xz;
+        hd -= BF_HORIZON_PERIOD * rint(hd / BF_HORIZON_PERIOD);
+        bentRel.y -= BF_HORIZON_K * u.camPosH.w * min(dot(hd, hd), BF_HORIZON_D2CAP);
+        o.position = u.viewProj * float4(bentRel, 1.0);
         // Leaf spheres overlap to form one canopy. Keep only the magnitude of the
         // analytic vertical normal: camera yaw cannot change it, and abs keeps two
         // vertically overlapping shells close in tone. This restores soft lobe

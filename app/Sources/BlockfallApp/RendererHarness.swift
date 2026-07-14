@@ -865,6 +865,39 @@ func runWashoutTest() -> Bool {
 
 func runHeadlessSelfTest() -> Bool {
     guard bf_abi_version() == BF_ABI_VERSION else { return false }
+    // #286: prove why composed geometry must remove the camera before adding its
+    // fine local parts. Near the torus seam, absolute assembly loses ~0.001 block
+    // from offsets used by berries, branches and furnishings; the relative path
+    // preserves them across camera rotations. Shader-source guards keep both the
+    // terrain and GPU-prop implementations on that operation ordering.
+    let seamCamera = SIMD3<Float>(32344, 11, 31788)
+    let finePart = SIMD3<Float>(0.0053, 0.0071, 0.0097)
+    var relativeWorst: Float = 0
+    var absoluteBest = Float.greatestFiniteMagnitude
+    for yaw in [Float(0.17), 0.61, 1.19] {
+        let c = cos(yaw), s = sin(yaw)
+        var view = matrix_identity_float4x4
+        view.columns.0 = SIMD4<Float>(c, 0, -s, 0)
+        view.columns.2 = SIMD4<Float>(s, 0,  c, 0)
+        let cameraT = view * SIMD4<Float>(-seamCamera.x, -seamCamera.y, -seamCamera.z, 1)
+        view.columns.3 = cameraT
+        let relativeVP = Renderer.cameraRelativeViewProj(projection: matrix_identity_float4x4,
+                                                         view: view)
+        let relativeDelta = relativeVP * SIMD4<Float>(finePart.x, finePart.y, finePart.z, 1)
+                          - relativeVP * SIMD4<Float>(0, 0, 0, 1)
+        let absoluteDelta = view * SIMD4<Float>(seamCamera.x + finePart.x,
+                                                seamCamera.y + finePart.y,
+                                                seamCamera.z + finePart.z, 1)
+                          - view * SIMD4<Float>(seamCamera.x, seamCamera.y, seamCamera.z, 1)
+        let expected = view * SIMD4<Float>(finePart.x, finePart.y, finePart.z, 0)
+        relativeWorst = max(relativeWorst, simd_length(relativeDelta - expected))
+        absoluteBest = min(absoluteBest, simd_length(absoluteDelta - expected))
+    }
+    guard relativeWorst < 0.00001,
+          absoluteBest > relativeWorst * 10,
+          Renderer.shaderSource.contains("(u.chunkOrigin.xyz - wu.camPosH.xyz)"),
+          Renderer.shaderSource.contains("(float3(inst.position) - u.camPosH.xyz) + lp")
+    else { return false }
     // Static world props are uploaded through a three-frame ring. Reusing one shared
     // buffer lets the CPU overwrite instances while an older GPU frame still reads it.
     guard Renderer.propInstanceBufferRingSize == 3,
@@ -935,6 +968,6 @@ func runHeadlessSelfTest() -> Bool {
         if frame.hud.health != 20.0 { return false }
         bf_frame_end(e)
     }
-    print("OK: swift<->c++ self-test (5 frames, hud populated; canopy shells stable)")
+    print("OK: swift<->c++ self-test (5 frames; seam-scale sub-block projection stable)")
     return true
 }
