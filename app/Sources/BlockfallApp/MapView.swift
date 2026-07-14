@@ -206,14 +206,10 @@ final class MapView: NSView {
 
         // The planet: explored parchment / unexplored dark, player centred.
         if let img = mapImage {
-            ctx.saveGState()
             ctx.interpolationQuality = .none
-            // CGImage row 0 (north) draws at the TOP of the rect in this
-            // unflipped view when we flip the CTM around the rect's centre.
-            ctx.translateBy(x: 0, y: r.midY * 2)
-            ctx.scaleBy(x: 1, y: -1)
+            // buildMapImage already writes north into the first image rows;
+            // CGContext draws those at the top of this unflipped view.
             ctx.draw(img, in: r)
-            ctx.restoreGState()
         } else {
             NSColor(calibratedWhite: 0.1, alpha: 1).setFill()
             ctx.fill(r)
