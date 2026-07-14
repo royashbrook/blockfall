@@ -1294,7 +1294,8 @@ func runCritterGallery(savePath: String) -> Bool {
     ]
     // Two rows so the camera can sit close and the models render large.
     let perRow = motionMode ? kinds.count : (kinds.count + 1) / 2
-    let spacing: Float = 1.7
+    let motionScale = Float(ProcessInfo.processInfo.environment["BF_CRITTER_SCALE"] ?? "") ?? 1.35
+    let spacing: Float = motionMode && motionKind == 3 ? max(1.7, motionScale * 1.7) : 1.7
     var ents: [bf_entity_draw] = []
     var avatarAppearances: [bf_player_appearance] = []
     for (i, k) in kinds.enumerated() {
@@ -1304,7 +1305,8 @@ func runCritterGallery(savePath: String) -> Bool {
         e.yaw = 0.7; e.kind = k; e.sat = 1.0
         // #212: in villager mode, vary height per figure to preview the engine's
         // 0.80..1.16 spread (scaled up for the gallery camera).
-        e.scale = villagerMode ? (1.05 + Float((i * 3 + 1) % 5) * 0.16) : 1.35
+        e.scale = villagerMode ? (1.05 + Float((i * 3 + 1) % 5) * 0.16)
+            : (motionMode ? motionScale : 1.35)
         let c = motionMode ? cols[0]
             : (villagerMode ? villagerCols[i % villagerCols.count] : cols[i % cols.count])
         e.color = bf_vec3(x: c.x, y: c.y, z: c.z)
@@ -1322,9 +1324,11 @@ func runCritterGallery(savePath: String) -> Bool {
     // The Necker's head sits more than four blocks above its feet at gallery
     // scale. Give that one motion strip a taller/wider frame so validation sees
     // the complete connected neck instead of cropping it at the shoulders.
-    let eye = motionMode
-        ? (motionKind == 1 ? SIMD3<Float>(cx, 4.05, 7.8)
+    let motionEye = motionKind == 1 ? SIMD3<Float>(cx, 4.05, 7.8)
+        : (motionKind == 3 ? SIMD3<Float>(cx, 0.80 + motionScale * 0.78,
+                                         3.00 + motionScale * 2.70)
                            : SIMD3<Float>(cx, 2.3, 4.8))
+    let eye = motionMode ? motionEye
         : SIMD3<Float>(cx, 3.0, Float(perRow) * 1.15 + 3)
     let view = EntityRenderer.rotX(0.22) * EntityRenderer.trans(SIMD3(-eye.x, -eye.y, -eye.z))
     let viewProj = proj * view
@@ -1385,6 +1389,10 @@ func runCritterGallery(savePath: String) -> Bool {
         if motionMode && motionKind == 1 {
             assert(totalEntities == 4 && totalParts <= 192 && totalTriangles <= 6_400,
                    "Necker exceeded its 48-part / 1,600-triangle budget")
+        }
+        if motionMode && motionKind == 3 {
+            assert(totalEntities == 4 && totalParts <= 176 && totalTriangles <= 7_200,
+                   "Ramlord exceeded its 44-part / 1,800-triangle budget")
         }
         print("critter metrics: entities=\(totalEntities) body_parts=\(totalParts) triangles=\(totalTriangles)")
         enc.endEncoding()
