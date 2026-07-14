@@ -1649,8 +1649,9 @@ fn emit_artisan_workstation(
         (9, 14, 8, 11, 9, 14, 10),
         (2, 8, 8, 9, 11, 12, 53),
         (3, 7, 10, 12, 3, 6, 53),
-        (5, 7, 8, 11, 5, 11, 4),
-        (3, 8, 8, 9, 7, 11, 14),
+        (5, 7, 8, 11, 6, 11, 4),
+        (3, 5, 8, 9, 7, 11, 14),
+        (7, 8, 8, 9, 7, 11, 14),
     ];
     const BLACKSMITH: &[WorkstationPiece] = &[
         (7, 15, 0, 7, 2, 14, 8),
@@ -1661,7 +1662,7 @@ fn emit_artisan_workstation(
         (10, 12, 8, 9, 6, 8, 15),
         (9, 11, 8, 9, 9, 11, 15),
         (3, 7, 0, 6, 6, 10, 10),
-        (2, 8, 5, 7, 5, 11, 53),
+        (2, 8, 5, 8, 5, 11, 53),
         (3, 7, 7, 9, 6, 10, 53),
         (1, 9, 9, 12, 4, 12, 53),
         (0, 3, 10, 11, 6, 10, 53),
@@ -1672,7 +1673,7 @@ fn emit_artisan_workstation(
         (3, 6, 0, 7, 10, 13, 21),
         (11, 14, 0, 7, 3, 6, 21),
         (11, 14, 0, 7, 10, 13, 21),
-        (3, 14, 3, 5, 3, 13, 4),
+        (4, 13, 3, 5, 4, 12, 4),
         (2, 15, 7, 9, 2, 14, 4),
         (4, 7, 9, 13, 4, 7, 14),
         (10, 13, 9, 12, 9, 12, 14),
@@ -1692,11 +1693,11 @@ fn emit_artisan_workstation(
         (2, 14, 4, 6, 11, 13, 21),
         (2, 15, 7, 10, 5, 11, 4),
         (4, 15, 10, 12, 6, 10, 21),
-        (1, 3, 9, 15, 4, 12, 53),
+        (1, 3, 9, 14, 4, 12, 53),
         (1, 4, 14, 16, 6, 10, 4),
-        (1, 3, 8, 10, 4, 6, 53),
-        (1, 3, 8, 10, 7, 9, 53),
-        (1, 3, 8, 10, 10, 12, 53),
+        (1, 3, 8, 9, 4, 6, 53),
+        (1, 3, 8, 9, 7, 9, 53),
+        (1, 3, 8, 9, 10, 12, 53),
         (9, 14, 12, 13, 4, 6, 53),
     ];
 
@@ -3274,7 +3275,7 @@ mod tests {
     #[test]
     fn artisan_workstations_have_distinct_finished_material_silhouettes_and_safe_caps() {
         let cases: &[(BlockId, u32, &[BlockId])] = &[
-            (MASON_BENCH, 11, &[3, 4, 8, 10, 14, 53]),
+            (MASON_BENCH, 12, &[3, 4, 8, 10, 14, 53]),
             (BLACKSMITH_FORGE, 13, &[7, 8, 10, 15, 53]),
             (HERBALIST_TABLE, 14, &[4, 5, 14, 21, 36, 37]),
             (BUILDER_SAWBENCH, 14, &[4, 21, 53]),
@@ -3291,6 +3292,7 @@ mod tests {
 
             let (res, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
             let verts = decode_position_and_mat(&vtx);
+            assert_no_different_material_coplanar_faces(id, &vtx);
             assert_eq!(res.index_count, cuboids * 36, "station {id} cuboid budget");
             assert_eq!(res.vertex_bytes, cuboids * 24 * VERTEX_SIZE as u32);
             assert!(
@@ -3552,6 +3554,64 @@ mod tests {
             out.push((normal, mat));
         }
         out
+    }
+
+    // Closed cuboid parts may touch, but two different materials must never own
+    // the same outward plane and area: equal-depth fragments flash as the view turns.
+    fn assert_no_different_material_coplanar_faces(id: BlockId, vtx: &[u8]) {
+        let positions = decode_position_and_mat(vtx);
+        let normals = decode_normal_and_mat(vtx);
+        let faces: Vec<_> = positions
+            .chunks_exact(4)
+            .zip(normals.chunks_exact(4))
+            .map(|(positions, normals)| {
+                let normal = normals[0].0;
+                let material = positions[0].1;
+                assert!(normal <= BF_NZ_NEG);
+                assert!(normals.iter().all(|&(n, m)| n == normal && m == material));
+                let axis = (normal / 2) as usize;
+                assert!(positions
+                    .iter()
+                    .all(|&(p, m)| m == material && p[axis] == positions[0].0[axis]));
+                let tangents = match axis {
+                    0 => [1, 2],
+                    1 => [0, 2],
+                    2 => [0, 1],
+                    _ => unreachable!(),
+                };
+                let extent = |axis: usize| {
+                    positions
+                        .iter()
+                        .map(|(p, _)| p[axis])
+                        .fold((f32::MAX, f32::MIN), |(lo, hi), value| {
+                            (lo.min(value), hi.max(value))
+                        })
+                };
+                (
+                    normal,
+                    material,
+                    positions[0].0[axis],
+                    extent(tangents[0]),
+                    extent(tangents[1]),
+                )
+            })
+            .collect();
+
+        for (index, a) in faces.iter().enumerate() {
+            for b in &faces[index + 1..] {
+                let (a_normal, a_material, a_plane, a_u, a_v) = a;
+                let (b_normal, b_material, b_plane, b_u, b_v) = b;
+                if a_normal != b_normal || a_material == b_material || a_plane != b_plane {
+                    continue;
+                }
+                let overlaps =
+                    a_u.0 < b_u.1 && b_u.0 < a_u.1 && a_v.0 < b_v.1 && b_v.0 < a_v.1;
+                assert!(
+                    !overlaps,
+                    "station {id} has different-material coplanar faces: {a:?} vs {b:?}"
+                );
+            }
+        }
     }
 
     #[test]
