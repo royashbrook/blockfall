@@ -1748,14 +1748,14 @@ fn emit_social_prop(
         (3, 11, 9, 10, 4, 12, 28),
     ];
     const BROOM: &[WorkstationPiece] = &[
-        (4, 12, 0, 2, 4, 12, 4),
+        (6, 12, 0, 2, 4, 12, 4),
         (11, 14, 2, 16, 6, 10, 21),
-        (7, 14, 13, 16, 4, 12, 4),
+        (8, 11, 13, 16, 4, 12, 4),
         (5, 8, 11, 14, 4, 6, 53),
         (5, 8, 11, 14, 10, 12, 53),
         (3, 5, 2, 7, 7, 9, 21),
-        (4, 6, 6, 11, 7, 9, 21),
-        (5, 7, 10, 15, 7, 9, 21),
+        (4, 6, 7, 11, 7, 9, 21),
+        (5, 7, 11, 15, 7, 9, 21),
         (1, 6, 0, 3, 5, 11, 6),
         (2, 6, 3, 5, 6, 10, 6),
         (7, 11, 2, 5, 2, 5, 14),
@@ -3349,9 +3349,7 @@ mod tests {
             ch.set(8, 8, 8, id);
             store.chunks.insert(ChunkCoord::default(), ch);
             let (res, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
-            if id == COMMUNAL_BENCH {
-                assert_no_different_material_coplanar_faces(id, &vtx);
-            }
+            assert_no_different_material_coplanar_faces(id, &vtx);
             let verts = decode_position_and_mat(&vtx);
             assert_eq!(res.index_count, cuboids * 36);
             assert_eq!(res.vertex_bytes, cuboids * 24 * VERTEX_SIZE as u32);
