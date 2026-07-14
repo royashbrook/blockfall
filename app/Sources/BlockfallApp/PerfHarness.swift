@@ -1319,7 +1319,12 @@ func runCritterGallery(savePath: String) -> Bool {
     }
     let cx = Float(perRow - 1) * spacing * 0.5
     let proj = Renderer.perspective(fovy: 0.62, aspect: Float(W) / Float(H), near: 0.05, far: 300)
-    let eye = motionMode ? SIMD3<Float>(cx, 2.3, 4.8)
+    // The Necker's head sits more than four blocks above its feet at gallery
+    // scale. Give that one motion strip a taller/wider frame so validation sees
+    // the complete connected neck instead of cropping it at the shoulders.
+    let eye = motionMode
+        ? (motionKind == 1 ? SIMD3<Float>(cx, 4.05, 7.8)
+                           : SIMD3<Float>(cx, 2.3, 4.8))
         : SIMD3<Float>(cx, 3.0, Float(perRow) * 1.15 + 3)
     let view = EntityRenderer.rotX(0.22) * EntityRenderer.trans(SIMD3(-eye.x, -eye.y, -eye.z))
     let viewProj = proj * view
@@ -1376,6 +1381,10 @@ func runCritterGallery(savePath: String) -> Bool {
         if motionMode && motionKind == 27 {
             assert(totalEntities == 4 && totalParts == 128 && totalTriangles <= 2_600,
                    "merchant cart exceeded its 32-part / 650-triangle budget")
+        }
+        if motionMode && motionKind == 1 {
+            assert(totalEntities == 4 && totalParts <= 192 && totalTriangles <= 6_400,
+                   "Necker exceeded its 48-part / 1,600-triangle budget")
         }
         print("critter metrics: entities=\(totalEntities) body_parts=\(totalParts) triangles=\(totalTriangles)")
         enc.endEncoding()

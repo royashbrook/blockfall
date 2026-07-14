@@ -426,9 +426,9 @@ extension EntityRenderer {
     //   legCol   = base * 0.80 (slightly darker than body)
     //   ankleCol = same as patchCol (dark bands)
     //
-    // Parts: legs(4) ankle-bands(4) body(1) belly-underside(1) body-spots(4)
-    //        neck(1) neck-spots(2) head(1) muzzle(1) nostrils(2) eyes(2) lashes(2)
-    //        ossicones(2) tail-shaft(1) tail-tuft(1) = 31 parts
+    // Parts: tubular leg sections(8) knees(4) feet(4) body(1) belly(1)
+    //        body-spots(4) neck sections(3) neck joints(2) head(1) muzzle(1)
+    //        nostrils(2) eyes(2) lashes(2) ossicones(2) tail(2) = 43 parts
     // =========================================================================
     func drawKind1(enc: MTLRenderCommandEncoder,
                            viewProj: simd_float4x4,
@@ -463,18 +463,23 @@ extension EntityRenderer {
         let eyeCol    = SIMD3<Float>(0.05, 0.03, 0.02)   // warm dark brown
         let lashCol   = SIMD3<Float>(0.06, 0.04, 0.03)
 
-        let blinkPhase  = phase + hash * 3.8
-        let breathPhase = phase * 0.38 + hash * 2.1
-        let tailPhase   = phase + hash * 1.8
-
-        let walkSpeed: Float = 1.9
-        let legSwing  = sin(phase * walkSpeed) * 0.34
-        // Neck sways gently side to side — very visible at this length
-        let neckWave  = phase * walkSpeed * 0.80
-        let neckSway  = sin(neckWave + 0.5) * s * 0.08
+        // Idle life stays independent from locomotion so a planted Necker still
+        // blinks, breathes, and swishes its tail. Locomotion samples the same
+        // authored contact/down/pass/up clip as villagers; only its amplitudes
+        // change for this long-legged quadruped.
+        let blinkPhase  = curAmbientPhase + hash * 3.8
+        let breathPhase = curAmbientPhase * 0.38 + hash * 2.1
+        let tailPhase   = curAmbientPhase + hash * 1.8
+        let walk = villagerWalkPose(phase)
+        let walkAmt = min(1.0, curGaitSpeed / 1.2)
+        let neckWave = phase * 1.52
+        let idleNeckSway = sin(curAmbientPhase * 0.62 + hash * 2.0) * s * 0.025
+        let neckSway = idleNeckSway
+            + sin(neckWave + 0.5) * s * 0.10 * walkAmt
         // The head trails the long neck by a fraction of a beat instead of
         // moving as one rigid tower.
-        let headSway  = neckSway + sin(neckWave + 0.18) * s * 0.025
+        let headSway = neckSway
+            + sin(neckWave + 0.18) * s * 0.035 * walkAmt
 
         let breatheY   = breatheYOffset(breathPhase, scale: s)
         let eyeBlinkSY = blinkScale(blinkPhase)
@@ -483,35 +488,54 @@ extension EntityRenderer {
         // ---- PROPORTIONS ---- (tall tower silhouette)
         // Body: compact barrel
         let bW = s * 0.58;  let bH = s * 0.60;  let bD = s * 0.70
-        // Legs: VERY long thin stilts — THE visual key
-        let legW = s * 0.11; let legH = s * 1.00; let legD = s * 0.11
-        let ankW = s * 0.17; let ankH = s * 0.10; let ankD = s * 0.17
+        // Legs: long two-section hoses. The knee/foot spheres overlap their
+        // neighbours, so the silhouette stays continuous throughout the gait.
+        let legW = s * 0.11
+        let upperLegH = s * 0.52; let lowerLegH = s * 0.48
+        let kneeS = s * 0.14
+        let footW = s * 0.17; let footH = s * 0.11; let footD = s * 0.22
         // Neck: VERY long and THIN — unmistakable
-        let neckW = s * 0.15; let neckH = s * 1.50; let neckD = s * 0.15
+        let neckH = s * 1.50
         // Head: tiny at top of neck
         let hW = s * 0.28; let hH = s * 0.24; let hD = s * 0.32
         // Ossicones: stubby horn knobs
         let ossW = s * 0.06; let ossH = s * 0.18; let ossD = s * 0.06
 
+        let cartoonLift = walk.lift * s * 0.45 * walkAmt
+        let stepSquash = walk.squash * 0.55 * walkAmt
         let groundY = pos.y
-        let bodyY   = groundY + legH + bH * 0.5 + breatheY
+        let bodyY   = groundY + upperLegH + lowerLegH + bH * 0.5
+            + breatheY + cartoonLift
         let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
-        let R       = squashRig(Ryaw, squash: squash, footLocalY: groundY - wc.y)
+        let landingShape = SIMD3<Float>(1 + stepSquash * 0.45,
+                                        1 - stepSquash,
+                                        1 + stepSquash * 0.45)
+        let R       = squashRig(Ryaw, squash: squash * landingShape,
+                                footLocalY: groundY - wc.y)
+        let bodyLean = EntityRenderer.rotZ(walk.bodyRoll * 0.60 * walkAmt)
+            * EntityRenderer.rotX(walk.bodyPitch * 0.45 * walkAmt)
+        let rig = R * bodyLean
 
         func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * rig * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
+        func legPW(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
         }
-        func lw(_ hip: SIMD3<Float>, _ ang: Float) -> simd_float4x4 {
-            EntityRenderer.trans(wc) * R * EntityRenderer.trans(hip)
-                * EntityRenderer.rotX(ang)
-                * EntityRenderer.trans(SIMD3(0, -legH * 0.5, 0))
-                * EntityRenderer.scaleM(SIMD3(legW, legH, legD))
-        }
-        func aw(_ hip: SIMD3<Float>, _ ang: Float) -> simd_float4x4 {
-            EntityRenderer.trans(wc) * R * EntityRenderer.trans(hip)
-                * EntityRenderer.rotX(ang)
-                * EntityRenderer.trans(SIMD3(0, -legH + ankH * 0.55, 0))
-                * EntityRenderer.scaleM(SIMD3(ankW, ankH, ankD))
+        func legPoints(_ hip: SIMD3<Float>, _ legPose: Float,
+                       _ anklePose: Float) -> (SIMD3<Float>, SIMD3<Float>) {
+            let upperAng = legPose * 0.48 * walkAmt
+            let lowerAng = upperAng + anklePose * 0.72 * walkAmt
+            let stepLift = max(0, anklePose) * s * 0.20 * walkAmt
+            var knee = hip + SIMD3<Float>(0,
+                                          -cos(upperAng) * upperLegH,
+                                           sin(upperAng) * upperLegH)
+            knee.y += stepLift * 0.35
+            var foot = knee + SIMD3<Float>(0,
+                                            -cos(lowerAng) * lowerLegH,
+                                             sin(lowerAng) * lowerLegH)
+            foot.y += stepLift
+            return (knee, foot)
         }
 
         let hipY = -bH * 0.5
@@ -520,15 +544,45 @@ extension EntityRenderer {
         let hipBL = SIMD3<Float>(-bW * 0.34, hipY, -bD * 0.32)
         let hipBR = SIMD3<Float>( bW * 0.34, hipY, -bD * 0.32)
 
-        // 4 long stilt legs + dark ankle bands
-        drawCube(enc: enc, viewProj: viewProj, model: lw(hipFL,  legSwing), rgb: legCol,   sat: sat, shape: .cylinder)
-        drawCube(enc: enc, viewProj: viewProj, model: lw(hipFR, -legSwing), rgb: legCol,   sat: sat, shape: .cylinder)
-        drawCube(enc: enc, viewProj: viewProj, model: lw(hipBL, -legSwing), rgb: legCol,   sat: sat, shape: .cylinder)
-        drawCube(enc: enc, viewProj: viewProj, model: lw(hipBR,  legSwing), rgb: legCol,   sat: sat, shape: .cylinder)
-        drawCube(enc: enc, viewProj: viewProj, model: aw(hipFL,  legSwing), rgb: ankleCol, sat: sat, shape: .cylinder)
-        drawCube(enc: enc, viewProj: viewProj, model: aw(hipFR, -legSwing), rgb: ankleCol, sat: sat, shape: .cylinder)
-        drawCube(enc: enc, viewProj: viewProj, model: aw(hipBL, -legSwing), rgb: ankleCol, sat: sat, shape: .cylinder)
-        drawCube(enc: enc, viewProj: viewProj, model: aw(hipBR,  legSwing), rgb: ankleCol, sat: sat, shape: .cylinder)
+        // Opposite diagonal pairs share contact phases, giving the tall body a
+        // stable, cartoony four-beat walk instead of four scissoring rods.
+        let legPoses: [(SIMD3<Float>, Float, Float)] = [
+            (hipFL, walk.legL, walk.ankleL),
+            (hipFR, walk.legR, walk.ankleR),
+            (hipBL, walk.legR, walk.ankleR),
+            (hipBR, walk.legL, walk.ankleL),
+        ]
+        let rawLegs = legPoses.map { hip, legPose, anklePose in
+            let (knee, foot) = legPoints(hip, legPose, anklePose)
+            return (hip, knee, foot)
+        }
+        // Stretch the whole hose chain just enough for the lowest diagonal pair
+        // to plant. The body keeps its authored bounce while the swing pair stays
+        // relatively lifted; using R (without body lean) keeps contact stable.
+        let targetFootY = groundY - wc.y
+        let stanceExtension = max(0, (rawLegs.map { $0.2.y }.min() ?? targetFootY)
+                                      - targetFootY)
+        for (hip, rawKnee, rawFoot) in rawLegs {
+            var knee = rawKnee
+            var foot = rawFoot
+            knee.y -= stanceExtension * 0.35
+            foot.y -= stanceExtension
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: connectedSegment(wc, R, from: hip, to: knee,
+                                             width: legW, overlap: s * 0.07),
+                     rgb: legCol, sat: sat, shape: .cylinder)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: connectedSegment(wc, R, from: knee, to: foot,
+                                             width: legW * 0.90, overlap: s * 0.07),
+                     rgb: legCol, sat: sat, shape: .cylinder)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: legPW(knee, SIMD3(repeating: kneeS)),
+                     rgb: legCol, sat: sat, shape: .sphere)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: legPW(foot + SIMD3<Float>(0, footH * 0.45, s * 0.025),
+                                  SIMD3(footW, footH, footD)),
+                     rgb: ankleCol, sat: sat, shape: .sphere)
+        }
 
         // Body — compact barrel, amber-tan
         drawCube(enc: enc, viewProj: viewProj,
@@ -552,83 +606,97 @@ extension EntityRenderer {
                  model: pw(SIMD3(-bW*0.40, bH*0.22,  bD*0.34), SIMD3(s*0.06, s*0.16, s*0.18)),
                  rgb: patchCol, sat: sat)
 
-        // ---- NECK — very long, very thin, key silhouette mast ----
-        let neckBaseY = bH * 0.48
-        let neckFwdZ  = bD * 0.22
-        let neckTilt  = EntityRenderer.rotX(-0.16)   // slight forward lean
-        let neckModel = EntityRenderer.trans(wc) * R
-            * EntityRenderer.trans(SIMD3(neckSway, neckBaseY, neckFwdZ))
-            * neckTilt
-            * EntityRenderer.trans(SIMD3(0, neckH * 0.5, 0))
-            * EntityRenderer.scaleM(SIMD3(neckW, neckH, neckD))
-        drawCube(enc: enc, viewProj: viewProj, model: neckModel, rgb: baseCol, sat: sat,
-                 shape: .cylinder)
+        // ---- NECK — a continuous tapered hose, not a separately translated rod.
+        // Explicit endpoints remove the old tilt-sign mismatch that placed the
+        // head on the opposite side of the neck's actual top.
+        let neckBase = SIMD3<Float>(0, bH * 0.40, bD * 0.18)
+        let neckPoints = [
+            neckBase,
+            SIMD3<Float>(neckSway * 0.24, neckBase.y + neckH * 0.34,
+                         neckBase.z + s * 0.04),
+            SIMD3<Float>(neckSway * 0.64, neckBase.y + neckH * 0.68,
+                         neckBase.z + s * 0.12),
+            SIMD3<Float>(headSway, neckBase.y + neckH,
+                         neckBase.z + s * 0.24),
+        ]
+        let neckWidths = [s * 0.18, s * 0.155, s * 0.13]
+        for index in 0..<(neckPoints.count - 1) {
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: connectedSegment(wc, rig,
+                                             from: neckPoints[index], to: neckPoints[index + 1],
+                                             width: neckWidths[index], overlap: s * 0.09),
+                     rgb: baseCol, sat: sat, shape: .cylinder)
+            if index < 2 {
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: pw(neckPoints[index + 1],
+                                   SIMD3(repeating: neckWidths[index] * 1.14)),
+                         rgb: patchCol, sat: sat, shape: .sphere)
+            }
+        }
 
-        // Neck spots — two dark patch blocks along the neck at ~1/3 and ~2/3 height
-        let neckSpot1 = EntityRenderer.trans(wc) * R
-            * EntityRenderer.trans(SIMD3(neckSway + neckW*0.5, neckBaseY + neckH*0.30, neckFwdZ))
-            * neckTilt
-            * EntityRenderer.scaleM(SIMD3(s*0.04, s*0.20, neckD*1.10))
-        let neckSpot2 = EntityRenderer.trans(wc) * R
-            * EntityRenderer.trans(SIMD3(neckSway - neckW*0.5, neckBaseY + neckH*0.62, neckFwdZ))
-            * neckTilt
-            * EntityRenderer.scaleM(SIMD3(s*0.04, s*0.16, neckD*1.10))
-        drawCube(enc: enc, viewProj: viewProj, model: neckSpot1, rgb: patchCol, sat: sat)
-        drawCube(enc: enc, viewProj: viewProj, model: neckSpot2, rgb: patchCol, sat: sat)
-
-        // ---- HEAD — tiny, at top of neck ----
-        let neckTopLY  = neckBaseY + cos(-0.16) * neckH
-        let neckTopLZ  = neckFwdZ  + sin( 0.16) * neckH
-        let headY      = neckTopLY + hH * 0.42
-        let headZ      = neckTopLZ + hD * 0.18
+        // ---- HEAD — a true child of the neck tip with delayed roll/nod. Every
+        // facial feature uses the same local transform, so nothing separates as
+        // the head follows through.
+        let headCenter = neckPoints[3] + SIMD3<Float>(0, hH * 0.28, hD * 0.05)
+        let headMotion = EntityRenderer.rotZ(walk.headRoll * 0.72 * walkAmt
+                                              + sin(curAmbientPhase * 0.55 + hash) * 0.025)
+            * EntityRenderer.rotX(walk.headPitch * 0.65 * walkAmt)
+        func hpw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
+            EntityRenderer.trans(wc) * rig
+                * EntityRenderer.trans(headCenter) * headMotion
+                * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
+        }
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(headSway, headY, headZ), SIMD3(hW, hH, hD)),
+                 model: hpw(.zero, SIMD3(hW, hH, hD)),
                  rgb: baseCol, sat: sat, shape: .sphere)
 
-        // Long narrow muzzle — paler cream, extends forward
-        let snoutZ    = headZ + hD * 0.50 + s * 0.14
+        // Long narrow muzzle — paler cream, extends forward.
+        let snoutZ = hD * 0.50 + s * 0.14
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(headSway, headY - hH*0.08, snoutZ),
-                           SIMD3(hW*0.60, hH*0.62, s*0.30)),
+                 model: hpw(SIMD3(0, -hH * 0.08, snoutZ),
+                            SIMD3(hW * 0.60, hH * 0.62, s * 0.30)),
                  rgb: muzzleCol, sat: sat, shape: .sphere)
-        // Nostrils — two dark dots at muzzle tip
-        let nostCol = patchCol
-        let nostZ   = snoutZ + s * 0.16
+        // Nostrils — two dark dots at muzzle tip.
+        let nostZ = snoutZ + s * 0.16
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(headSway - hW*0.14, headY - hH*0.12, nostZ), SIMD3(s*0.04, s*0.04, s*0.03)),
-                 rgb: nostCol, sat: sat)
+                 model: hpw(SIMD3(-hW * 0.14, -hH * 0.12, nostZ),
+                            SIMD3(s * 0.04, s * 0.04, s * 0.03)),
+                 rgb: patchCol, sat: sat)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(headSway + hW*0.14, headY - hH*0.12, nostZ), SIMD3(s*0.04, s*0.04, s*0.03)),
-                 rgb: nostCol, sat: sat)
+                 model: hpw(SIMD3(hW * 0.14, -hH * 0.12, nostZ),
+                            SIMD3(s * 0.04, s * 0.04, s * 0.03)),
+                 rgb: patchCol, sat: sat)
 
-        // Gentle front-facing eyes — wide-set on the small head, cream sclera
-        let gfFaceZ  = headZ + hD * 0.46
+        // Gentle front-facing eyes — wide-set on the small head, cream sclera.
+        let gfFaceZ = hD * 0.46
         let geW = s * 0.08; let geH = s * 0.10 * eyeBlinkSY; let geD = s * 0.05
-        let geY = headY + hH * 0.16
-        drawEye(enc: enc, viewProj: viewProj, pw: pw,
-                c: SIMD3(headSway - hW*0.30, geY, gfFaceZ), r: SIMD3(geW, geH, geD),
+        let geY = hH * 0.16
+        drawEye(enc: enc, viewProj: viewProj, pw: hpw,
+                c: SIMD3(-hW * 0.30, geY, gfFaceZ), r: SIMD3(geW, geH, geD),
                 sat: sat, scleraCol: SIMD3(0.95, 0.92, 0.86), pupilCol: eyeCol,
                 shape: .sphere)
-        drawEye(enc: enc, viewProj: viewProj, pw: pw,
-                c: SIMD3(headSway + hW*0.30, geY, gfFaceZ), r: SIMD3(geW, geH, geD),
+        drawEye(enc: enc, viewProj: viewProj, pw: hpw,
+                c: SIMD3(hW * 0.30, geY, gfFaceZ), r: SIMD3(geW, geH, geD),
                 sat: sat, scleraCol: SIMD3(0.95, 0.92, 0.86), pupilCol: eyeCol,
                 shape: .sphere)
-        // Long eyelashes (giraffe charm)
+        // Long eyelashes (giraffe charm).
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(headSway - hW*0.30, geY + geH*1.25, gfFaceZ), SIMD3(geW*1.6, s*0.02, geD)),
+                 model: hpw(SIMD3(-hW * 0.30, geY + geH * 1.25, gfFaceZ),
+                            SIMD3(geW * 1.6, s * 0.02, geD)),
                  rgb: lashCol, sat: sat)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(headSway + hW*0.30, geY + geH*1.25, gfFaceZ), SIMD3(geW*1.6, s*0.02, geD)),
+                 model: hpw(SIMD3(hW * 0.30, geY + geH * 1.25, gfFaceZ),
+                            SIMD3(geW * 1.6, s * 0.02, geD)),
                  rgb: lashCol, sat: sat)
 
-        // Ossicones — two stubby horn-knobs on top of head
+        // Ossicones — two stubby horn-knobs on top of head.
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(headSway - hW*0.24, headY + hH*0.50 + ossH*0.5, headZ - hD*0.08),
-                           SIMD3(ossW, ossH, ossD)),
+                 model: hpw(SIMD3(-hW * 0.24, hH * 0.50 + ossH * 0.5, -hD * 0.08),
+                            SIMD3(ossW, ossH, ossD)),
                  rgb: patchCol, sat: sat, shape: .cylinder)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(headSway + hW*0.24, headY + hH*0.50 + ossH*0.5, headZ - hD*0.08),
-                           SIMD3(ossW, ossH, ossD)),
+                 model: hpw(SIMD3(hW * 0.24, hH * 0.50 + ossH * 0.5, -hD * 0.08),
+                            SIMD3(ossW, ossH, ossD)),
                  rgb: patchCol, sat: sat, shape: .cylinder)
 
         // Short tail with tufted dark tip
@@ -636,12 +704,12 @@ extension EntityRenderer {
         let tailTuftW  = s * 0.13; let tailTuftH  = s * 0.14; let tailTuftD  = s * 0.09
         do {
             let tailPivot = SIMD3<Float>(0, bH * 0.30, -bD * 0.48)
-            let shaftModel = EntityRenderer.trans(wc) * R
+            let shaftModel = EntityRenderer.trans(wc) * rig
                 * EntityRenderer.trans(tailPivot)
                 * EntityRenderer.rotY(tailAng)
                 * EntityRenderer.trans(SIMD3(0, -tailShaftH * 0.5, -tailShaftD * 0.5))
                 * EntityRenderer.scaleM(SIMD3(tailShaftW, tailShaftH, tailShaftD))
-            let tuftModel = EntityRenderer.trans(wc) * R
+            let tuftModel = EntityRenderer.trans(wc) * rig
                 * EntityRenderer.trans(tailPivot)
                 * EntityRenderer.rotY(tailAng)
                 * EntityRenderer.trans(SIMD3(0, -tailShaftH - tailTuftH*0.5, -tailShaftD*0.5))
