@@ -187,7 +187,12 @@ impl<'c> World<'c> {
                     .filter(|d| d.disposition == "hostile")
                     // Grey assault roles are composed explicitly at settlements;
                     // they do not dilute environmental night/ruin pools.
-                    .filter(|d| !matches!(d.name.as_str(), "smudgeling" | "hollow"))
+                    .filter(|d| {
+                        !matches!(
+                            d.name.as_str(),
+                            "smudgeling" | "hollow" | "crooked_herald"
+                        )
+                    })
                     .filter(|d| d.biome.is_empty() || d.biome == "any" || d.biome == bk)
                     .cloned()
                     .collect()
@@ -328,14 +333,26 @@ impl<'c> World<'c> {
                 continue;
             }
             let index = self.creatures.len() - 1;
-            let hollow_slots = if tier >= 2 { wanted / 2 } else { 0 };
-            let is_hollow = spawned >= wanted - hollow_slots;
+            let is_herald = tier >= 3 && spawned == wanted - 1;
+            let hollow_slots = if tier >= 2 {
+                (wanted - i32::from(tier >= 3)) / 2
+            } else {
+                0
+            };
+            let is_hollow = !is_herald
+                && spawned >= wanted - i32::from(tier >= 3) - hollow_slots;
             let _ = self.configure_hostile_named(
                 index,
-                if is_hollow { "hollow" } else { "smudgeling" },
+                if is_herald {
+                    "crooked_herald"
+                } else if is_hollow {
+                    "hollow"
+                } else {
+                    "smudgeling"
+                },
             );
             let from = self.creatures[index].pos;
-            let (goal, goal_is_light) = if is_hollow {
+            let (goal, goal_is_light) = if is_hollow || is_herald {
                 let x = Self::wrap_block(ax + 1 + (spawned % 3 - 1));
                 let z = Self::wrap_block(az + Self::PALISADE_R);
                 let y = worldgen::worldgen_surface_height(x, z, self.seed) + 1;
@@ -349,9 +366,18 @@ impl<'c> World<'c> {
             c.home_z = anchor.1;
             c.assault_goal = goal;
             c.assault_goal_is_light = goal_is_light;
-            c.scale = if is_hollow { 1.05 } else { 0.68 };
+            c.scale = if is_herald {
+                1.05
+            } else if is_hollow {
+                1.05
+            } else {
+                0.68
+            };
             if is_hollow {
                 c.hp += i32::from(tier.saturating_sub(2)) * 2;
+            }
+            if is_herald {
+                c.uncanny_cycle = (spawned as f32 * 0.37) % 2.4;
             }
             c.atk_cd = 0.8 + spawned as f32 * 0.25;
             spawned += 1;
@@ -370,6 +396,9 @@ impl<'c> World<'c> {
             self.toast(&format!(
                 "Night assault! {spawned} attackers approach the {place}.{ward}"
             ));
+            if tier >= 3 {
+                self.toast("A Crooked Herald conducts the Grey beyond the lights.");
+            }
         }
         spawned
     }

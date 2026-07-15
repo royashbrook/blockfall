@@ -3563,6 +3563,29 @@ fn prepared_settlement_defense(tier: u8) -> (World<'static>, i32, i32, f32) {
     (w, ax, az, surf)
 }
 
+fn flat_grey_defense(tier: u8) -> (World<'static>, i32, i32) {
+    let content: &'static ContentRegistry = {
+        let mut c = ContentRegistry::new();
+        assert!(c.load(CONTENT));
+        Box::leak(Box::new(c))
+    };
+    let extra: &'static ContentExtra = {
+        let mut x = ContentExtra::new();
+        assert!(x.load(CONTENT));
+        Box::leak(Box::new(x))
+    };
+    let mut w = World::new(None);
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_content(content);
+    w.set_extra(extra);
+    w.generate_test_world();
+    w.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    w.debug_set_village_tier(8, 8, tier);
+    w.debug_set_camera(8.5, 9.7, 8.5, 0.0, 0.0);
+    (w, 8, 8)
+}
+
 #[test]
 fn settlement_guards_scale_and_civilians_seek_safety() {
     // A new village fields one slow woodcutter militia member. The first ward
@@ -3800,6 +3823,130 @@ fn guards_scale_against_hollow_foot_soldiers() {
     );
     city.debug_update_creatures(0.05);
     assert_eq!(city.debug_count_named("hollow"), 0, "city ward volley clears a 10hp Hollow");
+}
+
+#[test]
+fn city_wave_has_one_herald_and_its_troops_move_as_a_coordinated_aura() {
+    let (mut wave, ax, az, _surf) = prepared_settlement_defense(3);
+    wave.debug_clear_creatures();
+    let spawned = wave.debug_spawn_settlement_assault(ax, az, 3);
+    assert_eq!(spawned, 5, "normal city wave remains bounded");
+    assert_eq!(wave.debug_count_named("smudgeling"), 2);
+    assert_eq!(wave.debug_count_named("hollow"), 2);
+    assert_eq!(wave.debug_count_named("crooked_herald"), 1);
+
+    let run = |with_herald: bool| {
+        let (mut w, hx, hz) = flat_grey_defense(3);
+        let hollow_x = 18.5;
+        let hollow_z = 8.5;
+        let hollow = w.debug_spawn_hollow_at(
+            hx,
+            hz,
+            hollow_x,
+            8.0,
+            hollow_z,
+        );
+        if with_herald {
+            w.debug_spawn_crooked_herald_at(
+                hx,
+                hz,
+                hollow_x,
+                8.0,
+                15.5,
+            );
+        }
+        let start = w.debug_creature_pos(hollow);
+        for _ in 0..20 {
+            w.debug_update_creatures(0.05);
+        }
+        let end = w.debug_creature_pos(hollow);
+        (end.0 - start.0).hypot(end.2 - start.2)
+    };
+    let alone = run(false);
+    let conducted = run(true);
+    assert!(
+        conducted > alone * 1.08,
+        "nearby Herald strengthens troop approach speed ({alone} -> {conducted})"
+    );
+}
+
+#[test]
+fn crooked_herald_holds_then_lunges_but_fears_a_completed_ward() {
+    let (mut stalk, ax, az) = flat_grey_defense(3);
+    let stalk_x = 9.5;
+    let stalk_z = 19.5;
+    let herald = stalk.debug_spawn_crooked_herald_at(
+        ax,
+        az,
+        stalk_x,
+        8.0,
+        stalk_z,
+    );
+    let start = stalk.debug_creature_pos(herald);
+    for _ in 0..9 {
+        stalk.debug_update_creatures(0.05);
+    }
+    let held = stalk.debug_creature_pos(herald);
+    assert!(
+        (held.0 - start.0).hypot(held.2 - start.2) < 0.03,
+        "readable tell is a true movement hold"
+    );
+    assert_eq!(stalk.debug_creature_motion_speed(herald), 0.0);
+    for _ in 0..12 {
+        stalk.debug_update_creatures(0.05);
+    }
+    assert!(
+        stalk.debug_creature_motion_speed(herald) > 0.5,
+        "hold breaks into a sudden elastic locomotion clip"
+    );
+
+    let (mut ward, wx, wz) = flat_grey_defense(3);
+    ward.debug_set_village_lights(wx, wz, 8);
+    let ward_x = 19.5;
+    let ward_z = 8.5;
+    let afraid = ward.debug_spawn_crooked_herald_at(
+        wx,
+        wz,
+        ward_x,
+        8.0,
+        ward_z,
+    );
+    let before = ward.debug_creature_pos(afraid).0;
+    for _ in 0..20 {
+        ward.debug_update_creatures(0.05);
+    }
+    assert!(ward.debug_creature_pos(afraid).0 > before, "lit ward drives the Herald back");
+    let mut frame = empty_frame();
+    let mut draws = Vec::new();
+    let mut shadows = Vec::new();
+    let mut props = Vec::new();
+    ward.build_frame(&mut frame, &mut draws, &mut shadows, &mut props, 0.0);
+    assert!(
+        ward.entity_role_actions().iter().any(|a| a.action == 16),
+        "ward fear selects the authored recoil silhouette"
+    );
+}
+
+#[test]
+fn crooked_herald_survives_one_city_volley_and_needs_player_attention() {
+    let (mut city, ax, az, surf) = prepared_settlement_defense(3);
+    city.debug_clear_creatures();
+    for role in [4, 2, 6] {
+        city.debug_spawn_villager_role(ax, az, role);
+    }
+    let herald = city.debug_spawn_crooked_herald_at(
+        ax,
+        az,
+        ax as f32 + 9.5,
+        surf + 1.0,
+        az as f32 + 0.5,
+    );
+    city.debug_update_creatures(0.05);
+    assert_eq!(city.debug_creature_hp(herald), 7, "three unlit guards deal nine damage");
+    for _ in 0..4 {
+        city.debug_attack_creature(herald);
+    }
+    assert_eq!(city.debug_count_named("crooked_herald"), 0);
 }
 
 // ============================================================================

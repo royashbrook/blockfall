@@ -756,6 +756,7 @@ final class EntityRenderer {
             case 27: drawKind27(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             case 28: drawKind28(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             case 29: drawKind29(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
+            case 30: drawKind30(enc: enc, viewProj: vpRel, e: e, pos: posRel, phase: phase, hash: phaseHash, squash: squash)
             // kind 22 — DEBRIS FRAGMENT (#170 blockfall): a small tumbling cube
             // chip in the broken block's colour. yaw carries the engine-driven
             // spin phase; scale seeds the size + a fixed per-fragment tilt.

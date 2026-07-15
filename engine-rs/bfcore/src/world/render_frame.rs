@@ -447,7 +447,10 @@ impl<'c> World<'c> {
                 // authored species clips can consume the same stable locomotion
                 // state as villagers without estimating velocity from render
                 // positions. Role/action remain zero for non-villagers.
-                let at_goal = matches!(cr.name.as_str(), "smudgeling" | "hollow")
+                let at_goal = matches!(
+                    cr.name.as_str(),
+                    "smudgeling" | "hollow" | "crooked_herald"
+                )
                     && cr.assault_goal.y != NO_FLOOR
                     && {
                         let dx = Self::wrap_signed_f(
@@ -463,6 +466,10 @@ impl<'c> World<'c> {
                         12
                     } else if cr.name == "hollow" && cr.light_exposure > 0.0 {
                         14
+                    } else if cr.name == "crooked_herald" && cr.light_exposure > 0.0 {
+                        16
+                    } else if cr.name == "crooked_herald" {
+                        17
                     } else if cr.name == "hollow" && at_goal {
                         15
                     } else if at_goal {
@@ -474,6 +481,10 @@ impl<'c> World<'c> {
                         1.0
                     } else if cr.name == "hollow" && cr.light_exposure > 0.0 {
                         (cr.light_exposure / 2.0).clamp(0.0, 1.0)
+                    } else if cr.name == "crooked_herald" && cr.light_exposure > 0.0 {
+                        cr.light_exposure
+                    } else if cr.name == "crooked_herald" {
+                        (cr.uncanny_cycle / 2.4).clamp(0.0, 1.0)
                     } else {
                         0.0
                     },

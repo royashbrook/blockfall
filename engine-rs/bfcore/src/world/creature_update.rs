@@ -707,13 +707,29 @@ impl<'c> World<'c> {
             let home_dz = Self::wrap_signed_f(c.pos.z - c.home_z as f32 - 0.5);
             let home_dist = (home_dx * home_dx + home_dz * home_dz).sqrt();
             let is_hollow = c.from_assault && c.name == "hollow";
-            let ward_exposed = is_hollow
-                && home_dist < 12.0
-                && self
-                    .villages
-                    .get(&(Self::wrap_block(c.home_x), Self::wrap_block(c.home_z)))
-                    .map(|v| v.lights >= Self::VILLAGE_WARD_LIGHTS)
-                    .unwrap_or(false);
+            let is_herald = c.from_assault && c.name == "crooked_herald";
+            let ward_active = self
+                .villages
+                .get(&(Self::wrap_block(c.home_x), Self::wrap_block(c.home_z)))
+                .map(|v| v.lights >= Self::VILLAGE_WARD_LIGHTS)
+                .unwrap_or(false);
+            let ward_exposed = is_hollow && home_dist < 12.0 && ward_active;
+            let herald_fearing = is_herald && home_dist < 14.0 && ward_active;
+            c.uncanny_cycle = (c.uncanny_cycle + dt) % 2.4;
+            let herald_aura = c.from_assault
+                && !is_herald
+                && self.creatures.iter().any(|herald| {
+                    if herald.name != "crooked_herald"
+                        || !herald.from_assault
+                        || herald.home_x != c.home_x
+                        || herald.home_z != c.home_z
+                    {
+                        return false;
+                    }
+                    let dx = Self::wrap_signed_f(herald.pos.x - c.pos.x);
+                    let dz = Self::wrap_signed_f(herald.pos.z - c.pos.z);
+                    dx * dx + dz * dz <= 10.0 * 10.0
+                });
             if ward_exposed {
                 c.light_exposure += dt;
                 if c.light_exposure >= 2.0 {
@@ -732,6 +748,13 @@ impl<'c> World<'c> {
                 }
             } else {
                 c.light_exposure = 0.0;
+            }
+            if is_herald {
+                c.light_exposure = if herald_fearing {
+                    (c.light_exposure + dt).min(1.0)
+                } else {
+                    0.0
+                };
             }
 
             // Smudgelings hesitate at a live perimeter light, snatch one ward
@@ -782,7 +805,10 @@ impl<'c> World<'c> {
             // Assault creatures press toward the settlement, not wherever the player
             // happens to stand inside it. This also makes Hard Creative a useful,
             // harmless observation mode for the complete approach behavior.
-            let (ppx, ppz) = if is_smudgeling && c.carrying_light {
+            let (ppx, ppz) = if herald_fearing {
+                let len = home_dist.max(0.001);
+                (c.pos.x + home_dx / len * 10.0, c.pos.z + home_dz / len * 10.0)
+            } else if is_smudgeling && c.carrying_light {
                 let len = home_dist.max(0.001);
                 (c.pos.x + home_dx / len * 12.0, c.pos.z + home_dz / len * 12.0)
             } else if is_smudgeling && c.assault_goal.y != NO_FLOOR {
@@ -798,7 +824,7 @@ impl<'c> World<'c> {
                 } else {
                     (gx, gz)
                 }
-            } else if is_hollow && c.assault_goal.y != NO_FLOOR {
+            } else if (is_hollow || is_herald) && c.assault_goal.y != NO_FLOOR {
                 (
                     c.pos.x
                         + Self::wrap_signed_f(c.assault_goal.x as f32 + 0.5 - c.pos.x),
@@ -893,10 +919,13 @@ impl<'c> World<'c> {
                 }
                 let yd = ((c.pos.y + c.scale * 0.5) - (self.pos.y - 1.6)).abs();
                 if xzd < 1.3 && yd < 1.6 && c.atk_cd <= 0.0 {
-                    let damage = if is_hollow {
+                    let damage = if is_herald {
+                        5.0
+                    } else if is_hollow {
                         1.0 + self.effective_village_tier(c.home_x, c.home_z) as f32
+                            + f32::from(herald_aura)
                     } else {
-                        2.5
+                        2.5 + f32::from(herald_aura)
                     };
                     self.hurt_player(damage);
                     c.atk_cd = 1.1;
@@ -1119,10 +1148,25 @@ impl<'c> World<'c> {
             // through the existing collision/climb code. step_locomotion never snaps
             // heading or velocity, so creatures rotate and ramp instead of flipping.
             let light_slow = if ward_exposed { 0.72 } else { 1.0 };
+            let aura_speed = if herald_aura { 1.18 } else { 1.0 };
+            let uncanny_speed = if herald_fearing {
+                1.2
+            } else if is_herald {
+                let phase = c.uncanny_cycle / 2.4;
+                if phase < 0.24 {
+                    0.0
+                } else if phase < 0.46 {
+                    1.8
+                } else {
+                    0.68
+                }
+            } else {
+                1.0
+            };
             let target_speed = if routine_path_failed {
                 0.0
             } else {
-                c.speed * dec.speed_frac * light_slow
+                c.speed * dec.speed_frac * light_slow * aura_speed * uncanny_speed
             };
             let (mdx, mdz, new_heading, new_speed) =
                 cai::step_locomotion(&c.ai, desired_heading, target_speed, dt);

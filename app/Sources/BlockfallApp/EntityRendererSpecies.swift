@@ -5496,6 +5496,137 @@ extension EntityRenderer {
         }
     }
 
+    // =========================================================================
+    // KIND 30 — CROOKED HERALD (#313). Tall Grey conductor with a single
+    // connected coat/neck/head silhouette and very long two-link hose limbs.
+    // Action 17 is the authored hold/lunge cycle; 16 recoils from a live ward.
+    // =========================================================================
+    func drawKind30(enc: MTLRenderCommandEncoder, viewProj: simd_float4x4,
+                    e: bf_entity_draw, pos: SIMD3<Float>, phase: Float,
+                    hash: Float, squash: SIMD3<Float>) {
+        let s = e.scale, sat = e.sat
+        let void = SIMD3<Float>(0.045, 0.038, 0.065)
+        let deep = SIMD3<Float>(0.13, 0.11, 0.19)
+        let grey = SIMD3<Float>(0.27, 0.22, 0.34)
+        let violet = SIMD3<Float>(0.48, 0.31, 0.54)
+        let mask = SIMD3<Float>(0.84, 0.80, 0.68)
+        let ward = SIMD3<Float>(1.75, 1.10, 0.30)
+
+        let fear = curEntityAction == 16
+        let cycle = curEntityAction == 17 ? curEntityActionProgress : 0.5
+        let tell = cycle < 0.24
+        let burstPhase = max(0, min(1, (cycle - 0.24) / 0.22))
+        let burst: Float = cycle >= 0.24 && cycle < 0.46
+            ? sin(burstPhase * Float.pi) : 0
+        let moving: Float = curEntityMoving ? 1 : 0
+        let gait = phase * 1.15
+        let flow = sin(gait) * moving
+        let snapLean: Float = fear ? -0.28 : (tell ? -0.10 : burst * 0.24)
+        let bob = (tell ? -s * 0.07 : abs(flow) * s * 0.035)
+            + sin(phase * 0.31 + hash) * s * 0.012
+        let wc = SIMD3<Float>(pos.x, pos.y + s * 1.58 + bob, pos.z)
+        let R = squashRig(EntityRenderer.rotY(e.yaw), squash: squash,
+                          footLocalY: pos.y - wc.y)
+
+        func part(_ lo: SIMD3<Float>, _ d: SIMD3<Float>,
+                  shape: EntityPartShape = .smoothSphere,
+                  color: SIMD3<Float>, emissive: Bool = false,
+                  rotX: Float = 0, rotZ: Float = 0) {
+            let model = EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo)
+                * EntityRenderer.rotZ(rotZ) * EntityRenderer.rotX(rotX)
+                * EntityRenderer.scaleM(d)
+            drawCube(enc: enc, viewProj: viewProj, model: model,
+                     rgb: color, sat: emissive ? -1 : sat, shape: shape)
+        }
+        func hose(_ shoulder: SIMD3<Float>, length: Float, radius: Float,
+                  pitch: Float, roll: Float = 0,
+                  color: SIMD3<Float>) -> SIMD3<Float> {
+            let chain = EntityRenderer.trans(wc) * R * EntityRenderer.trans(shoulder)
+                * EntityRenderer.rotZ(roll) * EntityRenderer.rotX(pitch)
+            let model = chain * EntityRenderer.trans(SIMD3<Float>(0, -length * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3<Float>(radius, length, radius))
+            drawCube(enc: enc, viewProj: viewProj, model: model,
+                     rgb: color, sat: sat, shape: .cylinder)
+            let endpoint = shoulder + SIMD3<Float>(
+                sin(roll) * cos(pitch) * length,
+                -cos(roll) * cos(pitch) * length,
+                -sin(pitch) * length
+            )
+            part(endpoint, SIMD3<Float>(repeating: radius * 1.45),
+                 shape: .sphere, color: color)
+            return endpoint
+        }
+
+        // Elastic two-link legs: the burst phase reaches almost a full block,
+        // while the tell plants both crooked shoes and goes completely still.
+        for side: Float in [-1, 1] {
+            let stride = tell ? 0 : (flow * 0.62 + burst * side * 0.70) * side
+            let hip = SIMD3<Float>(side * s * 0.16, -s * 0.38, snapLean * s * 0.15)
+            let knee = hose(hip, length: s * 0.52, radius: s * 0.055,
+                            pitch: stride, roll: -side * 0.08, color: grey)
+            let shinPitch = -stride * 0.55 + (burst > 0 ? -0.35 : 0)
+            let ankle = hose(knee, length: s * 0.55, radius: s * 0.05,
+                             pitch: shinPitch, roll: side * 0.06, color: deep)
+            part(ankle + SIMD3<Float>(0, -s * 0.015, s * 0.10),
+                 SIMD3<Float>(s * 0.22, s * 0.11, s * 0.38), color: void,
+                 rotZ: side * 0.12)
+        }
+
+        // Narrow coat and hunched shoulder mantle overlap the crooked neck.
+        part(SIMD3<Float>(0, 0, snapLean * s),
+             SIMD3<Float>(s * 0.38, s * 0.92, s * 0.34), color: deep,
+             rotX: snapLean)
+        part(SIMD3<Float>(0, -s * 0.32, snapLean * s * 0.7),
+             SIMD3<Float>(s * 0.52, s * 0.40, s * 0.44), color: grey)
+        part(SIMD3<Float>(0, s * 0.39, snapLean * s),
+             SIMD3<Float>(s * 0.58, s * 0.24, s * 0.40), color: violet,
+             rotZ: -0.08)
+
+        let neckBase = SIMD3<Float>(-s * 0.08, s * 0.46, snapLean * s)
+        let neckMid = hose(neckBase, length: s * 0.38, radius: s * 0.085,
+                           pitch: fear ? 0.42 : -0.18, roll: -0.32, color: deep)
+        let neckTop = hose(neckMid, length: s * 0.30, radius: s * 0.075,
+                           pitch: fear ? 0.28 : -0.08, roll: 0.38, color: grey)
+        let head = neckTop + SIMD3<Float>(0, s * 0.08, 0)
+        part(head, SIMD3<Float>(s * 0.46, s * 0.58, s * 0.40), color: grey,
+             rotZ: fear ? -0.26 : 0.10)
+
+        // Recessed mask layers stay inside the head at profile angles.
+        let face = head + SIMD3<Float>(0, -s * 0.01, s * 0.17)
+        part(face, SIMD3<Float>(s * 0.29, s * 0.39, s * 0.13), color: mask,
+             rotZ: fear ? -0.26 : 0.10)
+        let eyeH: Float = tell ? s * 0.13 : (fear ? s * 0.035 : s * 0.075)
+        for side: Float in [-1, 1] {
+            part(face + SIMD3<Float>(side * s * 0.085, s * 0.055, s * 0.055),
+                 SIMD3<Float>(s * 0.055, eyeH, s * 0.045), color: void,
+                 rotZ: side * (tell ? -0.18 : 0.08))
+        }
+        part(face + SIMD3<Float>(0, -s * 0.105, s * 0.055),
+             SIMD3<Float>(s * 0.18, s * 0.045, s * 0.04), color: void,
+             rotZ: -0.22)
+
+        // Long conducting arms bow through two connected hose segments.
+        for side: Float in [-1, 1] {
+            let shoulder = SIMD3<Float>(side * s * 0.27, s * 0.28, snapLean * s)
+            let raise: Float = fear ? -1.15 : (tell ? -0.25 : -flow * side * 0.78 - burst * 0.55)
+            let elbow = hose(shoulder, length: s * 0.56, radius: s * 0.052,
+                             pitch: raise, roll: -side * (fear ? 0.48 : 0.12), color: grey)
+            let hand = hose(elbow, length: s * 0.54, radius: s * 0.045,
+                            pitch: raise * 0.65 - 0.20, roll: side * 0.10, color: deep)
+            part(hand, SIMD3<Float>(s * 0.12, s * 0.16, s * 0.10), color: mask)
+        }
+
+        // A small resonant throat mark identifies the troop-conducting role.
+        part(SIMD3<Float>(0, s * 0.23, s * 0.22 + snapLean * s),
+             SIMD3<Float>(s * 0.14, s * 0.22, s * 0.055), color: violet,
+             emissive: true)
+        if fear {
+            part(SIMD3<Float>(0, s * 0.08, s * 0.31),
+                 SIMD3<Float>(s * 0.055, s * 0.68, s * 0.035),
+                 color: ward, emissive: true, rotZ: 0.42)
+        }
+    }
+
     private func drawCube(enc: MTLRenderCommandEncoder,
                           viewProj: simd_float4x4,
                           model: simd_float4x4,
