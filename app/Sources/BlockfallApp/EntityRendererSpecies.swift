@@ -1024,7 +1024,10 @@ extension EntityRenderer {
         let breathPhase = curAmbientPhase * 0.38 + hash * 3.1
         let manePhase = curAmbientPhase * 0.55 + hash * 1.4
         let walk = villagerWalkPose(phase)
-        let walkAmt = min(1.0, curGaitSpeed / 1.2)
+        let siegeCharge: Float = curEntityAction == 18 ? curEntityActionProgress : 0
+        let rallyPulse: Float = curEntityAction == 19
+            ? (sin(curAmbientPhase * 2.2 + hash) * 0.5 + 0.5) : 0
+        let walkAmt = siegeCharge > 0 ? 0 : min(1.0, curGaitSpeed / 1.2)
         let breatheY = breatheYOffset(breathPhase, scale: s)
         let eyeBlinkSY = blinkScale(blinkPhase)
         let cartoonLift = walk.lift * s * 0.36 * walkAmt
@@ -1043,15 +1046,15 @@ extension EntityRenderer {
         let hipY = -bH * 0.38
         let bodyY = groundY + upperLegH + lowerLegH - hipY + breatheY + cartoonLift
         let wc = SIMD3<Float>(pos.x, bodyY, pos.z)
-        let landingShape = SIMD3<Float>(1 + stepSquash * 0.50,
-                                        1 - stepSquash,
-                                        1 + stepSquash * 0.50)
+        let landingShape = SIMD3<Float>(1 + stepSquash * 0.50 + siegeCharge * 0.16,
+                                        1 - stepSquash - siegeCharge * 0.12,
+                                        1 + stepSquash * 0.50 + siegeCharge * 0.12)
         let R = squashRig(Ryaw, squash: squash * landingShape,
                           footLocalY: groundY - wc.y)
         let waddle = sin(phase) * walkAmt
         let bodyLean = EntityRenderer.rotY(waddle * 0.075)
             * EntityRenderer.rotZ((walk.bodyRoll * 0.82 + waddle * 0.07) * walkAmt)
-            * EntityRenderer.rotX(walk.bodyPitch * 0.46 * walkAmt)
+            * EntityRenderer.rotX(walk.bodyPitch * 0.46 * walkAmt + siegeCharge * 0.30)
         let rig = R * bodyLean
 
         func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
@@ -1148,7 +1151,8 @@ extension EntityRenderer {
                  rgb: maneCol, sat: sat, shape: .sphere)
 
         // The face and both horn curls share one delayed head transform.
-        let headCenter = SIMD3<Float>(0, -bH * 0.02, bD * 0.43 + hD * 0.25)
+        let headCenter = SIMD3<Float>(0, -bH * 0.02 - siegeCharge * s * 0.12,
+                                     bD * 0.43 + hD * 0.25 + siegeCharge * s * 0.16)
         let idleHead = sin(curAmbientPhase * 0.62 + hash * 2.0) * 0.028
         let headMotion = EntityRenderer.rotZ(walk.headRoll * 0.78 * walkAmt + idleHead)
             * EntityRenderer.rotX(walk.headPitch * 0.66 * walkAmt)
@@ -1182,7 +1186,8 @@ extension EntityRenderer {
         // The huge face cycles through a grin, open-mouthed curiosity, and a
         // brief determined scowl. Reversing the brow slope is what prevents the
         // Ramlord from reading angry in every frame.
-        let expression = sin(curAmbientPhase * 0.74 + hash * 2.3)
+        let expression = siegeCharge > 0
+            ? -0.9 : sin(curAmbientPhase * 0.74 + hash * 2.3)
         let grin = max(0, expression)
         let surprise = max(0, -expression)
         let browOuterY = hH * (0.25 - expression * 0.11)
@@ -1246,6 +1251,13 @@ extension EntityRenderer {
                      model: connectedSegment(wc, headRig, from: outer, to: tip,
                                              width: s * 0.13, overlap: s * 0.08),
                      rgb: hornCol * 0.76, sat: sat, shape: .cone)
+        }
+        if siegeCharge > 0 || rallyPulse > 0.05 {
+            let pulse = max(siegeCharge, rallyPulse * 0.55)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: hpw(SIMD3(0, hH * 0.34, faceZ + s * 0.02),
+                                SIMD3(repeating: s * (0.07 + pulse * 0.08))),
+                     rgb: SIMD3<Float>(1.55, 0.62, 0.22), sat: -1, shape: .smoothSphere)
         }
     }
 

@@ -3829,6 +3829,7 @@ fn guards_scale_against_hollow_foot_soldiers() {
 fn city_wave_has_one_herald_and_its_troops_move_as_a_coordinated_aura() {
     let (mut wave, ax, az, _surf) = prepared_settlement_defense(3);
     wave.debug_clear_creatures();
+    wave.debug_set_assault_wave_serial(1);
     let spawned = wave.debug_spawn_settlement_assault(ax, az, 3);
     assert_eq!(spawned, 5, "normal city wave remains bounded");
     assert_eq!(wave.debug_count_named("smudgeling"), 2);
@@ -3947,6 +3948,104 @@ fn crooked_herald_survives_one_city_volley_and_needs_player_attention() {
         city.debug_attack_creature(herald);
     }
     assert_eq!(city.debug_count_named("crooked_herald"), 0);
+}
+
+#[test]
+fn city_siege_waves_are_bounded_and_every_third_wave_has_one_ramlord() {
+    let (mut wave, ax, az, _surf) = prepared_settlement_defense(3);
+    wave.debug_clear_creatures();
+    wave.debug_set_assault_wave_serial(0);
+    assert_eq!(wave.debug_spawn_settlement_assault(ax, az, 3), 5);
+    assert_eq!(wave.debug_count_named("smudgeling"), 2);
+    assert_eq!(wave.debug_count_named("hollow"), 1);
+    assert_eq!(wave.debug_count_named("crooked_herald"), 1);
+    assert_eq!(wave.debug_count_named("dim_ramlord"), 1);
+    assert!(wave.debug_assaults_outside_protection());
+
+    wave.debug_clear_creatures();
+    wave.debug_set_assault_wave_serial(1);
+    assert_eq!(wave.debug_spawn_settlement_assault(ax, az, 3), 5);
+    assert_eq!(wave.debug_count_named("dim_ramlord"), 0);
+    assert_eq!(wave.debug_count_named("hollow"), 2);
+}
+
+#[test]
+fn ramlord_telegraphs_at_the_gate_then_cracks_two_ward_charges() {
+    let (mut ward, ax, az) = flat_grey_defense(3);
+    ward.debug_set_village_lights(ax, az, 8);
+    let ramlord = ward.debug_spawn_ramlord_at(ax, az, 9.5, 8.0, 18.5);
+    for _ in 0..20 {
+        ward.debug_update_creatures(0.05);
+    }
+    assert!(ward.debug_creature_siege_charge(ramlord) > 0.9);
+    assert_eq!(ward.debug_village_lights(ax, az), 8);
+
+    let mut frame = empty_frame();
+    let mut draws = Vec::new();
+    let mut shadows = Vec::new();
+    let mut props = Vec::new();
+    ward.build_frame(&mut frame, &mut draws, &mut shadows, &mut props, 0.0);
+    assert!(
+        ward.entity_role_actions()
+            .iter()
+            .any(|a| a.action == 18 && a.progress > 0.30),
+        "three-second siege windup has a visible authored pose"
+    );
+
+    for _ in 0..41 {
+        ward.debug_update_creatures(0.05);
+    }
+    assert_eq!(ward.debug_village_lights(ax, az), 6);
+    assert!(ward.debug_assaults_outside_protection());
+}
+
+#[test]
+fn city_guards_need_player_help_against_a_ramlord_and_it_drops_siege_rewards() {
+    let (mut city, ax, az, surf) = prepared_settlement_defense(3);
+    city.debug_clear_creatures();
+    city.debug_clear_inventory();
+    for role in [4, 2, 6] {
+        city.debug_spawn_villager_role(ax, az, role);
+    }
+    let ramlord = city.debug_spawn_ramlord_at(
+        ax,
+        az,
+        ax as f32 + 9.5,
+        surf + 1.0,
+        az as f32 + 0.5,
+    );
+    city.debug_update_creatures(0.05);
+    assert_eq!(city.debug_creature_hp(ramlord), 71, "three city guards cannot erase the captain");
+
+    city.debug_set_creature_hp(ramlord, 2);
+    city.debug_attack_creature(ramlord);
+    assert_eq!(city.debug_count_named("dim_ramlord"), 0);
+    assert_eq!(city.debug_item_count(city.debug_item_id("crystal_shard")), 4);
+    assert_eq!(city.debug_item_count(city.debug_item_id("color_dust")), 4);
+    assert_eq!(city.debug_item_count(city.debug_item_id("glow_dust")), 3);
+}
+
+#[test]
+fn ramlord_captain_rallies_nearby_grey_troops() {
+    let run = |with_captain: bool| {
+        let (mut w, ax, az) = flat_grey_defense(3);
+        let hollow = w.debug_spawn_hollow_at(ax, az, 18.5, 8.0, 8.5);
+        if with_captain {
+            w.debug_spawn_ramlord_at(ax, az, 18.5, 8.0, 15.5);
+        }
+        let start = w.debug_creature_pos(hollow);
+        for _ in 0..20 {
+            w.debug_update_creatures(0.05);
+        }
+        let end = w.debug_creature_pos(hollow);
+        (end.0 - start.0).hypot(end.2 - start.2)
+    };
+    let alone = run(false);
+    let rallied = run(true);
+    assert!(
+        rallied > alone * 1.15,
+        "nearby siege captain visibly accelerates its troops ({alone} -> {rallied})"
+    );
 }
 
 // ============================================================================

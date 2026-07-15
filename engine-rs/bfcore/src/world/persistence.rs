@@ -384,6 +384,7 @@ impl<'c> World<'c> {
         self.creatures.clear();
         self.creature_timer = 0.0;
         self.assault_cooldown = 0.0;
+        self.assault_wave_serial = 0;
         self.ruin_sites.clear();
         self.danger_timer = 0.0;
         if !quest_loaded {

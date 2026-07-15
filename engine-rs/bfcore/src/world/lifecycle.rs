@@ -57,6 +57,7 @@ impl<'c> World<'c> {
             entity_appearances: Vec::new(),
             creature_timer: 0.0,
             assault_cooldown: 0.0,
+            assault_wave_serial: 0,
             villager_timer: 0.0,
             danger_timer: 0.0,
             ruin_sites: HashMap::new(),
@@ -463,6 +464,7 @@ impl<'c> World<'c> {
         self.last_reveal_pos = Some((Self::wrap_block(sx), Self::wrap_block(sz)));
         self.creature_timer = 0.0;
         self.assault_cooldown = 0.0;
+        self.assault_wave_serial = 0;
         self.all_quests_done = false;
         self.quests_completed = 0;
         self.difficulty = 1; // #238: back to Normal until the app re-applies its saved pick

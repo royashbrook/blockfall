@@ -283,6 +283,31 @@ impl<'c> World<'c> {
         };
         idx
     }
+    pub fn debug_spawn_ramlord_at(
+        &mut self,
+        ax: i32,
+        az: i32,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> i32 {
+        let idx = self.debug_spawn_assault_hostile_at(ax, az, x, y, z);
+        let _ = self.configure_hostile_named(idx as usize, "dim_ramlord");
+        let goal_x = Self::wrap_block(ax + 1);
+        let goal_z = Self::wrap_block(az + Self::PALISADE_R);
+        let goal_y = worldgen::worldgen_surface_height(goal_x, goal_z, self.seed) + 1;
+        let c = &mut self.creatures[idx as usize];
+        c.scale = 2.0;
+        c.is_boss = true;
+        c.color = Self::color_for("boss", 11);
+        c.speed *= 0.8;
+        c.assault_goal = IVec3 {
+            x: goal_x,
+            y: goal_y,
+            z: goal_z,
+        };
+        idx
+    }
     pub fn debug_clear_creatures(&mut self) {
         self.creatures.clear();
     }
@@ -298,6 +323,13 @@ impl<'c> World<'c> {
             .get(i.max(0) as usize)
             .filter(|_| i >= 0)
             .map(|c| c.light_exposure)
+            .unwrap_or(0.0)
+    }
+    pub fn debug_creature_siege_charge(&self, i: i32) -> f32 {
+        self.creatures
+            .get(i.max(0) as usize)
+            .filter(|_| i >= 0)
+            .map(|c| c.siege_charge)
             .unwrap_or(0.0)
     }
     pub fn debug_creature_motion_speed(&self, i: i32) -> f32 {
@@ -317,6 +349,11 @@ impl<'c> World<'c> {
             .map(|c| c.hp)
             .unwrap_or(0)
     }
+    pub fn debug_set_creature_hp(&mut self, i: i32, hp: i32) {
+        if let Some(c) = self.creatures.get_mut(i.max(0) as usize).filter(|_| i >= 0) {
+            c.hp = hp;
+        }
+    }
     pub fn debug_creature_guarding(&self, i: i32) -> bool {
         self.creatures
             .get(i.max(0) as usize)
@@ -335,6 +372,9 @@ impl<'c> World<'c> {
     }
     pub fn debug_spawn_settlement_assault(&mut self, ax: i32, az: i32, tier: u8) -> i32 {
         self.spawn_settlement_assault(ax, az, tier)
+    }
+    pub fn debug_set_assault_wave_serial(&mut self, serial: u32) {
+        self.assault_wave_serial = serial;
     }
     pub fn debug_assaults_outside_protection(&self) -> bool {
         self.creatures.iter().filter(|c| c.from_assault).all(|c| {

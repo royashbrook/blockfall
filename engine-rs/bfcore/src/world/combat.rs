@@ -105,7 +105,11 @@ impl<'c> World<'c> {
         if self.inv.is_none() {
             return;
         }
-        if cr.is_boss {
+        if cr.name == "dim_ramlord" {
+            self.give_loot("crystal_shard", 4);
+            self.give_loot("color_dust", 4);
+            self.give_loot("glow_dust", 3);
+        } else if cr.is_boss {
             let n1 = 2 + (self.rand01() * 2.0) as i32;
             self.give_loot("crystal_shard", n1);
             self.give_loot("color_dust", 2);

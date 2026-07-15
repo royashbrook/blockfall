@@ -708,6 +708,7 @@ impl<'c> World<'c> {
             let home_dist = (home_dx * home_dx + home_dz * home_dz).sqrt();
             let is_hollow = c.from_assault && c.name == "hollow";
             let is_herald = c.from_assault && c.name == "crooked_herald";
+            let is_ramlord = c.from_assault && c.name == "dim_ramlord";
             let ward_active = self
                 .villages
                 .get(&(Self::wrap_block(c.home_x), Self::wrap_block(c.home_z)))
@@ -715,6 +716,7 @@ impl<'c> World<'c> {
                 .unwrap_or(false);
             let ward_exposed = is_hollow && home_dist < 12.0 && ward_active;
             let herald_fearing = is_herald && home_dist < 14.0 && ward_active;
+            let ramlord_warded = is_ramlord && home_dist < 14.0 && ward_active;
             c.uncanny_cycle = (c.uncanny_cycle + dt) % 2.4;
             let herald_aura = c.from_assault
                 && !is_herald
@@ -729,6 +731,20 @@ impl<'c> World<'c> {
                     let dx = Self::wrap_signed_f(herald.pos.x - c.pos.x);
                     let dz = Self::wrap_signed_f(herald.pos.z - c.pos.z);
                     dx * dx + dz * dz <= 10.0 * 10.0
+                });
+            let captain_aura = c.from_assault
+                && !is_ramlord
+                && self.creatures.iter().any(|captain| {
+                    if captain.name != "dim_ramlord"
+                        || !captain.from_assault
+                        || captain.home_x != c.home_x
+                        || captain.home_z != c.home_z
+                    {
+                        return false;
+                    }
+                    let dx = Self::wrap_signed_f(captain.pos.x - c.pos.x);
+                    let dz = Self::wrap_signed_f(captain.pos.z - c.pos.z);
+                    dx * dx + dz * dz <= 14.0 * 14.0
                 });
             if ward_exposed {
                 c.light_exposure += dt;
@@ -755,6 +771,16 @@ impl<'c> World<'c> {
                 } else {
                     0.0
                 };
+            }
+            if ramlord_warded {
+                c.light_exposure += dt;
+                if c.light_exposure >= 2.0 {
+                    c.light_exposure -= 2.0;
+                    c.hp -= 2;
+                    c.hit_flash = 0.22;
+                }
+            } else if is_ramlord {
+                c.light_exposure = 0.0;
             }
 
             // Smudgelings hesitate at a live perimeter light, snatch one ward
@@ -802,6 +828,31 @@ impl<'c> World<'c> {
                     }
                 }
             }
+            if is_ramlord && c.assault_goal.y != NO_FLOOR {
+                let gx = c.pos.x
+                    + Self::wrap_signed_f(c.assault_goal.x as f32 + 0.5 - c.pos.x);
+                let gz = c.pos.z
+                    + Self::wrap_signed_f(c.assault_goal.z as f32 + 0.5 - c.pos.z);
+                let dist = ((gx - c.pos.x).powi(2) + (gz - c.pos.z).powi(2)).sqrt();
+                if dist < 3.5 {
+                    c.siege_charge += dt;
+                    if c.siege_charge >= 3.0 {
+                        c.siege_charge = 0.0;
+                        let key = (Self::wrap_block(c.home_x), Self::wrap_block(c.home_z));
+                        let drained = self.villages.get_mut(&key).map(|state| {
+                            let before = state.lights;
+                            state.lights = state.lights.saturating_sub(2);
+                            before - state.lights
+                        });
+                        self.fx(8, c.assault_goal, 0);
+                        if drained.unwrap_or(0) > 0 {
+                            self.toast("The Dim Ramlord cracks two charges from the village ward!");
+                        }
+                    }
+                } else {
+                    c.siege_charge = 0.0;
+                }
+            }
             // Assault creatures press toward the settlement, not wherever the player
             // happens to stand inside it. This also makes Hard Creative a useful,
             // harmless observation mode for the complete approach behavior.
@@ -824,7 +875,9 @@ impl<'c> World<'c> {
                 } else {
                     (gx, gz)
                 }
-            } else if (is_hollow || is_herald) && c.assault_goal.y != NO_FLOOR {
+            } else if (is_hollow || is_herald || is_ramlord)
+                && c.assault_goal.y != NO_FLOOR
+            {
                 (
                     c.pos.x
                         + Self::wrap_signed_f(c.assault_goal.x as f32 + 0.5 - c.pos.x),
@@ -919,13 +972,16 @@ impl<'c> World<'c> {
                 }
                 let yd = ((c.pos.y + c.scale * 0.5) - (self.pos.y - 1.6)).abs();
                 if xzd < 1.3 && yd < 1.6 && c.atk_cd <= 0.0 {
-                    let damage = if is_herald {
+                    let damage = if is_ramlord {
+                        8.0
+                    } else if is_herald {
                         5.0
                     } else if is_hollow {
                         1.0 + self.effective_village_tier(c.home_x, c.home_z) as f32
                             + f32::from(herald_aura)
+                            + 2.0 * f32::from(captain_aura)
                     } else {
-                        2.5 + f32::from(herald_aura)
+                        2.5 + f32::from(herald_aura) + 2.0 * f32::from(captain_aura)
                     };
                     self.hurt_player(damage);
                     c.atk_cd = 1.1;
@@ -1147,8 +1203,20 @@ impl<'c> World<'c> {
             // Smooth turn + accel toward the decision, then apply the displacement
             // through the existing collision/climb code. step_locomotion never snaps
             // heading or velocity, so creatures rotate and ramp instead of flipping.
-            let light_slow = if ward_exposed { 0.72 } else { 1.0 };
-            let aura_speed = if herald_aura { 1.18 } else { 1.0 };
+            let light_slow = if ramlord_warded {
+                0.65
+            } else if ward_exposed {
+                0.72
+            } else {
+                1.0
+            };
+            let aura_speed = if captain_aura {
+                1.30
+            } else if herald_aura {
+                1.18
+            } else {
+                1.0
+            };
             let uncanny_speed = if herald_fearing {
                 1.2
             } else if is_herald {
@@ -1163,7 +1231,7 @@ impl<'c> World<'c> {
             } else {
                 1.0
             };
-            let target_speed = if routine_path_failed {
+            let target_speed = if routine_path_failed || (is_ramlord && c.siege_charge > 0.0) {
                 0.0
             } else {
                 c.speed * dec.speed_frac * light_slow * aura_speed * uncanny_speed

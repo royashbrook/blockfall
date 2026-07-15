@@ -325,6 +325,8 @@ impl<'c> World<'c> {
             .map(|v| v.lights >= 8)
             .unwrap_or(false);
         let wanted = self.settlement_assault_size(ax, az, tier);
+        let siege_wave = tier >= 3 && self.assault_wave_serial % 3 == 0;
+        self.assault_wave_serial = self.assault_wave_serial.wrapping_add(1);
         let mut spawned = 0;
         let mut attempts = 0;
         while spawned < wanted && attempts < wanted * 8 {
@@ -333,17 +335,25 @@ impl<'c> World<'c> {
                 continue;
             }
             let index = self.creatures.len() - 1;
-            let is_herald = tier >= 3 && spawned == wanted - 1;
+            let is_ramlord = siege_wave && spawned == wanted - 1;
+            let is_herald = tier >= 3 && spawned == wanted - 1 - i32::from(siege_wave);
             let hollow_slots = if tier >= 2 {
-                (wanted - i32::from(tier >= 3)) / 2
+                (wanted - i32::from(tier >= 3) - i32::from(siege_wave)) / 2
             } else {
                 0
             };
             let is_hollow = !is_herald
-                && spawned >= wanted - i32::from(tier >= 3) - hollow_slots;
+                && !is_ramlord
+                && spawned
+                    >= wanted
+                        - i32::from(tier >= 3)
+                        - i32::from(siege_wave)
+                        - hollow_slots;
             let _ = self.configure_hostile_named(
                 index,
-                if is_herald {
+                if is_ramlord {
+                    "dim_ramlord"
+                } else if is_herald {
                     "crooked_herald"
                 } else if is_hollow {
                     "hollow"
@@ -352,7 +362,7 @@ impl<'c> World<'c> {
                 },
             );
             let from = self.creatures[index].pos;
-            let (goal, goal_is_light) = if is_hollow || is_herald {
+            let (goal, goal_is_light) = if is_hollow || is_herald || is_ramlord {
                 let x = Self::wrap_block(ax + 1 + (spawned % 3 - 1));
                 let z = Self::wrap_block(az + Self::PALISADE_R);
                 let y = worldgen::worldgen_surface_height(x, z, self.seed) + 1;
@@ -366,7 +376,9 @@ impl<'c> World<'c> {
             c.home_z = anchor.1;
             c.assault_goal = goal;
             c.assault_goal_is_light = goal_is_light;
-            c.scale = if is_herald {
+            c.scale = if is_ramlord {
+                2.0
+            } else if is_herald {
                 1.05
             } else if is_hollow {
                 1.05
@@ -378,6 +390,11 @@ impl<'c> World<'c> {
             }
             if is_herald {
                 c.uncanny_cycle = (spawned as f32 * 0.37) % 2.4;
+            }
+            if is_ramlord {
+                c.is_boss = true;
+                c.color = Self::color_for("boss", 11);
+                c.speed *= 0.8;
             }
             c.atk_cd = 0.8 + spawned as f32 * 0.25;
             spawned += 1;
@@ -398,6 +415,9 @@ impl<'c> World<'c> {
             ));
             if tier >= 3 {
                 self.toast("A Crooked Herald conducts the Grey beyond the lights.");
+            }
+            if siege_wave {
+                self.toast("Siege horns answer — a Dim Ramlord advances on the ward!");
             }
         }
         spawned

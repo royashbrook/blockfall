@@ -329,6 +329,7 @@ struct Creature {
     carrying_light: bool,
     light_exposure: f32,
     uncanny_cycle: f32,
+    siege_charge: f32,
     // Vertical distance still to be climbed when the creature is stepping up onto
     // a ledge it bumped into. While this is > 0 the creature raises its Y toward
     // the ledge top over several ticks (a smooth clamber) instead of snapping up a
@@ -482,6 +483,7 @@ impl Default for Creature {
             carrying_light: false,
             light_exposure: 0.0,
             uncanny_cycle: 0.0,
+            siege_charge: 0.0,
             climb: 0.0,
             name: String::new(),
             given: String::new(),
@@ -647,6 +649,7 @@ pub struct World<'c> {
     // Global transient spacing between settlement assault waves. One settlement is
     // active around the local player at a time, so a world-wide timer is sufficient.
     assault_cooldown: f32,
+    assault_wave_serial: u32,
     villager_timer: f32,
     danger_timer: f32,
     // Per-landmark danger-site state, keyed by the structure anchor. A site is

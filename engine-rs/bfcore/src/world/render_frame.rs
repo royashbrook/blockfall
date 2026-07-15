@@ -449,7 +449,7 @@ impl<'c> World<'c> {
                 // positions. Role/action remain zero for non-villagers.
                 let at_goal = matches!(
                     cr.name.as_str(),
-                    "smudgeling" | "hollow" | "crooked_herald"
+                    "smudgeling" | "hollow" | "crooked_herald" | "dim_ramlord"
                 )
                     && cr.assault_goal.y != NO_FLOOR
                     && {
@@ -470,6 +470,10 @@ impl<'c> World<'c> {
                         16
                     } else if cr.name == "crooked_herald" {
                         17
+                    } else if cr.name == "dim_ramlord" && cr.siege_charge > 0.0 {
+                        18
+                    } else if cr.name == "dim_ramlord" {
+                        19
                     } else if cr.name == "hollow" && at_goal {
                         15
                     } else if at_goal {
@@ -485,6 +489,8 @@ impl<'c> World<'c> {
                         cr.light_exposure
                     } else if cr.name == "crooked_herald" {
                         (cr.uncanny_cycle / 2.4).clamp(0.0, 1.0)
+                    } else if cr.name == "dim_ramlord" && cr.siege_charge > 0.0 {
+                        (cr.siege_charge / 3.0).clamp(0.0, 1.0)
                     } else {
                         0.0
                     },
