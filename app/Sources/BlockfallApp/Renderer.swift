@@ -42,11 +42,12 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var bloomBlurVPipeline: MTLRenderPipelineState!  // vertical Gaussian
     private var compositePipeline: MTLRenderPipelineState!   // ACES + grade + vignette → drawable
     private var godrayPipeline: MTLRenderPipelineState!      // #167 half-res god-ray march pre-pass
-    // Ambient life (birds + fireflies) — renderer-owned, no engine data needed
+    // Ambient life (birds + fireflies) — renderer-owned visual state
     private var ambientLifePipeline: MTLRenderPipelineState!
     private var ambientLifeDepthState: MTLDepthStencilState!
     private var ambientLifeBuffer: MTLBuffer!   // AmbientSprite array (CPU-updated each frame)
     private let kMaxAmbientSprites = 120   // birds + fireflies + pollen + grey ash motes
+    private let ambientBirdSystem = AmbientBirdSystem()
 
     // ---- Sub-voxel props (#51/#52: GPU-instanced) ---------------------------
     private var propPipeline: MTLRenderPipelineState!
@@ -1085,14 +1086,19 @@ final class Renderer: NSObject, MTKViewDelegate {
             let packed = Int(ev.j)
             audio?.playBreak(materialClass: packed & 0xF)
             spawnBreakParticles(ev.pos, blockId: packed >> 4)
-        case 1: audio?.play(.place)
+            ambientBirdSystem.disturb(at: SIMD3<Float>(Float(ev.pos.x), Float(ev.pos.y), Float(ev.pos.z)))
+        case 1:
+            audio?.play(.place)
+            ambientBirdSystem.disturb(at: SIMD3<Float>(Float(ev.pos.x), Float(ev.pos.y), Float(ev.pos.z)))
         case 2: audio?.playStep(Int(ev.j))   // ev.j = terrain class (soft/hard/sand/snow/wood)
         case 3: audio?.play(.jump)
         case 4: audio?.play(.craft)
         case 5: audio?.play(.befriend)
         case 6: audio?.play(.questComplete)
         case 7: audio?.play(.pickup)
-        case 8: audio?.play(.mine)         // melee hit on a creature
+        case 8:
+            audio?.play(.mine)             // melee hit on a creature
+            ambientBirdSystem.disturb(at: SIMD3<Float>(Float(ev.pos.x), Float(ev.pos.y), Float(ev.pos.z)))
         case 9: audio?.play(.hurt)         // player took damage
         case 20: onDialogue?(Int(ev.j))    // #82 right-clicked a villager: open dialogue (npc_id = j)
         default: break
@@ -1535,9 +1541,13 @@ final class Renderer: NSObject, MTKViewDelegate {
 
             // --- Ambient life: birds (day) + fireflies (night) ---
             let spriteCount = updateAmbientSprites(
+                deltaTime: worldPaused ? 0 : Float(dt),
                 wallClock: wallClock,
                 timeOfDay: frame.camera.time_of_day,
                 camPos: SIMD3<Float>(camPosW.x, camPosW.y, camPosW.z),
+                birdsVisible: isUnderwater < 0.5,
+                entities: frame.entities,
+                entityCount: Int(frame.entity_count),
                 greyAmt: max(0, 1 - frame.camera.local_sat))   // #: Grey ash density
             if spriteCount > 0 {
                 enc.setRenderPipelineState(ambientLifePipeline)
@@ -2214,7 +2224,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// Fills ambientLifeBuffer with this frame's bird/firefly sprites.
     /// Returns the sprite count written (may be 0 when completely faded).
     @discardableResult
-    private func updateAmbientSprites(wallClock: Float, timeOfDay: Float, camPos: SIMD3<Float>,
+    private func updateAmbientSprites(deltaTime: Float, wallClock: Float, timeOfDay: Float,
+                                      camPos: SIMD3<Float>, birdsVisible: Bool,
+                                      entities: UnsafePointer<bf_entity_draw>?, entityCount: Int,
                                       greyAmt: Float = 0) -> Int {
         // dayT: 0=night, 1=day (sun-elevation based so birds/fireflies swap when the
         // sun actually sets, not a quarter-cycle off — see Renderer.dayLight).
@@ -2225,7 +2237,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Spawn budget
         // Keep all seven cheap slots while any daylight remains; each one fades on
         // its own threshold below, avoiding count-rounding pops at dusk.
-        let birdCount: Int     = dayT > 0 ? 7 : 0                     // 0 or 7 sparse birds
+        let birdCount: Int     = dayT > 0 && birdsVisible ? 7 : 0     // 0 or 7 sparse birds
         let fireflyCount: Int  = Int((nightT * nightT * 40).rounded()) // 0..40 fireflies by night
         let pollenCount: Int   = gfxPollen ? Int((dayT * 16).rounded()) : 0   // 0..16 motes by day (#45, toggle)
         // Grey ash motes: density scales with how drained the player's region is, so
@@ -2237,21 +2249,23 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         let ptr = ambientLifeBuffer.contents().bindMemory(to: AmbientSpritePod.self, capacity: kMaxAmbientSprites)
 
-        // --- Birds (daytime, sparse camera-relative sky loops) ---
+        var birdThreats = [camPos]
+        if let entities {
+            birdThreats.reserveCapacity(entityCount + 1)
+            for i in 0..<entityCount {
+                let p = entities[i].position
+                birdThreats.append(SIMD3<Float>(p.x, p.y, p.z))
+            }
+        }
+        let birdPoses = birdCount > 0
+            ? ambientBirdSystem.update(dt: deltaTime, clock: wallClock, camera: camPos,
+                                       threats: birdThreats,
+                                       surface: { [unowned self] x, z in self.ambientPerchSurface(x: x, z: z) })
+            : []
+
+        // --- Birds (daytime flight, world perches, local flee reactions) ---
         for i in 0..<birdCount {
-            let fi = Float(i)
-            // Golden-angle phases and slightly different loop speeds keep them from
-            // reading as one rigid flock. The shader derives travel direction from
-            // this orbit and turns each cartoon bird along its path.
-            let speed = 0.040 + Float(i % 4) * 0.009
-            let phase = fi * 2.399
-            let angle = wallClock * speed + phase + sin(wallClock * 0.055 + fi * 1.7) * 0.16
-            let radius = 28.0 + Float((i * 11) % 31) + sin(wallClock * 0.035 + fi) * 3.0
-            let height = camPos.y + 19.0 + Float((i * 7) % 18)
-                + sin(fi * 0.9 + wallClock * (0.09 + fi * 0.004)) * 4.0
-            let bx = camPos.x + cos(angle) * radius
-            let bz = camPos.z + sin(angle) * radius
-            let by = height
+            let pose = birdPoses[i]
             // Staggered continuous fade: later birds disappear earlier, while the
             // final one approaches zero before dayLight itself reaches zero.
             let fadeStart = Float(i) * 0.018
@@ -2264,8 +2278,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             default: body = SIMD3(0.88, 0.60, 0.13)  // golden goof
             }
             ptr[i] = AmbientSpritePod(
-                posW:  SIMD4<Float>(bx, by, bz, 1.55 + Float(i % 3) * 0.18),
-                color: SIMD4<Float>(body.x, body.y, body.z, birdAlpha * 0.96))
+                posW:  SIMD4<Float>(pose.position.x, pose.position.y, pose.position.z,
+                                    1.48 + Float(i % 3) * 0.16),
+                color: SIMD4<Float>(body.x, body.y, body.z, birdAlpha * 0.96),
+                motion: SIMD4<Float>(pose.heading.x, pose.heading.y, pose.heading.z,
+                                     Float(pose.mode)))
         }
 
         // --- Fireflies (nighttime, near-ground, small emissive) ---
@@ -2289,7 +2306,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             let idx = birdCount + i
             ptr[idx] = AmbientSpritePod(
                 posW:  SIMD4<Float>(fx, fy, fz, 0.22),              // w=size (tiny)
-                color: SIMD4<Float>(r, g, b, ffAlpha))
+                color: SIMD4<Float>(r, g, b, ffAlpha),
+                motion: .zero)
         }
 
         // --- Pollen / dust motes (daytime, near-ground, slow drift) (#45) ---
@@ -2313,7 +2331,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             let pAlpha  = dayT * (0.08 + twinkle * 0.10) * pNear   // faint, never busy, never up-close
             ptr[idx] = AmbientSpritePod(
                 posW:  SIMD4<Float>(px, py, pz, 0.09),          // w=size (very tiny)
-                color: SIMD4<Float>(1.0, 0.97, 0.80, pAlpha))  // pale warm gold
+                color: SIMD4<Float>(1.0, 0.97, 0.80, pAlpha),  // pale warm gold
+                motion: .zero)
         }
 
         // --- Grey ash / dust motes (The Grey ambience) ---
@@ -2339,10 +2358,37 @@ final class Renderer: NSObject, MTKViewDelegate {
             let v = 0.40 + 0.18 * Float(fmod(Double(fi) * 0.61, 1.0))
             ptr[idx] = AmbientSpritePod(
                 posW:  SIMD4<Float>(px, py, pz, 0.11),          // w=size (small)
-                color: SIMD4<Float>(v, v * 1.02, v * 1.08, aAlpha))   // ashen grey
+                color: SIMD4<Float>(v, v * 1.02, v * 1.08, aAlpha),   // ashen grey
+                motion: .zero)
         }
 
         return totalSprites
+    }
+
+    /// Highest loaded solid in a column, borrowed from the existing shadow occupancy
+    /// copy. Requiring two clear cells prevents perches inside roofs or tree crowns.
+    private func ambientPerchSurface(x: Int, z: Int) -> SIMD3<Float>? {
+        let (dx, dy, dz) = shadowVolTexDims
+        guard dx > 0, dy > 3, dz > 0, shadowVolBuf.count >= dx * dy * dz else { return nil }
+        let ox = Int(shadowVolOrigin.x), oz = Int(shadowVolOrigin.z)
+        guard x >= ox, x < ox + dx, z >= oz, z < oz + dz else { return nil }
+        let oy = Int(shadowVolOrigin.y)
+        func wrap(_ value: Int, _ size: Int) -> Int {
+            let m = value % size
+            return m < 0 ? m + size : m
+        }
+        let gx = wrap(x, dx), gz = wrap(z, dz)
+        func occupied(_ y: Int) -> Bool {
+            let gy = y - oy
+            guard gy >= 0, gy < dy else { return false }
+            return shadowVolBuf[(gz * dy + gy) * dx + gx] != 0
+        }
+        for y in stride(from: oy + dy - 3, through: oy, by: -1) {
+            if occupied(y), !occupied(y + 1), !occupied(y + 2) {
+                return SIMD3<Float>(Float(x) + 0.5, Float(y) + 1.18, Float(z) + 0.5)
+            }
+        }
+        return nil
     }
 
     // MARK: Sub-voxel props (#51/#52 GPU-instanced)

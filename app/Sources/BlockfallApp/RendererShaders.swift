@@ -171,10 +171,11 @@ extension Renderer {
         float  ao;               // 0=fully occluded, 1=fully open (from bits [3:5])
     };
 
-    // AmbientSprite: 32 bytes, matches Swift AmbientSpritePod.
+    // AmbientSprite: 48 bytes, matches Swift AmbientSpritePod.
     struct AmbientSprite {
         float4 posW;    // xyz=world pos; w=bird world radius or tiny-mote size
         float4 color;   // rgb=HDR colour (>1 ok), a=alpha
+        float4 motion;  // xyz=bird heading; w=bird mode (0 cruise, 1 land, 2 perch, 3 flee)
     };
 
     // AmbientLifeUniforms: matches Swift AmbientLifeUniforms.
@@ -3119,7 +3120,7 @@ extension Renderer {
     // vertex_id: sprite = vid / 6, corner = vid % 6.
     //
     // Birds: rounded procedural cartoon billboards, depth-tested against the
-    //        world and turned along their camera-relative sky loops.
+    //        world and turned along their authored flight/perch/flee heading.
     // Fireflies: tiny emissive warm-green, HDR > 1, depth-tested so they
     //            hide behind terrain. They bloom via the existing bloom pass.
     // =========================================================
@@ -3130,6 +3131,7 @@ extension Renderer {
         float2 uv;       // normalised quad UV (−1..1)
         float  flap [[flat]];
         uint   isBird [[flat]];
+        uint   birdMode [[flat]];
     };
 
     float alEllipse(float2 p, float2 center, float2 radius, float angle) {
@@ -3167,16 +3169,15 @@ extension Renderer {
         float3 centerW = horizonBend(sp.posW.xyz, camH);
         float4 clipCenter = au.viewProj * float4(centerW, 1.0);
 
-        // A bird's loop tangent projected into screen space gives it a stable head-
-        // first travel direction. Other motes preserve their old upright tiny quad.
+        // Project the CPU-authored flight heading so approach, landing, and escape
+        // all stay head-first. Other motes preserve their upright tiny quad.
         float aspect = max(au.aspect, 0.001);
         float2 forward = float2(1.0, 0.0);
+        uint birdMode = isBird ? uint(clamp(sp.motion.w + 0.5, 0.0, 3.0)) : 0u;
         if (isBird) {
-            float3 radial = sp.posW.xyz - au.camPosW.xyz;
-            radial.y = 0.0;
-            float invRadius = rsqrt(max(dot(radial.xz, radial.xz), 0.0001));
-            float3 tangent = float3(-radial.z * invRadius, 0.0, radial.x * invRadius);
-            float3 aheadW = horizonBend(sp.posW.xyz + tangent, camH);
+            float3 travel = sp.motion.xyz;
+            if (dot(travel, travel) < 0.0001) travel = float3(1.0, 0.0, 0.0);
+            float3 aheadW = horizonBend(sp.posW.xyz + normalize(travel), camH);
             float4 clipAhead = au.viewProj * float4(aheadW, 1.0);
             float2 centerNdc = clipCenter.xy / max(abs(clipCenter.w), 0.001);
             float2 aheadNdc = clipAhead.xy / max(abs(clipAhead.w), 0.001);
@@ -3197,9 +3198,13 @@ extension Renderer {
         o.position = pos;
         o.color    = sp.color;
         o.uv       = corner;
-        o.flap = sin(au.wallClock * (5.1 + fmod(float(si), 3.0) * 0.35)
-                     + float(si) * 1.91);
+        float flapRate = birdMode == 3u ? 8.8 : (birdMode == 1u ? 6.3 : 5.1);
+        o.flap = birdMode == 2u
+            ? sin(au.wallClock * 0.85 + float(si) * 1.91)
+            : sin(au.wallClock * (flapRate + fmod(float(si), 3.0) * 0.35)
+                  + float(si) * 1.91);
         o.isBird = isBird ? 1u : 0u;
+        o.birdMode = birdMode;
         return o;
     }
 
@@ -3208,7 +3213,8 @@ extension Renderer {
 
         if (in.isBird == 1u) {
             float2 uv = in.uv;
-            float flap = in.flap;
+            bool perched = in.birdMode == 2u;
+            float flap = perched ? in.flap * 0.10 : in.flap;
 
             // Rounded tail feathers and floppy wings keep the silhouette cohesive;
             // everything overlaps the plump body instead of floating beside it.
@@ -3216,16 +3222,23 @@ extension Renderer {
             float tailBotD = alEllipse(uv, float2(-0.54, -0.13), float2(0.37, 0.12), -0.34);
             float bodyD = alEllipse(uv, float2(-0.05, -0.03), float2(0.57, 0.31), 0.0);
             float headD = alEllipse(uv, float2(0.47, 0.03), float2(0.27, 0.26), 0.0);
+            float wingLength = perched ? 0.31 : 0.45;
             float backWingD = alEllipse(uv, float2(-0.10, -flap * 0.18),
-                                        float2(0.38, 0.15), -flap * 0.58);
+                                        float2(perched ? 0.29 : 0.38, 0.15), -flap * 0.58);
             float frontWingD = alEllipse(uv, float2(-0.02, flap * 0.27),
-                                         float2(0.45, 0.17 + abs(flap) * 0.04), flap * 0.72);
+                                         float2(wingLength, 0.17 + abs(flap) * 0.04), flap * 0.72);
+            float legAD = alEllipse(uv, float2(-0.09, -0.39), float2(0.032, 0.13), -0.08);
+            float legBD = alEllipse(uv, float2( 0.12, -0.39), float2(0.032, 0.13),  0.08);
+            float footAD = alEllipse(uv, float2(-0.02, -0.50), float2(0.14, 0.035), 0.04);
+            float footBD = alEllipse(uv, float2( 0.19, -0.50), float2(0.14, 0.035), 0.04);
 
             float tail = max(alMask(tailTopD, 0.06), alMask(tailBotD, 0.06));
             float body = alMask(bodyD, 0.045);
             float head = alMask(headD, 0.05);
             float backWing = alMask(backWingD, 0.055);
             float frontWing = alMask(frontWingD, 0.055);
+            float feet = perched ? max(max(alMask(legAD, 0.08), alMask(legBD, 0.08)),
+                                       max(alMask(footAD, 0.08), alMask(footBD, 0.08))) : 0.0;
 
             // Pointed yellow beak with a slightly larger dark surround.
             float2 bp = uv - float2(0.64, 0.035);
@@ -3242,12 +3255,17 @@ extension Renderer {
                                 max(alMask(bodyD / 1.13, 0.035), alMask(headD / 1.14, 0.035)));
             outline = max(outline, max(alMask(backWingD / 1.15, 0.035),
                                        alMask(frontWingD / 1.14, 0.035)));
+            if (perched) {
+                outline = max(outline, max(max(alMask(legAD / 1.35, 0.05), alMask(legBD / 1.35, 0.05)),
+                                           max(alMask(footAD / 1.25, 0.05), alMask(footBD / 1.25, 0.05))));
+            }
             outline = max(outline, beakOutline);
             if (outline < 0.01) discard_fragment();
 
             float3 base = in.color.rgb;
             float3 ink = float3(0.055, 0.035, 0.055);
             float3 col = ink;
+            col = mix(col, float3(0.92, 0.55, 0.08), feet);
             col = mix(col, base * 0.52, backWing);
             col = mix(col, base * 0.68, tail);
             col = mix(col, base, body);
@@ -3260,7 +3278,9 @@ extension Renderer {
 
             // One oversized eye supplies the intentionally funny cartoon read.
             float eye = alMask(alEllipse(uv, float2(0.52, 0.085), float2(0.095, 0.105), 0.0), 0.08) * head;
-            float pupil = alMask(alEllipse(uv, float2(0.555, 0.082), float2(0.041, 0.055), 0.0), 0.10) * eye;
+            float eyeLook = perched ? in.flap * 0.018 : 0.0;
+            float pupil = alMask(alEllipse(uv, float2(0.555 + eyeLook, 0.082),
+                                           float2(0.041, 0.055), 0.0), 0.10) * eye;
             col = mix(col, float3(1.0, 0.97, 0.84), eye);
             col = mix(col, ink, pupil);
 

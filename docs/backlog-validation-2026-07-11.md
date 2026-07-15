@@ -285,9 +285,11 @@ still a streaming/render defect.
 
 Use the live checklist below and also confirm birds are absent in caves, underwater, and
 at night. `BF_SELFTEST_BIRDS=1` now renders a centered, terrain-independent three-bird
-fixture. It validates connected geometry and pose only; live play validates sparse
-density, terrain occlusion, looping, and dusk disappearance. The fixture fails if any of
-the three expected colored bird areas is missing or projected offscreen.
+fixture in cruise, perched, and flee poses. The same run exercises the client-only state
+machine through cruise, approach, perch, and threat-driven flee transitions. Live play
+validates sparse density, world perches, support removal, terrain occlusion, and dusk
+disappearance. The fixture fails if any expected colored bird area is missing or
+projected offscreen.
 
 ## What changed
 
@@ -644,17 +646,26 @@ Stand outdoors in full daylight for 30 seconds and look across, then above, the
 treeline. At most seven sparse birds should cross at varied heights and speeds. Each
 must read as one plump cartoon animal—rounded body and head, oversized eye, beak,
 tail, and overlapping floppy wings—not the old faint V mark or detached shapes.
-They should turn along their loops, flap smoothly, disappear behind roofs/trees, and
-fade away around dusk. At night, confirm the existing fireflies still glow and bloom.
+They should turn into their travel direction, flap and sway smoothly, descend onto
+loaded roof, wall, or treetop surfaces, and occasionally perch with tucked wings,
+visible feet, a tiny hop, and an idle eye movement.
+
+Approach a perched bird to within roughly 10 blocks: it must take off before contact.
+Mining, placing, or attacking nearby must also send it fleeing. Remove its support and
+it must leave rather than float. Pause must freeze every bird. Birds must disappear
+behind terrain and be absent at night, underwater, and in caves; at night, confirm the
+existing fireflies still glow and bloom. Flying far away may locally recycle a bird;
+there is deliberately no bird persistence, collision, loot, or network state.
 
 For a fixed three-bird geometry check, run:
 
 ```bash
-BF_SELFTEST_BIRDS=1 "$BIN" --screenshot "$OUT/ambient-birds.png"
+BF_SELFTEST_BIRDS=1 "$BIN" --screenshot "$OUT/ambient-bird-modes-after.png"
 ```
 
-This fixture is centered and terrain-independent; use it for connected silhouette and
-pose only. Live play remains the terrain-occlusion, density, looping, and dusk gate.
+This fixture renders cruise, perched, and flee silhouettes and first runs a deterministic
+state test proving that a bird can land and then flee from a threat. Live play remains
+the world-perch, support-removal, occlusion, density, pause, and dusk gate.
 
 ## Deterministic headless visual checks
 

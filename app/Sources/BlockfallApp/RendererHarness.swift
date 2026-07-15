@@ -2,11 +2,12 @@ import MetalKit
 import simd
 import CBlockcore
 
-// MARK: - Ambient sprite POD (matches MSL AmbientSprite, 32 bytes)
-/// 32 bytes per sprite, written by Swift, read by MSL ambientLifeVert.
+// MARK: - Ambient sprite POD (matches MSL AmbientSprite, 48 bytes)
+/// 48 bytes per sprite, written by Swift, read by MSL ambientLifeVert.
 struct AmbientSpritePod {
     var posW:    SIMD4<Float>   // xyz = world pos; w = bird world radius or tiny-mote size
     var color:   SIMD4<Float>   // rgb = HDR colour (>1 allowed for bloom), a = alpha
+    var motion:  SIMD4<Float>   // xyz = bird heading; w = bird mode (0..3)
 }
 
 // MARK: - Precipitation particle POD (matches MSL PrecipParticle, 16 bytes)
@@ -20,9 +21,13 @@ struct PrecipParticlePod {
 // MARK: - Offscreen render self-test (CI: proves terrain pixels actually draw)
 
 func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 240) -> Bool {
-    guard MemoryLayout<AmbientSpritePod>.stride == 32,
+    guard MemoryLayout<AmbientSpritePod>.stride == 48,
           MemoryLayout<AmbientLifeUniforms>.stride == 96 else {
         print("ambient-life Swift/MSL layout mismatch")
+        return false
+    }
+    guard AmbientBirdSystem.selfTest() else {
+        print("ambient bird state transition self-test failed")
         return false
     }
     guard let device = MTLCreateSystemDefaultDevice() else { print("no Metal device"); return false }
@@ -244,13 +249,16 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
                 let ptr = birdFixtureBuffer.contents().bindMemory(to: AmbientSpritePod.self, capacity: 3)
                 ptr[0] = AmbientSpritePod(
                     posW: SIMD4<Float>(-3.0, 0.7, -9.0, 0.9),
-                    color: SIMD4<Float>(0.12, 0.57, 0.67, 0.96))
+                    color: SIMD4<Float>(0.12, 0.57, 0.67, 0.96),
+                    motion: SIMD4<Float>(1, 0, 0, 0))
                 ptr[1] = AmbientSpritePod(
                     posW: SIMD4<Float>(0.0, 0.0, -8.0, 1.1),
-                    color: SIMD4<Float>(0.88, 0.31, 0.25, 0.96))
+                    color: SIMD4<Float>(0.88, 0.31, 0.25, 0.96),
+                    motion: SIMD4<Float>(1, 0, 0, 2))
                 ptr[2] = AmbientSpritePod(
                     posW: SIMD4<Float>(3.0, -0.7, -9.0, 0.9),
-                    color: SIMD4<Float>(0.55, 0.32, 0.78, 0.96))
+                    color: SIMD4<Float>(0.55, 0.32, 0.78, 0.96),
+                    motion: SIMD4<Float>(1, 0, 0, 3))
                 var au = AmbientLifeUniforms(
                     viewProj: fixtureViewProj,
                     camPosW: SIMD4<Float>(fixtureCam.x, fixtureCam.y, fixtureCam.z, 0),
