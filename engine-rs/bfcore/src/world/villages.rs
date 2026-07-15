@@ -238,7 +238,7 @@ impl<'c> World<'c> {
             self.set_block_internal(
                 IVec3 {
                     x: wx,
-                    y: surf + 1,
+                    y: surf + 3,
                     z: wz,
                 },
                 Self::IRON_GATE,
@@ -246,7 +246,7 @@ impl<'c> World<'c> {
             self.set_block_internal(
                 IVec3 {
                     x: wx,
-                    y: surf + 2,
+                    y: surf + 4,
                     z: wz,
                 },
                 Self::IRON_GATE,
@@ -273,6 +273,48 @@ impl<'c> World<'c> {
             };
             if self.block_at(p) == AIR {
                 self.set_block_internal(p, Self::LAMP);
+            }
+        }
+    }
+
+    /// One-time old-save repair for the pre-#319 portcullis, which occupied the
+    /// only two walking columns. A raised bar already present identifies the new
+    /// layout, so later player construction is left alone.
+    pub(super) fn repair_legacy_city_gates(&mut self) {
+        let cities: Vec<(i32, i32)> = self
+            .villages
+            .iter()
+            .filter_map(|(&(ax, az), state)| (state.tier >= 3).then_some((ax, az)))
+            .collect();
+        for (cx, cz) in cities {
+            let z = cz + Self::PALISADE_R;
+            let gate = [0, 1].map(|dx| {
+                let x = cx + dx;
+                (x, worldgen::worldgen_surface_height(x, z, self.seed))
+            });
+            let legacy = gate.iter().any(|&(x, y)| {
+                self.block_at(IVec3 { x, y: y + 1, z }) == Self::IRON_GATE
+                    || self.block_at(IVec3 { x, y: y + 2, z }) == Self::IRON_GATE
+            });
+            let raised = gate.iter().any(|&(x, y)| {
+                self.block_at(IVec3 { x, y: y + 3, z }) == Self::IRON_GATE
+            });
+            if !legacy || raised {
+                continue;
+            }
+            for (x, y) in gate {
+                for dy in 1..=2 {
+                    let p = IVec3 { x, y: y + dy, z };
+                    if self.block_at(p) == Self::IRON_GATE {
+                        self.set_block_internal(p, AIR);
+                    }
+                }
+                for dy in 3..=4 {
+                    let p = IVec3 { x, y: y + dy, z };
+                    if self.block_at(p) == AIR {
+                        self.set_block_internal(p, Self::IRON_GATE);
+                    }
+                }
             }
         }
     }

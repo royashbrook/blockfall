@@ -3102,21 +3102,46 @@ fn village_blacksmith_adds_iron_gate_tier3() {
     let _ = w.debug_try_donation(bs);
     assert_eq!(w.debug_item_count(iron), 11);
     assert_eq!(w.debug_village_tier(ax, az), 3, "tier advances to 3 (iron)");
-    // Iron gate (block id 53) stands somewhere in the south gate columns.
-    let mut iron_blocks = 0;
-    for dx in -1..=2 {
+    // The iron gate is raised above the south opening: visibly present, but it
+    // must never seal the only two-wide route out of the promoted city.
+    for dx in [0, 1] {
         let wx = ax + dx;
         let wz = az + 8; // PALISADE_R
-        for wy in 0..=140 {
-            if w.debug_block_at(wx, wy, wz) == 53 {
-                iron_blocks += 1;
-            }
-        }
+        let surf = worldgen::worldgen_surface_height(wx, wz, 11);
+        assert_eq!(w.debug_block_at(wx, surf + 1, wz), 0, "gate floor is open");
+        assert_eq!(w.debug_block_at(wx, surf + 2, wz), 0, "gate headroom is open");
+        assert_eq!(w.debug_block_at(wx, surf + 3, wz), 53, "raised iron gate is visible");
+        assert_eq!(w.debug_block_at(wx, surf + 4, wz), 53, "raised iron gate has height");
     }
-    assert!(
-        iron_blocks > 0,
-        "an iron gate (block 53) was placed at the south opening"
-    );
+
+    // An existing save from before #319 has those same bars at foot/head level.
+    // Loading it must move them overhead automatically so current saves open too.
+    for dx in [0, 1] {
+        let wx = ax + dx;
+        let wz = az + 8;
+        let surf = worldgen::worldgen_surface_height(wx, wz, 11);
+        w.debug_edit(wx, surf + 1, wz, 53);
+        w.debug_edit(wx, surf + 2, wz, 53);
+        w.debug_edit(wx, surf + 3, wz, 0);
+        w.debug_edit(wx, surf + 4, wz, 0);
+    }
+    let dir = std::env::temp_dir().join(format!("bf_legacy_gate_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(w.save(dir.to_str().unwrap()));
+    let mut loaded = World::new(Some(TerrainGen::new()));
+    loaded.set_allocator(allocator());
+    assert!(loaded.load(dir.to_str().unwrap()));
+    for dx in [0, 1] {
+        let wx = ax + dx;
+        let wz = az + 8;
+        let surf = worldgen::worldgen_surface_height(wx, wz, 11);
+        assert_eq!(loaded.debug_block_at(wx, surf + 1, wz), 0);
+        assert_eq!(loaded.debug_block_at(wx, surf + 2, wz), 0);
+        assert_eq!(loaded.debug_block_at(wx, surf + 3, wz), 53);
+        assert_eq!(loaded.debug_block_at(wx, surf + 4, wz), 53);
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
