@@ -1227,6 +1227,21 @@ if CommandLine.arguments.contains("--dialogueprobe") {
         print("dialogueprobe FAIL: Mason material guidance missing")
         exit(1)
     }
+    // #317: the Elder can have enough offers to push the bottom Done button
+    // offscreen. The trade header must always retain its own close affordance.
+    var tradeClosed = 0
+    let trade = TradeView(frame: parent.bounds, npcId: 3, renderer: nil)
+    trade.onClose = { tradeClosed += 1 }
+    let tradeButtons = allButtons(trade)
+    guard let tradeX = tradeButtons.first(where: { $0.attributedTitle.string == "\u{2715}" }) else {
+        print("dialogueprobe FAIL: trade overlay missing X close")
+        exit(1)
+    }
+    tradeX.performClick(nil)
+    guard tradeClosed == 1 else {
+        print("dialogueprobe FAIL: trade X did not close")
+        exit(1)
+    }
     print("dialogueprobe OK")
     exit(0)
 }

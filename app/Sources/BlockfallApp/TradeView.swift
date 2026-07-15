@@ -53,7 +53,19 @@ final class TradeView: NSView {
 
         let title = NSTextField(labelWithString: "Trading Post")
         title.font = .boldSystemFont(ofSize: 26); title.textColor = .white
-        rows.append(title)
+        let xBtn = NSButton(title: "\u{2715}", target: self, action: #selector(closeClicked))
+        xBtn.bezelStyle = .regularSquare; xBtn.isBordered = false
+        xBtn.font = .boldSystemFont(ofSize: 20); xBtn.contentTintColor = .white
+        xBtn.toolTip = "Close trading"
+        xBtn.translatesAutoresizingMaskIntoConstraints = false
+        xBtn.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        xBtn.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        let header = NSStackView(views: [title, NSView(), xBtn])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.translatesAutoresizingMaskIntoConstraints = false
+        header.widthAnchor.constraint(equalToConstant: 480).isActive = true
+        rows.append(header)
 
         // Live coin balance so kids always know what they can afford.
         let coins = renderer?.inventoryCount(item: 96) ?? 0
