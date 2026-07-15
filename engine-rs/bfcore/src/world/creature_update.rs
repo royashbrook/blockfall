@@ -8,6 +8,7 @@ pub(super) const SOCIAL_SIT: u32 = 9;
 const SOCIAL_SWEEP: u32 = 10;
 const SOCIAL_HOME_RADIUS: i32 = 12;
 const SOCIAL_TRAVEL_SECONDS: f32 = 12.0;
+const GUARD_RANGE: f32 = 11.0;
 
 impl<'c> World<'c> {
     // The AI pathfinder asks the world about terrain through this thin shim; it never
@@ -681,6 +682,9 @@ impl<'c> World<'c> {
         const CLIMB_SPEED: f32 = 3.0;
         const MAX_CLIMB: i32 = 2;
         let n = self.creatures.len();
+        // Damage is queued by index so guards can inspect the stable creature roster
+        // during AI, then resolve hits after every creature has written its snapshot.
+        let mut guard_damage = vec![0i32; n];
         for i in 0..n {
             // Snapshot the fields we need for read-only logic, then write back.
             let mut c = self.creatures[i].clone();
@@ -696,8 +700,19 @@ impl<'c> World<'c> {
             );
             // Player position expressed in the creature's frame (may be just
             // outside [0, WORLD_PERIOD) when the pair straddles the seam).
-            let ppx = c.pos.x + to_player.x;
-            let ppz = c.pos.z + to_player.z;
+            let player_px = c.pos.x + to_player.x;
+            let player_pz = c.pos.z + to_player.z;
+            // Assault creatures press toward the settlement, not wherever the player
+            // happens to stand inside it. This also makes Hard Creative a useful,
+            // harmless observation mode for the complete approach behavior.
+            let (ppx, ppz) = if c.from_assault {
+                (
+                    c.pos.x + Self::wrap_signed_f(c.home_x as f32 + 0.5 - c.pos.x),
+                    c.pos.z + Self::wrap_signed_f(c.home_z as f32 + 0.5 - c.pos.z),
+                )
+            } else {
+                (player_px, player_pz)
+            };
             if c.aquatic {
                 if c.wander <= 0.0 {
                     c.yaw = self.rand01() * 6.2831853;
@@ -742,6 +757,7 @@ impl<'c> World<'c> {
             // smoothed displacement through the EXISTING collision/climb code below.
             use crate::creature_ai as cai;
             let xzd = (to_player.x * to_player.x + to_player.z * to_player.z).sqrt();
+            let pursuit_xzd = ((ppx - c.pos.x).powi(2) + (ppz - c.pos.z).powi(2)).sqrt();
             let aggressive = c.hostile || c.provoked;
             let temper = if c.wander > 900.0 {
                 // Scripted straight-walker (set by debug_spawn_creature_at for the
@@ -761,7 +777,11 @@ impl<'c> World<'c> {
             };
             // Aggressive creatures only seek/attack in survival; outside it they amble.
             let hunting = aggressive && self.mode == bf_game_mode::BF_MODE_SURVIVAL;
-            let eff_temper = if aggressive && !hunting {
+            let observing_assault = c.from_assault
+                && self.mode == bf_game_mode::BF_MODE_CREATIVE
+                && self.difficulty == 2;
+            let pursuing = hunting || observing_assault;
+            let eff_temper = if aggressive && !pursuing {
                 cai::Temperament::Passive
             } else {
                 temper
@@ -777,6 +797,8 @@ impl<'c> World<'c> {
                     c.atk_cd = 1.1;
                 }
             }
+            c.guarding = false;
+            c.guard_progress = 0.0;
             // Drive the behaviour state machine from the world rng so it stays
             // deterministic with the rest of the sim. The world's rng is the seed.
             c.ai.tick_repath();
@@ -792,7 +814,103 @@ impl<'c> World<'c> {
             let mut seed = self.rng;
             let artisan = c.model == 20 && Self::profession_station_spec(c.npc_id).is_some();
             let dialogue_held = c.model == 20 && c.dialogue_held;
+            let tier = if c.model == 20 {
+                self.effective_village_tier(c.home_x, c.home_z)
+            } else {
+                0
+            };
+            let assault_target = if c.model == 20 {
+                self.creatures
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, target)| {
+                        target.hostile
+                            && target.from_assault
+                            && target.home_x == c.home_x
+                            && target.home_z == c.home_z
+                    })
+                    .min_by(|(_, a), (_, b)| {
+                        let adx = Self::wrap_signed_f(a.pos.x - c.pos.x);
+                        let adz = Self::wrap_signed_f(a.pos.z - c.pos.z);
+                        let bdx = Self::wrap_signed_f(b.pos.x - c.pos.x);
+                        let bdz = Self::wrap_signed_f(b.pos.z - c.pos.z);
+                        (adx * adx + adz * adz).total_cmp(&(bdx * bdx + bdz * bdz))
+                    })
+                    .map(|(idx, target)| (idx, target.pos))
+            } else {
+                None
+            };
+            let settlement_under_attack = assault_target.is_some();
+            let guard_role = match tier {
+                3.. => matches!(c.npc_id, 2 | 4 | 6),
+                2 => matches!(c.npc_id, 2 | 4),
+                1 => c.npc_id == 4,
+                _ => false,
+            };
+            let assault_decision = if !dialogue_held {
+                assault_target.map(|(target_idx, target_pos)| {
+                    let dx = Self::wrap_signed_f(target_pos.x - c.pos.x);
+                    let dz = Self::wrap_signed_f(target_pos.z - c.pos.z);
+                    let dist = (dx * dx + dz * dz).sqrt();
+                    if guard_role && dist <= GUARD_RANGE {
+                        let ward_lit = self
+                            .villages
+                            .get(&(c.home_x, c.home_z))
+                            .map(|v| v.lights >= 8)
+                            .unwrap_or(false);
+                        let cooldown = match tier {
+                            3.. => 1.2,
+                            2 => 1.7,
+                            _ => 3.0,
+                        };
+                        c.atk_cd = (c.atk_cd - dt).max(0.0);
+                        c.guarding = true;
+                        c.guard_progress = (1.0 - c.atk_cd / cooldown).clamp(0.0, 1.0);
+                        if c.atk_cd <= 0.0 {
+                            let damage = tier as i32 + i32::from(ward_lit);
+                            guard_damage[target_idx] += damage.max(1);
+                            c.atk_cd = cooldown;
+                            c.guard_progress = 1.0;
+                        }
+                        cai::Decision {
+                            desired_heading: dx.atan2(dz),
+                            speed_frac: 0.0,
+                            path_goal: None,
+                        }
+                    } else if guard_role {
+                        // Walk to the inside of the threatened wall, then hold it.
+                        let adx = Self::wrap_signed_f(target_pos.x - c.home_x as f32);
+                        let adz = Self::wrap_signed_f(target_pos.z - c.home_z as f32);
+                        let len = (adx * adx + adz * adz).sqrt().max(0.001);
+                        cai::Decision {
+                            desired_heading: dx.atan2(dz),
+                            speed_frac: 0.9,
+                            path_goal: Some((
+                                Self::wrap_block(c.home_x + (adx / len * 6.0).round() as i32),
+                                Self::wrap_block(c.home_z + (adz / len * 6.0).round() as i32),
+                            )),
+                        }
+                    } else {
+                        // Civilians leave work/social time and seek the safe center.
+                        let hdx = Self::wrap_signed_f(c.home_x as f32 + 0.5 - c.pos.x);
+                        let hdz = Self::wrap_signed_f(c.home_z as f32 + 0.5 - c.pos.z);
+                        let home_dist = (hdx * hdx + hdz * hdz).sqrt();
+                        cai::Decision {
+                            desired_heading: hdx.atan2(hdz),
+                            speed_frac: if home_dist > 2.5 { 0.8 } else { 0.0 },
+                            path_goal: if home_dist > 2.5 {
+                                Some((c.home_x, c.home_z))
+                            } else {
+                                None
+                            },
+                        }
+                    }
+                })
+            } else {
+                None
+            };
             let tether_decision = if !dialogue_held
+                && !settlement_under_attack
                 && c.model == 20
                 && (!artisan || c.routine.state == VillagerRoutineState::Idle)
             {
@@ -801,6 +919,7 @@ impl<'c> World<'c> {
                 None
             };
             let social_allowed = !dialogue_held
+                && !settlement_under_attack
                 && c.model == 20
                 && tether_decision.is_none()
                 && Self::villager_social_window(&c);
@@ -817,15 +936,21 @@ impl<'c> World<'c> {
             }
             let social_driven = social_decision.is_some();
             let tether_driven = tether_decision.is_some() && !social_driven;
-            let routine_driven = artisan && !dialogue_held && !social_driven && !tether_driven;
+            let routine_driven = artisan
+                && !dialogue_held
+                && !settlement_under_attack
+                && !social_driven
+                && !tether_driven;
             let dec = if dialogue_held {
                 c.ai.path.clear();
                 c.ai.speed = 0.0;
                 cai::Decision {
-                    desired_heading: (ppx - c.pos.x).atan2(ppz - c.pos.z),
+                    desired_heading: (player_px - c.pos.x).atan2(player_pz - c.pos.z),
                     speed_frac: 0.0,
                     path_goal: None,
                 }
+            } else if let Some(dec) = assault_decision {
+                dec
             } else if let Some(dec) = social_decision {
                 dec
             } else if let Some(dec) = tether_decision {
@@ -834,7 +959,15 @@ impl<'c> World<'c> {
                 self.profession_routine_decision(&mut c, dt)
             } else {
                 cai::decide(
-                    &mut c.ai, eff_temper, c.pos.x, c.pos.z, ppx, ppz, xzd, dt, &mut seed,
+                    &mut c.ai,
+                    eff_temper,
+                    c.pos.x,
+                    c.pos.z,
+                    ppx,
+                    ppz,
+                    pursuit_xzd,
+                    dt,
+                    &mut seed,
                 )
             };
             self.rng = seed;
@@ -1017,6 +1150,27 @@ impl<'c> World<'c> {
                     z: cell_xz.1,
                 });
             }
+        }
+
+        // Resolve guard ward-strikes after the snapshot loop. AI kills intentionally
+        // grant no player loot/quest credit; the settlement defended itself.
+        let mut guard_fx = Vec::new();
+        for (i, damage) in guard_damage.into_iter().enumerate() {
+            if damage <= 0 || i >= self.creatures.len() || !self.creatures[i].from_assault {
+                continue;
+            }
+            let target = &mut self.creatures[i];
+            target.hp -= damage;
+            target.hit_flash = 0.22;
+            guard_fx.push(IVec3 {
+                x: Self::ifloor(target.pos.x),
+                y: Self::ifloor(target.pos.y + target.scale * 0.5),
+                z: Self::ifloor(target.pos.z),
+            });
+        }
+        self.creatures.retain(|c| c.hp > 0);
+        for p in guard_fx {
+            self.fx(8, p, 0);
         }
 
         // ---- collision: creatures (animals + villagers) hold distinct space ----

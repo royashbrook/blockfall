@@ -864,6 +864,10 @@ impl<'c> World<'c> {
             .unwrap_or(0)
     }
 
+    pub fn debug_set_village_lights(&mut self, ax: i32, az: i32, lights: u8) {
+        self.village_state_mut(ax, az).lights = lights.min(Self::VILLAGE_WARD_LIGHTS);
+    }
+
     pub fn debug_note_village_torch(&mut self, x: i32, y: i32, z: i32) -> bool {
         self.note_village_torch(IVec3 { x, y, z })
     }

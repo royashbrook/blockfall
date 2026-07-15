@@ -319,6 +319,9 @@ struct Creature {
     // Set for hostiles spawned at a procedural danger site. These ignore the
     // night/quest gate and are capped separately so they never overwhelm the world.
     from_ruin: bool,
+    // Night attackers aimed at a developed settlement. The home anchor identifies
+    // the threatened settlement; guards only engage attackers from their own home.
+    from_assault: bool,
     // Vertical distance still to be climbed when the creature is stepping up onto
     // a ledge it bumped into. While this is > 0 the creature raises its Y toward
     // the ledge top over several ticks (a smooth clamber) instead of snapping up a
@@ -344,6 +347,10 @@ struct Creature {
     // #305 transient UI conversation hold. Only the addressed villager pauses;
     // the rest of the simulation keeps running behind the dialogue overlay.
     dialogue_held: bool,
+    // Renderer-only guard pose state. Combat remains engine-authored and this is
+    // transient with the rest of the creature AI state.
+    guarding: bool,
+    guard_progress: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -458,6 +465,7 @@ impl Default for Creature {
             home_x: 0,
             home_z: 0,
             from_ruin: false,
+            from_assault: false,
             climb: 0.0,
             name: String::new(),
             given: String::new(),
@@ -465,6 +473,8 @@ impl Default for Creature {
             routine: VillagerRoutine::default(),
             social: VillagerSocial::default(),
             dialogue_held: false,
+            guarding: false,
+            guard_progress: 0.0,
         }
     }
 }
@@ -618,6 +628,9 @@ pub struct World<'c> {
     // #264 ABI v29 sidecar, index-aligned with `entities`.
     entity_appearances: Vec<bf_player_appearance>,
     creature_timer: f32,
+    // Global transient spacing between settlement assault waves. One settlement is
+    // active around the local player at a time, so a world-wide timer is sufficient.
+    assault_cooldown: f32,
     villager_timer: f32,
     danger_timer: f32,
     // Per-landmark danger-site state, keyed by the structure anchor. A site is

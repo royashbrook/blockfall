@@ -3550,6 +3550,134 @@ fn village_wall_keeps_hostiles_out() {
     assert!(!breached, "a hostile breached the walled village interior");
 }
 
+fn prepared_settlement_defense(tier: u8) -> (World<'static>, i32, i32, f32) {
+    let (mut w, (ax, az)) = village_world(11);
+    let surf = worldgen::worldgen_surface_height(ax, az, 11) as f32;
+    w.debug_set_camera(ax as f32 + 0.5, surf + 2.0, az as f32 + 0.5, 0.0, 0.0);
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    for _ in 0..40 {
+        w.update(&zero, 0.05);
+    }
+    w.debug_set_village_tier(ax, az, tier);
+    w.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    (w, ax, az, surf)
+}
+
+#[test]
+fn settlement_guards_scale_and_civilians_seek_safety() {
+    // A new village fields one slow woodcutter militia member. The first ward
+    // strike hurts but does not erase an ordinary attacker, leaving room for the
+    // player to help.
+    let (mut village, ax, az, surf) = prepared_settlement_defense(1);
+    let militia = village.debug_spawn_villager_role(ax, az, 4);
+    let attacker = village.debug_spawn_assault_hostile_at(
+        ax,
+        az,
+        ax as f32 + 9.5,
+        surf + 1.0,
+        az as f32 + 0.5,
+    );
+    village.debug_update_creatures(0.05);
+    assert!(
+        village.debug_creature_guarding(militia),
+        "woodcutter visibly takes guard duty"
+    );
+    assert_eq!(
+        village.debug_creature_hp(attacker),
+        4,
+        "village militia deals one damage"
+    );
+
+    let mut frame = empty_frame();
+    let mut draws = Vec::new();
+    let mut shadows = Vec::new();
+    let mut props = Vec::new();
+    village.build_frame(&mut frame, &mut draws, &mut shadows, &mut props, 0.0);
+    assert!(
+        village
+            .entity_role_actions()
+            .iter()
+            .any(|a| a.role == 4 && a.action == 11),
+        "guard sidecar selects the authored light-staff pose"
+    );
+
+    // A town civilian abandons the edge and moves toward the safe center while
+    // the woodcutter holds the attacker at the wall.
+    let (mut town, tx, tz, tsurf) = prepared_settlement_defense(2);
+    let civilian = town.debug_spawn_villager_role(tx, tz, 1);
+    town.debug_set_creature_pos(civilian, tx as f32 - 5.5, tsurf, tz as f32 + 0.5);
+    town.debug_spawn_villager_role(tx, tz, 4);
+    town.debug_spawn_assault_hostile_at(tx, tz, tx as f32 + 9.5, tsurf + 1.0, tz as f32 + 0.5);
+    let before = town.debug_creature_pos(civilian).0;
+    for _ in 0..12 {
+        town.debug_update_creatures(0.05);
+    }
+    let after = town.debug_creature_pos(civilian).0;
+    assert!(
+        after > before,
+        "civilian retreats toward settlement center ({before} -> {after})"
+    );
+    assert!(
+        !town.debug_creature_guarding(civilian),
+        "civilian never presents as a guard"
+    );
+
+    // A city has three eligible guards; their simultaneous first volley clears the
+    // same ordinary attacker without player damage or loot credit.
+    let (mut city, cx, cz, csurf) = prepared_settlement_defense(3);
+    for role in [4, 2, 6] {
+        city.debug_spawn_villager_role(cx, cz, role);
+    }
+    city.debug_spawn_assault_hostile_at(cx, cz, cx as f32 + 9.5, csurf + 1.0, cz as f32 + 0.5);
+    city.debug_update_creatures(0.05);
+    assert_eq!(
+        city.debug_assault_count(),
+        0,
+        "city guard volley clears ordinary pressure"
+    );
+}
+
+#[test]
+fn settlement_assaults_are_outside_bounded_and_light_ward_reduced() {
+    let (mut w, ax, az, surf) = prepared_settlement_defense(1);
+    assert_eq!(w.debug_assault_wave_size(ax, az, 1), 3);
+    w.debug_set_village_lights(ax, az, 8);
+    assert_eq!(
+        w.debug_assault_wave_size(ax, az, 1),
+        2,
+        "completed light ward thins a wave"
+    );
+    w.debug_set_village_lights(ax, az, 0);
+
+    w.debug_force_quest_done();
+    w.debug_set_day_time(0.90);
+    w.debug_set_camera(ax as f32 + 0.5, surf + 2.0, az as f32 + 0.5, 0.0, 0.0);
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    for _ in 0..300 {
+        if w.debug_assault_count() > 0 {
+            break;
+        }
+        w.update(&zero, 0.05);
+    }
+    let first_wave = w.debug_assault_count();
+    assert!(
+        first_wave > 0 && first_wave <= 3,
+        "one bounded village wave spawned: {first_wave}"
+    );
+    assert!(
+        w.debug_assaults_outside_protection(),
+        "attackers approach from outside the wall"
+    );
+    for _ in 0..200 {
+        w.update(&zero, 0.05);
+    }
+    assert_eq!(
+        w.debug_assault_count(),
+        first_wave,
+        "an active wave does not become constant trickle-spawning"
+    );
+}
+
 // ============================================================================
 // #170 the "blockfall" mechanic: breaking a block bursts it into physical
 // debris that pops, arcs, bounces, settles, and magnets to the player.

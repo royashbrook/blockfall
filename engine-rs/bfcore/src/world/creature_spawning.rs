@@ -225,6 +225,61 @@ impl<'c> World<'c> {
         true
     }
 
+    /// Start one readable night assault around the settlement containing the player.
+    /// Reuse the normal hostile roster for now; the Grey-specific silhouettes are
+    /// separate content issues, while this owns only wave/defense behavior.
+    pub(super) fn settlement_assault_size(&self, ax: i32, az: i32, tier: u8) -> i32 {
+        let anchor = (Self::wrap_block(ax), Self::wrap_block(az));
+        let ward_lit = self
+            .villages
+            .get(&anchor)
+            .map(|v| v.lights >= 8)
+            .unwrap_or(false);
+        let hard_bonus = if self.difficulty == 2 { 2 } else { 0 };
+        let ward_reduction = if ward_lit { 1 } else { 0 };
+        (2 + tier as i32 + hard_bonus - ward_reduction).max(2)
+    }
+
+    fn spawn_settlement_assault(&mut self, ax: i32, az: i32, tier: u8) -> i32 {
+        let anchor = (Self::wrap_block(ax), Self::wrap_block(az));
+        let ward_lit = self
+            .villages
+            .get(&anchor)
+            .map(|v| v.lights >= 8)
+            .unwrap_or(false);
+        let wanted = self.settlement_assault_size(ax, az, tier);
+        let mut spawned = 0;
+        let mut attempts = 0;
+        while spawned < wanted && attempts < wanted * 8 {
+            attempts += 1;
+            if !self.spawn_hostile(11.0, 19.0) {
+                continue;
+            }
+            if let Some(c) = self.creatures.last_mut() {
+                c.from_assault = true;
+                c.home_x = anchor.0;
+                c.home_z = anchor.1;
+            }
+            spawned += 1;
+        }
+        if spawned > 0 {
+            let place = match tier {
+                3 => "city",
+                2 => "town",
+                _ => "village",
+            };
+            let ward = if ward_lit {
+                " The light ward flares."
+            } else {
+                ""
+            };
+            self.toast(&format!(
+                "Night assault! {spawned} attackers approach the {place}.{ward}"
+            ));
+        }
+        spawned
+    }
+
     pub(super) fn spawn_fish(&mut self, rmin: f32, rmax: f32) -> bool {
         let pool: Vec<CreatureDefX> = match self.extra {
             Some(x) => x
@@ -294,6 +349,7 @@ impl<'c> World<'c> {
         if self.gen.is_none() || self.store.resident_count() < 20 {
             return;
         }
+        self.assault_cooldown = (self.assault_cooldown - dt).max(0.0);
         self.creature_timer -= dt;
         if self.creature_timer > 0.0 {
             return;
@@ -329,6 +385,11 @@ impl<'c> World<'c> {
         let quest_unlocked = self.quests_completed > 0
             || (hard && self.mode == bf_game_mode::BF_MODE_CREATIVE);
         let monsters_active = !easy && (night || dark_cave) && quest_unlocked;
+        if !night {
+            // A new night gets a prompt first wave; the in-night cooldown only
+            // prevents constant harassment after one group has been cleared.
+            self.assault_cooldown = 0.0;
+        }
         if easy || !spawn_hostiles {
             self.creatures.retain(|c| {
                 if c.hostile && c.from_ruin {
@@ -362,7 +423,27 @@ impl<'c> World<'c> {
         if monsters_active {
             // Hard: twice the cap, checked more than twice as often.
             self.creature_timer = if hard { 1.0 } else { 2.5 };
-            if hostiles < if hard { 8 } else { 4 } {
+            let settlement = if night {
+                self.village_protects(Self::ifloor(self.pos.x), Self::ifloor(self.pos.z))
+            } else {
+                None
+            };
+            let mut settlement_wave = false;
+            if let Some((ax, az)) = settlement {
+                settlement_wave = true;
+                let active = self
+                    .creatures
+                    .iter()
+                    .any(|c| c.hostile && c.from_assault && c.home_x == ax && c.home_z == az);
+                if !active && self.assault_cooldown <= 0.0 {
+                    let tier = self.effective_village_tier(ax, az).max(1);
+                    let spawned = self.spawn_settlement_assault(ax, az, tier);
+                    self.assault_cooldown = if spawned > 0 { 90.0 } else { 5.0 };
+                }
+            }
+            // While the player is inside a settlement, the bounded assault replaces
+            // ambient trickle-spawns. This keeps the fight readable and the cap honest.
+            if !settlement_wave && hostiles < if hard { 8 } else { 4 } {
                 self.spawn_hostile(10.0, 22.0);
             }
         } else if ambient < 9 {

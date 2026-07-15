@@ -197,6 +197,53 @@ impl<'c> World<'c> {
         self.creatures.push(c);
         (self.creatures.len() - 1) as i32
     }
+    pub fn debug_spawn_assault_hostile_at(
+        &mut self,
+        ax: i32,
+        az: i32,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> i32 {
+        let idx = self.debug_spawn_hostile_at(x, y, z);
+        let c = &mut self.creatures[idx as usize];
+        c.from_assault = true;
+        c.home_x = Self::wrap_block(ax);
+        c.home_z = Self::wrap_block(az);
+        idx
+    }
+    pub fn debug_creature_hp(&self, i: i32) -> i32 {
+        self.creatures
+            .get(i.max(0) as usize)
+            .filter(|_| i >= 0)
+            .map(|c| c.hp)
+            .unwrap_or(0)
+    }
+    pub fn debug_creature_guarding(&self, i: i32) -> bool {
+        self.creatures
+            .get(i.max(0) as usize)
+            .filter(|_| i >= 0)
+            .map(|c| c.guarding)
+            .unwrap_or(false)
+    }
+    pub fn debug_assault_count(&self) -> i32 {
+        self.creatures
+            .iter()
+            .filter(|c| c.hostile && c.from_assault)
+            .count() as i32
+    }
+    pub fn debug_assault_wave_size(&self, ax: i32, az: i32, tier: u8) -> i32 {
+        self.settlement_assault_size(ax, az, tier)
+    }
+    pub fn debug_assaults_outside_protection(&self) -> bool {
+        self.creatures.iter().filter(|c| c.from_assault).all(|c| {
+            self.village_protects(Self::ifloor(c.pos.x), Self::ifloor(c.pos.z))
+                .is_none()
+        })
+    }
+    pub fn debug_update_creatures(&mut self, dt: f32) {
+        self.update_creatures(dt);
+    }
     // Spawn a villager with a specific profession at a settlement anchor, for tier tests.
     pub fn debug_spawn_villager_role(&mut self, ax: i32, az: i32, npc_id: i32) -> i32 {
         let mut c = Creature::default();

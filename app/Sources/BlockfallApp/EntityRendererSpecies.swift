@@ -4213,9 +4213,10 @@ extension EntityRenderer {
         let professionWorking = curEntityAction == 3 && (2...6).contains(curEntityRole)
         let socialPose = (5...10).contains(curEntityAction)
         let playerActing = e.kind == 100 && curEntityAction == 11
+        let guardActing = e.kind != 100 && curEntityAction == 11
         let sweeping = curEntityAction == 10
         let sitting = curEntityAction == 9
-        let poseActive = professionWorking || socialPose || playerActing
+        let poseActive = professionWorking || socialPose || playerActing || guardActing
         let workT = curEntityActionProgress * .pi * 6.0
         let workStroke = 0.5 - 0.5 * cos(workT)
         let workSweep = sin(workT)
@@ -4232,6 +4233,12 @@ extension EntityRenderer {
                 return (-0.62 * actionAnticipation + 0.38 * actionContact,
                         1.00 * actionAnticipation - 2.05 * actionContact,
                         -0.22 * actionAnticipation + 0.42 * actionContact)
+            }
+            if guardActing {
+                let wardSwing = sin(actionT * .pi)
+                return (-1.02 + wardSwing * 0.26,
+                        -1.62 - wardSwing * 0.30,
+                        0.16 + wardSwing * 0.12)
             }
             if socialPose {
                 switch curEntityAction {
@@ -4458,7 +4465,7 @@ extension EntityRenderer {
         drawCube(enc: enc, viewProj: viewProj,
                  model: handM(shoulderXR, armAngR, elbowR, wristR, armBowR),
                  rgb: skinCol, sat: sat, shape: .sphere)
-        if professionWorking || sweeping {
+        if professionWorking || sweeping || guardActing {
             // Finished held tools make every role readable in a still frame. Two
             // parts per tool preserve the 29-part villager cap.
             func toolM(_ offset: SIMD3<Float>, _ dims: SIMD3<Float>,
@@ -4476,7 +4483,20 @@ extension EntityRenderer {
             }
             let handleCol = SIMD3<Float>(0.46, 0.27, 0.12)
             let ironCol = SIMD3<Float>(0.48, 0.53, 0.58)
-            if sweeping {
+            if guardActing {
+                // Settlement militia carry a readable two-part light staff. The orb
+                // brightens with the authored strike progress while staying inside
+                // the existing per-villager part budget.
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: toolM(SIMD3(0, -s * 0.28, 0),
+                                      SIMD3(s * 0.075, s * 0.62, s * 0.075), rotX: -0.12),
+                         rgb: SIMD3<Float>(0.42, 0.25, 0.11), sat: sat, shape: .cylinder)
+                let wardGlow = SIMD3<Float>(1.0, 0.66 + actionT * 0.24, 0.22)
+                drawCube(enc: enc, viewProj: viewProj,
+                         model: toolM(SIMD3(0, -s * 0.62, s * 0.02),
+                                      SIMD3(repeating: s * (0.20 + actionT * 0.035))),
+                         rgb: wardGlow, sat: sat, shape: .sphere)
+            } else if sweeping {
                 drawCube(enc: enc, viewProj: viewProj,
                          model: toolM(SIMD3(0, -s * 0.34, 0),
                                       SIMD3(s * 0.065, s * 0.72, s * 0.065), rotX: 0.18),

@@ -383,6 +383,7 @@ impl<'c> World<'c> {
         self.stream_active_r = 2.min(self.stream_r);
         self.creatures.clear();
         self.creature_timer = 0.0;
+        self.assault_cooldown = 0.0;
         self.ruin_sites.clear();
         self.danger_timer = 0.0;
         if !quest_loaded {
