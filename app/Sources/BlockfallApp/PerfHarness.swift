@@ -1350,6 +1350,7 @@ func runCritterGallery(savePath: String) -> Bool {
             let phases: [Float] = [0, .pi * 0.5, .pi, .pi * 1.5]
             var moving = bf_entity_role_action()
             moving._pad = 1
+            moving.role = UInt32(ProcessInfo.processInfo.environment["BF_CRITTER_ROLE"] ?? "0") ?? 0
             moving.action = UInt32(ProcessInfo.processInfo.environment["BF_CRITTER_ACTION"] ?? "0") ?? 0
             moving.progress = Float(ProcessInfo.processInfo.environment["BF_CRITTER_ACTION_PROGRESS"] ?? "0.5") ?? 0.5
             for i in ents.indices {

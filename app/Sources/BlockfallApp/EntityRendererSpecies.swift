@@ -27,38 +27,38 @@ private struct VillagerWalkPose {
 
 private let villagerWalkFrames: [VillagerWalkPose] = [
     // left contact, down, passing, up; then the mirrored right-foot half.
-    .init(legL: 0.82, legR: -0.62, ankleL: -0.30, ankleR: 0.42,
-          armL: -0.76, armR: 0.64, elbowL: 0.12, elbowR: -0.42,
-          wristL: -0.04, wristR: 0.22, bodyRoll: 0.050, bodyPitch: -0.045,
-          lift: 0.00, squash: 0.035, headRoll: -0.045, headPitch: 0.025),
-    .init(legL: 0.55, legR: -0.38, ankleL: -0.16, ankleR: 0.28,
-          armL: -0.58, armR: 0.52, elbowL: 0.22, elbowR: -0.50,
-          wristL: -0.10, wristR: 0.26, bodyRoll: 0.070, bodyPitch: 0.020,
-          lift: -0.018, squash: 0.080, headRoll: -0.070, headPitch: -0.020),
-    .init(legL: -0.12, legR: 0.18, ankleL: 0.22, ankleR: -0.12,
-          armL: -0.08, armR: 0.18, elbowL: 0.38, elbowR: -0.28,
-          wristL: -0.20, wristR: 0.12, bodyRoll: 0.010, bodyPitch: -0.020,
-          lift: 0.040, squash: 0.010, headRoll: 0.025, headPitch: 0.055),
-    .init(legL: -0.62, legR: 0.70, ankleL: 0.40, ankleR: -0.26,
-          armL: 0.62, armR: -0.70, elbowL: 0.48, elbowR: -0.08,
-          wristL: -0.24, wristR: 0.02, bodyRoll: -0.045, bodyPitch: -0.060,
-          lift: 0.082, squash: 0.000, headRoll: 0.065, headPitch: 0.020),
-    .init(legL: -0.62, legR: 0.82, ankleL: 0.42, ankleR: -0.30,
-          armL: 0.64, armR: -0.76, elbowL: 0.42, elbowR: -0.12,
-          wristL: -0.22, wristR: 0.04, bodyRoll: -0.050, bodyPitch: -0.045,
-          lift: 0.00, squash: 0.035, headRoll: 0.045, headPitch: 0.025),
-    .init(legL: -0.38, legR: 0.55, ankleL: 0.28, ankleR: -0.16,
-          armL: 0.52, armR: -0.58, elbowL: 0.50, elbowR: -0.22,
-          wristL: -0.26, wristR: 0.10, bodyRoll: -0.070, bodyPitch: 0.020,
-          lift: -0.018, squash: 0.080, headRoll: 0.070, headPitch: -0.020),
-    .init(legL: 0.18, legR: -0.12, ankleL: -0.12, ankleR: 0.22,
-          armL: 0.18, armR: -0.08, elbowL: 0.28, elbowR: -0.38,
-          wristL: -0.12, wristR: 0.20, bodyRoll: -0.010, bodyPitch: -0.020,
-          lift: 0.040, squash: 0.010, headRoll: -0.025, headPitch: 0.055),
-    .init(legL: 0.70, legR: -0.62, ankleL: -0.26, ankleR: 0.40,
-          armL: -0.70, armR: 0.62, elbowL: 0.08, elbowR: -0.48,
-          wristL: -0.02, wristR: 0.24, bodyRoll: 0.045, bodyPitch: -0.060,
-          lift: 0.082, squash: 0.000, headRoll: -0.065, headPitch: 0.020),
+    .init(legL: 1.04, legR: -0.78, ankleL: -0.42, ankleR: 0.60,
+          armL: -0.98, armR: 0.84, elbowL: 0.18, elbowR: -0.62,
+          wristL: -0.08, wristR: 0.36, bodyRoll: 0.078, bodyPitch: -0.078,
+          lift: 0.00, squash: 0.060, headRoll: -0.082, headPitch: 0.045),
+    .init(legL: 0.68, legR: -0.48, ankleL: -0.22, ankleR: 0.40,
+          armL: -0.72, armR: 0.66, elbowL: 0.30, elbowR: -0.68,
+          wristL: -0.16, wristR: 0.42, bodyRoll: 0.112, bodyPitch: 0.052,
+          lift: -0.035, squash: 0.140, headRoll: -0.115, headPitch: -0.040),
+    .init(legL: -0.18, legR: 0.28, ankleL: 0.34, ankleR: -0.18,
+          armL: -0.14, armR: 0.28, elbowL: 0.54, elbowR: -0.40,
+          wristL: -0.32, wristR: 0.18, bodyRoll: 0.018, bodyPitch: -0.038,
+          lift: 0.060, squash: -0.025, headRoll: 0.045, headPitch: 0.082),
+    .init(legL: -0.82, legR: 0.92, ankleL: 0.58, ankleR: -0.38,
+          armL: 0.84, armR: -0.94, elbowL: 0.66, elbowR: -0.12,
+          wristL: -0.38, wristR: 0.04, bodyRoll: -0.075, bodyPitch: -0.105,
+          lift: 0.125, squash: -0.065, headRoll: 0.108, headPitch: 0.040),
+    .init(legL: -0.78, legR: 1.04, ankleL: 0.60, ankleR: -0.42,
+          armL: 0.84, armR: -0.98, elbowL: 0.62, elbowR: -0.18,
+          wristL: -0.36, wristR: 0.08, bodyRoll: -0.078, bodyPitch: -0.078,
+          lift: 0.00, squash: 0.060, headRoll: 0.082, headPitch: 0.045),
+    .init(legL: -0.48, legR: 0.68, ankleL: 0.40, ankleR: -0.22,
+          armL: 0.66, armR: -0.72, elbowL: 0.68, elbowR: -0.30,
+          wristL: -0.42, wristR: 0.16, bodyRoll: -0.112, bodyPitch: 0.052,
+          lift: -0.035, squash: 0.140, headRoll: 0.115, headPitch: -0.040),
+    .init(legL: 0.28, legR: -0.18, ankleL: -0.18, ankleR: 0.34,
+          armL: 0.28, armR: -0.14, elbowL: 0.40, elbowR: -0.54,
+          wristL: -0.18, wristR: 0.32, bodyRoll: -0.018, bodyPitch: -0.038,
+          lift: 0.060, squash: -0.025, headRoll: -0.045, headPitch: 0.082),
+    .init(legL: 0.92, legR: -0.82, ankleL: -0.38, ankleR: 0.58,
+          armL: -0.94, armR: 0.84, elbowL: 0.12, elbowR: -0.66,
+          wristL: -0.04, wristR: 0.38, bodyRoll: 0.075, bodyPitch: -0.105,
+          lift: 0.125, squash: -0.065, headRoll: -0.108, headPitch: 0.040),
 ]
 
 private func villagerWalkPose(_ phase: Float) -> VillagerWalkPose {
@@ -4219,23 +4219,29 @@ extension EntityRenderer {
         let workT = curEntityActionProgress * .pi * 6.0
         let workStroke = 0.5 - 0.5 * cos(workT)
         let workSweep = sin(workT)
+        // The player clip has a distinct wind-up, contact, and elastic recovery.
+        // Both curves return to zero, so repeated actions never snap at the seam.
+        let actionT = curEntityActionProgress
+        let actionAnticipation = actionT < 0.28 ? sin(.pi * actionT / 0.28) : 0
+        let actionContact = actionT >= 0.20 ? sin(.pi * (actionT - 0.20) / 0.80) : 0
         // Raised anticipation -> station-facing contact. The previous curves
         // ended down and behind the villager, so hammer heads swept at the dirt.
-        let strikeAngle = 2.05 - workStroke * 3.30
+        let strikeAngle = 2.35 - workStroke * 4.00
         let workArms: (Float, Float, Float) = {
             if playerActing {
-                let strike = sin(curEntityActionProgress * .pi)
-                return (-0.18 + strike * 0.34, -0.30 - strike * 1.45, 0.10 + strike * 0.14)
+                return (-0.62 * actionAnticipation + 0.38 * actionContact,
+                        1.00 * actionAnticipation - 2.05 * actionContact,
+                        -0.22 * actionAnticipation + 0.42 * actionContact)
             }
             if socialPose {
                 switch curEntityAction {
-                case 6: return (-1.05 + workSweep * 0.22, 0.08, 0.02) // point/gesture
-                case 7: return (0.06, -1.28 + workSweep * 0.36, 0.02) // greeting wave
-                case 8: return (-0.34 + workSweep * 0.16,
-                                -0.58 - workSweep * 0.16, 0.03) // conversation
+                case 6: return (-1.28 + workSweep * 0.30, 0.12, 0.08) // point/gesture
+                case 7: return (0.10, -1.52 + workSweep * 0.48, -0.06) // greeting wave
+                case 8: return (-0.46 + workSweep * 0.24,
+                                -0.74 - workSweep * 0.24, 0.10) // conversation
                 case 9: return (-0.18, 0.18, -0.06) // hands relaxed while seated
-                case 10: return (-0.72 + workSweep * 0.24,
-                                 -0.96 - workSweep * 0.24, 0.18) // two-hand sweep
+                case 10: return (-0.88 + workSweep * 0.34,
+                                 -1.18 - workSweep * 0.34, 0.28) // two-hand sweep
                 default: return (0.02, -0.02, 0.0) // look around
                 }
             }
@@ -4257,7 +4263,10 @@ extension EntityRenderer {
             : armSway * (1 - walkAmt) + walk.armL * walkAmt
         let armAngR = poseActive ? workArms.1
             : -armSway * (1 - walkAmt) + walk.armR * walkAmt
-        let stepSquash = walk.squash * walkAmt
+        let actionSquash = playerActing
+            ? actionContact * 0.105 - actionAnticipation * 0.050
+            : (professionWorking ? workStroke * 0.045 : 0)
+        let stepSquash = walk.squash * walkAmt + actionSquash
         let cartoonLift = walk.lift * s * walkAmt
 
         let breatheY   = breatheYOffset(breathPhase, scale: s)
@@ -4298,9 +4307,9 @@ extension EntityRenderer {
         let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
         // A brief ground-pivoted landing squash makes each planted step read
         // without sliding or sinking the feet.
-        let landingShape = SIMD3<Float>(1 + stepSquash * 0.55,
-                                        1 - stepSquash,
-                                        1 + stepSquash * 0.55)
+        let landingShape = SIMD3<Float>(1 + stepSquash * 0.78,
+                                        1 - stepSquash * 1.12,
+                                        1 + stepSquash * 0.72)
         let R       = squashRig(Ryaw, squash: squash * landingShape,
                                 footLocalY: groundY - wc.y)
 
@@ -4313,16 +4322,18 @@ extension EntityRenderer {
         // ---- LEGS + FEET ----
         let hipY = -tH * 0.5
         // #212: legs (and feet) pivot at the hip by the walk swing.
-        func legM(_ hip: SIMD3<Float>, _ ang: Float) -> simd_float4x4 {
+        func legM(_ hip: SIMD3<Float>, _ ang: Float,
+                  _ hose: Float, _ reach: Float) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * bodyLean * EntityRenderer.trans(hip)
-                * EntityRenderer.rotX(ang)
-                * EntityRenderer.trans(SIMD3(0, -legH * 0.5, 0))
-                * EntityRenderer.scaleM(SIMD3(legW, legH, legD))
+                * EntityRenderer.rotZ(hose) * EntityRenderer.rotX(ang)
+                * EntityRenderer.trans(SIMD3(0, -legH * reach * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3(legW, legH * reach, legD))
         }
-        func footM(_ hip: SIMD3<Float>, _ legAng: Float, _ ankleAng: Float) -> simd_float4x4 {
+        func footM(_ hip: SIMD3<Float>, _ legAng: Float, _ ankleAng: Float,
+                   _ hose: Float, _ reach: Float) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * bodyLean * EntityRenderer.trans(hip)
-                * EntityRenderer.rotX(legAng)
-                * EntityRenderer.trans(SIMD3(0, -legH, 0))
+                * EntityRenderer.rotZ(hose) * EntityRenderer.rotX(legAng)
+                * EntityRenderer.trans(SIMD3(0, -legH * reach, 0))
                 * EntityRenderer.rotX(ankleAng)
                 * EntityRenderer.trans(SIMD3(0, -footH * 0.5, footD * 0.12))
                 * EntityRenderer.scaleM(SIMD3(footW, footH, footD))
@@ -4333,15 +4344,19 @@ extension EntityRenderer {
         let legAngR: Float = sitting ? 1.05 : walk.legR * walkAmt
         let ankleL: Float = sitting ? -0.85 : walk.ankleL * walkAmt
         let ankleR: Float = sitting ? -0.85 : walk.ankleR * walkAmt
-        drawCube(enc: enc, viewProj: viewProj, model: legM(hipL, legAngL),
+        let legHoseL = sitting ? -0.06 : -sin(legAngL) * 0.13 * walkAmt
+        let legHoseR = sitting ?  0.06 :  sin(legAngR) * 0.13 * walkAmt
+        let legReachL = 1 + max(0, abs(legAngL) - 0.55) * 0.16 * walkAmt
+        let legReachR = 1 + max(0, abs(legAngR) - 0.55) * 0.16 * walkAmt
+        drawCube(enc: enc, viewProj: viewProj, model: legM(hipL, legAngL, legHoseL, legReachL),
                  rgb: pantsCol, sat: sat, shape: .cylinder)
-        drawCube(enc: enc, viewProj: viewProj, model: legM(hipR, legAngR),
+        drawCube(enc: enc, viewProj: viewProj, model: legM(hipR, legAngR, legHoseR, legReachR),
                  rgb: pantsCol, sat: sat, shape: .cylinder)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: footM(hipL, legAngL, ankleL),
+                 model: footM(hipL, legAngL, ankleL, legHoseL, legReachL),
                  rgb: shoeCol, sat: sat, shape: .sphere)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: footM(hipR, legAngR, ankleR),
+                 model: footM(hipR, legAngR, ankleR, legHoseR, legReachR),
                  rgb: shoeCol, sat: sat, shape: .sphere)
 
         // ---- TORSO (tunic) ----
@@ -4364,39 +4379,45 @@ extension EntityRenderer {
         let shoulderXR =  (tW * 0.50 + armW * 0.45)
         let upperArmH = armH * 0.52
         let lowerArmH = armH - upperArmH
-        func upperArmM(_ shoulderX: Float, _ swingAng: Float) -> simd_float4x4 {
+        let armBowAmount: Float = poseActive ? 1 : walkAmt
+        let armBowL = -(0.075 + abs(armAngL) * 0.10) * armBowAmount
+        let armBowR =  (0.075 + abs(armAngR) * 0.10) * armBowAmount
+        func upperArmM(_ shoulderX: Float, _ swingAng: Float,
+                       _ bow: Float) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * bodyLean
                 * EntityRenderer.trans(SIMD3(shoulderX, shoulderY, 0))
-                * EntityRenderer.rotX(swingAng)
+                * EntityRenderer.rotZ(bow) * EntityRenderer.rotX(swingAng)
                 * EntityRenderer.trans(SIMD3(0, -upperArmH * 0.5, 0))
                 * EntityRenderer.scaleM(SIMD3(armW, upperArmH, armD))
         }
         func lowerArmM(_ shoulderX: Float, _ swingAng: Float,
-                       _ elbowAng: Float) -> simd_float4x4 {
+                       _ elbowAng: Float, _ bow: Float) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * bodyLean
                 * EntityRenderer.trans(SIMD3(shoulderX, shoulderY, 0))
-                * EntityRenderer.rotX(swingAng)
+                * EntityRenderer.rotZ(bow) * EntityRenderer.rotX(swingAng)
                 * EntityRenderer.trans(SIMD3(0, -upperArmH, 0))
-                * EntityRenderer.rotX(elbowAng)
+                * EntityRenderer.rotZ(-bow * 1.55) * EntityRenderer.rotX(elbowAng)
                 * EntityRenderer.trans(SIMD3(0, -lowerArmH * 0.5, 0))
                 * EntityRenderer.scaleM(SIMD3(armW * 0.92, lowerArmH, armD * 0.92))
         }
         func handM(_ shoulderX: Float, _ swingAng: Float,
-                   _ elbowAng: Float, _ wristAng: Float) -> simd_float4x4 {
+                   _ elbowAng: Float, _ wristAng: Float,
+                   _ bow: Float) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * bodyLean
                 * EntityRenderer.trans(SIMD3(shoulderX, shoulderY, 0))
-                * EntityRenderer.rotX(swingAng)
+                * EntityRenderer.rotZ(bow) * EntityRenderer.rotX(swingAng)
                 * EntityRenderer.trans(SIMD3(0, -upperArmH, 0))
-                * EntityRenderer.rotX(elbowAng)
+                * EntityRenderer.rotZ(-bow * 1.55) * EntityRenderer.rotX(elbowAng)
                 * EntityRenderer.trans(SIMD3(0, -lowerArmH, 0))
                 * EntityRenderer.rotX(wristAng)
                 * EntityRenderer.trans(SIMD3(0, -handH * 0.5, 0))
                 * EntityRenderer.scaleM(SIMD3(handW, handH, handD))
         }
-        func elbowM(_ shoulderX: Float, _ swingAng: Float) -> simd_float4x4 {
+        func elbowM(_ shoulderX: Float, _ swingAng: Float,
+                    _ bow: Float) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * bodyLean
                 * EntityRenderer.trans(SIMD3(shoulderX, shoulderY, 0))
-                * EntityRenderer.rotX(swingAng)
+                * EntityRenderer.rotZ(bow) * EntityRenderer.rotX(swingAng)
                 * EntityRenderer.trans(SIMD3(0, -upperArmH, 0))
                 * EntityRenderer.scaleM(SIMD3(armW * 1.02, armW * 1.02, armD * 1.02))
         }
@@ -4414,28 +4435,28 @@ extension EntityRenderer {
         let wristR: Float = poseActive ? (sweeping ? -0.18 : 0.05)
             : walk.wristR * walkAmt + idleElbow * 0.4
         drawCube(enc: enc, viewProj: viewProj,
-                 model: upperArmM(shoulderXL, armAngL),
+                 model: upperArmM(shoulderXL, armAngL, armBowL),
                  rgb: tunicCol, sat: sat, shape: .cylinder)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: lowerArmM(shoulderXL, armAngL, elbowL),
+                 model: lowerArmM(shoulderXL, armAngL, elbowL, armBowL),
                  rgb: tunicCol, sat: sat, shape: .cylinder)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: upperArmM(shoulderXR, armAngR),
+                 model: upperArmM(shoulderXR, armAngR, armBowR),
                  rgb: tunicCol, sat: sat, shape: .cylinder)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: lowerArmM(shoulderXR, armAngR, elbowR),
+                 model: lowerArmM(shoulderXR, armAngR, elbowR, armBowR),
                  rgb: tunicCol, sat: sat, shape: .cylinder)
         // Rounded elbow overlaps hide the mechanical hinge between child
         // segments, preserving the delayed bend while reading as one hose limb.
-        drawCube(enc: enc, viewProj: viewProj, model: elbowM(shoulderXL, armAngL),
+        drawCube(enc: enc, viewProj: viewProj, model: elbowM(shoulderXL, armAngL, armBowL),
                  rgb: tunicCol, sat: sat, shape: .sphere)
-        drawCube(enc: enc, viewProj: viewProj, model: elbowM(shoulderXR, armAngR),
+        drawCube(enc: enc, viewProj: viewProj, model: elbowM(shoulderXR, armAngR, armBowR),
                  rgb: tunicCol, sat: sat, shape: .sphere)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: handM(shoulderXL, armAngL, elbowL, wristL),
+                 model: handM(shoulderXL, armAngL, elbowL, wristL, armBowL),
                  rgb: skinCol, sat: sat, shape: .sphere)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: handM(shoulderXR, armAngR, elbowR, wristR),
+                 model: handM(shoulderXR, armAngR, elbowR, wristR, armBowR),
                  rgb: skinCol, sat: sat, shape: .sphere)
         if professionWorking || sweeping {
             // Finished held tools make every role readable in a still frame. Two
@@ -4444,9 +4465,9 @@ extension EntityRenderer {
                        rotX: Float = 0, rotZ: Float = 0) -> simd_float4x4 {
                 EntityRenderer.trans(wc) * R * bodyLean
                     * EntityRenderer.trans(SIMD3(shoulderXR, shoulderY, 0))
-                    * EntityRenderer.rotX(armAngR)
+                    * EntityRenderer.rotZ(armBowR) * EntityRenderer.rotX(armAngR)
                     * EntityRenderer.trans(SIMD3(0, -upperArmH, 0))
-                    * EntityRenderer.rotX(elbowR)
+                    * EntityRenderer.rotZ(-armBowR * 1.55) * EntityRenderer.rotX(elbowR)
                     * EntityRenderer.trans(SIMD3(0, -lowerArmH, 0))
                     * EntityRenderer.rotX(wristR)
                     * EntityRenderer.trans(offset)
@@ -4523,9 +4544,9 @@ extension EntityRenderer {
         let headY: Float = tH * 0.50 + nkH + hH * 0.50
         let headZ: Float = 0
         let headPivot = SIMD3<Float>(0, tH * 0.50 + nkH, 0)
-        let headLagZ = walk.headRoll * walkAmt
+        let headLagZ = walk.headRoll * 1.18 * walkAmt
             + sin(curAmbientPhase * 0.55 + hash) * 0.018 * (1 - walkAmt)
-        let headLagX = walk.headPitch * walkAmt
+        let headLagX = walk.headPitch * 1.12 * walkAmt
         let socialHeadY: Float = curEntityAction == 5 ? sin(curEntityActionProgress * .pi * 2) * 0.52 : 0
         let socialNod: Float = (curEntityAction == 7 || curEntityAction == 8)
             ? sin(curEntityActionProgress * .pi * 4) * 0.10 : 0
