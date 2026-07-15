@@ -203,7 +203,7 @@ impl<'c> World<'c> {
                 x.creatures()
                     .iter()
                     .filter(|d| d.disposition == "hostile")
-                    .filter(|d| d.name != "smudgeling")
+                    .filter(|d| !matches!(d.name.as_str(), "smudgeling" | "hollow"))
                     .cloned()
                     .collect()
             })

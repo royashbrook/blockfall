@@ -706,6 +706,33 @@ impl<'c> World<'c> {
             let home_dx = Self::wrap_signed_f(c.pos.x - c.home_x as f32 - 0.5);
             let home_dz = Self::wrap_signed_f(c.pos.z - c.home_z as f32 - 0.5);
             let home_dist = (home_dx * home_dx + home_dz * home_dz).sqrt();
+            let is_hollow = c.from_assault && c.name == "hollow";
+            let ward_exposed = is_hollow
+                && home_dist < 12.0
+                && self
+                    .villages
+                    .get(&(Self::wrap_block(c.home_x), Self::wrap_block(c.home_z)))
+                    .map(|v| v.lights >= Self::VILLAGE_WARD_LIGHTS)
+                    .unwrap_or(false);
+            if ward_exposed {
+                c.light_exposure += dt;
+                if c.light_exposure >= 2.0 {
+                    c.light_exposure -= 2.0;
+                    c.hp -= 1;
+                    c.hit_flash = 0.22;
+                    self.fx(
+                        8,
+                        IVec3 {
+                            x: Self::ifloor(c.pos.x),
+                            y: Self::ifloor(c.pos.y + c.scale * 0.5),
+                            z: Self::ifloor(c.pos.z),
+                        },
+                        0,
+                    );
+                }
+            } else {
+                c.light_exposure = 0.0;
+            }
 
             // Smudgelings hesitate at a live perimeter light, snatch one ward
             // charge, then bolt away with it. The authored pause/recoil makes light
@@ -771,6 +798,13 @@ impl<'c> World<'c> {
                 } else {
                     (gx, gz)
                 }
+            } else if is_hollow && c.assault_goal.y != NO_FLOOR {
+                (
+                    c.pos.x
+                        + Self::wrap_signed_f(c.assault_goal.x as f32 + 0.5 - c.pos.x),
+                    c.pos.z
+                        + Self::wrap_signed_f(c.assault_goal.z as f32 + 0.5 - c.pos.z),
+                )
             } else if c.from_assault {
                 (
                     c.pos.x + Self::wrap_signed_f(c.home_x as f32 + 0.5 - c.pos.x),
@@ -859,7 +893,12 @@ impl<'c> World<'c> {
                 }
                 let yd = ((c.pos.y + c.scale * 0.5) - (self.pos.y - 1.6)).abs();
                 if xzd < 1.3 && yd < 1.6 && c.atk_cd <= 0.0 {
-                    self.hurt_player(2.5);
+                    let damage = if is_hollow {
+                        1.0 + self.effective_village_tier(c.home_x, c.home_z) as f32
+                    } else {
+                        2.5
+                    };
+                    self.hurt_player(damage);
                     c.atk_cd = 1.1;
                 }
             }
@@ -1079,7 +1118,12 @@ impl<'c> World<'c> {
             // Smooth turn + accel toward the decision, then apply the displacement
             // through the existing collision/climb code. step_locomotion never snaps
             // heading or velocity, so creatures rotate and ramp instead of flipping.
-            let target_speed = if routine_path_failed { 0.0 } else { c.speed * dec.speed_frac };
+            let light_slow = if ward_exposed { 0.72 } else { 1.0 };
+            let target_speed = if routine_path_failed {
+                0.0
+            } else {
+                c.speed * dec.speed_frac * light_slow
+            };
             let (mdx, mdz, new_heading, new_speed) =
                 cai::step_locomotion(&c.ai, desired_heading, target_speed, dt);
             c.ai.heading = new_heading;

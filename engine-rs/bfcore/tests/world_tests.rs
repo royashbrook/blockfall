@@ -3730,6 +3730,78 @@ fn smudgeling_steals_and_drops_a_recoverable_ward_light() {
     assert_eq!(w.debug_item_count(w.debug_item_id("glow_dust")), 1);
 }
 
+#[test]
+fn hollow_foot_soldiers_join_town_waves_and_wilt_under_a_light_ward() {
+    let (mut wave, ax, az, _surf) = prepared_settlement_defense(2);
+    wave.debug_clear_creatures();
+    let spawned = wave.debug_spawn_settlement_assault(ax, az, 2);
+    assert_eq!(spawned, 4, "normal town pressure stays bounded");
+    assert_eq!(wave.debug_count_named("smudgeling"), 2);
+    assert_eq!(wave.debug_count_named("hollow"), 2);
+
+    let (mut ward, wx, wz, wsurf) = prepared_settlement_defense(2);
+    ward.debug_clear_creatures();
+    ward.debug_set_village_lights(wx, wz, 8);
+    let hollow = ward.debug_spawn_hollow_at(
+        wx,
+        wz,
+        wx as f32 + 9.5,
+        wsurf + 1.0,
+        wz as f32 + 0.5,
+    );
+    for _ in 0..20 {
+        ward.debug_update_creatures(0.05);
+    }
+    assert!(ward.debug_creature_light_exposure(hollow) > 0.9);
+    let mut frame = empty_frame();
+    let mut draws = Vec::new();
+    let mut shadows = Vec::new();
+    let mut props = Vec::new();
+    ward.build_frame(&mut frame, &mut draws, &mut shadows, &mut props, 0.0);
+    assert!(
+        ward.entity_role_actions().iter().any(|a| a.action == 14),
+        "ward exposure selects the authored recoil pose"
+    );
+    for _ in 0..21 {
+        ward.debug_update_creatures(0.05);
+    }
+    assert_eq!(ward.debug_creature_hp(hollow), 7, "bright ward deals slow Grey damage");
+}
+
+#[test]
+fn guards_scale_against_hollow_foot_soldiers() {
+    let (mut town, ax, az, surf) = prepared_settlement_defense(2);
+    town.debug_clear_creatures();
+    for role in [4, 2] {
+        town.debug_spawn_villager_role(ax, az, role);
+    }
+    let hollow = town.debug_spawn_hollow_at(
+        ax,
+        az,
+        ax as f32 + 9.5,
+        surf + 1.0,
+        az as f32 + 0.5,
+    );
+    town.debug_update_creatures(0.05);
+    assert_eq!(town.debug_creature_hp(hollow), 4, "two town guards halve an 8hp Hollow");
+
+    let (mut city, cx, cz, csurf) = prepared_settlement_defense(3);
+    city.debug_clear_creatures();
+    city.debug_set_village_lights(cx, cz, 8);
+    for role in [4, 2, 6] {
+        city.debug_spawn_villager_role(cx, cz, role);
+    }
+    city.debug_spawn_hollow_at(
+        cx,
+        cz,
+        cx as f32 + 9.5,
+        csurf + 1.0,
+        cz as f32 + 0.5,
+    );
+    city.debug_update_creatures(0.05);
+    assert_eq!(city.debug_count_named("hollow"), 0, "city ward volley clears a 10hp Hollow");
+}
+
 // ============================================================================
 // #170 the "blockfall" mechanic: breaking a block bursts it into physical
 // debris that pops, arcs, bounces, settles, and magnets to the player.

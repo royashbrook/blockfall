@@ -327,6 +327,7 @@ struct Creature {
     assault_goal: IVec3,
     assault_goal_is_light: bool,
     carrying_light: bool,
+    light_exposure: f32,
     // Vertical distance still to be climbed when the creature is stepping up onto
     // a ledge it bumped into. While this is > 0 the creature raises its Y toward
     // the ledge top over several ticks (a smooth clamber) instead of snapping up a
@@ -478,6 +479,7 @@ impl Default for Creature {
             },
             assault_goal_is_light: false,
             carrying_light: false,
+            light_exposure: 0.0,
             climb: 0.0,
             name: String::new(),
             given: String::new(),

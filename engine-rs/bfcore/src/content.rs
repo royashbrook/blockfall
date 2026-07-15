@@ -978,7 +978,7 @@ mod tests {
     fn extra_loads_creatures_quests() {
         let mut x = ContentExtra::new();
         assert!(x.load(CONTENT));
-        assert_eq!(x.creatures().len(), 36);   // #311: +1 Grey Smudgeling
+        assert_eq!(x.creatures().len(), 37);   // #312: +1 Grey Hollow
         assert_eq!(x.quests().len(), 15);
         assert_eq!(x.quests()[0].id, 1);
         assert_eq!(x.quests()[0].title, "First Light");

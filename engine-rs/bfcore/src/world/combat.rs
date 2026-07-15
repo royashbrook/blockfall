@@ -112,6 +112,9 @@ impl<'c> World<'c> {
         } else if cr.name == "smudgeling" {
             self.give_loot("color_dust", 1);
             self.give_loot("glow_dust", 1);
+        } else if cr.name == "hollow" {
+            self.give_loot("color_dust", 2);
+            self.give_loot("glow_dust", 1);
         } else if cr.hostile {
             let n1 = 1 + (self.rand01() * 2.0) as i32;
             self.give_loot("color_dust", n1);

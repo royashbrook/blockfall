@@ -51,7 +51,7 @@ impl<'c> World<'c> {
     const VILLAGE_VILLAGERS: i32 = 3;
     const TOWN_VILLAGERS: i32 = 5;
     const CITY_VILLAGERS: i32 = 6;
-    const VILLAGE_WARD_LIGHTS: u8 = 8;
+    pub(super) const VILLAGE_WARD_LIGHTS: u8 = 8;
 
     pub fn village_view_nearest(&self) -> Option<(i32, i32, u8, i32, i32, i32, i32)> {
         let px = Self::ifloor(self.pos.x);

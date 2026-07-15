@@ -237,12 +237,46 @@ impl<'c> World<'c> {
         c.atk_cd = 0.0;
         idx
     }
+    pub fn debug_spawn_hollow_at(
+        &mut self,
+        ax: i32,
+        az: i32,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> i32 {
+        let idx = self.debug_spawn_assault_hostile_at(ax, az, x, y, z);
+        let _ = self.configure_hostile_named(idx as usize, "hollow");
+        let tier = self.debug_village_tier(ax, az);
+        let goal_x = Self::wrap_block(ax + 1);
+        let goal_z = Self::wrap_block(az + Self::PALISADE_R);
+        let goal_y = worldgen::worldgen_surface_height(goal_x, goal_z, self.seed) + 1;
+        let c = &mut self.creatures[idx as usize];
+        c.scale = 1.05;
+        c.hp += i32::from(tier.saturating_sub(2)) * 2;
+        c.assault_goal = IVec3 {
+            x: goal_x,
+            y: goal_y,
+            z: goal_z,
+        };
+        idx
+    }
+    pub fn debug_clear_creatures(&mut self) {
+        self.creatures.clear();
+    }
     pub fn debug_creature_carrying_light(&self, i: i32) -> bool {
         self.creatures
             .get(i.max(0) as usize)
             .filter(|_| i >= 0)
             .map(|c| c.carrying_light)
             .unwrap_or(false)
+    }
+    pub fn debug_creature_light_exposure(&self, i: i32) -> f32 {
+        self.creatures
+            .get(i.max(0) as usize)
+            .filter(|_| i >= 0)
+            .map(|c| c.light_exposure)
+            .unwrap_or(0.0)
     }
     pub fn debug_attack_creature(&mut self, i: i32) {
         self.attack_creature(i);
@@ -269,6 +303,9 @@ impl<'c> World<'c> {
     }
     pub fn debug_assault_wave_size(&self, ax: i32, az: i32, tier: u8) -> i32 {
         self.settlement_assault_size(ax, az, tier)
+    }
+    pub fn debug_spawn_settlement_assault(&mut self, ax: i32, az: i32, tier: u8) -> i32 {
+        self.spawn_settlement_assault(ax, az, tier)
     }
     pub fn debug_assaults_outside_protection(&self) -> bool {
         self.creatures.iter().filter(|c| c.from_assault).all(|c| {

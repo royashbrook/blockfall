@@ -187,7 +187,7 @@ impl<'c> World<'c> {
                     .filter(|d| d.disposition == "hostile")
                     // Grey assault roles are composed explicitly at settlements;
                     // they do not dilute environmental night/ruin pools.
-                    .filter(|d| d.name != "smudgeling")
+                    .filter(|d| !matches!(d.name.as_str(), "smudgeling" | "hollow"))
                     .filter(|d| d.biome.is_empty() || d.biome == "any" || d.biome == bk)
                     .cloned()
                     .collect()
@@ -299,8 +299,7 @@ impl<'c> World<'c> {
     }
 
     /// Start one readable night assault around the settlement containing the player.
-    /// Reuse the normal hostile roster for now; the Grey-specific silhouettes are
-    /// separate content issues, while this owns only wave/defense behavior.
+    /// Compose a bounded Grey wave whose roles scale with settlement tier.
     pub(super) fn settlement_assault_size(&self, ax: i32, az: i32, tier: u8) -> i32 {
         let anchor = (Self::wrap_block(ax), Self::wrap_block(az));
         let ward_lit = self
@@ -313,7 +312,7 @@ impl<'c> World<'c> {
         (2 + tier as i32 + hard_bonus - ward_reduction).max(2)
     }
 
-    fn spawn_settlement_assault(&mut self, ax: i32, az: i32, tier: u8) -> i32 {
+    pub(super) fn spawn_settlement_assault(&mut self, ax: i32, az: i32, tier: u8) -> i32 {
         let anchor = (Self::wrap_block(ax), Self::wrap_block(az));
         let ward_lit = self
             .villages
@@ -329,16 +328,31 @@ impl<'c> World<'c> {
                 continue;
             }
             let index = self.creatures.len() - 1;
-            let _ = self.configure_hostile_named(index, "smudgeling");
+            let hollow_slots = if tier >= 2 { wanted / 2 } else { 0 };
+            let is_hollow = spawned >= wanted - hollow_slots;
+            let _ = self.configure_hostile_named(
+                index,
+                if is_hollow { "hollow" } else { "smudgeling" },
+            );
             let from = self.creatures[index].pos;
-            let (goal, goal_is_light) = self.smudgeling_objective(from, ax, az);
+            let (goal, goal_is_light) = if is_hollow {
+                let x = Self::wrap_block(ax + 1 + (spawned % 3 - 1));
+                let z = Self::wrap_block(az + Self::PALISADE_R);
+                let y = worldgen::worldgen_surface_height(x, z, self.seed) + 1;
+                (IVec3 { x, y, z }, false)
+            } else {
+                self.smudgeling_objective(from, ax, az)
+            };
             let c = &mut self.creatures[index];
             c.from_assault = true;
             c.home_x = anchor.0;
             c.home_z = anchor.1;
             c.assault_goal = goal;
             c.assault_goal_is_light = goal_is_light;
-            c.scale = 0.68;
+            c.scale = if is_hollow { 1.05 } else { 0.68 };
+            if is_hollow {
+                c.hp += i32::from(tier.saturating_sub(2)) * 2;
+            }
             c.atk_cd = 0.8 + spawned as f32 * 0.25;
             spawned += 1;
         }

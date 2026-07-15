@@ -5365,6 +5365,137 @@ extension EntityRenderer {
         }
     }
 
+    // =========================================================================
+    // KIND 29 — HOLLOW (#312). Common Grey foot soldier: one hunched inked
+    // silhouette, recessed empty mask, rubber-hose march and a clearly gripped
+    // crooked spear. Actions 14/15 are light recoil and gate attack.
+    // =========================================================================
+    func drawKind29(enc: MTLRenderCommandEncoder, viewProj: simd_float4x4,
+                    e: bf_entity_draw, pos: SIMD3<Float>, phase: Float,
+                    hash: Float, squash: SIMD3<Float>) {
+        let s = e.scale, sat = e.sat
+        let ink = SIMD3<Float>(0.055, 0.045, 0.075)
+        let charcoal = SIMD3<Float>(0.16, 0.15, 0.22)
+        let grey = SIMD3<Float>(0.28, 0.25, 0.35)
+        let violet = SIMD3<Float>(0.43, 0.31, 0.49)
+        let mask = SIMD3<Float>(0.78, 0.75, 0.67)
+        let wood = SIMD3<Float>(0.34, 0.20, 0.12)
+        let steel = SIMD3<Float>(0.57, 0.61, 0.68)
+        let ward = SIMD3<Float>(1.65, 1.12, 0.34)
+
+        let moving: Float = curEntityMoving ? 1 : 0
+        let recoiling = curEntityAction == 14
+        let attacking = curEntityAction == 15
+        let gait = phase * 1.45
+        let step = sin(gait)
+        let bob = abs(sin(gait)) * s * 0.055 * moving
+            + sin(phase * 0.37 + hash) * s * 0.012 * (1 - moving)
+        let wc = SIMD3<Float>(pos.x, pos.y + s * 0.82 + bob, pos.z)
+        let R = squashRig(EntityRenderer.rotY(e.yaw), squash: squash,
+                          footLocalY: pos.y - wc.y)
+
+        func part(_ lo: SIMD3<Float>, _ d: SIMD3<Float>,
+                  shape: EntityPartShape = .smoothSphere,
+                  color: SIMD3<Float>, emissive: Bool = false,
+                  rotX: Float = 0, rotZ: Float = 0) {
+            let model = EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo)
+                * EntityRenderer.rotZ(rotZ) * EntityRenderer.rotX(rotX)
+                * EntityRenderer.scaleM(d)
+            drawCube(enc: enc, viewProj: viewProj, model: model,
+                     rgb: color, sat: emissive ? -1 : sat, shape: shape)
+        }
+        func hose(_ shoulder: SIMD3<Float>, length: Float, radius: Float,
+                  pitch: Float, roll: Float = 0,
+                  color: SIMD3<Float>) -> SIMD3<Float> {
+            let chain = EntityRenderer.trans(wc) * R * EntityRenderer.trans(shoulder)
+                * EntityRenderer.rotZ(roll) * EntityRenderer.rotX(pitch)
+            let model = chain * EntityRenderer.trans(SIMD3<Float>(0, -length * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3<Float>(radius, length, radius))
+            drawCube(enc: enc, viewProj: viewProj, model: model,
+                     rgb: color, sat: sat, shape: .cylinder)
+            let endpoint = shoulder + SIMD3<Float>(
+                sin(roll) * cos(pitch) * length,
+                -cos(roll) * cos(pitch) * length,
+                -sin(pitch) * length
+            )
+            part(endpoint, SIMD3<Float>(repeating: radius * 1.35),
+                 shape: .sphere, color: color)
+            return endpoint
+        }
+
+        let legSwing = step * 0.70 * moving
+        for side: Float in [-1, 1] {
+            let pitch = legSwing * side
+            let hip = SIMD3<Float>(side * s * 0.20, -s * 0.29, 0)
+            let foot = hose(hip, length: s * 0.50, radius: s * 0.075,
+                            pitch: pitch, color: charcoal)
+            part(foot + SIMD3<Float>(0, -s * 0.02, s * 0.08),
+                 SIMD3<Float>(s * 0.25, s * 0.13, s * 0.36), color: ink,
+                 rotZ: side * 0.07)
+        }
+
+        // Overlapping coat, shoulders and hood make one continuous soldier mass.
+        part(SIMD3<Float>(0, 0, 0), SIMD3<Float>(s * 0.68, s * 0.82, s * 0.52),
+             color: grey)
+        part(SIMD3<Float>(0, -s * 0.29, -s * 0.01),
+             SIMD3<Float>(s * 0.76, s * 0.38, s * 0.58), color: charcoal)
+        part(SIMD3<Float>(0, s * 0.47, -s * 0.015),
+             SIMD3<Float>(s * 0.65, s * 0.62, s * 0.57), color: charcoal)
+        part(SIMD3<Float>(0, s * 0.70, -s * 0.02),
+             SIMD3<Float>(s * 0.76, s * 0.10, s * 0.62), shape: .cylinder,
+             color: violet)
+
+        // The mask is sunk well inside the hood's front half; profile views keep
+        // it attached instead of exposing a floating facial plate.
+        let faceY = s * 0.46 + (recoiling ? s * 0.04 : 0)
+        part(SIMD3<Float>(0, faceY, s * 0.22),
+             SIMD3<Float>(s * 0.43, s * 0.36, s * 0.15), color: mask)
+        let eyeH = recoiling ? s * 0.035 : s * 0.12
+        for side: Float in [-1, 1] {
+            part(SIMD3<Float>(side * s * 0.11, faceY + s * 0.035, s * 0.285),
+                 SIMD3<Float>(s * 0.075, eyeH, s * 0.055), color: ink,
+                 rotZ: side * (recoiling ? 0.26 : 0.08))
+        }
+        part(SIMD3<Float>(0, faceY - s * 0.12, s * 0.285),
+             SIMD3<Float>(s * 0.18, s * 0.055, s * 0.05), color: ink,
+             rotZ: -0.09)
+
+        let armWhip = -step * 0.88 * moving
+        let leftPitch: Float = recoiling ? -1.55 : (attacking ? -0.95 : armWhip)
+        let leftHand = hose(SIMD3<Float>(-s * 0.36, s * 0.16, 0),
+                            length: s * 0.48, radius: s * 0.065,
+                            pitch: leftPitch, roll: recoiling ? 0.25 : 0,
+                            color: grey)
+        part(leftHand, SIMD3<Float>(repeating: s * 0.12), color: mask)
+
+        let rightPitch: Float = recoiling ? -1.45 : (attacking ? -1.00 : 0.18)
+        let rightHand = hose(SIMD3<Float>(s * 0.35, s * 0.17, 0),
+                             length: s * 0.42, radius: s * 0.065,
+                             pitch: rightPitch, roll: recoiling ? -0.18 : -0.08,
+                             color: grey)
+        part(rightHand, SIMD3<Float>(repeating: s * 0.12), color: mask)
+
+        // Spear passes through the hand. Attack leans the complete weapon toward
+        // the gate; idle keeps a tall, readable soldier silhouette.
+        let weaponPitch: Float = attacking ? 0.82 : (recoiling ? 0.62 : 0.08)
+        let weaponChain = EntityRenderer.trans(wc) * R * EntityRenderer.trans(rightHand)
+            * EntityRenderer.rotX(weaponPitch)
+        let shaft = weaponChain * EntityRenderer.trans(SIMD3<Float>(0, s * 0.18, 0))
+            * EntityRenderer.scaleM(SIMD3<Float>(s * 0.045, s * 1.15, s * 0.045))
+        drawCube(enc: enc, viewProj: viewProj, model: shaft,
+                 rgb: wood, sat: sat, shape: .cylinder)
+        let tip = weaponChain * EntityRenderer.trans(SIMD3<Float>(0, s * 0.80, 0))
+            * EntityRenderer.scaleM(SIMD3<Float>(s * 0.16, s * 0.34, s * 0.16))
+        drawCube(enc: enc, viewProj: viewProj, model: tip,
+                 rgb: steel, sat: sat, shape: .cone)
+
+        if recoiling {
+            part(SIMD3<Float>(0, s * 0.03, s * 0.28),
+                 SIMD3<Float>(s * 0.055, s * 0.48, s * 0.035),
+                 color: ward, emissive: true, rotZ: -0.34)
+        }
+    }
+
     private func drawCube(enc: MTLRenderCommandEncoder,
                           viewProj: simd_float4x4,
                           model: simd_float4x4,
