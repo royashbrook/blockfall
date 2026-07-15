@@ -934,14 +934,16 @@ func runHeadlessSelfTest() -> Bool {
           Renderer.shaderSource.contains("float visible = step(0.999999, occD);"),
           !Renderer.shaderSource.contains("smoothstep(0.985, 0.9995, occD)")
     else { return false }
-    // #299: only a path clearer than its neighbours may emit a shaft. Unsigned
-    // mixed visibility lights blockers and draws the visual opposite of a shadow.
+    // #299 follow-up: shafts are authored radially at the sun; depth only multiplies
+    // them down. A blocker must never become the source of a bright edge.
     guard Renderer.shaderSource.contains(
-              "float clearGap = max(litFrac - neighbourFrac, 0.0);"),
+              "float authoredBeam = smoothstep(0.62, 0.93, broadBand) * 0.20;"),
           Renderer.shaderSource.contains(
-              "float sideA = sceneDepth.sample(sRay, sampleUV + neighbourUV * converge);"),
+              "float pathOpen = smoothstep(0.82, 0.995, litFrac);"),
           Renderer.shaderSource.contains(
-              "float sideB = sceneDepth.sample(sRay, sampleUV - neighbourUV * converge);"),
+              "float shaftRaw = authoredBeam * pathOpen;"),
+          !Renderer.shaderSource.contains("neighbourFrac"),
+          !Renderer.shaderSource.contains("clearGap"),
           !Renderer.shaderSource.contains("mixedVisibility"),
           !Renderer.shaderSource.contains("4.0 * litFrac * (1.0 - litFrac)")
     else { return false }

@@ -158,15 +158,15 @@ The accepted same-machine result was `246.7 -> 244.5` median FPS (`-0.9%`),
 Use one settled live session for slow-turn comparisons. Separate `--shot` processes can
 have different asynchronous terrain residency and are not evidence of view instability.
 
-### God-ray occlusion (#274)
+### God-ray occlusion (#274, #299)
 
 1. Load the latest save near `(32333, 13, 767)`, face northeast at dawn, and also inspect
    the roof/tree edges around `(32337, 12, 779)`.
 2. Disable Clouds and Lens Flare. Test God Rays at both 50% and 100% while turning slowly
    enough to move the sun behind trunks, leaves, and roof edges.
-3. Pass when there is no square ray volume, increasing occlusion never creates a brighter
-   line, blockers carve dark corridors through the rays, and fully open or fully blocked
-   paths do not add a broad sky wash.
+3. Pass when every bright shaft visibly converges on the sun, there is no square ray
+   volume, increasing occlusion never creates a brighter line, blockers only carve dark
+   corridors through rays, and fully blocked paths do not add a broad sky wash.
 
 Run the deterministic rectangular-edge gate after a fresh release build:
 
@@ -183,10 +183,21 @@ BF_SHOT_SEED=480181 \
 ```
 
 The command also writes `godray-edge_off.png`. Both axis scores must be below `0.20`
-and visible ray signal must exceed `0.05`; the accepted result was vertical `0.042`,
-horizontal `0.047`, signal `0.307`. Setting `BF_GODRAY_STR=0` is the negative control:
+and visible ray signal must exceed `0.05`; the accepted #299 follow-up is vertical
+`0.047`, horizontal `0.023`, signal `0.313`. Setting `BF_GODRAY_STR=0` is the negative control:
 it must fail with signal `0.000`. The headless A/B catches coherent rectangles and a
 disabled ray path; live slow turning remains the decisive inverse-shadow check.
+
+For an unambiguous maximum-strength source check, face the deterministic low sun from
+an open camera. Every visible band must meet the sun instead of beginning at foliage:
+
+```bash
+BF_SHOT_SEED=11 BF_SHOT_POS="31034,38,88,-2.552,0.22" \
+  BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 \
+  BF_SHOT_TOD=0 BF_SHOT_HELD=0 BF_GODRAY_STR=1 \
+  BF_SHOT_NOFLARE=1 BF_CLOUDS=0 BF_CEL=0 BF_SHOT_RENDER_DISTANCE=8 \
+  "$BIN" --shot "$OUT/godray-sun-authored-after.png"
+```
 
 ### God-ray clear-gap occlusion (#299)
 

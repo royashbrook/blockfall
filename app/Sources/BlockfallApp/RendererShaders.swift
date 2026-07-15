@@ -2388,7 +2388,7 @@ extension Renderer {
     //                 below lets a modest count look banding-free. PERF KNOB.
     //   GR_MAXDIST  : how far (world units) a ray marches before giving up. Kept inside
     //                 the far shadow cascade so every sample has shadow data.
-    //   GR_DENSITY  : fog density per world unit; scales how fast in-scatter accumulates.
+    //   GR_DENSITY  : final atmospheric shaft scale after visibility and phase.
     //   GR_HG_G     : Henyey-Greenstein anisotropy (0..1). Higher = the glow concentrates
     //                 more tightly toward the sun direction (forward scattering).
     // =========================================================
@@ -2572,15 +2572,8 @@ extension Renderer {
         float2 sunUV = float2(vu.camPosW.w, vu.voxDims.w);
         float2 rayVec = sunUV - uv;
         float2 rayStep = rayVec * (0.92 / float(GR_STEPS));
-        float2 sceneSize = float2(sceneDepth.get_width(), sceneDepth.get_height());
-        float2 rayPx = rayVec * sceneSize;
-        float2 perpPx = float2(-rayPx.y, rayPx.x) / max(length(rayPx), 1e-4);
-        // Compare this radial path with two nearby paths which converge at the sun.
-        // A real shaft is a CLEAR gap between darker neighbours. A blocker is the
-        // inverse (this path is darker), so its downstream trail must contribute 0.
-        float2 neighbourUV = perpPx * 24.0 / sceneSize;
         float2 sampleUV = uv + rayStep * dither;
-        float litLen = 0.0, neighbourLitLen = 0.0, totLen = 0.0;
+        float litLen = 0.0, totLen = 0.0;
         float weight = 1.0;
         for (int i = 0; i < GR_STEPS; ++i) {
             sampleUV += rayStep;
@@ -2588,21 +2581,13 @@ extension Renderer {
             // Linear depth filtering plus a narrow clear-depth ramp antialiases
             // tree/roof silhouettes before the radial integration.
             float openSky = smoothstep(0.995, 0.9999, sd);
-            float converge = 1.0 - 0.92 * float(i + 1) / float(GR_STEPS);
-            float sideA = sceneDepth.sample(sRay, sampleUV + neighbourUV * converge);
-            float sideB = sceneDepth.sample(sRay, sampleUV - neighbourUV * converge);
-            float neighbourSky = 0.5 * (smoothstep(0.995, 0.9999, sideA)
-                                      + smoothstep(0.995, 0.9999, sideB));
             litLen += openSky * weight;
-            neighbourLitLen += neighbourSky * weight;
             totLen += weight;
             weight *= 0.965;
         }
         float litFrac = (totLen > 1e-4) ? (litLen / totLen) : 0.0;   // 0..1
-        float neighbourFrac = (totLen > 1e-4) ? (neighbourLitLen / totLen) : 0.0;
 
         litFrac = clamp(litFrac, 0.0, 1.0);
-        neighbourFrac = clamp(neighbourFrac, 0.0, 1.0);
 
         // A floor cut that keeps ONLY the shaft cores: it suppresses the broad,
         // uniform low-level glow (the "fog wash" failure mode and the ground-wash
@@ -2612,12 +2597,18 @@ extension Renderer {
         // GR_SHAFT_GAMMA > 1 then CRUSHES the partly-lit midtones toward black so the
         // broad smooth glare dies and the shadow corridors read as crisp dark gaps
         // between bright beams (graphic, cel-shaded shafts, not a soft halo).
-        // Signed local contrast distinguishes a clear gap from an occluder. The old
-        // unsigned mixed-visibility gate lit both equally, creating a bright trail
-        // behind every tree and mountain (the visual opposite of a shadow).
-        float clearGap = max(litFrac - neighbourFrac, 0.0);
-        float shaftRaw = smoothstep(0.02, 0.30, clearGap)
-                       * smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac);
+        // Author beam directions at the sun, then let depth ONLY remove light. The
+        // previous neighbour contrast made a blocker edge the source of a bright
+        // line. These angular bands remain connected to the sun; trees and roofs can
+        // carve dark corridors but can never create a shaft by themselves.
+        float rayAngle = atan2(rayVec.y, rayVec.x);
+        float broadBand = 0.5 + 0.34 * sin(rayAngle * 5.0 + 0.4)
+                              + 0.16 * sin(rayAngle * 11.0 + 1.7);
+        float authoredBeam = smoothstep(0.62, 0.93, broadBand) * 0.20;
+        float sunCore = (1.0 - smoothstep(0.02, 0.10, length(rayVec))) * 0.20;
+        authoredBeam = max(authoredBeam, sunCore);
+        float pathOpen = smoothstep(0.82, 0.995, litFrac);
+        float shaftRaw = authoredBeam * pathOpen;
         float shaft    = pow(shaftRaw, GR_SHAFT_GAMMA);
         // #132 DISTINCT BEAMS: sharpen the shaft around its mid-value with a contrast
         // curve so the smooth in-scatter SEGMENTS into separated bright cores and dark
@@ -2633,7 +2624,10 @@ extension Renderer {
         // marchLen factor: long rays (open sky toward the sun) scatter more than the
         // short rays that hit nearby ground, which keeps the ground from washing.
         float lenFactor = clamp(marchLen / GR_MAXDIST, 0.0, 1.0);
-        float inscatter = shaft * shaftBoost * phase * lenFactor * GR_DENSITY * marchLen;
+        // The authored mask is already coherent; retain a restrained distance
+        // response without the old 140x accumulation that made opaque spokes.
+        float inscatter = shaft * shaftBoost * phase * lenFactor * GR_DENSITY
+                        * marchLen * 0.025;
         if (!isfinite(inscatter)) inscatter = 0.0;
         return float3(inscatter, litFrac, hitDist);
     }
