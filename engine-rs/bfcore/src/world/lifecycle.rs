@@ -1,6 +1,58 @@
 use super::*;
 
 impl<'c> World<'c> {
+    pub(super) fn home_column(seed: u64) -> (i32, i32) {
+        const SEA_LEVEL: i32 = 6;
+        const SPAWN_STEP: i32 = 8;
+        const SPAWN_MAX_R: i32 = 96;
+        let mut sx = 0i32;
+        let mut sz = 0i32;
+        let mut found_home = false;
+        if let Some((_typ, ax, az)) = worldgen::worldgen_city_near(0, 0, 4096, seed) {
+            if worldgen::worldgen_surface_height(ax, az, seed) >= SEA_LEVEL + 1 {
+                sx = ax + 2;
+                sz = az + 2;
+                found_home = true;
+            }
+        }
+        if !found_home {
+            if let Some((_typ, ax, az)) = worldgen::worldgen_settlement_near(0, 0, 2048, seed) {
+                if worldgen::worldgen_surface_height(ax, az, seed) >= SEA_LEVEL + 1 {
+                    sx = ax + 2;
+                    sz = az + 2;
+                    found_home = true;
+                }
+            }
+        }
+        if !found_home && worldgen::worldgen_surface_height(0, 0, seed) < SEA_LEVEL + 1 {
+            let mut dry = false;
+            let mut r = 1;
+            while r <= SPAWN_MAX_R && !dry {
+                let mut dz = -r;
+                while dz <= r && !dry {
+                    let mut dx = -r;
+                    while dx <= r && !dry {
+                        if dx.abs().max(dz.abs()) != r {
+                            dx += 1;
+                            continue;
+                        }
+                        let wx = dx * SPAWN_STEP;
+                        let wz = dz * SPAWN_STEP;
+                        if worldgen::worldgen_surface_height(wx, wz, seed) >= SEA_LEVEL + 1 {
+                            sx = wx;
+                            sz = wz;
+                            dry = true;
+                        }
+                        dx += 1;
+                    }
+                    dz += 1;
+                }
+                r += 1;
+            }
+        }
+        (Self::wrap_block(sx), Self::wrap_block(sz))
+    }
+
     /// Construct with a fresh mesher and an optional worldgen (the C++ ctor takes
     /// IMesher& and IWorldGen*; here both are owned). Pass `None` for the flat-test
     /// path that uses generate_test_world.
@@ -315,67 +367,9 @@ impl<'c> World<'c> {
         // wider than the old 120-block search. Search outward in expanding rings far
         // enough to clear an ocean and reach the nearest shore (step 8, up to ~768
         // blocks). The scan is a one-time cheap height lookup per ring cell.
-        const SEA_LEVEL: i32 = 6;
-        const SPAWN_STEP: i32 = 8;
-        const SPAWN_MAX_R: i32 = 96; // 96 * 8 = 768 blocks of reach
-        let mut sx = 0i32;
-        let mut sz = 0i32;
-        // #248: HOME starts beside a CITY. Search cities first, then retain #190's
-        // nearest-settlement fallback for defensive compatibility if generation ever
-        // changes. Offset off the anchor so the player stands at the plaza edge, not
-        // inside the civic marker.
-        let mut found_home = false;
-        if let Some((_typ, ax, az)) = worldgen::worldgen_city_near(0, 0, 4096, self.seed) {
-            // Dry check: settlements sit on land, but verify so a shoreline
-            // anchor can never put the bed in the water.
-            if worldgen::worldgen_surface_height(ax, az, self.seed) >= SEA_LEVEL + 1 {
-                sx = ax + 2;
-                sz = az + 2;
-                found_home = true;
-            }
-        }
-        if !found_home {
-            if let Some((_typ, ax, az)) =
-                worldgen::worldgen_settlement_near(0, 0, 2048, self.seed)
-            {
-                if worldgen::worldgen_surface_height(ax, az, self.seed) >= SEA_LEVEL + 1 {
-                    sx = ax + 2;
-                    sz = az + 2;
-                    found_home = true;
-                }
-            }
-        }
-        if !found_home && worldgen::worldgen_surface_height(0, 0, self.seed) < SEA_LEVEL + 1 {
-            let mut dry = false;
-            let mut r = 1;
-            while r <= SPAWN_MAX_R && !dry {
-                let mut dz = -r;
-                while dz <= r && !dry {
-                    let mut dx = -r;
-                    while dx <= r && !dry {
-                        let adx = if dx < 0 { -dx } else { dx };
-                        let adz = if dz < 0 { -dz } else { dz };
-                        if adx.max(adz) != r {
-                            dx += 1;
-                            continue;
-                        }
-                        let wx = dx * SPAWN_STEP;
-                        let wz = dz * SPAWN_STEP;
-                        if worldgen::worldgen_surface_height(wx, wz, self.seed) >= SEA_LEVEL + 1 {
-                            sx = wx;
-                            sz = wz;
-                            dry = true;
-                        }
-                        dx += 1;
-                    }
-                    dz += 1;
-                }
-                r += 1;
-            }
-        }
-        // #179: canonical spawn column (the ring search can land negative).
-        let sx = Self::wrap_block(sx);
-        let sz = Self::wrap_block(sz);
+        // #248: HOME starts beside a city, with the older nearest-settlement and
+        // dry-land fallbacks retained for defensive compatibility.
+        let (sx, sz) = Self::home_column(self.seed);
         // Engine handles can be reused for a fresh world. Drop old discoveries
         // before deriving the new seed's HOME road network.
         self.visited_villages.clear();
@@ -419,28 +413,7 @@ impl<'c> World<'c> {
         // so a fresh spawn reads "N" on the compass instead of the old 0.6 (SE).
         self.yaw = std::f32::consts::PI;
         self.pitch = -0.25;
-        // Spawn homeland starts colourful out to a generous radius.
-        {
-            let sr = Self::region_key(ChunkCoord {
-                x: scol.x,
-                y: 0,
-                z: scol.z,
-            });
-            // #179: wrap the ring onto the torus region grid so a spawn near
-            // the seam still colours the regions on the other side.
-            let region_count = WRAP_CHUNKS / KREGION_CHUNKS;
-            for dz in -2..=2 {
-                for dx in -2..=2 {
-                    self.region_sat.insert(
-                        RegionKey {
-                            x: (sr.x + dx).rem_euclid(region_count),
-                            z: (sr.z + dz).rem_euclid(region_count),
-                        },
-                        1.0,
-                    );
-                }
-            }
-        }
+        self.restore_homeland(sx, sz);
         self.last_center = Self::to_chunk(IVec3 {
             x: Self::ifloor(self.pos.x),
             y: Self::ifloor(self.pos.y),

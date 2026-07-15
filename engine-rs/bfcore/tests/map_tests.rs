@@ -329,6 +329,54 @@ fn map_dat_roundtrip() {
 }
 
 #[test]
+fn home_anchor_stays_put_and_legacy_saves_restore_its_colour() {
+    let mut content = ContentRegistry::new();
+    content.load(CONTENT);
+    let dir = std::env::temp_dir().join(format!("bf_home_anchor_{}", std::process::id()));
+    let dir = dir.to_string_lossy().to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let mut world = make_world(&content, 11);
+    let home = world.map_markers()[0].pos;
+    world.debug_set_camera(home.x as f32 + 2048.5, 80.0, home.z as f32 + 1024.5, 0.0, 0.0);
+    world.debug_clear_region_saturation();
+    assert!(world.save(&dir));
+
+    let mut loaded = World::new(Some(TerrainGen::new()));
+    loaded.debug_set_sync_streaming(true);
+    loaded.set_content(&content);
+    assert!(loaded.load(&dir));
+    let loaded_home = loaded.map_markers()[0].pos;
+    let (px, _py, pz, _) = loaded.get_player();
+    assert_eq!((loaded_home.x, loaded_home.z), (home.x, home.z));
+    assert_ne!((loaded_home.x, loaded_home.z), (px as i32, pz as i32));
+    assert!(
+        loaded.debug_region_sat(home.x.div_euclid(16), home.z.div_euclid(16)) > 0.99,
+        "HOME remains colourful even when the saved region table omitted it"
+    );
+
+    // Saves from before BFSP put HOME at the last logout position. Removing the
+    // trailer exercises the deterministic starter-settlement migration.
+    let player_path = format!("{dir}/player.dat");
+    let player = std::fs::read(&player_path).unwrap();
+    let trailer = player
+        .windows(4)
+        .rposition(|window| window == b"BFSP")
+        .expect("BFSP trailer");
+    std::fs::write(&player_path, &player[..trailer]).unwrap();
+
+    let mut legacy = World::new(Some(TerrainGen::new()));
+    legacy.debug_set_sync_streaming(true);
+    legacy.set_content(&content);
+    assert!(legacy.load(&dir));
+    let migrated_home = legacy.map_markers()[0].pos;
+    assert_eq!((migrated_home.x, migrated_home.z), (home.x, home.z));
+    assert!(legacy.debug_region_sat(home.x.div_euclid(16), home.z.div_euclid(16)) > 0.99);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn caravan_trailer_roundtrips_and_old_or_truncated_maps_are_safe() {
     let mut content = ContentRegistry::new();
     content.load(CONTENT);

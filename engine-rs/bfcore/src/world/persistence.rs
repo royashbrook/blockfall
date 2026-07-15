@@ -63,6 +63,10 @@ impl<'c> World<'c> {
                 buf.push(if self.ach_done[i] { 1 } else { 0 });
                 buf.extend_from_slice(&self.ach_progress[i].to_le_bytes());
             }
+            buf.extend_from_slice(b"BFSP");
+            buf.extend_from_slice(&self.spawn.x.to_le_bytes());
+            buf.extend_from_slice(&self.spawn.y.to_le_bytes());
+            buf.extend_from_slice(&self.spawn.z.to_le_bytes());
             let mut f = match std::fs::File::create(&path) {
                 Ok(f) => f,
                 Err(_) => return false,
@@ -179,6 +183,7 @@ impl<'c> World<'c> {
             }
         }
         let mut quest_loaded = false;
+        let mut saved_spawn = None;
         if let Ok(pl) = std::fs::read(format!("{}/player.dat", dir)) {
             let mut p = ByteReader::new(&pl);
             if p.take(4) == Some(b"BFPL") {
@@ -243,6 +248,13 @@ impl<'c> World<'c> {
                         }
                     }
                     quest_loaded = true;
+                    if p.take(4) == Some(b"BFSP") {
+                        if let (Some(x), Some(y), Some(z)) = (p.f32(), p.f32(), p.f32()) {
+                            if x.is_finite() && y.is_finite() && z.is_finite() {
+                                saved_spawn = Some(V3::new(x, y, z));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -250,7 +262,17 @@ impl<'c> World<'c> {
         // with coords already in [0, WORLD_PERIOD) are untouched).
         self.pos.x = Self::wrap_pos_f(self.pos.x);
         self.pos.z = Self::wrap_pos_f(self.pos.z);
-        self.spawn = self.pos;
+        self.spawn = saved_spawn.unwrap_or_else(|| {
+            let (x, z) = Self::home_column(self.seed);
+            V3::new(
+                x as f32 + 0.5,
+                worldgen::worldgen_surface_height(x, z, self.seed) as f32 + 3.2,
+                z as f32 + 0.5,
+            )
+        });
+        self.spawn.x = Self::wrap_pos_f(self.spawn.x);
+        self.spawn.z = Self::wrap_pos_f(self.spawn.z);
+        self.restore_homeland(Self::ifloor(self.spawn.x), Self::ifloor(self.spawn.z));
         if self.health <= 0.0 {
             self.health = 20.0;
         }
