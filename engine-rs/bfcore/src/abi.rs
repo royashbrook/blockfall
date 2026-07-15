@@ -519,7 +519,8 @@ pub struct bf_chest_view {
 
 /// Mirror of `bf_village_view` in the C header. Tier/donation status of the village
 /// nearest the player, for the HUD donation panel (#95).
-/// Layout: anchor(12) + present(1) + tier(1) + _pad(2) + 4*u32(16) + want(16) = 48
+/// Layout: anchor(12) + present(1) + tier(1) + lights(1) + ward_active(1)
+/// + 4*u32(16) + want(16) = 48
 /// bytes, align 4.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -527,7 +528,8 @@ pub struct bf_village_view {
     pub anchor: bf_ivec3,
     pub present: u8,
     pub tier: u8,
-    pub _pad: [u8; 2],
+    pub lights: u8,
+    pub ward_active: u8,
     pub wood_cells: u32,
     pub wood_total: u32,
     pub progress: u32,
@@ -733,7 +735,8 @@ mod parity {
         assert_eq!(offset_of!(bf_village_view, anchor), 0);
         assert_eq!(offset_of!(bf_village_view, present), 12);
         assert_eq!(offset_of!(bf_village_view, tier), 13);
-        assert_eq!(offset_of!(bf_village_view, _pad), 14);
+        assert_eq!(offset_of!(bf_village_view, lights), 14);
+        assert_eq!(offset_of!(bf_village_view, ward_active), 15);
         assert_eq!(offset_of!(bf_village_view, wood_cells), 16);
         assert_eq!(offset_of!(bf_village_view, wood_total), 20);
         assert_eq!(offset_of!(bf_village_view, progress), 24);

@@ -3072,6 +3072,8 @@ fn eight_village_torches_restore_a_boundary_safe_persistent_ward() {
             );
         }
     }
+    let view = w.village_view_nearest().expect("ward village remains visible to HUD");
+    assert_eq!(view.7, 8, "HUD reports the completed eight-light ward");
 
     let dir = std::env::temp_dir().join(format!("bf_village_ward_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

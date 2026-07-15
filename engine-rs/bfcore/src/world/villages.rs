@@ -53,7 +53,7 @@ impl<'c> World<'c> {
     const CITY_VILLAGERS: i32 = 6;
     pub(super) const VILLAGE_WARD_LIGHTS: u8 = 8;
 
-    pub fn village_view_nearest(&self) -> Option<(i32, i32, u8, i32, i32, i32, i32)> {
+    pub fn village_view_nearest(&self) -> Option<(i32, i32, u8, i32, i32, i32, i32, u8)> {
         let px = Self::ifloor(self.pos.x);
         let pz = Self::ifloor(self.pos.z);
         self.village_status_near(px, pz, 64)
@@ -792,7 +792,7 @@ impl<'c> World<'c> {
         wx: i32,
         wz: i32,
         radius: i32,
-    ) -> Option<(i32, i32, u8, i32, i32, i32, i32)> {
+    ) -> Option<(i32, i32, u8, i32, i32, i32, i32, u8)> {
         let mut best: Option<(i32, i32)> = None;
         let mut best_d2 = (radius as i64) * (radius as i64);
         for &(ax, az) in self.villages.keys() {
@@ -832,6 +832,7 @@ impl<'c> World<'c> {
             Self::PALISADE_CELLS,
             progress,
             progress_needed,
+            vs.lights,
         ))
     }
 

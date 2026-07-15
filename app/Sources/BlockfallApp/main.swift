@@ -1508,11 +1508,11 @@ if let idx = CommandLine.arguments.firstIndex(of: "--mapshot"), idx + 1 < Comman
 if let idx = CommandLine.arguments.firstIndex(of: "--villageshot"), idx + 1 < CommandLine.arguments.count {
     let W = 900, rowH = 220
     // Four sample states: tier 0 (needs wood, half ring), tier 1->stone, tier 2->iron, tier 3 done.
-    let states: [(UInt8, UInt32, UInt32, UInt32, UInt32, String)] = [
-        (0, 30, 62, 0, 0, "wood"),    // building the wooden wall
-        (1, 62, 62, 8, 16, "stone"),  // wall done, donating stone to the mason
-        (2, 62, 62, 5, 8, "iron"),    // stone done, donating iron to the blacksmith
-        (3, 62, 62, 0, 0, ""),        // complete
+    let states: [(UInt8, UInt32, UInt32, UInt32, UInt32, String, UInt8)] = [
+        (0, 30, 62, 0, 0, "wood", 3),    // building the wooden wall + ward
+        (1, 62, 62, 8, 16, "stone", 7),  // one light short, donating stone
+        (2, 62, 62, 5, 8, "iron", 8),    // active ward, donating iron
+        (3, 62, 62, 0, 0, "", 8),        // guarded city + active ward
     ]
     let H = rowH * states.count
     let cs = CGColorSpace(name: CGColorSpace.sRGB)!
@@ -1527,6 +1527,7 @@ if let idx = CommandLine.arguments.firstIndex(of: "--villageshot"), idx + 1 < Co
         v.tier = st.0
         v.wood_cells = st.1; v.wood_total = st.2
         v.progress = st.3; v.progress_needed = st.4
+        v.lights = st.6; v.ward_active = st.6 >= 8 ? 1 : 0
         withUnsafeMutableBytes(of: &v.want) { raw in
             let p = raw.bindMemory(to: CChar.self)
             for (j, byte) in Array(st.5.utf8).prefix(15).enumerated() { p[j] = CChar(bitPattern: byte) }

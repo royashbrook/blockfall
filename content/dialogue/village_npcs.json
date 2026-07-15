@@ -10,6 +10,7 @@
         "choices": [
           { "label": "How can I help?", "goto": 1 },
           { "label": "What happened?", "goto": 2 },
+          { "label": "What follows the Grey?", "goto": 6 },
           { "label": "Got any wise advice?", "goto": 4 },
           { "label": "Tell me a story!", "goto": 5 },
           { "label": "Maybe later.", "goto": -1 }
@@ -25,7 +26,7 @@
       },
       {
         "id": 2,
-        "text": "The Dim Barrens grew from the east. Color just drains away there. Ancient beacons once kept the world bright, but they have gone dark.",
+        "text": "The Dim Barrens grew from the east. First color faded, then songs lost their rhythm, stories lost their middles, and living shapes went hollow. Ancient beacons once held it back, but they have gone dark.",
         "choices": [
           { "label": "Tell me more.", "goto": 3 },
           { "label": "I will help!", "goto": 1 }
@@ -33,7 +34,7 @@
       },
       {
         "id": 3,
-        "text": "The beacons need crystal shards and iron to rebuild. Explore, gather, and when you are ready, we will light them together. The world is counting on us!",
+        "text": "Eight village torches weave a close light ward; old beacons carry that same color much farther. Strong walls and trained guards keep the ward standing while the Grey tests it at night.",
         "choices": [
           { "label": "Let us begin.", "goto": -1 }
         ]
@@ -50,6 +51,29 @@
         "text": "A story! Once, a brave hero set off to save the whole world, and then... hmm. I forgot the middle part. And the end. Old brains are like buckets with holes. But it was VERY exciting! Trust me.",
         "choices": [
           { "label": "Best story ever.", "goto": 0 }
+        ]
+      },
+      {
+        "id": 6,
+        "text": "We know their ranks by what they do. Smudgelings steal light. Hollows march where color has emptied out. Crooked Heralds conduct them with broken, jerky steps. A Dim Ramlord comes only when the Grey means to crack a ward.",
+        "choices": [
+          { "label": "Why grow a city?", "goto": 7 },
+          { "label": "Where did they come from?", "goto": 8 },
+          { "label": "I understand.", "goto": 0 }
+        ]
+      },
+      {
+        "id": 7,
+        "text": "A village wall stops strays. A town fields more guards. A city has stone, iron, lamps, and enough defenders to hold the lesser Grey — but a Ramlord still needs your help.",
+        "choices": [
+          { "label": "Then we build.", "goto": 0 }
+        ]
+      },
+      {
+        "id": 8,
+        "text": "No one truly knows. Some old songs call it a hunger between stars; others say it is the shadow of a forgotten promise. We know its symptoms and how light resists it. The source remains beyond our oldest story.",
+        "choices": [
+          { "label": "The mystery can wait.", "goto": 0 }
         ]
       }
     ]
@@ -188,7 +212,7 @@
       },
       {
         "id": 2,
-        "text": "A wall keeps the night things out and the little ones safe. Once it is up, ask the stone mason. She can make it even stronger.",
+        "text": "A wall keeps roaming creatures and Grey Smudgelings outside the streets. Once it is up, ask Bria the stone mason; Hollows hit harder, and stronger walls give our guards room to answer.",
         "choices": [
           { "label": "Good thinking.", "goto": 0 }
         ]
@@ -202,7 +226,7 @@
     "nodes": [
       {
         "id": 0,
-        "text": "Stone mason, at your service. Once Finn's wooden wall is standing, I can reinforce it with good cut stone and raise proud towers. For now I am sharpening my chisels and waiting on that timber.",
+        "text": "Stone mason, at your service. Once Finn's wooden wall is complete, hold stone, cobblestone, or stone bricks and choose Donate. I will take the useful stack at once, reinforce the wall, and raise proud towers against the Hollows.",
         "choices": [
           { "label": "Sounds grand!", "goto": -1 }
         ]
@@ -216,7 +240,7 @@
     "nodes": [
       {
         "id": 0,
-        "text": "The village blacksmith! When our walls are strong, I will forge iron gates and bright lamps to light them through the night. Bring me iron in the days to come and we will make this place shine.",
+        "text": "The village blacksmith! When Bria's stone wall is complete, hold iron or raw iron and choose Donate. I will forge gates, lamps, and guard gear so the city can face Heralds at night — though a Dim Ramlord still calls for a hero.",
         "choices": [
           { "label": "I look forward to it.", "goto": -1 }
         ]

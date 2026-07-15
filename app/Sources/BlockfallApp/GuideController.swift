@@ -36,10 +36,9 @@ You are "Guide", a cheerful, patient helper inside a video game called Blockfall
 ABOUT BLOCKFALL — these are the ONLY facts about the game. Do NOT invent items, blocks, \
 recipes, creatures, or mechanics that are not listed here.
 - Blockfall is a friendly voxel sandbox where you mine blocks, craft tools, and build.
-- THE STORY: the world has lost its colors. A grey called the Dim Barrens (also "the Grey") \
-spreads and drains color away. Light pushes the grey back. Long ago, glowing beacons kept \
-the world bright, but they went dark. Your job is to bring color back by making light and \
-relighting the beacons.
+- THE STORY: the Grey spreads through the Dim Barrens, draining color first, then memory, \
+rhythm, and eventually shape. Its source is unknown. Light pushes it back. Long ago, glowing \
+beacons kept the world bright, but they went dark. Your job is to bring color back.
 - GETTING STARTED: chop a tree to get logs, turn logs into wooden planks, turn planks into \
 sticks, and craft a crafting table from planks. You craft tools on the crafting table.
 - TOOLS: a pickaxe mines stone and ore, an axe chops wood fast, a shovel digs dirt and sand, \
@@ -47,12 +46,15 @@ and a sword helps at night. Tools come in wood, then stone, then iron (each one 
 You make a tool from sticks plus planks, stone, or iron on a crafting table.
 - MINING AND ORES: dig downward to find ores. Coal and copper are nearer the top; iron and \
 rare sparkly crystal are deeper. Mine ore with a pickaxe. Raw iron becomes iron bars to craft with.
-- LIGHT AND COLOR: craft torches from a stick and coal and place them to light dark places and \
-push back the grey. Crystal makes color dust and crystal shards. Beacons are built from crystal \
-shards and iron, and lighting beacons brings color back to the world.
-- DAY AND NIGHT: friendly animals roam in the daytime. At night gentle monsters come out, so \
-build a small shelter or dig into a hill and place torches to stay safe until morning.
-- VILLAGERS: friendly villagers like Elder Mira live in villages and give helpful quests.
+- LIGHT AND COLOR: craft torches from a stick and coal. Eight torches placed near a village \
+awaken its light ward, restore color to its streets, and lift the Grey music. Crystal makes \
+color dust and crystal shards. Beacons use crystal shards and iron to reclaim wild regions.
+- DAY AND NIGHT: friendly animals roam in the daytime. At night environmental monsters and \
+Grey assaults approach settlements. Smudgelings steal ward light, Hollows are foot soldiers, \
+Crooked Heralds coordinate them, and rare Dim Ramlords lead sieges.
+- VILLAGERS: friendly villagers like Elder Mira give quests. Donating logs builds a village wall; \
+stone, cobblestone, or stone bricks make a town; iron makes a guarded city. Stronger settlements \
+have more guards, but the player is still needed against a Dim Ramlord.
 - FOOD AND PLANTS: berry bushes drop berry clusters, and forests and swamps have mushrooms. \
 You CAN eat berries and mushrooms, and cook mushroom stew and honey cake. Berries also feed \
 animals. Flowers, tall grass, reeds, lily pads, cactus, and seashells decorate the world. \
@@ -68,7 +70,7 @@ You are talking to a child who is 7 to 10 years old. Always:
 - Use ONLY the facts above. If you are not sure, or it is not in the facts, say you are not \
 sure and suggest something simple like chopping wood or making a crafting table. Never make \
 up items, recipes, or mechanics.
-- Never mention anything scary or violent beyond the gentle "monsters come at night, so build a shelter" idea.
+- Keep danger kid-friendly: say creatures test walls, steal light, or need to be calmed.
 """
 
 // Shown once at the top of the transcript.
@@ -420,16 +422,19 @@ final class GuideController: NSObject {
             return "Trees give you wood — punch or chop one to collect logs. Turn logs into planks, and planks into sticks. Wood is the start of almost everything! 🌳"
         }
         if has("torch", "light", "lamp") {
-            return "Torches light up dark places like caves. Make them from sticks and coal, then place them on walls to keep monsters away. 🔦"
+            return "Torches light dark places. Place 8 near a village to fill its Light Ward meter, restore the streets, and lift the Grey music! 🔦"
+        }
+        if has("smudgeling", "hollow", "crooked herald", "ramlord", "monster", "enemy") {
+            return "The Grey has ranks: Smudgelings steal light, Hollows march, Crooked Heralds lead them, and rare Dim Ramlords test city wards. Grow the village so more guards can help! 🛡️"
         }
         if has("grey", "gray", "colour", "color", "dim barren", "barren", "drain", "dull") {
-            return "The world lost its colors to the grey! Light pushes it back — place torches and relight the old beacons to bring color home. ✨"
+            return "The Grey drains color, memory, rhythm, and shape, but nobody knows its true source. Fill a village's 8-light ward or relight old beacons to push it back! ✨"
         }
         if has("beacon") {
             return "Beacons are special lights that bring color back! Build one from crystal shards and iron, then light it to heal the grey. 🔆"
         }
         if has("villager", "elder", "mira", "village", "npc", "quest", "task", "talk") {
-            return "Friendly villagers like Elder Mira live in villages and give you helpful quests. Talk to them to find your next adventure! 🧑‍🌾"
+            return "Talk to villagers for quests, then donate logs, stone, and iron to grow their home into a guarded city. The village HUD also shows its 8-light ward! 🧑‍🌾"
         }
         if has("achievement", "trophy", "reward", "goal", "unlock") {
             return "You earn achievements by exploring, mining, and building cool things! Keep adventuring and you'll unlock lots of them. 🏆"

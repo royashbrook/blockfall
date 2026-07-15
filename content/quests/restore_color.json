@@ -9,7 +9,7 @@
         "trigger": "craft_item",
         "target": "torch",
         "count": 4,
-        "objective_text": "Craft 4 torches to push back the grey."
+        "objective_text": "Craft 4 torches to begin pushing back the Grey. A village ward needs 8 placed nearby."
       }
     ],
     "rewards": [
@@ -34,7 +34,7 @@
         "trigger": "place_block",
         "target": "torch",
         "count": 8,
-        "objective_text": "Place 8 torches around the village to awaken its light ward."
+        "objective_text": "Place 8 torches near the village. Watch its Light Ward meter reach 8/8 and restore the streets."
       }
     ],
     "rewards": [
@@ -115,7 +115,7 @@
         "trigger": "reach_location",
         "target": "dim_barrens",
         "count": 1,
-        "objective_text": "Walk away from your bright spawn into the grey Dim Barrens to see what steals the color."
+        "objective_text": "Enter the Grey Dim Barrens, where color, memory, rhythm, and eventually shape drain away."
       }
     ],
     "rewards": [
@@ -257,7 +257,7 @@
   },
   {
     "id": 11,
-    "title": "Herald of Dim",
+    "title": "Captain of the Grey",
     "arc": "restore_color",
     "giver_npc": "elder_mira",
     "objectives": [
@@ -265,7 +265,7 @@
         "trigger": "calm_boss",
         "target": "dim_ramlord",
         "count": 1,
-        "objective_text": "Go out into the grey, then follow the red marker to the Dim Herald and calm it."
+        "objective_text": "Follow the red marker into the Grey and calm the Dim Ramlord siege captain."
       }
     ],
     "rewards": [

@@ -122,6 +122,7 @@ final class HUDView: NSView {
             guard let a = was, let b = v else { return (was == nil) != (v == nil) }
             return a.present != b.present || a.tier != b.tier
                 || a.wood_cells != b.wood_cells || a.progress != b.progress
+                || a.lights != b.lights || a.ward_active != b.ward_active
         }()
         if changed { needsDisplay = true }
     }
@@ -916,15 +917,18 @@ final class HUDView: NSView {
         case 2: tierName = "Town"
         default: tierName = "City"
         }
-        // Headline + the donation hint.
+        // Headline + the build and light-ward hints.
         let title = "\(tierName)  ·  Tier \(v.tier)/3"
         let hint: String
         switch want {
         case "wood":  hint = "Bring the Woodcutter LOGS for the wall"
         case "stone": hint = "Bring the Stone Mason STONE to reinforce it"
         case "iron":  hint = "Bring the Blacksmith IRON for the gate + lamps"
-        default:      hint = "This town is complete — safe through the night!"
+        default:      hint = "City guards are ready — Grey assaults still come at night"
         }
+        let ward = v.ward_active != 0
+            ? "✦ Light ward shining — streets restored"
+            : "Light ward: \(v.lights)/8 nearby torches"
         // Progress fraction: wood tier uses wall cells; later tiers use the resource count.
         let frac: CGFloat
         if v.tier <= 1 && v.wood_cells < v.wood_total {
@@ -944,12 +948,20 @@ final class HUDView: NSView {
             .foregroundColor: NSColor(white: 0.92, alpha: 1),
             .strokeColor: NSColor.black, .strokeWidth: -2.0,
         ]
+        let wardAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: fs(12)),
+            .foregroundColor: v.ward_active != 0
+                ? NSColor(red: 1.0, green: 0.84, blue: 0.32, alpha: 1)
+                : NSColor(red: 0.70, green: 0.76, blue: 0.88, alpha: 1),
+            .strokeColor: NSColor.black, .strokeWidth: -2.0,
+        ]
         let tSz = (title as NSString).size(withAttributes: titleAttrs)
         let hSz = (hint as NSString).size(withAttributes: hintAttrs)
+        let wSz = (ward as NSString).size(withAttributes: wardAttrs)
         let pad: CGFloat = 14
         let barH: CGFloat = 8
-        let w = max(tSz.width, hSz.width) + pad * 2
-        let h = tSz.height + hSz.height + barH + 18
+        let w = max(max(tSz.width, hSz.width), wSz.width) + pad * 2
+        let h = tSz.height + hSz.height + wSz.height + barH + 20
         let bx = b.midX - w / 2
         let by: CGFloat = 92   // sit just above the hotbar
         let box = NSRect(x: bx, y: by, width: w, height: h)
@@ -961,6 +973,8 @@ final class HUDView: NSView {
         (title as NSString).draw(at: NSPoint(x: box.midX - tSz.width/2, y: cy), withAttributes: titleAttrs)
         cy -= hSz.height + 2
         (hint as NSString).draw(at: NSPoint(x: box.midX - hSz.width/2, y: cy), withAttributes: hintAttrs)
+        cy -= wSz.height + 1
+        (ward as NSString).draw(at: NSPoint(x: box.midX - wSz.width/2, y: cy), withAttributes: wardAttrs)
         // Progress bar.
         let barRect = NSRect(x: box.minX + pad, y: box.minY + 8, width: box.width - pad*2, height: barH)
         NSColor(white: 0.20, alpha: 1).setFill()

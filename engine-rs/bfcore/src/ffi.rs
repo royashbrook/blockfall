@@ -1049,14 +1049,15 @@ pub unsafe extern "C" fn bf_village_query(e: bf_engine, out: *mut bf_village_vie
         anchor: bf_ivec3 { x: 0, y: 0, z: 0 },
         present: 0,
         tier: 0,
-        _pad: [0; 2],
+        lights: 0,
+        ward_active: 0,
         wood_cells: 0,
         wood_total: 0,
         progress: 0,
         progress_needed: 0,
         want: [0; 16],
     };
-    if let Some((ax, az, tier, wood_cells, wood_total, progress, progress_needed)) =
+    if let Some((ax, az, tier, wood_cells, wood_total, progress, progress_needed, lights)) =
         e.world.village_view_nearest()
     {
         view.anchor = bf_ivec3 { x: ax, y: 0, z: az };
@@ -1066,6 +1067,8 @@ pub unsafe extern "C" fn bf_village_query(e: bf_engine, out: *mut bf_village_vie
         view.wood_total = wood_total.max(0) as u32;
         view.progress = progress.max(0) as u32;
         view.progress_needed = progress_needed.max(0) as u32;
+        view.lights = lights;
+        view.ward_active = u8::from(lights >= 8);
         // What the next villager wants, by tier.
         let want: &[u8] = match tier {
             0 => b"wood",

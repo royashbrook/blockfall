@@ -619,7 +619,8 @@ typedef struct bf_village_view {
     bf_ivec3 anchor;          /* settlement anchor: x in .x, z in .z, .y = 0   */
     uint8_t  present;         /* 1 = a village is in range, 0 = none (rest 0)  */
     uint8_t  tier;            /* 0 none, 1 wood, 2 stone, 3 iron (complete)    */
-    uint8_t  _pad[2];
+    uint8_t  lights;          /* nearby torches counted toward the 8-light ward */
+    uint8_t  ward_active;     /* 1 once the ward has restored the settlement    */
     uint32_t wood_cells;      /* palisade wall cells built so far              */
     uint32_t wood_total;      /* palisade wall cells in a complete ring        */
     uint32_t progress;        /* units donated toward the CURRENT tier upgrade */
