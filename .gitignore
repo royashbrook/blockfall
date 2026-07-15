@@ -16,6 +16,7 @@ app/Sources/CBlockcore/include/engine_c_api.h
 blockfall-shots/
 shots/
 shot_*.png
+/graphify-out/
 
 # Python
 __pycache__/
