@@ -1096,11 +1096,10 @@ cabins, grand towers, and boss-castle rooms remain unchanged and traversable.
 7. Repeat in Creative. The ram may become provoked internally, but—as with normal
    hostiles in Creative—it should amble instead of damaging the player.
 
-The provoked state lasts for that loaded creature's lifetime. It intentionally
-does not convert the ram into a monster: defeating it still uses animal loot and
-animal quest accounting, and passive population/night spawning rules do not
-change. Creatures are transient, so save/reload is not a persistence test for
-this state.
+The provoked state lasts until the creature unloads or the player dies. It
+intentionally does not convert the ram into a monster: defeating it still uses
+animal loot and animal quest accounting, and passive population/night spawning
+rules do not change. Save/reload and player respawn both clear retaliation.
 
 ### Exaggerated humanoid animation (#271)
 
@@ -1324,6 +1323,74 @@ Required result on this closure build: `check.sh GREEN`, 177 Rust unit tests and
 77 world tests passing, content/dialogue probes green, release build assembled,
 and an empty issue list. Commit `57b3db4` measured 92.9 FPS median / 51.1 FPS
 1%-low with zero frames at or above 33.3 ms on the development Mac.
+
+## July 15 HOME, iron-bar, and respawn fixes
+
+- `d86c9d9` / #320 — HOME is a persisted world anchor instead of the last logout
+  position. Legacy saves migrate it back to the seed's starter city, and HOME is
+  always restored from the Grey on load.
+- `3e729f1` / #321 — iron bars use a thin five-part lattice instead of an opaque
+  full cube. Collision remains solid.
+- `b965249` / #322 — death clears retaliation and stale pursuit state on surviving
+  passive creatures such as a natural Dim Ramlord.
+
+### Stable HOME and legacy-save migration
+
+1. Open an existing affected save in this build. Do not create a new world.
+2. Open the map before travelling. HOME should point to the original starter City,
+   not the location where the player last logged out.
+3. Travel or teleport somewhere at least several map cells away, save, quit fully,
+   reload, and open the map again. HOME must remain on the same starter City while
+   the player resumes at the distant logout position.
+4. Teleport to HOME. The starter City and its surrounding homeland must be in full
+   color, normal music must play, and **The Grey** status must be absent.
+5. Return to a separately restored village/city. Its ward and color must still be
+   present: fixing HOME must not move or consume another restored region.
+6. Save and reload once more to prove the migrated HOME anchor now persists.
+
+### Iron-bar lattice
+
+1. In Creative, place an **Iron Gate** block in open air, or inspect the raised
+   portcullis over a promoted City's gate.
+2. From both sides, confirm it reads as three narrow upright bars joined by two
+   cross rails. Open gaps must show the world behind it; it must not look like a
+   dark metal cube.
+3. Turn slowly and move closer/farther. Every bar and rail must remain present with
+   no angle-dependent popping or flicker.
+4. Place a bar at ground level and try to walk through it. Collision must remain
+   solid even though the visible mesh is thin.
+5. Recheck the promoted City entrance: its raised portcullis remains overhead and
+   the two-block-wide walking opening remains clear.
+
+### Ramlord aggro after death
+
+1. In Survival on Normal or Hard, find a natural Dim Ramlord and strike it once.
+   Confirm it becomes angry, pursues, and can damage the player.
+2. Let it kill the player. After respawn, return to the same loaded Ramlord without
+   attacking it.
+3. It must behave passively and must not continue its old pursuit or damage the
+   player. The Ramlord itself remains in the world; only its retaliation is reset.
+4. Strike it again. It must become angry and pursue again, proving retaliation was
+   reset rather than disabled.
+
+Automated gate used for these fixes:
+
+```bash
+cargo test --manifest-path engine-rs/bfcore/Cargo.toml \
+  home_anchor_stays_put_and_legacy_saves_restore_its_colour
+cargo test --manifest-path engine-rs/bfcore/Cargo.toml \
+  iron_bars_are_a_thin_see_through_lattice
+cargo test --manifest-path engine-rs/bfcore/Cargo.toml --test world_tests \
+  natural_dim_ramlord_pursues_and_attacks_after_being_struck
+./ci/check.sh
+./ci/build.sh release
+```
+
+Required result on `b965249`: `check.sh GREEN`; 178 unit tests passed with six
+intentional ignores, 13 map tests and 79 world tests passed, localhost co-op and
+content/render probes passed, and `build/Blockfall.app` assembled. The dev-box
+smoke measured 98.2 FPS median / 65.1 FPS 1%-low with zero frames at or above
+33.3 ms.
 
 ## Reporting failures
 
