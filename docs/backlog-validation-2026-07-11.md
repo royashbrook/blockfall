@@ -188,6 +188,33 @@ horizontal `0.047`, signal `0.307`. Setting `BF_GODRAY_STR=0` is the negative co
 it must fail with signal `0.000`. The headless A/B catches coherent rectangles and a
 disabled ray path; live slow turning remains the decisive inverse-shadow check.
 
+### God-ray clear-gap occlusion (#299)
+
+The #274 mixed-visibility gate still emitted light behind blockers because it treated
+any mixture of sky and silhouette as a shaft. The replacement compares each sunward
+path with two neighbouring paths. Only the clearer center gap emits; a darker center
+path is clamped to zero.
+
+1. Use the #274 deterministic command above after a fresh build. The accepted #299
+   result is vertical `0.089`, horizontal `0.097`, signal `0.359`; the old shader fails
+   the same current-world fixture at vertical `0.381`.
+2. For the representative maximum-strength visual A/B, run:
+
+```bash
+BIN="$PWD/build/Blockfall.app/Contents/MacOS/Blockfall"
+OUT="$PWD/artifacts/playtest-2026-07-12"
+BF_SHOT_SEED=11 \
+  BF_SHOT_POS="32411,13,11098,-2.552,0.05" \
+  BF_SHOT_FREEZE_CAMERA=1 BF_SHOT_NOWALK=1 BF_SHOT_HELD=0 \
+  BF_SHOT_TOD=0 BF_GODRAY_STR=1 BF_SHOT_NOFLARE=1 BF_CLOUDS=0 BF_CEL=1 \
+  BF_SHOT_RENDER_DISTANCE=12 BF_SHOT_AB=1 \
+  "$BIN" --shot "$OUT/godray-clear-gap-after.png"
+```
+
+This also writes `godray-clear-gap-after_off.png`. Pass when the enabled image has
+translucent rays through open gaps, solid silhouettes and their downstream paths stay
+dark, clear sky is not washed white, and no black/invalid reconstruction patches appear.
+
 ### Berries and cel canopy definition (#265, #279)
 
 1. Stand near `(32340, 13, 762)`, facing northeast in the daytime forest.

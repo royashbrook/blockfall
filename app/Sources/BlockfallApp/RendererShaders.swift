@@ -2418,7 +2418,7 @@ extension Renderer {
     constant float GR_SHAFT_GAMMA = 1.25;
     constant float GR_SATURATION  = 1.45;
     constant float3 GR_WARM_TINT  = float3(1.12, 1.02, 0.78);
-    constant float GR_MAX_ADD     = 0.85;
+    constant float GR_MAX_ADD     = 0.12;
 
     // #132 DISTINCT DESCENDING SHAFTS — knobs that sharpen the volumetric in-scatter into
     // clearly separated beams and boost it at low sun (dawn/dusk) so rays read as actually
@@ -2525,7 +2525,7 @@ extension Renderer {
     // dilateTexel is the uv offset for the 4-tap min-depth dilation: one scene texel
     // when marching at full res, one HALF-RES texel (two scene texels) at half res so
     // the conservative near depth covers the coarse pixel's whole 2x2 footprint.
-    static float3 grInscatter(float2 uv, float2 pixPos, float2 dilateTexel,
+    static float3 grInscatter(float2 uv, float2 dilateTexel,
                               depth2d<float, access::sample> sceneDepth,
                               constant VolUniforms& vu) {
         constexpr sampler sD(filter::nearest, address::clamp_to_edge);
@@ -2556,20 +2556,10 @@ extension Renderer {
         float  cosT  = dot(viewDir, toSun);
         float  phase = hgPhase(cosT, GR_HG_G);
 
-        // #188 STRATIFIED QUAD JITTER. The old scheme was one small (+/-7.5% step)
-        // IGN offset per pixel; the 2x2 quad denoise below then averaged four
-        // nearly-equal phases back to a constant, so the march re-quantized into
-        // concentric rings around the sun (litFrac steps of 1/GR_STEPS) which the
-        // steep shaft shaping amplified into the visible banded "cubing". Instead,
-        // give each LANE of the 2x2 quad a different quarter of the step
-        // ((lane + IGN)/4), with the IGN base computed per QUAD so the four lanes
-        // stratify one full step exactly. The quad averages below then integrate a
-        // 4x stratified estimate of the march (effectively 4*GR_STEPS phases), so
-        // both the rings and the per-pixel grain are gone at the same march cost.
-        float2 quadPos = floor(pixPos * 0.5);
-        float ignQ = fract(52.9829189 * fract(dot(quadPos, float2(0.06711056, 0.00583715))));
-        float lane = float((int(pixPos.x) & 1) | ((int(pixPos.y) & 1) << 1));
-        float dither = (lane + ignQ) * 0.25;
+        // A centred first sample is stable while turning. The neighbouring-path
+        // comparison below supplies the smoothing that previously required 2x2
+        // quad replication (which visibly reduced the ray pass to 1/8 resolution).
+        float dither = 0.5;
 
         // #274: use a classic screen-space radial visibility march. The previous
         // world-volume version exposed both the finite occupancy box and individual
@@ -2579,9 +2569,17 @@ extension Renderer {
         // has no finite 3D box that can project onto the sky. The CPU packs sun UV in
         // camPosW.w / voxDims.w for this ray-only uniform.
         float2 sunUV = float2(vu.camPosW.w, vu.voxDims.w);
-        float2 rayStep = (sunUV - uv) * (0.92 / float(GR_STEPS));
+        float2 rayVec = sunUV - uv;
+        float2 rayStep = rayVec * (0.92 / float(GR_STEPS));
+        float2 sceneSize = float2(sceneDepth.get_width(), sceneDepth.get_height());
+        float2 rayPx = rayVec * sceneSize;
+        float2 perpPx = float2(-rayPx.y, rayPx.x) / max(length(rayPx), 1e-4);
+        // Compare this radial path with two nearby paths which converge at the sun.
+        // A real shaft is a CLEAR gap between darker neighbours. A blocker is the
+        // inverse (this path is darker), so its downstream trail must contribute 0.
+        float2 neighbourUV = perpPx * 24.0 / sceneSize;
         float2 sampleUV = uv + rayStep * dither;
-        float litLen = 0.0, litSqLen = 0.0, totLen = 0.0;
+        float litLen = 0.0, neighbourLitLen = 0.0, totLen = 0.0;
         float weight = 1.0;
         for (int i = 0; i < GR_STEPS; ++i) {
             sampleUV += rayStep;
@@ -2589,35 +2587,21 @@ extension Renderer {
             // Linear depth filtering plus a narrow clear-depth ramp antialiases
             // tree/roof silhouettes before the radial integration.
             float openSky = smoothstep(0.995, 0.9999, sd);
+            float converge = 1.0 - 0.92 * float(i + 1) / float(GR_STEPS);
+            float sideA = sceneDepth.sample(sRay, sampleUV + neighbourUV * converge);
+            float sideB = sceneDepth.sample(sRay, sampleUV - neighbourUV * converge);
+            float neighbourSky = 0.5 * (smoothstep(0.995, 0.9999, sideA)
+                                      + smoothstep(0.995, 0.9999, sideB));
             litLen += openSky * weight;
-            litSqLen += openSky * openSky * weight;
+            neighbourLitLen += neighbourSky * weight;
             totLen += weight;
             weight *= 0.965;
         }
         float litFrac = (totLen > 1e-4) ? (litLen / totLen) : 0.0;   // 0..1
-        float visibilityVar = (totLen > 1e-4)
-            ? max(0.0, litSqLen / totLen - litFrac * litFrac) : 0.0;
+        float neighbourFrac = (totLen > 1e-4) ? (neighbourLitLen / totLen) : 0.0;
 
-        // #147 DENOISE THE LIT FRACTION (before the steep shaping). The jittered march
-        // leaves a little high-frequency variance in litFrac; the floor/gamma/contrast curves
-        // below are steep, so that small per-pixel noise gets AMPLIFIED into the visible grain
-        // in the shafts near the sun. Box-average litFrac over the 2x2 fragment quad FIRST so
-        // the shaping operates on a clean signal. quad_shuffle_xor reaches the three other
-        // lanes of this pixel's quad (xor 1 = horizontal, 2 = vertical, 3 = diagonal), so the
-        // mean of all four is the EXACT 2x2 box filter, parity-independent. This removes the
-        // jitter grain while preserving the real beam structure (which varies far more slowly
-        // than one pixel). Cost: three lane shuffles, no extra voxel marches (the dominant cost
-        // stays at GR_STEPS); the grain that survived the march is averaged out for free.
-        float lfq = (litFrac
-                     + quad_shuffle_xor(litFrac, 1u)
-                     + quad_shuffle_xor(litFrac, 2u)
-                     + quad_shuffle_xor(litFrac, 3u)) * 0.25;
-        litFrac = clamp(lfq, 0.0, 1.0);
-        float vvq = (visibilityVar
-                     + quad_shuffle_xor(visibilityVar, 1u)
-                     + quad_shuffle_xor(visibilityVar, 2u)
-                     + quad_shuffle_xor(visibilityVar, 3u)) * 0.25;
-        visibilityVar = max(0.0, vvq);
+        litFrac = clamp(litFrac, 0.0, 1.0);
+        neighbourFrac = clamp(neighbourFrac, 0.0, 1.0);
 
         // A floor cut that keeps ONLY the shaft cores: it suppresses the broad,
         // uniform low-level glow (the "fog wash" failure mode and the ground-wash
@@ -2627,24 +2611,18 @@ extension Renderer {
         // GR_SHAFT_GAMMA > 1 then CRUSHES the partly-lit midtones toward black so the
         // broad smooth glare dies and the shadow corridors read as crisp dark gaps
         // between bright beams (graphic, cel-shaded shafts, not a soft halo).
-        // More occlusion must never make a carved ray brighter. The previous
-        // 4*l*(1-l) term peaked at half visibility, turning every shadow corridor
-        // into a bright line. Weighted variance limits the effect to paths that
-        // actually mix sky and silhouette, so uniform clear sky cannot restore the
-        // broad phase halo while visibility inside a real beam stays monotonic.
-        float mixedVisibility = smoothstep(0.002, 0.025, visibilityVar);
-        float shaftRaw = smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac) * mixedVisibility;
+        // Signed local contrast distinguishes a clear gap from an occluder. The old
+        // unsigned mixed-visibility gate lit both equally, creating a bright trail
+        // behind every tree and mountain (the visual opposite of a shadow).
+        float clearGap = max(litFrac - neighbourFrac, 0.0);
+        float shaftRaw = smoothstep(0.02, 0.30, clearGap)
+                       * smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac);
         float shaft    = pow(shaftRaw, GR_SHAFT_GAMMA);
         // #132 DISTINCT BEAMS: sharpen the shaft around its mid-value with a contrast
         // curve so the smooth in-scatter SEGMENTS into separated bright cores and dark
         // gaps. A logistic-ish contrast about 0.5 keeps it in [0,1] (cannot raise the
         // mean past the carved beams, so it cannot reintroduce a wash).
         shaft = clamp((shaft - 0.5) * GR_SHAFT_SHARP + 0.5, 0.0, 1.0);
-        float shaftQ = (shaft
-                        + quad_shuffle_xor(shaft, 1u)
-                        + quad_shuffle_xor(shaft, 2u)
-                        + quad_shuffle_xor(shaft, 3u)) * 0.25;
-        shaft = mix(shaft, clamp(shaftQ, 0.0, 1.0), 0.90);
         // #132 LOW-SUN BOOST: shafts read as god-rays streaming DOWN at dawn/dusk and stay
         // subtle at noon. sunDir points downward, so -sunDir.y is the sun elevation
         // (~1 noon, ~0 horizon). lowSun is ~1 near the horizon, ~0 high up.
@@ -2655,6 +2633,7 @@ extension Renderer {
         // short rays that hit nearby ground, which keeps the ground from washing.
         float lenFactor = clamp(marchLen / GR_MAXDIST, 0.0, 1.0);
         float inscatter = shaft * shaftBoost * phase * lenFactor * GR_DENSITY * marchLen;
+        if (!isfinite(inscatter)) inscatter = 0.0;
         return float3(inscatter, litFrac, hitDist);
     }
 
@@ -2670,34 +2649,16 @@ extension Renderer {
         // factor (2 = half res, 4 = quarter res), so the conservative near depth
         // covers this coarse pixel's whole NxN scene footprint (no shaft leak over
         // foreground silhouettes after the upsample).
-        // #188: 2x the downscale, so the conservative near depth covers the whole
-        // 2x2 QUAD footprint (the composite reconstructs from one texel per quad
-        // now, and the quad denoise mixes all four lanes' marches, so every lane
-        // must march against the quad's nearest depth or sky in-scatter leaks
-        // over silhouettes as a bright halo).
-        float2 dilate = 2.0 * max(vu.sunDir.w, 1.0)
+        float2 dilate = max(vu.sunDir.w, 1.0)
                         / float2(sceneDepth.get_width(), sceneDepth.get_height());
-        float3 r = grInscatter(in.uv, in.position.xy, dilate, sceneDepth, vu);
-        // #188: store UNIT in-scatter (per marchLen^2), normalised by THIS lane's own
-        // march length BEFORE the quad average. A quad straddling a silhouette mixes
-        // short foreground marches with long sky marches; averaging raw in-scatter
-        // and renormalising later by one shared quad length overshoots by up to
-        // (maxLen/minLen)^2, which sparkled white along canopy edges. Unit in-scatter
-        // is length-independent, so the quad mean stays consistent and the composite
-        // just rescales by its own pixel's marchLen^2.
+        float3 r = grInscatter(in.uv, dilate, sceneDepth, vu);
+        // Store unit in-scatter (per marchLen^2), so bilateral interpolation cannot
+        // make a thin foreground pixel inherit a long sky ray's raw contribution.
         float lenL = min(r.z, GR_MAXDIST);
         float u = r.x / max(lenL * lenL, 1.0);
-        float uq = (u
-                    + quad_shuffle_xor(u, 1u)
-                    + quad_shuffle_xor(u, 2u)
-                    + quad_shuffle_xor(u, 3u)) * 0.25;
-        // #188: the composite now reconstructs from ONE texel per 2x2 quad, so the
-        // depth key must be quad-uniform too: take the quad MIN so the key stays the
-        // conservative near depth over the quad's whole scene footprint.
-        float hd = min(min(r.z, quad_shuffle_xor(r.z, 1u)),
-                       min(quad_shuffle_xor(r.z, 2u), quad_shuffle_xor(r.z, 3u)));
+        if (!isfinite(u)) u = 0.0;
         // Clamp the stored distance into fp16 range (a sky pixel reconstructs far).
-        return float4(uq, r.y, min(hd, 60000.0), 1.0);
+        return float4(u, r.y, min(r.z, 60000.0), 1.0);
     }
 
     fragment float4 compositeFrag(FSVOut in [[stage_in]],
@@ -2743,21 +2704,14 @@ extension Renderer {
                 float2 ndcXY = float2(in.uv.x * 2.0 - 1.0, (1.0 - in.uv.y) * 2.0 - 1.0);
                 float4 wp = vu.invViewProj * float4(ndcXY, d, 1.0);
                 float hitD = min(length(wp.xyz / wp.w - vu.camPosW.xyz), 60000.0);
-                // #188 QUAD-CENTRED RECONSTRUCTION. The pre-pass quad denoise makes
-                // every 2x2 texel quad of godrayTex carry ONE value, so interpolating
-                // between adjacent TEXELS produced flat 2-texel plateaus with kinks at
-                // quad boundaries: on screen, a regular grid of blocks in the smooth
-                // glow around the sun (the "cubing"). Interpolate between QUADS
-                // instead (one representative texel per quad): the reconstruction is
-                // then a single smooth bilinear ramp across the whole gradient.
+                // Bilinear reconstruction from the four nearest quarter-resolution
+                // ray texels. Each texel now carries its own centred, stable march.
                 float2 grSize = float2(godrayTex.get_width(), godrayTex.get_height());
-                float2 grQuads = grSize * 0.5;
-                float2 posG = in.uv * grQuads - 0.5;
+                float2 posG = in.uv * grSize - 0.5;
                 float2 fw   = fract(posG);
                 float2 q0   = floor(posG);
-                // Lane (0,0) texel of each quad (all four lanes hold the same value).
-                float2 base = (q0 * 2.0 + 0.5) / grSize;
-                float2 gt   = 2.0 / grSize;
+                float2 base = (q0 + 0.5) / grSize;
+                float2 gt   = 1.0 / grSize;
                 float4 s00 = godrayTex.sample(sDepth, base);
                 float4 s10 = godrayTex.sample(sDepth, base + float2(gt.x, 0.0));
                 float4 s01 = godrayTex.sample(sDepth, base + float2(0.0, gt.y));
@@ -2771,21 +2725,19 @@ extension Renderer {
                 float4 w  = bw * dw;
                 float ws  = w.x + w.y + w.z + w.w;
                 if (ws < 1e-5) { w = bw; ws = 1.0; }   // no depth match: plain bilinear
-                // #188: the pre-pass stores UNIT in-scatter (already normalised by each
-                // lane's own marchLen^2 before the quad average), so thin foreground
-                // geometry (grass blades, mushroom stems) narrower than a coarse texel
-                // never inherits a long sky ray's raw in-scatter. Just rescale by THIS
-                // pixel's own marchLen^2, the same physics the inline path applies.
+                // The pre-pass stores unit in-scatter. Rescale by this pixel's own
+                // marchLen^2 so thin foreground geometry cannot inherit a sky ray.
                 float4 tapIns = float4(s00.r, s10.r, s01.r, s11.r);
                 float lenHere = min(hitD, GR_MAXDIST);
                 inscatter = (dot(w, tapIns) / ws) * lenHere * lenHere;
+                if (!isfinite(inscatter)) inscatter = 0.0;
                 litFrac   = dot(w, float4(s00.g, s10.g, s01.g, s11.g)) / ws;
             } else {
                 // Legacy inline full-res march. Only the headless harness composite
                 // call sites take this path (they do not encode the pre-pass); the
                 // live renderer always sets vu.sunDir.w to the downscale factor.
                 float2 dilate = 1.0 / float2(sceneDepth.get_width(), sceneDepth.get_height());
-                float3 r = grInscatter(in.uv, in.position.xy, dilate, sceneDepth, vu);
+                float3 r = grInscatter(in.uv, dilate, sceneDepth, vu);
                 inscatter = r.x; litFrac = r.y;
             }
 
@@ -2798,9 +2750,7 @@ extension Renderer {
                                    0.0, 1.5);
             // Clamp the additive HARD so god rays can never blow the scene to white
             // (mirrors the bloom clamp below). This is the night-whiteout / ground-wash
-            // guard: even at max in-scatter the lift per channel stays bounded. The cap is
-            // higher than #126 (0.40) so the bold shafts can actually punch through, but it
-            // is still a hard per-channel ceiling, so a runaway value can never wash out.
+            // guard: even at max in-scatter the lift per channel stays bounded.
             float3 add = clamp(sunSat * inscatter * volStrength, 0.0, GR_MAX_ADD);
             if (volDebug) {
                 // Show the lit fraction (top) and the final shaft term (bottom half).

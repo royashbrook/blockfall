@@ -926,13 +926,15 @@ func runHeadlessSelfTest() -> Bool {
           Renderer.shaderSource.contains("float visible = step(0.999999, occD);"),
           !Renderer.shaderSource.contains("smoothstep(0.985, 0.9995, occD)")
     else { return false }
-    // #274: ray brightness must be monotonic with radial visibility. The removed
-    // 4*l*(1-l) term made half-occluded paths brighter than clear ones, drawing a
-    // bright line directly behind every tree/roof that should cast a dark corridor.
+    // #299: only a path clearer than its neighbours may emit a shaft. Unsigned
+    // mixed visibility lights blockers and draws the visual opposite of a shadow.
     guard Renderer.shaderSource.contains(
-              "float mixedVisibility = smoothstep(0.002, 0.025, visibilityVar);"),
+              "float clearGap = max(litFrac - neighbourFrac, 0.0);"),
           Renderer.shaderSource.contains(
-              "smoothstep(GR_FLOOR_LO, GR_FLOOR_HI, litFrac) * mixedVisibility;"),
+              "float sideA = sceneDepth.sample(sRay, sampleUV + neighbourUV * converge);"),
+          Renderer.shaderSource.contains(
+              "float sideB = sceneDepth.sample(sRay, sampleUV - neighbourUV * converge);"),
+          !Renderer.shaderSource.contains("mixedVisibility"),
           !Renderer.shaderSource.contains("4.0 * litFrac * (1.0 - litFrac)")
     else { return false }
     // #265: each exposed oak/birch leaf voxel must expand to exactly one sphere,
