@@ -296,11 +296,11 @@ still a streaming/render defect.
 
 Use the live checklist below and also confirm birds are absent in caves, underwater, and
 at night. `BF_SELFTEST_BIRDS=1` now renders a centered, terrain-independent three-bird
-fixture in cruise, perched, and flee poses. The same run exercises the client-only state
-machine through cruise, approach, perch, and threat-driven flee transitions. Live play
-validates sparse density, world perches, support removal, terrain occlusion, and dusk
-disappearance. The fixture fails if any expected colored bird area is missing or
-projected offscreen.
+fixture in cruise, perched, and landing-flare poses. The same run exercises the
+client-only state machine through cruise, elevated approach, shallow landing, exact
+perch contact, and threat-driven flee transitions. Live play validates sparse density,
+world perches, support removal, terrain clearance, and dusk disappearance. The fixture
+fails if any expected colored bird area is missing or projected offscreen.
 
 ## What changed
 
@@ -653,13 +653,17 @@ live natural spawns.
 
 ### Ambient sky birds
 
-Stand outdoors in full daylight for 30 seconds and look across, then above, the
-treeline. At most seven sparse birds should cross at varied heights and speeds. Each
+Stand outdoors in full daylight for 60 seconds and look across, then above, the
+treeline. At most three sparse birds should cross at varied heights and speeds, normally
+42 blocks or more from the player rather than crowding the camera. Each
 must read as one plump cartoon animal—rounded body and head, oversized eye, beak,
 tail, and overlapping floppy wings—not the old faint V mark or detached shapes.
-They should turn into their travel direction, flap and sway smoothly, descend onto
-loaded roof, wall, or treetop surfaces, and occasionally perch with tucked wings,
-visible feet, a tiny hop, and an idle eye movement.
+They should steer on curved paths instead of snapping to a new velocity. Before landing,
+each bird must fly to an elevated waypoint, make a shallow final glide, flare its wings
+and feet while keeping its body roughly level, then place its feet on—never through—the
+loaded roof, wall, or treetop surface. It must not dive vertically, fly through an
+intervening surface, or pop upward on takeoff. Perched birds tuck their wings, hop, and
+move an idle eye.
 
 Approach a perched bird to within roughly 10 blocks: it must take off before contact.
 Mining, placing, or attacking nearby must also send it fleeing. Remove its support and
@@ -674,9 +678,11 @@ For a fixed three-bird geometry check, run:
 BF_SELFTEST_BIRDS=1 "$BIN" --screenshot "$OUT/ambient-bird-modes-after.png"
 ```
 
-This fixture renders cruise, perched, and flee silhouettes and first runs a deterministic
-state test proving that a bird can land and then flee from a threat. Live play remains
-the world-perch, support-removal, occlusion, density, pause, and dusk gate.
+This fixture renders cruise, perched, and landing-flare silhouettes and first runs a
+deterministic state test proving the elevated approach, shallow level-bodied landing,
+exact contact, default three-bird budget, and subsequent threat-driven flee. Live play
+remains the terrain-clearance, world-perch, support-removal, occlusion, density, pause,
+and dusk gate.
 
 ## Deterministic headless visual checks
 

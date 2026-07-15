@@ -2235,9 +2235,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         let nightT = max(0, 1.0 - dayT * 2.0)   // 0 during day, >0 during dusk/night
 
         // Spawn budget
-        // Keep all seven cheap slots while any daylight remains; each one fades on
+        // Keep the three cheap slots while any daylight remains; each one fades on
         // its own threshold below, avoiding count-rounding pops at dusk.
-        let birdCount: Int     = dayT > 0 && birdsVisible ? 7 : 0     // 0 or 7 sparse birds
+        let birdCount: Int     = dayT > 0 && birdsVisible ? ambientBirdSystem.count : 0
         let fireflyCount: Int  = Int((nightT * nightT * 40).rounded()) // 0..40 fireflies by night
         let pollenCount: Int   = gfxPollen ? Int((dayT * 16).rounded()) : 0   // 0..16 motes by day (#45, toggle)
         // Grey ash motes: density scales with how drained the player's region is, so
@@ -2278,8 +2278,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             default: body = SIMD3(0.88, 0.60, 0.13)  // golden goof
             }
             ptr[i] = AmbientSpritePod(
-                posW:  SIMD4<Float>(pose.position.x, pose.position.y, pose.position.z,
-                                    1.48 + Float(i % 3) * 0.16),
+                posW:  SIMD4<Float>(pose.position.x, pose.position.y, pose.position.z, 1.25),
                 color: SIMD4<Float>(body.x, body.y, body.z, birdAlpha * 0.96),
                 motion: SIMD4<Float>(pose.heading.x, pose.heading.y, pose.heading.z,
                                      Float(pose.mode)))
@@ -2385,7 +2384,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         for y in stride(from: oy + dy - 3, through: oy, by: -1) {
             if occupied(y), !occupied(y + 1), !occupied(y + 2) {
-                return SIMD3<Float>(Float(x) + 0.5, Float(y) + 1.18, Float(z) + 0.5)
+                // The procedural feet sit ~0.62 world units below a 1.25 bird's
+                // centre. Put those feet on the solid top instead of through it.
+                return SIMD3<Float>(Float(x) + 0.5, Float(y) + 1.62, Float(z) + 0.5)
             }
         }
         return nil

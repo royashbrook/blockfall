@@ -175,7 +175,7 @@ extension Renderer {
     struct AmbientSprite {
         float4 posW;    // xyz=world pos; w=bird world radius or tiny-mote size
         float4 color;   // rgb=HDR colour (>1 ok), a=alpha
-        float4 motion;  // xyz=bird heading; w=bird mode (0 cruise, 1 land, 2 perch, 3 flee)
+        float4 motion;  // xyz=bird heading; w=mode (0 cruise, 1 approach, 2 perch, 3 flee, 4 landing)
     };
 
     // AmbientLifeUniforms: matches Swift AmbientLifeUniforms.
@@ -3167,7 +3167,7 @@ extension Renderer {
         // all stay head-first. Other motes preserve their upright tiny quad.
         float aspect = max(au.aspect, 0.001);
         float2 forward = float2(1.0, 0.0);
-        uint birdMode = isBird ? uint(clamp(sp.motion.w + 0.5, 0.0, 3.0)) : 0u;
+        uint birdMode = isBird ? uint(clamp(sp.motion.w + 0.5, 0.0, 4.0)) : 0u;
         if (isBird) {
             float3 travel = sp.motion.xyz;
             if (dot(travel, travel) < 0.0001) travel = float3(1.0, 0.0, 0.0);
@@ -3193,10 +3193,10 @@ extension Renderer {
         o.color    = sp.color;
         o.uv       = corner;
         float flapRate = birdMode == 3u ? 8.8 : (birdMode == 1u ? 6.3 : 5.1);
-        o.flap = birdMode == 2u
-            ? sin(au.wallClock * 0.85 + float(si) * 1.91)
+        o.flap = birdMode == 2u ? sin(au.wallClock * 0.85 + float(si) * 1.91)
+            : (birdMode == 4u ? 0.72 + 0.14 * sin(au.wallClock * 2.2 + float(si))
             : sin(au.wallClock * (flapRate + fmod(float(si), 3.0) * 0.35)
-                  + float(si) * 1.91);
+                  + float(si) * 1.91));
         o.isBird = isBird ? 1u : 0u;
         o.birdMode = birdMode;
         return o;
@@ -3208,6 +3208,7 @@ extension Renderer {
         if (in.isBird == 1u) {
             float2 uv = in.uv;
             bool perched = in.birdMode == 2u;
+            bool landing = in.birdMode == 4u;
             float flap = perched ? in.flap * 0.10 : in.flap;
 
             // Rounded tail feathers and floppy wings keep the silhouette cohesive;
@@ -3216,9 +3217,10 @@ extension Renderer {
             float tailBotD = alEllipse(uv, float2(-0.54, -0.13), float2(0.37, 0.12), -0.34);
             float bodyD = alEllipse(uv, float2(-0.05, -0.03), float2(0.57, 0.31), 0.0);
             float headD = alEllipse(uv, float2(0.47, 0.03), float2(0.27, 0.26), 0.0);
-            float wingLength = perched ? 0.31 : 0.45;
+            float wingLength = perched ? 0.31 : (landing ? 0.56 : 0.45);
             float backWingD = alEllipse(uv, float2(-0.10, -flap * 0.18),
-                                        float2(perched ? 0.29 : 0.38, 0.15), -flap * 0.58);
+                                        float2(perched ? 0.29 : (landing ? 0.47 : 0.38), 0.15),
+                                        -flap * 0.58);
             float frontWingD = alEllipse(uv, float2(-0.02, flap * 0.27),
                                          float2(wingLength, 0.17 + abs(flap) * 0.04), flap * 0.72);
             float legAD = alEllipse(uv, float2(-0.09, -0.39), float2(0.032, 0.13), -0.08);
@@ -3231,8 +3233,9 @@ extension Renderer {
             float head = alMask(headD, 0.05);
             float backWing = alMask(backWingD, 0.055);
             float frontWing = alMask(frontWingD, 0.055);
-            float feet = perched ? max(max(alMask(legAD, 0.08), alMask(legBD, 0.08)),
-                                       max(alMask(footAD, 0.08), alMask(footBD, 0.08))) : 0.0;
+            float feet = (perched || landing)
+                ? max(max(alMask(legAD, 0.08), alMask(legBD, 0.08)),
+                      max(alMask(footAD, 0.08), alMask(footBD, 0.08))) : 0.0;
 
             // Pointed yellow beak with a slightly larger dark surround.
             float2 bp = uv - float2(0.64, 0.035);
@@ -3249,7 +3252,7 @@ extension Renderer {
                                 max(alMask(bodyD / 1.13, 0.035), alMask(headD / 1.14, 0.035)));
             outline = max(outline, max(alMask(backWingD / 1.15, 0.035),
                                        alMask(frontWingD / 1.14, 0.035)));
-            if (perched) {
+            if (perched || landing) {
                 outline = max(outline, max(max(alMask(legAD / 1.35, 0.05), alMask(legBD / 1.35, 0.05)),
                                            max(alMask(footAD / 1.25, 0.05), alMask(footBD / 1.25, 0.05))));
             }

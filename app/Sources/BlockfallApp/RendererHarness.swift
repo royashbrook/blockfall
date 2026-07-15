@@ -7,7 +7,7 @@ import CBlockcore
 struct AmbientSpritePod {
     var posW:    SIMD4<Float>   // xyz = world pos; w = bird world radius or tiny-mote size
     var color:   SIMD4<Float>   // rgb = HDR colour (>1 allowed for bloom), a = alpha
-    var motion:  SIMD4<Float>   // xyz = bird heading; w = bird mode (0..3)
+    var motion:  SIMD4<Float>   // xyz = bird heading; w = bird mode (0..4)
 }
 
 // MARK: - Precipitation particle POD (matches MSL PrecipParticle, 16 bytes)
@@ -258,7 +258,7 @@ func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 
                 ptr[2] = AmbientSpritePod(
                     posW: SIMD4<Float>(3.0, -0.7, -9.0, 0.9),
                     color: SIMD4<Float>(0.55, 0.32, 0.78, 0.96),
-                    motion: SIMD4<Float>(1, 0, 0, 3))
+                    motion: SIMD4<Float>(1, 0, 0, 4))
                 var au = AmbientLifeUniforms(
                     viewProj: fixtureViewProj,
                     camPosW: SIMD4<Float>(fixtureCam.x, fixtureCam.y, fixtureCam.z, 0),
