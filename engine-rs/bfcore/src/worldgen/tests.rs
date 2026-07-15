@@ -173,6 +173,8 @@ mod worldgen_tests {
 
         assert_eq!(struct_footprint_reach(STRUCT_VILLAGE), VILLAGE_LAYOUT_REACH);
         assert_eq!(struct_footprint_reach(STRUCT_CITY), CITY_LAYOUT_REACH);
+        assert_eq!(struct_footprint_reach(STRUCT_TALL_TOWER), 3);
+        assert_eq!(struct_footprint_reach(STRUCT_KEEP), 5);
         assert!(STRUCT_MAX_REACH_XZ >= CITY_LAYOUT_REACH);
     }
 
@@ -2276,6 +2278,19 @@ mod worldgen_tests {
             assert_eq!(castle_at(dx, 1, dz), OAK_DOOR, "castle room has no foot door at {dx},{dz}");
             assert_eq!(castle_at(dx, 2, dz), OAK_DOOR, "castle room has no head door at {dx},{dz}");
         }
+        for &(room_x, room_z) in &[(0, 6), (-7, 1), (7, 1)] {
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    let b = castle_at(room_x + dx, 1, room_z + dz);
+                    assert!(
+                        b == AIR || b == CHEST,
+                        "castle door-gated room lost its 3x3 interior at {},{}",
+                        room_x + dx,
+                        room_z + dz
+                    );
+                }
+            }
+        }
         assert_eq!(castle_at(0, 1, 0), AIR, "boss anchor foot space is blocked");
         assert_eq!(castle_at(0, 2, 0), AIR, "boss anchor head space is blocked");
         for step in 1..=5 {
@@ -2330,6 +2345,51 @@ mod worldgen_tests {
         assert_eq!(typed, (STRUCT_GRAND_TOWER, wrap_world(tower.anchor_wx), tower_floor, wrap_world(tower.anchor_wz)));
         assert!(!worldgen_danger_site_is_boss(typed.0));
         assert_eq!(worldgen_epic_landmark_near(tower.anchor_wx, tower.anchor_wz, 0, seed), Some(typed));
+    }
+
+    #[test]
+    fn small_door_gated_structures_have_three_by_three_interiors() {
+        let seed = 11u64;
+
+        let keep = struct_for_cell(45, 0, seed);
+        assert_eq!(keep.typ, STRUCT_KEEP);
+        let keep_cells = stamp_structure(&keep, seed);
+        let keep_floor = (-5..=5)
+            .flat_map(|dz| (-5..=5).map(move |dx| struct_surface(keep.anchor_wx + dx, keep.anchor_wz + dz, seed)))
+            .max()
+            .unwrap();
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let b = *keep_cells
+                    .get(&(keep.anchor_wx + dx, keep_floor + 1, keep.anchor_wz + dz))
+                    .unwrap_or(&AIR);
+                assert!(b == AIR || b == CHEST, "keep hall is not a usable 3x3 room at {dx},{dz}: {b}");
+            }
+        }
+        assert_eq!(
+            keep_cells.get(&(keep.anchor_wx, keep_floor + 1, keep.anchor_wz - 2)),
+            Some(&OAK_DOOR)
+        );
+
+        let tower = struct_for_cell(61, 0, seed);
+        assert_eq!(tower.typ, STRUCT_TALL_TOWER);
+        let tower_cells = stamp_structure(&tower, seed);
+        let tower_floor = (-3..=3)
+            .flat_map(|dz| (-3..=3).map(move |dx| struct_surface(tower.anchor_wx + dx, tower.anchor_wz + dz, seed)))
+            .max()
+            .unwrap();
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let b = *tower_cells
+                    .get(&(tower.anchor_wx + dx, tower_floor + 2, tower.anchor_wz + dz))
+                    .unwrap_or(&AIR);
+                assert!(b == AIR || b == GLOW_BLOCK, "tower entry is not a usable 3x3 room at {dx},{dz}: {b}");
+            }
+        }
+        assert_eq!(
+            tower_cells.get(&(tower.anchor_wx, tower_floor + 2, tower.anchor_wz - 2)),
+            Some(&OAK_DOOR)
+        );
     }
 
     #[test]
@@ -2418,20 +2478,20 @@ mod worldgen_tests {
         let cells = stamp_structure_order(&sd, seed, false);
         assert_eq!(cells, stamp_structure_order(&sd, seed, true));
 
-        let base_h = (-2..=2)
-            .flat_map(|dz| (-2..=2).map(move |dx| struct_surface(sd.anchor_wx + dx, sd.anchor_wz + dz, seed)))
+        let base_h = (-3..=3)
+            .flat_map(|dz| (-3..=3).map(move |dx| struct_surface(sd.anchor_wx + dx, sd.anchor_wz + dz, seed)))
             .max()
             .unwrap();
         let shaft_h = 13 + ((sd.cell_hash >> 4) % 7) as i32;
         let top_y = base_h + shaft_h;
-        for (dx, dz) in [(-2, -2), (2, -2), (-2, 2), (2, 2)] {
+        for (dx, dz) in [(-3, -3), (3, -3), (-3, 3), (3, 3)] {
             assert_eq!(
                 cells.get(&(sd.anchor_wx + dx, top_y + 2, sd.anchor_wz + dz)),
                 Some(&STONE_RUBBLE),
                 "tower corner crown lost its shaped cap"
             );
         }
-        for (dx, dz) in [(-2, 0), (2, 0), (0, -2), (0, 2)] {
+        for (dx, dz) in [(-3, 0), (3, 0), (0, -3), (0, 3)] {
             assert_eq!(
                 cells.get(&(sd.anchor_wx + dx, base_h + 4, sd.anchor_wz + dz)),
                 Some(&STONE_RUBBLE),
@@ -2443,8 +2503,8 @@ mod worldgen_tests {
             .filter(|&(&(x, y, z), &b)| {
                 b == STONE_RUBBLE
                     && y <= top_y
-                    && (x - sd.anchor_wx).abs() <= 1
-                    && (z - sd.anchor_wz).abs() <= 1
+                    && (x - sd.anchor_wx).abs() <= 2
+                    && (z - sd.anchor_wz).abs() <= 2
             })
             .count();
         let shaft_moss = cells
@@ -2453,12 +2513,18 @@ mod worldgen_tests {
                 b == MOSSY_STONE
                     && y >= base_h + 2
                     && y <= top_y
-                    && (x - sd.anchor_wx).abs() <= 1
-                    && (z - sd.anchor_wz).abs() <= 1
+                    && (x - sd.anchor_wx).abs() <= 2
+                    && (z - sd.anchor_wz).abs() <= 2
             })
             .count();
-        assert!((1..=3).contains(&shaft_rubble), "tower rubble accents are not restrained");
-        assert!((1..=2).contains(&shaft_moss), "tower weathering is missing or noisy");
+        assert!(
+            (1..=3).contains(&shaft_rubble),
+            "tower rubble accents are not restrained ({shaft_rubble})"
+        );
+        assert!(
+            (1..=2).contains(&shaft_moss),
+            "tower weathering is missing or noisy ({shaft_moss})"
+        );
     }
 
     // floordiv helper available to tests (mirrors the private seam_floordiv).
@@ -3808,8 +3874,8 @@ mod worldgen_tests {
                         let cells = stamp_structure(&sd, seed);
                         let h = sd.cell_hash;
                         let mut base_h = -1000000;
-                        for dz in -4..=4 {
-                            for dx in -4..=4 {
+                        for dz in -5..=5 {
+                            for dx in -5..=5 {
                                 let sh = struct_surface(sd.anchor_wx + dx, sd.anchor_wz + dz, seed);
                                 if sh > base_h {
                                     base_h = sh;
@@ -3817,7 +3883,7 @@ mod worldgen_tests {
                             }
                         }
                         let _ = h;
-                        let rr = 4;
+                        let rr = 5;
                         // Curtain wall sections flanking the 2 wide gate (gate spans
                         // dx in {0,-1}); dx = +1 and dx = -2 at dz = -r must be solid
                         // at the torch height (base_h + 3), with no hole behind a torch.

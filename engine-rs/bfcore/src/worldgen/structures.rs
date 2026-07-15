@@ -151,8 +151,8 @@ fn struct_footprint_reach(typ: i32) -> i32 {
         x if x == STRUCT_WELL => 1,
         x if x == STRUCT_VILLAGE => VILLAGE_LAYOUT_REACH,
         x if x == STRUCT_SHRINE => 3,
-        x if x == STRUCT_TALL_TOWER => 2,
-        x if x == STRUCT_KEEP => 4,        // curtain wall + turrets at +/-4
+        x if x == STRUCT_TALL_TOWER => 3,  // expanded shaft crown / buttresses
+        x if x == STRUCT_KEEP => 5,        // curtain wall + turrets at +/-5
         x if x == STRUCT_RUIN => 4,
         x if x == STRUCT_CITY => CITY_LAYOUT_REACH,
         x if x == STRUCT_BOSS_CASTLE => 11,
@@ -265,7 +265,7 @@ fn raw_struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
     // are rarer than the small buildings: only when this byte is low. The split
     // among the three big types is driven by a separate slice of the hash so the
     // choice is stable per cell and deterministic.
-    // Big structures (9x9 footprint, half extent 4). Each one levels its footprint
+    // Big structures use varied 7x7..11x11 footprints. Each one levels its footprint
     // with a per-column foundation that fills the slope gap down to every column's
     // own terrain (see place_tall_tower / place_keep / place_ruin), so they sit flush
     // on the ground on a slope instead of floating (#108). We deliberately do NOT
@@ -2179,11 +2179,13 @@ fn place_shrine<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx
 // Bigger and clearly taller than the watchtower. Max XZ half-extent is 2 (well
 // within STRUCT_MAX_REACH_XZ).
 fn place_tall_tower<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
-    // Foundation: take the highest column under the 5x5 footprint so the tower sits
+    const SHAFT_R: i32 = 2;
+    const FOOTPRINT_R: i32 = 3;
+    // Foundation: take the highest column under the 7x7 footprint so the tower sits
     // on the ground no matter the slope (then we fill any gap below each column).
     let mut base_h = -1000000;
-    for dz in -2..=2 {
-        for dx in -2..=2 {
+    for dz in -FOOTPRINT_R..=FOOTPRINT_R {
+        for dx in -FOOTPRINT_R..=FOOTPRINT_R {
             let sh = struct_surface(ax + dx, az + dz, seed);
             if sh > base_h {
                 base_h = sh;
@@ -2194,30 +2196,30 @@ fn place_tall_tower<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C
     let shaft_h = 13 + ((h >> 4) % 7) as i32; // 13..19 tall
     let top_y = base_h + shaft_h;
 
-    // Solid 5x5 plinth one block tall, filling any slope gap below.
-    for dz in -2..=2 {
-        for dx in -2..=2 {
+    // Solid 7x7 plinth one block tall, filling any slope gap below.
+    for dz in -FOOTPRINT_R..=FOOTPRINT_R {
+        for dx in -FOOTPRINT_R..=FOOTPRINT_R {
             struct_fill_col(chunk, ax + dx, az + dz, base_h, seed, wx_min, wy_min, wz_min, STONE);
             struct_set(chunk, ax + dx, base_h + 1, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
         }
     }
 
-    // 3x3 hollow shaft of stone brick from base+2 up to top_y.
+    // 5x5 hollow shaft: its 3x3 interior remains usable past the open door.
     for wy in (base_h + 2)..=top_y {
         let level = wy - base_h;
         let accent_i = level / 5;
         let accent_corner = (accent_i + ((h >> 12) & 3) as i32) & 3;
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                let wall = dx == -1 || dx == 1 || dz == -1 || dz == 1;
+        for dz in -SHAFT_R..=SHAFT_R {
+            for dx in -SHAFT_R..=SHAFT_R {
+                let wall = dx.abs() == SHAFT_R || dz.abs() == SHAFT_R;
                 if wall {
                     // One corner accent every five levels breaks the blank shaft
                     // without turning the intact tower into a ruin.
                     let corner = match accent_corner {
-                        0 => (-1, -1),
-                        1 => (1, -1),
-                        2 => (1, 1),
-                        _ => (-1, 1),
+                        0 => (-SHAFT_R, -SHAFT_R),
+                        1 => (SHAFT_R, -SHAFT_R),
+                        2 => (SHAFT_R, SHAFT_R),
+                        _ => (-SHAFT_R, SHAFT_R),
                     };
                     let b = if level % 5 == 0 && (dx, dz) == corner {
                         if accent_i & 1 == 0 { MOSSY_STONE } else { STONE_RUBBLE }
@@ -2234,13 +2236,13 @@ fn place_tall_tower<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C
     }
 
     // Doorway on the south face at the base of the shaft.
-    struct_set(chunk, ax, base_h + 2, az - 1, wx_min, wy_min, wz_min, OAK_DOOR);
-    struct_set(chunk, ax, base_h + 3, az - 1, wx_min, wy_min, wz_min, OAK_DOOR);
+    struct_set(chunk, ax, base_h + 2, az - SHAFT_R, wx_min, wy_min, wz_min, OAK_DOOR);
+    struct_set(chunk, ax, base_h + 3, az - SHAFT_R, wx_min, wy_min, wz_min, OAK_DOOR);
 
     // Four tapered buttresses give the lower tower a grounded, non-box silhouette.
     // Their rubble caps use the custom broken-stone mesh, so the transition back to
     // the narrow shaft is visibly shaped instead of another stack of full cubes.
-    for (dx, dz) in [(-2, 0), (2, 0), (0, -2), (0, 2)] {
+    for (dx, dz) in [(-FOOTPRINT_R, 0), (FOOTPRINT_R, 0), (0, -FOOTPRINT_R), (0, FOOTPRINT_R)] {
         struct_set(chunk, ax + dx, base_h + 2, az + dz, wx_min, wy_min, wz_min, COBBLESTONE);
         struct_set(chunk, ax + dx, base_h + 3, az + dz, wx_min, wy_min, wz_min, STONE_BRICK);
         struct_set(chunk, ax + dx, base_h + 4, az + dz, wx_min, wy_min, wz_min, STONE_RUBBLE);
@@ -2250,7 +2252,7 @@ fn place_tall_tower<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C
     // into a bulky solid column or a noisy ruin.
     let mut band_y = base_h + 7;
     while band_y <= top_y - 2 {
-        for (dx, dz) in [(-2, 0), (2, 0), (0, -2), (0, 2)] {
+        for (dx, dz) in [(-FOOTPRINT_R, 0), (FOOTPRINT_R, 0), (0, -FOOTPRINT_R), (0, FOOTPRINT_R)] {
             struct_set(chunk, ax + dx, band_y, az + dz, wx_min, wy_min, wz_min, STONE_RUBBLE);
         }
         band_y += 6;
@@ -2261,23 +2263,24 @@ fn place_tall_tower<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C
     let low = base_h + 2 + shaft_h / 3;
     let mid = base_h + 2 + shaft_h / 2;
     let high = base_h + 2 + (shaft_h * 2) / 3;
-    struct_set(chunk, ax, low, az - 1, wx_min, wy_min, wz_min, GLASS_PANE);
-    struct_set(chunk, ax, high, az + 1, wx_min, wy_min, wz_min, GLASS_PANE);
-    struct_set(chunk, ax + 1, mid, az, wx_min, wy_min, wz_min, GLASS_PANE);
-    struct_set(chunk, ax - 1, mid, az, wx_min, wy_min, wz_min, GLASS_PANE);
+    struct_set(chunk, ax, low, az - SHAFT_R, wx_min, wy_min, wz_min, GLASS_PANE);
+    struct_set(chunk, ax, high, az + SHAFT_R, wx_min, wy_min, wz_min, GLASS_PANE);
+    struct_set(chunk, ax + SHAFT_R, mid, az, wx_min, wy_min, wz_min, GLASS_PANE);
+    struct_set(chunk, ax - SHAFT_R, mid, az, wx_min, wy_min, wz_min, GLASS_PANE);
 
-    // Crenellated crown: a wider 5x5 cobble rim overhangs the shaft, with an
+    // Crenellated crown: a wider 7x7 cobble rim overhangs the shaft, with an
     // irregular mix of full and shaped merlons. The one-block projection makes the
     // top read from the ground instead of continuing the same rectangular shaft.
-    for dz in -2..=2 {
-        for dx in -2..=2 {
-            let rim = dx == -2 || dx == 2 || dz == -2 || dz == 2;
+    for dz in -FOOTPRINT_R..=FOOTPRINT_R {
+        for dx in -FOOTPRINT_R..=FOOTPRINT_R {
+            let rim = dx.abs() == FOOTPRINT_R || dz.abs() == FOOTPRINT_R;
             if !rim {
                 continue;
             }
             struct_set(chunk, ax + dx, top_y + 1, az + dz, wx_min, wy_min, wz_min, COBBLESTONE);
-            let corner = dx.abs() == 2 && dz.abs() == 2;
-            let cardinal = (dx == 0 && dz.abs() == 2) || (dz == 0 && dx.abs() == 2);
+            let corner = dx.abs() == FOOTPRINT_R && dz.abs() == FOOTPRINT_R;
+            let cardinal = (dx == 0 && dz.abs() == FOOTPRINT_R)
+                || (dz == 0 && dx.abs() == FOOTPRINT_R);
             if corner || cardinal {
                 struct_set(chunk, ax + dx, top_y + 2, az + dz, wx_min, wy_min, wz_min, STONE_RUBBLE);
             }
@@ -2302,13 +2305,13 @@ fn weathered_keep_stone(h: u64, dx: i32, dz: i32, level: i32) -> BlockId {
     }
 }
 
-// A small keep / castle: a square weathered-stone curtain wall (9x9 footprint, half
-// extent 4) with a corner turret on each corner, a gated south wall, and a small
-// inner hall. Max XZ half-extent is 4.
+// A small keep / castle: an 11x11 weathered-stone curtain wall with a corner turret
+// on each corner, a gated south wall, and a 3x3 usable inner hall.
 fn place_keep<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_min: i32, wy_min: i32, wz_min: i32) {
+    let r = 5;
     let mut base_h = -1000000;
-    for dz in -4..=4 {
-        for dx in -4..=4 {
+    for dz in -r..=r {
+        for dx in -r..=r {
             let sh = struct_surface(ax + dx, az + dz, seed);
             if sh > base_h {
                 base_h = sh;
@@ -2316,7 +2319,6 @@ fn place_keep<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
         }
     }
 
-    let r = 4;
     let wall_h = 4 + ((h >> 4) & 1) as i32; // 4 or 5 tall, varied per cell
     let wall_top = base_h + wall_h;
 
@@ -2362,8 +2364,8 @@ fn place_keep<C: Chunk>(ax: i32, az: i32, h: u64, seed: u64, chunk: &mut C, wx_m
         struct_set(chunk, ax + t[0], wall_top + 3, az + t[1], wx_min, wy_min, wz_min, STONE_RUBBLE);
     }
 
-    // Inner hall: a 3x3 room at the keep center with a door and a roof.
-    let hall = 1;
+    // Inner hall: a 5x5 shell leaves a full 3x3 room past the door.
+    let hall = 2;
     let hall_top = base_h + 4;
     for dz in -hall..=hall {
         for dx in -hall..=hall {
