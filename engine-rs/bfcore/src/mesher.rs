@@ -523,6 +523,7 @@ const DOOR_OPEN: BlockId = 50;
 const CHEST: BlockId = 31;
 const WOOD_BEAM: BlockId = 51;
 const BED: BlockId = 52;
+const IRON_BARS: BlockId = 53;
 const CHOPPING_BLOCK: BlockId = 56;
 const STONE_RUBBLE: BlockId = 57;
 const MASON_BENCH: BlockId = 58;
@@ -550,6 +551,11 @@ fn is_door_frame(id: BlockId) -> bool {
 #[inline]
 fn is_bed(id: BlockId) -> bool {
     id == BED
+}
+
+#[inline]
+fn is_iron_bars(id: BlockId) -> bool {
+    id == IRON_BARS
 }
 
 #[inline]
@@ -601,6 +607,7 @@ fn is_opaque(id: BlockId) -> bool {
         && !is_wood_beam(id)
         && !is_loot_barrel(id)
         && !is_bed(id)
+        && !is_iron_bars(id)
         && !is_chopping_block(id)
         && !is_artisan_workstation(id)
         && !is_social_prop(id)
@@ -626,6 +633,7 @@ fn is_occluder(id: BlockId) -> bool {
         && !is_wood_beam(id)
         && !is_loot_barrel(id)
         && !is_bed(id)
+        && !is_iron_bars(id)
         && !is_chopping_block(id)
         && !is_artisan_workstation(id)
         && !is_social_prop(id)
@@ -1192,6 +1200,28 @@ fn emit_cuboid_16(
         &vert(xlo, ylo, zhi, BF_NY_NEG, 0, 1),
     );
     true
+}
+
+fn emit_iron_bars(
+    x: i32,
+    y: i32,
+    z: i32,
+    sky: u8,
+    blk: u8,
+    buf: &mut MeshBuffers,
+) -> bool {
+    let parts = [
+        (1, 3, 0, 16, 6, 10),
+        (7, 9, 0, 16, 6, 10),
+        (13, 15, 0, 16, 6, 10),
+        (1, 15, 4, 6, 6, 10),
+        (1, 15, 10, 12, 6, 10),
+    ];
+    parts.iter().all(|&(xlo, xhi, ylo, yhi, zlo, zhi)| {
+        emit_cuboid_16(
+            x, y, z, xlo, xhi, ylo, yhi, zlo, zhi, IRON_BARS, sky, blk, buf,
+        )
+    })
 }
 
 // One faceted cask section. Points run clockwise around X/Z; lower/upper may
@@ -2491,6 +2521,16 @@ impl GreedyMesher {
                 for z in 0..KCHUNK_DIM {
                     let here = chunk_get(chunk_opt, x, y, z);
 
+                    if is_iron_bars(here) {
+                        let sky = chunk.sky_light(x as usize, y as usize, z as usize);
+                        let blk = chunk.block_light(x as usize, y as usize, z as usize);
+                        if !emit_iron_bars(x, y, z, sky, blk, &mut buf) {
+                            buf.full = true;
+                            return finalize(buf, false);
+                        }
+                        continue;
+                    }
+
                     // #247 broken masonry: persistent shaped chunk geometry. Sparse
                     // generated cells make this cheap; coordinate mirroring keeps
                     // neighbouring wall crowns from repeating one Lego silhouette.
@@ -2886,6 +2926,33 @@ mod tests {
             .into_iter()
             .filter(|&(_, mat)| mat == 4 || mat == 28 || mat == BED)
             .collect()
+    }
+
+    #[test]
+    fn iron_bars_are_a_thin_see_through_lattice() {
+        assert!(!is_opaque(IRON_BARS));
+        assert!(!is_occluder(IRON_BARS));
+        assert!(!is_prop(IRON_BARS));
+
+        let mut store = TestStore::new();
+        let mut ch = TestChunk::new();
+        ch.set(8, 8, 8, IRON_BARS);
+        store.chunks.insert(ChunkCoord::default(), ch);
+
+        let (res, vtx, _) = GreedyMesher::new().mesh(ChunkCoord::default(), &store, false);
+        let verts = decode_position_and_mat(&vtx);
+        assert_eq!(res.index_count, 5 * 36);
+        assert_eq!(verts.len(), 5 * 24);
+        assert!(verts.iter().all(|(_, mat)| *mat == IRON_BARS));
+        let bounds = |axis: usize| {
+            verts
+                .iter()
+                .map(|(p, _)| p[axis])
+                .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)))
+        };
+        assert_eq!(bounds(0), (8.0625, 8.9375));
+        assert_eq!(bounds(1), (8.0, 9.0));
+        assert_eq!(bounds(2), (8.375, 8.625));
     }
 
     #[test]
