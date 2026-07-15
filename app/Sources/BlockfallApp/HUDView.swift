@@ -338,7 +338,7 @@ final class HUDView: NSView {
         let edgeDir:  CGVector  // unit-ish direction to point the arrow (off-screen)
         let distM:    Int       // distance to the peer, metres (rounded)
         let color:    NSColor   // the peer's per-peer tint
-        let label:    String    // "Player" (peer) or "Boss" (#41 quest target)
+        let label:    String    // player, creature objective, or local artisan
     }
     private var peers: [PeerMarker] = []
 

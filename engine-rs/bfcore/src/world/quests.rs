@@ -293,6 +293,10 @@ impl<'c> World<'c> {
             distance: 0.0,
             label: [0; 48],
         };
+        self.fill_creature_quest_target(out) || self.fill_growth_artisan_target(out)
+    }
+
+    fn fill_creature_quest_target(&self, out: &mut bf_quest_target) -> bool {
         let x = match self.extra {
             Some(x) => x,
             None => return false,
@@ -364,6 +368,33 @@ impl<'c> World<'c> {
             }
         }
         Self::cstr_copy(&mut out.label, &lbl);
+        true
+    }
+
+    fn fill_growth_artisan_target(&self, out: &mut bf_quest_target) -> bool {
+        let artisan = match self.local_growth_artisan() {
+            Some(c) => c,
+            None => return false,
+        };
+        let dx = Self::wrap_signed_f(artisan.pos.x - self.pos.x);
+        let dy = artisan.pos.y - self.pos.y;
+        let dz = Self::wrap_signed_f(artisan.pos.z - self.pos.z);
+        out.active = 1;
+        out.position = bf_vec3 {
+            x: self.pos.x + dx,
+            y: artisan.pos.y,
+            z: self.pos.z + dz,
+        };
+        out.distance = (dx * dx + dy * dy + dz * dz).sqrt();
+        Self::cstr_copy(
+            &mut out.label,
+            match artisan.npc_id {
+                4 => "Woodcutter - donate logs",
+                5 => "Stone Mason - donate stone",
+                6 => "Blacksmith - donate iron",
+                _ => return false,
+            },
+        );
         true
     }
 

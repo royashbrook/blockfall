@@ -349,15 +349,14 @@ typedef struct bf_quest_entry {
     float    progress;        /* 0..1 (meaningful for the active quest)        */
 } bf_quest_entry;
 
-/* The live creature the ACTIVE quest wants you to reach — the nearest spawned
- * one matching a befriend_creature / calm_boss objective. Powers the quest-target
- * compass (#41): one marker that points at the thing to fight/befriend, by name.
- * `active` is 0 when the current objective isn't creature-based OR no matching
- * creature is currently loaded near the player (then the marker is hidden). */
+/* The live objective the player should reach. Active creature-quest targets take
+ * priority; otherwise an incomplete settlement can point to its next growth artisan
+ * while the player remains local. Powers the shared quest-target compass (#41).
+ * `active` is 0 when no applicable target is currently loaded near the player. */
 typedef struct bf_quest_target {
-    uint8_t  active;          /* 1 = a matching creature is loaded; fields valid */
-    uint8_t  is_boss;         /* 1 = fight (calm_boss), 0 = befriend/find        */
-    bf_vec3  position;        /* world position of the nearest matching creature */
+    uint8_t  active;          /* 1 = a matching live target is loaded; fields valid */
+    uint8_t  is_boss;         /* 1 = fight (calm_boss), 0 = befriend/find/help     */
+    bf_vec3  position;        /* world position of the nearest matching target     */
     float    distance;        /* metres from the player                          */
     char     label[48];       /* display name, e.g. "Gloom Stag"                 */
 } bf_quest_target;
@@ -403,9 +402,9 @@ BF_API bf_result bf_entity_appearances(bf_engine e, bf_entity_appearance_view* o
  * quest/achievement overview screen. Order = the quest chain; states reflect what's
  * done / active / upcoming. */
 BF_API uint32_t bf_quest_list(bf_engine e, bf_quest_entry* out, uint32_t cap);
-/* Fill `out` with the active quest's target creature (nearest loaded match) and
- * return 1, or return 0 (and zero `out`) when there's no creature objective active
- * or none is loaded. Powers the quest-target compass (#41). */
+/* Fill `out` with the active creature-quest target (nearest loaded match), or the
+ * next local settlement growth artisan when no creature target is loaded. Returns
+ * 0 and zeroes `out` when neither applies. Powers the quest-target compass (#41). */
 BF_API uint8_t bf_quest_target_get(bf_engine e, bf_quest_target* out);
 /* [MAIN] Release the borrow. After this, pointers from acquire are invalid. */
 BF_API void      bf_frame_end(bf_engine e);

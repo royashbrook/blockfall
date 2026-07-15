@@ -2839,6 +2839,45 @@ fn village_world(seed: u64) -> (World<'static>, (i32, i32)) {
 }
 
 #[test]
+fn settlement_growth_marker_follows_next_artisan_only_while_local() {
+    let (mut w, (ax, az)) = village_world(11);
+    let y = worldgen::worldgen_surface_height(ax, az, 11) as f32;
+    w.debug_set_village_tier(ax, az, 0); // also registers the synthetic settlement
+    let woodcutter = w.debug_spawn_villager_role(ax, az, 4);
+    let mason = w.debug_spawn_villager_role(ax, az, 5);
+    let blacksmith = w.debug_spawn_villager_role(ax, az, 6);
+    w.debug_set_creature_pos(woodcutter, ax as f32 + 2.0, y, az as f32);
+    w.debug_set_creature_pos(mason, ax as f32 + 4.0, y, az as f32);
+    w.debug_set_creature_pos(blacksmith, ax as f32 + 6.0, y, az as f32);
+    w.debug_set_camera(ax as f32, y + 2.0, az as f32, 0.0, 0.0);
+
+    let mut target: bf_quest_target = unsafe { std::mem::zeroed() };
+    assert!(w.fill_quest_target(&mut target));
+    assert_eq!(cstr_str(&target.label), "Woodcutter - donate logs");
+    assert_eq!(target.position.x, ax as f32 + 2.0);
+
+    w.debug_set_village_tier(ax, az, 1);
+    assert!(w.fill_quest_target(&mut target));
+    assert_eq!(cstr_str(&target.label), "Stone Mason - donate stone");
+    assert_eq!(target.position.x, ax as f32 + 4.0);
+
+    w.debug_set_village_tier(ax, az, 2);
+    assert!(w.fill_quest_target(&mut target));
+    assert_eq!(cstr_str(&target.label), "Blacksmith - donate iron");
+    assert_eq!(target.position.x, ax as f32 + 6.0);
+
+    // The same unfinished settlement must stop pulling the HUD marker once the
+    // player leaves its 64-block local area.
+    w.debug_set_camera(ax as f32 + 96.0, y + 2.0, az as f32, 0.0, 0.0);
+    assert!(!w.fill_quest_target(&mut target));
+    assert_eq!(target.active, 0);
+
+    w.debug_set_camera(ax as f32, y + 2.0, az as f32, 0.0, 0.0);
+    w.debug_set_village_tier(ax, az, 3);
+    assert!(!w.fill_quest_target(&mut target), "a completed city needs no artisan marker");
+}
+
+#[test]
 fn village_woodcutter_builds_wall_to_tier1() {
     let (mut w, (ax, az)) = village_world(11);
     let wc = w.debug_spawn_villager_role(ax, az, 4); // woodcutter

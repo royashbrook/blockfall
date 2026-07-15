@@ -59,6 +59,24 @@ impl<'c> World<'c> {
         self.village_status_near(px, pz, 64)
     }
 
+    /// The artisan who owns the next growth step for the settlement the player
+    /// is currently inside. Completed cities and unloaded/missing artisans have
+    /// no target, so this never creates a long-distance marker.
+    pub(super) fn local_growth_artisan(&self) -> Option<&Creature> {
+        let (ax, az, tier, ..) = self.village_view_nearest()?;
+        let npc_id = match tier {
+            0 => 4, // Woodcutter: logs for the palisade.
+            1 => 5, // Stone Mason: reinforce it with stone.
+            2 => 6, // Blacksmith: finish the gate with iron.
+            _ => return None,
+        };
+        let home_x = Self::wrap_block(ax);
+        let home_z = Self::wrap_block(az);
+        self.creatures.iter().find(|c| {
+            c.model == 20 && c.npc_id == npc_id && c.home_x == home_x && c.home_z == home_z
+        })
+    }
+
     fn palisade_ring_cells() -> Vec<(i32, i32)> {
         const R: i32 = World::PALISADE_R;
         let mut order: Vec<(i32, i32)> = Vec::new();

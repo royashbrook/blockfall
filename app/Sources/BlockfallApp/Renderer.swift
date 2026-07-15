@@ -2146,8 +2146,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             markers.append(marker(at: head, color: color, label: "Player"))
         }
 
-        // Quest target (#41): the ONE creature the active quest wants you to reach —
-        // not every boss. Red for a boss to calm, gold for a creature to befriend.
+        // Objective target (#41/#318): one active creature-quest target, otherwise
+        // the next local settlement artisan. Red for a boss; gold for find/help.
         if let e = engine {
             var qt = bf_quest_target()
             if bf_quest_target_get(e, &qt) == 1 && qt.active == 1 {
