@@ -118,12 +118,13 @@ impl<'c> World<'c> {
         {
             let path = format!("{}/villages.dat", dir);
             let mut buf: Vec<u8> = Vec::new();
-            buf.extend_from_slice(b"BFVL");
+            buf.extend_from_slice(b"BFV2");
             buf.extend_from_slice(&(self.villages.len() as u32).to_le_bytes());
             for (&(ax, az), v) in self.villages.iter() {
                 buf.extend_from_slice(&ax.to_le_bytes());
                 buf.extend_from_slice(&az.to_le_bytes());
                 buf.push(v.tier);
+                buf.push(v.lights);
                 buf.extend_from_slice(&v.wood_cells.to_le_bytes());
                 buf.extend_from_slice(&v.progress.to_le_bytes());
             }
@@ -313,7 +314,9 @@ impl<'c> World<'c> {
         self.villages.clear();
         if let Ok(b) = std::fs::read(format!("{}/villages.dat", dir)) {
             let mut cr = ByteReader::new(&b);
-            if cr.take(4) == Some(b"BFVL") {
+            let magic = cr.take(4);
+            if magic == Some(b"BFVL") || magic == Some(b"BFV2") {
+                let has_lights = magic == Some(b"BFV2");
                 let n = cr.u32().unwrap_or(0);
                 for _ in 0..n {
                     let ax = cr.i32();
@@ -323,18 +326,28 @@ impl<'c> World<'c> {
                         _ => break,
                     };
                     let tier = cr.u8().unwrap_or(0);
+                    let lights = if has_lights { cr.u8().unwrap_or(0) } else { 0 };
                     let wood_cells = cr.i32().unwrap_or(0);
                     let progress = cr.i32().unwrap_or(0);
                     self.villages.insert(
                         (Self::wrap_block(ax), Self::wrap_block(az)),
                         VillageState {
                             tier,
+                            lights,
                             wood_cells,
                             progress,
                         },
                     );
                 }
             }
+        }
+        let wards: Vec<(i32, i32)> = self
+            .villages
+            .iter()
+            .filter_map(|(&(ax, az), v)| (v.lights >= 8).then_some((ax, az)))
+            .collect();
+        for (ax, az) in wards {
+            self.restore_village_ward(ax, az);
         }
         // #256 growth is tier-derived. Fresh chunks receive it during generation;
         // resident old-save chunks are refreshed only when their column has no saved

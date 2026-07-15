@@ -5,6 +5,7 @@ use super::*;
 #[derive(Clone, Default)]
 pub(super) struct VillageState {
     pub(super) tier: u8,
+    pub(super) lights: u8,
     pub(super) wood_cells: i32,
     pub(super) progress: i32,
 }
@@ -50,6 +51,7 @@ impl<'c> World<'c> {
     const VILLAGE_VILLAGERS: i32 = 3;
     const TOWN_VILLAGERS: i32 = 5;
     const CITY_VILLAGERS: i32 = 6;
+    const VILLAGE_WARD_LIGHTS: u8 = 8;
 
     pub fn village_view_nearest(&self) -> Option<(i32, i32, u8, i32, i32, i32, i32)> {
         let px = Self::ifloor(self.pos.x);
@@ -546,6 +548,52 @@ impl<'c> World<'c> {
             .or_default()
     }
 
+    pub(super) fn note_village_torch(&mut self, place: IVec3) -> bool {
+        let Some((_typ, ax, az)) = worldgen::worldgen_settlement_near(
+            place.x,
+            place.z,
+            32,
+            self.seed,
+        ) else {
+            self.toast("This torch makes a safe pocket. A village ward needs eight torches around a settlement.");
+            return false;
+        };
+        let (lights, completed_now) = {
+            let state = self.village_state_mut(ax, az);
+            let before = state.lights;
+            state.lights = state.lights.saturating_add(1).min(Self::VILLAGE_WARD_LIGHTS);
+            (state.lights, before < Self::VILLAGE_WARD_LIGHTS && state.lights == Self::VILLAGE_WARD_LIGHTS)
+        };
+        if completed_now {
+            self.restore_village_ward(ax, az);
+            self.toast("The village light ward flares to life — the Grey retreats and the music lifts!");
+        } else if lights < Self::VILLAGE_WARD_LIGHTS {
+            self.toast(&format!(
+                "Village light ward: {}/{} torches.",
+                lights,
+                Self::VILLAGE_WARD_LIGHTS
+            ));
+        } else {
+            self.toast("This village's light ward is already shining.");
+        }
+        true
+    }
+
+    pub(super) fn restore_village_ward(&mut self, ax: i32, az: i32) {
+        let center = Self::to_chunk(IVec3 { x: ax, y: 0, z: az });
+        // Terrain saturation blends four neighbouring region corners. Restoring the
+        // surrounding 3x3 keeps an entire settlement colourful even on a boundary.
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                self.restore_region(ChunkCoord {
+                    x: center.x + dx * KREGION_CHUNKS,
+                    y: 0,
+                    z: center.z + dz * KREGION_CHUNKS,
+                });
+            }
+        }
+    }
+
     pub(super) fn try_village_donation(&mut self, idx: usize) -> bool {
         let npc_id = self.creatures[idx].npc_id;
         let held = match self.inv.as_ref() {
@@ -807,6 +855,17 @@ impl<'c> World<'c> {
             .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
             .map(|v| v.wood_cells)
             .unwrap_or(0)
+    }
+
+    pub fn debug_village_lights(&self, ax: i32, az: i32) -> u8 {
+        self.villages
+            .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
+            .map(|v| v.lights)
+            .unwrap_or(0)
+    }
+
+    pub fn debug_note_village_torch(&mut self, x: i32, y: i32, z: i32) -> bool {
+        self.note_village_torch(IVec3 { x, y, z })
     }
 
     pub fn debug_palisade_cells_total() -> i32 {

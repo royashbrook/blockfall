@@ -182,7 +182,16 @@ impl<'c> World<'c> {
         }
         self.fx(1, place, 0);
         let pbname = self.block_name(pb);
-        self.notify_quest("place_block", &pbname);
+        if pbname == "torch" {
+            // #308 quest progress and Grey restoration both require the torch to
+            // actually be around a settlement, matching the objective's wording.
+            if self.note_village_torch(place) {
+                self.notify_quest("place_block", &pbname);
+            }
+        } else {
+            self.notify_quest("place_block", &pbname);
+        }
+        // Glow blocks and ancient beacons remain direct wilderness restorers.
         if pb == self.glow_id || (self.beacon_id != 0 && pb == self.beacon_id) {
             self.notify_quest("light_beacon", &pbname);
             let rc = Self::to_chunk(place);

@@ -79,6 +79,9 @@ impl<'c> World<'c> {
     pub fn debug_region_sat(&self, cx: i32, cz: i32) -> f32 {
         self.region_sat(ChunkCoord { x: cx, y: 0, z: cz })
     }
+    pub fn debug_clear_region_saturation(&mut self) {
+        self.region_sat.clear();
+    }
     pub fn debug_item_id(&self, n: &str) -> ItemId {
         self.item_id_by_name(n)
     }

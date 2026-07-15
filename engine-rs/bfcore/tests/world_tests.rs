@@ -3048,6 +3048,46 @@ fn village_blacksmith_adds_iron_gate_tier3() {
 }
 
 #[test]
+fn eight_village_torches_restore_a_boundary_safe_persistent_ward() {
+    let (mut w, _) = village_world(11);
+    let (px, _, pz, _) = w.get_player();
+    let (_, ax, az) = worldgen::worldgen_settlement_near(px as i32, pz as i32, 80, 11)
+        .expect("spawn settlement");
+    w.debug_clear_region_saturation();
+    let center = (chunk_of(ax), chunk_of(az));
+    assert!(w.debug_region_sat(center.0, center.1) < 0.99);
+
+    for n in 1..=8 {
+        assert!(w.debug_note_village_torch(ax + n, 8, az));
+        assert_eq!(w.debug_village_lights(ax, az), n as u8);
+        if n < 8 {
+            assert!(w.debug_region_sat(center.0, center.1) < 0.99);
+        }
+    }
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            assert!(
+                w.debug_region_sat(center.0 + dx * 8, center.1 + dz * 8) > 0.99,
+                "ward missed region offset ({dx}, {dz})"
+            );
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!("bf_village_ward_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(w.save(dir.to_str().unwrap()));
+
+    let mut loaded = World::new(Some(TerrainGen::new()));
+    loaded.debug_set_sync_streaming(true);
+    loaded.set_allocator(allocator());
+    assert!(loaded.load(dir.to_str().unwrap()));
+    assert_eq!(loaded.debug_village_lights(ax, az), 8);
+    assert!(loaded.debug_region_sat(center.0, center.1) > 0.99);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn village_tier_persists_round_trip() {
     let dir = std::env::temp_dir().join(format!("bf_village_save_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

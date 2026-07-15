@@ -17,7 +17,7 @@
       },
       {
         "id": 1,
-        "text": "Start small. Light drives back the grey. Craft some torches and place them around our village. Here, let me give you a task.",
+        "text": "Start small. Eight torches around a settlement awaken its light ward and drive the Grey from every street. Ancient beacons can reclaim the wilds beyond. Here, let me give you a task.",
         "gives_quest": 1,
         "choices": [
           { "label": "I will do it!", "goto": -1 }

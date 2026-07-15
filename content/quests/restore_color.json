@@ -34,7 +34,7 @@
         "trigger": "place_block",
         "target": "torch",
         "count": 8,
-        "objective_text": "Place 8 torches around the village."
+        "objective_text": "Place 8 torches around the village to awaken its light ward."
       }
     ],
     "rewards": [
