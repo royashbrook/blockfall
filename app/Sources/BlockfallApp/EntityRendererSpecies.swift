@@ -1027,15 +1027,15 @@ extension EntityRenderer {
         let walkAmt = min(1.0, curGaitSpeed / 1.2)
         let breatheY = breatheYOffset(breathPhase, scale: s)
         let eyeBlinkSY = blinkScale(blinkPhase)
-        let cartoonLift = walk.lift * s * 0.24 * walkAmt
-        let stepSquash = walk.squash * 0.65 * walkAmt
+        let cartoonLift = walk.lift * s * 0.36 * walkAmt
+        let stepSquash = walk.squash * 0.92 * walkAmt
 
         // Broad body, oversized low head, and very short legs stay readable at
         // both the Curl-Horn Ram's ~0.8 scale and the Dim Ramlord's 2.0 scale.
-        let bW = s * 1.24; let bH = s * 0.58; let bD = s * 0.92
-        let hW = s * 0.78; let hH = s * 0.62; let hD = s * 0.60
-        let snW = s * 0.48; let snH = s * 0.28; let snD = s * 0.30
-        let upperLegH = s * 0.25; let lowerLegH = s * 0.22
+        let bW = s * 1.30; let bH = s * 0.70; let bD = s * 1.00
+        let hW = s * 0.84; let hH = s * 0.68; let hD = s * 0.66
+        let snW = s * 0.52; let snH = s * 0.30; let snD = s * 0.32
+        let upperLegH = s * 0.23; let lowerLegH = s * 0.20
         let legW = s * 0.16; let kneeS = s * 0.19
         let hoofW = s * 0.27; let hoofH = s * 0.13; let hoofD = s * 0.32
 
@@ -1048,8 +1048,10 @@ extension EntityRenderer {
                                         1 + stepSquash * 0.50)
         let R = squashRig(Ryaw, squash: squash * landingShape,
                           footLocalY: groundY - wc.y)
-        let bodyLean = EntityRenderer.rotZ(walk.bodyRoll * 0.48 * walkAmt)
-            * EntityRenderer.rotX(walk.bodyPitch * 0.36 * walkAmt)
+        let waddle = sin(phase) * walkAmt
+        let bodyLean = EntityRenderer.rotY(waddle * 0.075)
+            * EntityRenderer.rotZ((walk.bodyRoll * 0.82 + waddle * 0.07) * walkAmt)
+            * EntityRenderer.rotX(walk.bodyPitch * 0.46 * walkAmt)
         let rig = R * bodyLean
 
         func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
@@ -1060,9 +1062,9 @@ extension EntityRenderer {
         }
         func legPoints(_ hip: SIMD3<Float>, _ legPose: Float,
                        _ anklePose: Float) -> (SIMD3<Float>, SIMD3<Float>) {
-            let upperAngle = legPose * 0.34 * walkAmt
-            let lowerAngle = upperAngle + anklePose * 0.50 * walkAmt
-            let stepLift = max(0, anklePose) * s * 0.11 * walkAmt
+            let upperAngle = legPose * 0.48 * walkAmt
+            let lowerAngle = upperAngle + anklePose * 0.72 * walkAmt
+            let stepLift = max(0, anklePose) * s * 0.18 * walkAmt
             var knee = hip + SIMD3<Float>(0, -cos(upperAngle) * upperLegH,
                                            sin(upperAngle) * upperLegH)
             knee.y += stepLift * 0.30
@@ -1127,27 +1129,26 @@ extension EntityRenderer {
                            SIMD3(bW * 0.90, bH * 0.84, bD * 0.52)),
                  rgb: baseCol * 0.88, sat: sat, shape: .smoothSphere)
 
-        // Two shallow deterministic hide patches add material variation while
-        // staying proud of the body surface (no coplanar shimmer).
-        let patchDrift = appearanceKey * s * 0.045
+        // Rounded shoulder puffs bridge the torso into the head. Their tint keeps
+        // the hide varied without reading as separate plates stuck to a sphere.
+        let patchDrift = appearanceKey * s * 0.035
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(bW * 0.47, bH * (0.07 + appearanceKey * 0.035), patchDrift),
-                           SIMD3(s * 0.16, s * 0.25, s * 0.31)),
-                 rgb: patchCol, sat: sat, shape: .sphere)
+                 model: pw(SIMD3(bW * 0.31, bH * 0.12, bD * 0.29 + patchDrift),
+                           SIMD3(bW * 0.49, bH * 0.62, bD * 0.48)),
+                 rgb: maneCol * 0.92, sat: sat, shape: .sphere)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: pw(SIMD3(-bW * 0.47, bH * (0.01 - appearanceKey * 0.03),
-                                 -bD * 0.16 - patchDrift),
-                           SIMD3(s * 0.16, s * 0.22, s * 0.27)),
-                 rgb: patchCol * 0.86, sat: sat, shape: .sphere)
-        let manePivot = SIMD3<Float>(0, bH * 0.43, -bD * 0.22)
+                 model: pw(SIMD3(-bW * 0.31, bH * 0.10, bD * 0.29 - patchDrift),
+                           SIMD3(bW * 0.49, bH * 0.59, bD * 0.48)),
+                 rgb: maneCol * 0.84, sat: sat, shape: .sphere)
+        let manePivot = SIMD3<Float>(0, bH * 0.18, bD * 0.39)
         let maneModel = EntityRenderer.trans(wc) * rig * EntityRenderer.trans(manePivot)
-            * EntityRenderer.rotZ(sin(manePhase) * 0.055)
-            * EntityRenderer.scaleM(SIMD3(bW * 0.62, s * 0.22, bD * 0.32))
+            * EntityRenderer.rotZ(sin(manePhase) * 0.075 + waddle * 0.035)
+            * EntityRenderer.scaleM(SIMD3(bW * 0.78, bH * 0.66, bD * 0.46))
         drawCube(enc: enc, viewProj: viewProj, model: maneModel,
                  rgb: maneCol, sat: sat, shape: .sphere)
 
         // The face and both horn curls share one delayed head transform.
-        let headCenter = SIMD3<Float>(0, -bH * 0.04, bD * 0.46 + hD * 0.28)
+        let headCenter = SIMD3<Float>(0, -bH * 0.02, bD * 0.43 + hD * 0.25)
         let idleHead = sin(curAmbientPhase * 0.62 + hash * 2.0) * 0.028
         let headMotion = EntityRenderer.rotZ(walk.headRoll * 0.78 * walkAmt + idleHead)
             * EntityRenderer.rotX(walk.headPitch * 0.66 * walkAmt)
@@ -1178,18 +1179,25 @@ extension EntityRenderer {
                 c: SIMD3(hW * 0.23, eyeY, faceZ), r: SIMD3(eyeW, eyeH, eyeD),
                 sat: sat, scleraCol: sclera, pupilCol: eyeCol, shape: .sphere)
 
-        let browMood = sin(curAmbientPhase * 0.74 + hash) * s * 0.022
+        // The huge face cycles through a grin, open-mouthed curiosity, and a
+        // brief determined scowl. Reversing the brow slope is what prevents the
+        // Ramlord from reading angry in every frame.
+        let expression = sin(curAmbientPhase * 0.74 + hash * 2.3)
+        let grin = max(0, expression)
+        let surprise = max(0, -expression)
+        let browOuterY = hH * (0.25 - expression * 0.11)
+        let browInnerY = hH * (0.25 + expression * 0.10)
         let browZ = faceZ + s * 0.035
         drawCube(enc: enc, viewProj: viewProj,
                  model: connectedSegment(wc, headRig,
-                                         from: SIMD3(-hW * 0.40, hH * 0.30 + browMood, browZ),
-                                         to: SIMD3(-hW * 0.07, hH * 0.20 - browMood, browZ),
+                                         from: SIMD3(-hW * 0.40, browOuterY, browZ),
+                                         to: SIMD3(-hW * 0.07, browInnerY, browZ),
                                          width: s * 0.065, overlap: s * 0.035),
                  rgb: darkCol, sat: sat, shape: .cylinder)
         drawCube(enc: enc, viewProj: viewProj,
                  model: connectedSegment(wc, headRig,
-                                         from: SIMD3(hW * 0.07, hH * 0.20 + browMood, browZ),
-                                         to: SIMD3(hW * 0.40, hH * 0.30 - browMood, browZ),
+                                         from: SIMD3(hW * 0.07, browInnerY, browZ),
+                                         to: SIMD3(hW * 0.40, browOuterY, browZ),
                                          width: s * 0.065, overlap: s * 0.035),
                  rgb: darkCol, sat: sat, shape: .cylinder)
 
@@ -1203,18 +1211,22 @@ extension EntityRenderer {
         }
         drawCube(enc: enc, viewProj: viewProj,
                  model: hpw(SIMD3(0, snoutCenter.y - snH * 0.29, snoutFrontZ - s * 0.010),
-                            SIMD3(snW * 0.72, s * 0.105, s * 0.055)),
+                            SIMD3(snW * (0.42 + grin * 0.34),
+                                  s * (0.075 + surprise * 0.14), s * 0.055)),
                  rgb: mouthCol, sat: sat, shape: .sphere)
         drawCube(enc: enc, viewProj: viewProj,
-                 model: hpw(SIMD3(0, snoutCenter.y - snH * 0.34, snoutFrontZ - s * 0.005),
-                            SIMD3(snW * 0.46, s * 0.045, s * 0.05)),
+                 model: hpw(SIMD3(0, snoutCenter.y - snH * (0.34 + surprise * 0.07),
+                                  snoutFrontZ - s * 0.005),
+                            SIMD3(snW * (0.30 + grin * 0.28),
+                                  s * (0.040 + surprise * 0.045), s * 0.05)),
                  rgb: lipCol, sat: sat, shape: .sphere)
 
         // Soft ears overlap the head sides; each horn is exactly one continuous
         // root-to-tip curl, with no second floating horn rig underneath it.
         for side in [-1.0, 1.0] as [Float] {
             drawCube(enc: enc, viewProj: viewProj,
-                     model: hpw(SIMD3(side * hW * 0.50, hH * 0.20, -hD * 0.05),
+                     model: hpw(SIMD3(side * hW * 0.50,
+                                      hH * (0.20 + side * expression * 0.035), -hD * 0.05),
                                 SIMD3(s * 0.24, s * 0.14, s * 0.18)),
                      rgb: patchCol, sat: sat, shape: .sphere)
 

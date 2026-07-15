@@ -648,7 +648,8 @@ final class EntityRenderer {
                     let dx = pos.x - h.lastX
                     let dz = pos.z - h.lastZ
                     let inst = sqrt(dx * dx + dz * dz) / max(frameDt, 1e-4)
-                    let authoredLocomotion = e.kind == 1 || e.kind == 20 || e.kind == 100
+                    let authoredLocomotion = e.kind == 1 || e.kind == 3
+                        || e.kind == 20 || e.kind == 100
                     if authoredLocomotion {
                         // #270: locomotion is an animation state, not inverse
                         // kinematics reconstructed from render-frame displacement.
@@ -663,9 +664,11 @@ final class EntityRenderer {
                         let response: Float = target > h.gaitSpeed ? 9 : 5
                         h.gaitSpeed += (target - h.gaitSpeed) * min(1, frameDt * response)
                         if h.gaitSpeed > 0.01 {
-                            // Tall Neckers take quick, theatrical reaching steps;
-                            // humanoids keep the established authored cadence.
-                            h.gait += frameDt * (e.kind == 1 ? 11.2 : 8.5)
+                            // Tall Neckers reach quickly, Ramlords troll along with
+                            // a slower poofy roll, and humanoids keep their cadence.
+                            let cadence: Float = e.kind == 1 ? 11.2
+                                : (e.kind == 3 ? 7.2 : 8.5)
+                            h.gait += frameDt * cadence
                         } else if !curEntityMoving {
                             h.gait = 0
                         }
