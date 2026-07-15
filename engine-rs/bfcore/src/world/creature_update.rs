@@ -702,10 +702,76 @@ impl<'c> World<'c> {
             // outside [0, WORLD_PERIOD) when the pair straddles the seam).
             let player_px = c.pos.x + to_player.x;
             let player_pz = c.pos.z + to_player.z;
+            let is_smudgeling = c.from_assault && c.name == "smudgeling";
+            let home_dx = Self::wrap_signed_f(c.pos.x - c.home_x as f32 - 0.5);
+            let home_dz = Self::wrap_signed_f(c.pos.z - c.home_z as f32 - 0.5);
+            let home_dist = (home_dx * home_dx + home_dz * home_dz).sqrt();
+
+            // Smudgelings hesitate at a live perimeter light, snatch one ward
+            // charge, then bolt away with it. The authored pause/recoil makes light
+            // visibly matter without allowing an AI creature to grief placed blocks.
+            if is_smudgeling && c.assault_goal_is_light && !c.carrying_light {
+                let gx = c.pos.x
+                    + Self::wrap_signed_f(c.assault_goal.x as f32 + 0.5 - c.pos.x);
+                let gz = c.pos.z
+                    + Self::wrap_signed_f(c.assault_goal.z as f32 + 0.5 - c.pos.z);
+                let dx = gx - c.pos.x;
+                let dz = gz - c.pos.z;
+                let dist = (dx * dx + dz * dz).sqrt();
+                if dist < 4.0 {
+                    c.atk_cd = (c.atk_cd - dt).max(0.0);
+                }
+                if dist < 2.2 && c.atk_cd <= 0.0 {
+                    let key = (Self::wrap_block(c.home_x), Self::wrap_block(c.home_z));
+                    if let Some(state) = self.villages.get_mut(&key) {
+                        if state.lights > 0 {
+                            state.lights -= 1;
+                            let stolen_at = c.assault_goal;
+                            c.carrying_light = true;
+                            c.assault_goal.y = NO_FLOOR;
+                            self.fx(8, stolen_at, 0);
+                            self.toast("A Smudgeling stole a village ward-light — catch it!");
+                        }
+                    }
+                }
+            }
+            if is_smudgeling
+                && !c.assault_goal_is_light
+                && c.assault_goal.y != NO_FLOOR
+            {
+                let gx = c.pos.x
+                    + Self::wrap_signed_f(c.assault_goal.x as f32 + 0.5 - c.pos.x);
+                let gz = c.pos.z
+                    + Self::wrap_signed_f(c.assault_goal.z as f32 + 0.5 - c.pos.z);
+                let dist = ((gx - c.pos.x).powi(2) + (gz - c.pos.z).powi(2)).sqrt();
+                if dist < 2.2 {
+                    c.atk_cd = (c.atk_cd - dt).max(0.0);
+                    if c.atk_cd <= 0.0 {
+                        self.fx(8, c.assault_goal, 0);
+                        c.atk_cd = 0.75;
+                    }
+                }
+            }
             // Assault creatures press toward the settlement, not wherever the player
             // happens to stand inside it. This also makes Hard Creative a useful,
             // harmless observation mode for the complete approach behavior.
-            let (ppx, ppz) = if c.from_assault {
+            let (ppx, ppz) = if is_smudgeling && c.carrying_light {
+                let len = home_dist.max(0.001);
+                (c.pos.x + home_dx / len * 12.0, c.pos.z + home_dz / len * 12.0)
+            } else if is_smudgeling && c.assault_goal.y != NO_FLOOR {
+                let gx = c.pos.x
+                    + Self::wrap_signed_f(c.assault_goal.x as f32 + 0.5 - c.pos.x);
+                let gz = c.pos.z
+                    + Self::wrap_signed_f(c.assault_goal.z as f32 + 0.5 - c.pos.z);
+                let dx = gx - c.pos.x;
+                let dz = gz - c.pos.z;
+                let dist = (dx * dx + dz * dz).sqrt().max(0.001);
+                if c.assault_goal_is_light && dist < 4.0 && c.atk_cd > 0.0 {
+                    (c.pos.x - dx / dist * 3.0, c.pos.z - dz / dist * 3.0)
+                } else {
+                    (gx, gz)
+                }
+            } else if c.from_assault {
                 (
                     c.pos.x + Self::wrap_signed_f(c.home_x as f32 + 0.5 - c.pos.x),
                     c.pos.z + Self::wrap_signed_f(c.home_z as f32 + 0.5 - c.pos.z),
@@ -1155,6 +1221,7 @@ impl<'c> World<'c> {
         // Resolve guard ward-strikes after the snapshot loop. AI kills intentionally
         // grant no player loot/quest credit; the settlement defended itself.
         let mut guard_fx = Vec::new();
+        let mut recovered_lights = Vec::new();
         for (i, damage) in guard_damage.into_iter().enumerate() {
             if damage <= 0 || i >= self.creatures.len() || !self.creatures[i].from_assault {
                 continue;
@@ -1162,6 +1229,9 @@ impl<'c> World<'c> {
             let target = &mut self.creatures[i];
             target.hp -= damage;
             target.hit_flash = 0.22;
+            if target.hp <= 0 && target.carrying_light {
+                recovered_lights.push((target.home_x, target.home_z));
+            }
             guard_fx.push(IVec3 {
                 x: Self::ifloor(target.pos.x),
                 y: Self::ifloor(target.pos.y + target.scale * 0.5),
@@ -1169,6 +1239,13 @@ impl<'c> World<'c> {
             });
         }
         self.creatures.retain(|c| c.hp > 0);
+        let mut recovered = false;
+        for (ax, az) in recovered_lights {
+            recovered |= self.return_stolen_village_light(ax, az);
+        }
+        if recovered {
+            self.toast("The guards recovered a stolen village ward-light.");
+        }
         for p in guard_fx {
             self.fx(8, p, 0);
         }

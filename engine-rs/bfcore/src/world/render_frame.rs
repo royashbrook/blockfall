@@ -447,7 +447,30 @@ impl<'c> World<'c> {
                 // authored species clips can consume the same stable locomotion
                 // state as villagers without estimating velocity from render
                 // positions. Role/action remain zero for non-villagers.
+                let at_goal = cr.name == "smudgeling"
+                    && cr.assault_goal.y != NO_FLOOR
+                    && {
+                        let dx = Self::wrap_signed_f(
+                            cr.assault_goal.x as f32 + 0.5 - cr.pos.x,
+                        );
+                        let dz = Self::wrap_signed_f(
+                            cr.assault_goal.z as f32 + 0.5 - cr.pos.z,
+                        );
+                        dx * dx + dz * dz < 2.2 * 2.2
+                    };
                 bf_entity_role_action {
+                    action: if cr.name == "smudgeling" && cr.carrying_light {
+                        12
+                    } else if at_goal {
+                        13
+                    } else {
+                        0
+                    },
+                    progress: if cr.name == "smudgeling" && cr.carrying_light {
+                        1.0
+                    } else {
+                        0.0
+                    },
                     _pad: u32::from(cr.ai.speed > 0.05),
                     ..bf_entity_role_action::default()
                 }

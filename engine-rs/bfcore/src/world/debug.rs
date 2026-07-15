@@ -212,6 +212,41 @@ impl<'c> World<'c> {
         c.home_z = Self::wrap_block(az);
         idx
     }
+    pub fn debug_spawn_smudgeling_at(
+        &mut self,
+        ax: i32,
+        az: i32,
+        x: f32,
+        y: f32,
+        z: f32,
+        goal_x: i32,
+        goal_y: i32,
+        goal_z: i32,
+        goal_is_light: bool,
+    ) -> i32 {
+        let idx = self.debug_spawn_assault_hostile_at(ax, az, x, y, z);
+        let _ = self.configure_hostile_named(idx as usize, "smudgeling");
+        let c = &mut self.creatures[idx as usize];
+        c.scale = 0.68;
+        c.assault_goal = IVec3 {
+            x: goal_x,
+            y: goal_y,
+            z: goal_z,
+        };
+        c.assault_goal_is_light = goal_is_light;
+        c.atk_cd = 0.0;
+        idx
+    }
+    pub fn debug_creature_carrying_light(&self, i: i32) -> bool {
+        self.creatures
+            .get(i.max(0) as usize)
+            .filter(|_| i >= 0)
+            .map(|c| c.carrying_light)
+            .unwrap_or(false)
+    }
+    pub fn debug_attack_creature(&mut self, i: i32) {
+        self.attack_creature(i);
+    }
     pub fn debug_creature_hp(&self, i: i32) -> i32 {
         self.creatures
             .get(i.max(0) as usize)

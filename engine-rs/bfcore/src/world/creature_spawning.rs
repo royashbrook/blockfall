@@ -185,6 +185,9 @@ impl<'c> World<'c> {
                 x.creatures()
                     .iter()
                     .filter(|d| d.disposition == "hostile")
+                    // Grey assault roles are composed explicitly at settlements;
+                    // they do not dilute environmental night/ruin pools.
+                    .filter(|d| d.name != "smudgeling")
                     .filter(|d| d.biome.is_empty() || d.biome == "any" || d.biome == bk)
                     .cloned()
                     .collect()
@@ -225,6 +228,76 @@ impl<'c> World<'c> {
         true
     }
 
+    pub(super) fn configure_hostile_named(&mut self, index: usize, name: &str) -> bool {
+        let Some(d) = self
+            .extra
+            .and_then(|x| x.creatures().iter().find(|d| d.name == name))
+            .cloned()
+        else {
+            return false;
+        };
+        let c = &mut self.creatures[index];
+        c.name = d.name;
+        c.model = d.model;
+        c.speed = d.move_speed.max(0.8);
+        c.hp = i32::from(d.max_health).max(1);
+        c.color = Self::color_for("hostile", d.id);
+        true
+    }
+
+    fn smudgeling_objective(&self, from: V3, ax: i32, az: i32) -> (IVec3, bool) {
+        let torch = self.block_id_by_name("torch");
+        let lamp = self.block_id_by_name("crystal_lamp");
+        let glow = self.block_id_by_name("glow_block");
+        let door = self.block_id_by_name("oak_door");
+        let open_door = self.block_id_by_name("oak_door_open");
+        let iron_gate = self.block_id_by_name("iron_bars");
+        let ward_charged = self
+            .villages
+            .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
+            .map(|v| v.lights > 0)
+            .unwrap_or(false);
+        let base_y = worldgen::worldgen_surface_height(ax, az, self.seed);
+        let mut best: Option<(i32, IVec3, bool)> = None;
+        for dz in -Self::PALISADE_R..=Self::PALISADE_R {
+            for dx in -Self::PALISADE_R..=Self::PALISADE_R {
+                let x = Self::wrap_block(ax + dx);
+                let z = Self::wrap_block(az + dz);
+                for y in (base_y - 2)..=(base_y + 10) {
+                    let p = IVec3 { x, y, z };
+                    let b = self.block_at(p);
+                    let is_light = ward_charged
+                        && b != AIR
+                        && (b == torch || b == lamp || b == glow);
+                    let is_gate = b != AIR && (b == door || b == open_door || b == iron_gate);
+                    if !is_light && !is_gate {
+                        continue;
+                    }
+                    // Assault creatures cannot enter the protected interior. Only
+                    // choose props they can actually reach on or outside the wall.
+                    if self.village_protects(x, z).is_some() {
+                        continue;
+                    }
+                    let dx = Self::wrap_signed_f(x as f32 + 0.5 - from.x);
+                    let dz = Self::wrap_signed_f(z as f32 + 0.5 - from.z);
+                    // Lights beat gates, then nearest wins. Integer score keeps the
+                    // choice deterministic when several identical lamps exist.
+                    let score = (if is_light { 0 } else { 100_000 })
+                        + ((dx * dx + dz * dz) * 100.0) as i32;
+                    if best.map(|b| score < b.0).unwrap_or(true) {
+                        best = Some((score, p, is_light));
+                    }
+                }
+            }
+        }
+        best.map(|(_, p, light)| (p, light)).unwrap_or_else(|| {
+            let x = Self::wrap_block(ax + 1);
+            let z = Self::wrap_block(az + Self::PALISADE_R);
+            let y = worldgen::worldgen_surface_height(x, z, self.seed) + 1;
+            (IVec3 { x, y, z }, false)
+        })
+    }
+
     /// Start one readable night assault around the settlement containing the player.
     /// Reuse the normal hostile roster for now; the Grey-specific silhouettes are
     /// separate content issues, while this owns only wave/defense behavior.
@@ -255,11 +328,18 @@ impl<'c> World<'c> {
             if !self.spawn_hostile(11.0, 19.0) {
                 continue;
             }
-            if let Some(c) = self.creatures.last_mut() {
-                c.from_assault = true;
-                c.home_x = anchor.0;
-                c.home_z = anchor.1;
-            }
+            let index = self.creatures.len() - 1;
+            let _ = self.configure_hostile_named(index, "smudgeling");
+            let from = self.creatures[index].pos;
+            let (goal, goal_is_light) = self.smudgeling_objective(from, ax, az);
+            let c = &mut self.creatures[index];
+            c.from_assault = true;
+            c.home_x = anchor.0;
+            c.home_z = anchor.1;
+            c.assault_goal = goal;
+            c.assault_goal_is_light = goal_is_light;
+            c.scale = 0.68;
+            c.atk_cd = 0.8 + spawned as f32 * 0.25;
             spawned += 1;
         }
         if spawned > 0 {

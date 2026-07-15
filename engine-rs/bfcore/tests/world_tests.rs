@@ -3664,6 +3664,11 @@ fn settlement_assaults_are_outside_bounded_and_light_ward_reduced() {
         first_wave > 0 && first_wave <= 3,
         "one bounded village wave spawned: {first_wave}"
     );
+    assert_eq!(
+        w.debug_count_named("smudgeling"),
+        first_wave,
+        "the first Grey assault tier is composed of Smudgelings"
+    );
     assert!(
         w.debug_assaults_outside_protection(),
         "attackers approach from outside the wall"
@@ -3676,6 +3681,53 @@ fn settlement_assaults_are_outside_bounded_and_light_ward_reduced() {
         first_wave,
         "an active wave does not become constant trickle-spawning"
     );
+}
+
+#[test]
+fn smudgeling_steals_and_drops_a_recoverable_ward_light() {
+    let (mut w, ax, az, surf) = prepared_settlement_defense(1);
+    w.debug_clear_inventory();
+    w.debug_set_village_lights(ax, az, 8);
+    let goal_x = ax + 8;
+    let goal_z = az;
+    let smudge = w.debug_spawn_smudgeling_at(
+        ax,
+        az,
+        goal_x as f32 + 1.0,
+        surf + 1.0,
+        goal_z as f32 + 0.5,
+        goal_x,
+        surf as i32 + 1,
+        goal_z,
+        true,
+    );
+    w.debug_update_creatures(0.05);
+    assert!(
+        w.debug_creature_carrying_light(smudge),
+        "the swarmer visibly carries its perimeter-light prize"
+    );
+    assert_eq!(w.debug_village_lights(ax, az), 7, "the live ward loses one charge");
+
+    let mut frame = empty_frame();
+    let mut draws = Vec::new();
+    let mut shadows = Vec::new();
+    let mut props = Vec::new();
+    w.build_frame(&mut frame, &mut draws, &mut shadows, &mut props, 0.0);
+    let entities =
+        unsafe { std::slice::from_raw_parts(frame.entities, frame.entity_count as usize) };
+    let smudge_draw = w
+        .entity_role_actions()
+        .iter()
+        .zip(entities.iter())
+        .find(|(_, e)| e.kind == 28)
+        .expect("Smudgeling model 28 is rendered");
+    assert_eq!(smudge_draw.0.action, 12, "stolen light selects the carry pose");
+
+    w.debug_attack_creature(smudge);
+    w.debug_attack_creature(smudge);
+    assert_eq!(w.debug_village_lights(ax, az), 8, "catching it restores the ward charge");
+    assert_eq!(w.debug_item_count(w.debug_item_id("color_dust")), 1);
+    assert_eq!(w.debug_item_count(w.debug_item_id("glow_dust")), 1);
 }
 
 // ============================================================================

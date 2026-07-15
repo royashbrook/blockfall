@@ -5235,6 +5235,136 @@ extension EntityRenderer {
              SIMD3<Float>(s * 0.30, s * 0.32, s * 0.30), shape: .sphere, color: teal)
     }
 
+    // =========================================================================
+    // KIND 28 — SMUDGELING (#311). A small Grey gremlin whose overlapping pear
+    // body, rubber-hose limbs, huge face and crooked shoes read as one animated
+    // cartoon character. Action 12 means it is fleeing with a stolen ward-light.
+    // =========================================================================
+    func drawKind28(enc: MTLRenderCommandEncoder, viewProj: simd_float4x4,
+                    e: bf_entity_draw, pos: SIMD3<Float>, phase: Float,
+                    hash: Float, squash: SIMD3<Float>) {
+        let s = e.scale, sat = e.sat
+        let ink = SIMD3<Float>(0.075, 0.055, 0.09)
+        let grey = SIMD3<Float>(0.25, 0.20, 0.31)
+        let violet = SIMD3<Float>(0.39, 0.27, 0.48)
+        let patch = SIMD3<Float>(0.57, 0.42, 0.63)
+        let cream = SIMD3<Float>(0.95, 0.89, 0.72)
+        let tooth = SIMD3<Float>(0.98, 0.94, 0.80)
+        let glow = SIMD3<Float>(2.2, 1.25, 0.30)
+
+        let moving: Float = curEntityMoving ? 1 : 0
+        let gait = phase * 1.75
+        let step = sin(gait)
+        let hop = abs(sin(gait)) * s * 0.075 * moving
+        let idle = sin(phase * 0.43 + hash * 3.0) * s * 0.018 * (1 - moving)
+        let bodyY = pos.y + s * 0.55 + hop + idle
+        let wc = SIMD3<Float>(pos.x, bodyY, pos.z)
+        let R = squashRig(EntityRenderer.rotY(e.yaw), squash: squash,
+                          footLocalY: pos.y - bodyY)
+
+        func part(_ lo: SIMD3<Float>, _ d: SIMD3<Float>,
+                  shape: EntityPartShape = .smoothSphere,
+                  color: SIMD3<Float>, emissive: Bool = false,
+                  rotZ: Float = 0) {
+            let model = EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo)
+                * EntityRenderer.rotZ(rotZ) * EntityRenderer.scaleM(d)
+            drawCube(enc: enc, viewProj: viewProj, model: model,
+                     rgb: color, sat: emissive ? -1 : sat, shape: shape)
+        }
+        func hose(_ shoulder: SIMD3<Float>, length: Float, radius: Float,
+                  pitch: Float, roll: Float = 0,
+                  color: SIMD3<Float>) -> SIMD3<Float> {
+            let model = EntityRenderer.trans(wc) * R * EntityRenderer.trans(shoulder)
+                * EntityRenderer.rotZ(roll) * EntityRenderer.rotX(pitch)
+                * EntityRenderer.trans(SIMD3<Float>(0, -length * 0.5, 0))
+                * EntityRenderer.scaleM(SIMD3<Float>(radius, length, radius))
+            drawCube(enc: enc, viewProj: viewProj, model: model,
+                     rgb: color, sat: sat, shape: .cylinder)
+            let joint = EntityRenderer.trans(wc) * R * EntityRenderer.trans(shoulder)
+                * EntityRenderer.rotZ(roll) * EntityRenderer.rotX(pitch)
+                * EntityRenderer.trans(SIMD3<Float>(0, -length, 0))
+                * EntityRenderer.scaleM(SIMD3<Float>(radius * 1.35, radius * 1.2, radius * 1.35))
+            drawCube(enc: enc, viewProj: viewProj, model: joint,
+                     rgb: color, sat: sat, shape: .sphere)
+            return shoulder + SIMD3<Float>(
+                sin(roll) * cos(pitch) * length,
+                -cos(roll) * cos(pitch) * length,
+                -sin(pitch) * length
+            )
+        }
+
+        let legSwing = step * 0.78 * moving
+        let armSwing = -step * 1.05 * moving
+        for side: Float in [-1, 1] {
+            let legPhase = legSwing * side
+            let hip = SIMD3<Float>(side * s * 0.18, -s * 0.25, 0)
+            _ = hose(hip, length: s * 0.34, radius: s * 0.075,
+                     pitch: legPhase, color: grey)
+            let shoeZ = -sin(legPhase) * s * 0.30 + s * 0.08
+            let shoeY = -s * 0.56 - cos(legPhase) * s * 0.03
+            part(SIMD3<Float>(side * s * 0.19, shoeY, shoeZ),
+                 SIMD3<Float>(s * 0.24, s * 0.13, s * 0.34),
+                 color: ink, rotZ: side * 0.08)
+
+            let carrying = curEntityAction == 12
+            let attacking = curEntityAction == 13
+            let armPhase: Float = carrying ? -0.75
+                : (attacking ? -1.30 + side * sin(phase * 4.0) * 0.22 : armSwing * side)
+            let armRoll: Float = carrying ? -side * 0.50
+                : (attacking ? -side * 0.22 : 0)
+            let shoulder = SIMD3<Float>(side * s * 0.34, s * 0.18, s * 0.01)
+            let hand = hose(shoulder, length: s * 0.38, radius: s * 0.065,
+                            pitch: armPhase, roll: armRoll, color: violet)
+            part(hand,
+                 SIMD3<Float>(s * 0.13, s * 0.13, s * 0.13), color: cream)
+        }
+
+        // The torso and head deliberately overlap: no floating toy joints.
+        part(SIMD3<Float>(0, 0, 0), SIMD3<Float>(s * 0.62, s * 0.72, s * 0.54),
+             color: grey)
+        part(SIMD3<Float>(-s * 0.17, s * 0.03, s * 0.25),
+             SIMD3<Float>(s * 0.20, s * 0.30, s * 0.08), color: patch, rotZ: -0.22)
+        let headY = s * 0.44 + sin(gait * 0.5) * s * 0.025 * moving
+        part(SIMD3<Float>(0, headY, s * 0.02),
+             SIMD3<Float>(s * 0.76, s * 0.60, s * 0.62), color: violet)
+
+        // Swept ears grow into the head instead of hovering beside it.
+        for side: Float in [-1, 1] {
+            part(SIMD3<Float>(side * s * 0.42, headY + s * 0.11, -s * 0.01),
+                 SIMD3<Float>(s * 0.22, s * 0.48, s * 0.20), shape: .cone,
+                 color: grey, rotZ: -side * 0.82)
+        }
+
+        // Huge pie-cut eyes, a crooked muzzle and off-center teeth carry the face.
+        let blink = sin(phase * 0.31 + hash * 11.0) > 0.985
+        for side: Float in [-1, 1] {
+            let eyeH = blink ? s * 0.045 : s * 0.25
+            part(SIMD3<Float>(side * s * 0.17, headY + s * 0.08, s * 0.24),
+                 SIMD3<Float>(s * 0.20, eyeH, s * 0.12), color: cream,
+                 rotZ: side * 0.13)
+            if !blink {
+                part(SIMD3<Float>(side * s * 0.18 + step * side * s * 0.012,
+                                  headY + s * 0.035, s * 0.29),
+                     SIMD3<Float>(s * 0.075, s * 0.11, s * 0.06), color: ink)
+            }
+        }
+        part(SIMD3<Float>(0, headY - s * 0.16, s * 0.24),
+             SIMD3<Float>(s * 0.43, s * 0.18, s * 0.14), color: ink, rotZ: 0.08)
+        part(SIMD3<Float>(-s * 0.11, headY - s * 0.14, s * 0.30),
+             SIMD3<Float>(s * 0.11, s * 0.10, s * 0.06), color: tooth, rotZ: -0.10)
+        part(SIMD3<Float>(s * 0.10, headY - s * 0.18, s * 0.30),
+             SIMD3<Float>(s * 0.09, s * 0.08, s * 0.06), color: tooth, rotZ: 0.13)
+
+        if curEntityAction == 12 {
+            part(SIMD3<Float>(0, -s * 0.03, s * 0.36),
+                 SIMD3<Float>(s * 0.25, s * 0.25, s * 0.25),
+                 color: glow, emissive: true)
+            part(SIMD3<Float>(0, -s * 0.03, s * 0.36),
+                 SIMD3<Float>(s * 0.10, s * 0.10, s * 0.10),
+                 color: cream, emissive: true)
+        }
+    }
+
     private func drawCube(enc: MTLRenderCommandEncoder,
                           viewProj: simd_float4x4,
                           model: simd_float4x4,

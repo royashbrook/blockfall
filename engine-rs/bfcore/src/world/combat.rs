@@ -82,6 +82,9 @@ impl<'c> World<'c> {
             };
             let cr = self.creatures[idx].clone();
             self.drop_creature_loot(&cr);
+            if cr.carrying_light && self.return_stolen_village_light(cr.home_x, cr.home_z) {
+                self.toast("You recovered a stolen village ward-light.");
+            }
             self.creatures.remove(idx);
             self.creatures_calmed += 1;
             let pv = self.player_voxel();
@@ -106,6 +109,9 @@ impl<'c> World<'c> {
             let n1 = 2 + (self.rand01() * 2.0) as i32;
             self.give_loot("crystal_shard", n1);
             self.give_loot("color_dust", 2);
+        } else if cr.name == "smudgeling" {
+            self.give_loot("color_dust", 1);
+            self.give_loot("glow_dust", 1);
         } else if cr.hostile {
             let n1 = 1 + (self.rand01() * 2.0) as i32;
             self.give_loot("color_dust", n1);

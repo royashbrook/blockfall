@@ -322,6 +322,11 @@ struct Creature {
     // Night attackers aimed at a developed settlement. The home anchor identifies
     // the threatened settlement; guards only engage attackers from their own home.
     from_assault: bool,
+    // Optional settlement prop objective used by Grey swarmers. y == NO_FLOOR means
+    // the normal settlement-center assault goal. All fields are transient AI state.
+    assault_goal: IVec3,
+    assault_goal_is_light: bool,
+    carrying_light: bool,
     // Vertical distance still to be climbed when the creature is stepping up onto
     // a ledge it bumped into. While this is > 0 the creature raises its Y toward
     // the ledge top over several ticks (a smooth clamber) instead of snapping up a
@@ -466,6 +471,13 @@ impl Default for Creature {
             home_z: 0,
             from_ruin: false,
             from_assault: false,
+            assault_goal: IVec3 {
+                x: 0,
+                y: NO_FLOOR,
+                z: 0,
+            },
+            assault_goal_is_light: false,
+            carrying_light: false,
             climb: 0.0,
             name: String::new(),
             given: String::new(),

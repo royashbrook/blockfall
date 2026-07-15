@@ -40,7 +40,7 @@ impl SettlementClass {
 
 impl<'c> World<'c> {
     // The palisade / wall ring is an R-radius square centred on the settlement anchor.
-    const PALISADE_R: i32 = 8;
+    pub(super) const PALISADE_R: i32 = 8;
     const PALISADE_CELLS: i32 = 8 * Self::PALISADE_R - 2;
     const WALL_WOOD: BlockId = 21; // oak_log
     const WALL_STONE: BlockId = 8; // stone_brick
@@ -592,6 +592,18 @@ impl<'c> World<'c> {
                 });
             }
         }
+    }
+
+    pub(super) fn return_stolen_village_light(&mut self, ax: i32, az: i32) -> bool {
+        let key = (Self::wrap_block(ax), Self::wrap_block(az));
+        let Some(state) = self.villages.get_mut(&key) else {
+            return false;
+        };
+        if state.lights >= Self::VILLAGE_WARD_LIGHTS {
+            return false;
+        }
+        state.lights += 1;
+        true
     }
 
     pub(super) fn try_village_donation(&mut self, idx: usize) -> bool {

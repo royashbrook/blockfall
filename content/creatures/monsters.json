@@ -106,5 +106,17 @@
     "biome": "beach",
     "spawn_light_max": 3,
     "model": 17
+  },
+  {
+    "id": 37,
+    "name": "smudgeling",
+    "display_name": "Smudgeling",
+    "disposition": "hostile",
+    "max_health": 4,
+    "move_speed": 3.4,
+    "spawn_biomes": ["dim_barrens"],
+    "biome": "any",
+    "spawn_light_max": 5,
+    "model": 28
   }
 ]
