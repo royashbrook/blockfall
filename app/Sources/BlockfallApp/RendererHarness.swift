@@ -918,6 +918,14 @@ func runHeadlessSelfTest() -> Bool {
           edgeSun.rayVisibility > 0, edgeSun.rayVisibility < 1,
           outsideSun.rayVisibility == 0,
           backSun.rayVisibility == 0 else { return false }
+    // #298: perspective depth crowds distant terrain close to 1. The flare must
+    // distinguish only the untouched clear value as sky, using a nearest sample;
+    // the old broad smoothstep let mountains pass as nearly fully visible.
+    guard Renderer.shaderSource.contains(
+              "float occD = sceneDepth.sample(sDepth, clamp(sunUV, 0.0, 1.0));"),
+          Renderer.shaderSource.contains("float visible = step(0.999999, occD);"),
+          !Renderer.shaderSource.contains("smoothstep(0.985, 0.9995, occD)")
+    else { return false }
     // #274: ray brightness must be monotonic with radial visibility. The removed
     // 4*l*(1-l) term made half-occluded paths brighter than clear ones, drawing a
     // bright line directly behind every tree/roof that should cast a dark corridor.

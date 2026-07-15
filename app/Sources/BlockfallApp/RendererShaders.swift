@@ -2821,11 +2821,12 @@ extension Renderer {
         // hard-clamped to FLARE_MAX_ADD on top of that.
         if (pu.lensFlareStr > 0.001) {
             float2 sunUV = float2(pu.sunScreenX, pu.sunScreenY);
-            // OCCLUSION: sample scene depth at the sun's screen position. The sky is at the
-            // far plane (depth ~1); any geometry in front reads notably less than 1. Fade the
-            // flare smoothly to zero as something occludes the sun (hill / tree / wall).
-            float occD = sceneDepth.sample(s, clamp(sunUV, 0.0, 1.0));
-            float visible = smoothstep(0.985, 0.9995, occD);   // 1 = clear sky behind sun, 0 = occluded
+            // OCCLUSION: only the untouched far-plane clear value is sky. Perspective
+            // depth is non-linear, so distant mountains also sit close to 1; the old
+            // 0.985..0.9995 smoothstep therefore treated most real terrain as visible sky.
+            // Nearest sampling avoids blending a solid silhouette with an adjacent sky texel.
+            float occD = sceneDepth.sample(sDepth, clamp(sunUV, 0.0, 1.0));
+            float visible = step(0.999999, occD);   // 1 = clear sky, 0 = any scene geometry
             float flareStr = pu.lensFlareStr * visible * FLARE_INTENSITY;
             if (flareStr > 0.001) {
                 // Aspect correction so circles stay round and distances are isotropic.
