@@ -1185,6 +1185,146 @@ The July 15 five-second dev-box smoke references were 90.8 FPS median / 59.6 FPS
 zero frames at or above 33.3 ms in either run. These are regression references,
 not substitutes for the ten-minute M1 Air gate documented above.
 
+## July 15 Grey settlement and progression closure
+
+This pass closed the remaining progression and Grey-faction work:
+
+- `6a9017d` / #305 — the addressed villager stands still for the whole dialogue.
+- `62c22a8` / #306 — one donation consumes the useful amount from the held stack.
+- `bb722a3` / #307 — the Mason accepts stone, cobblestone, or stone bricks and
+  dialogue owns the donation target even if the camera has moved.
+- `bc81531` / #308 — eight nearby village torches awaken a persistent light ward,
+  restore the complete blended settlement area, and lift the Grey music.
+- `0b795b0` / #309 — settlements face bounded night assaults; guards scale with
+  settlement class and civilians seek the center.
+- `bbb323d`, `2f9a92e`, `6cf5783`, `3c46cd6` / #311–#314 — Smudgelings,
+  Hollows, Crooked Heralds, and Dim Ramlord siege captains form the Grey ranks.
+- `57b3db4` / #310 — dialogue, quests, the Guide, and the village HUD now explain
+  the same lore, growth chain, night threat, and ward state.
+
+### Village growth and donation
+
+Use a map marker labelled **Village**, not the complete starter City. Existing
+partially grown villages are valid; use a fresh seed-11 world if state is unclear.
+
+1. Talk to Woodcutter Finn. While the dialogue is open, walk keys must not make
+   Finn wander away. Hold a stack of oak, birch, or pine logs and choose **Donate
+   held logs** once.
+2. Confirm one click consumes every currently useful pair of logs, the wall grows
+   by the matching number of sections, and the HUD progress changes. It must not
+   stop after an arbitrary eight items.
+3. Finish the wooden ring. The HUD must change to **Walled Village · Tier 1/3**
+   and request stone from the Mason.
+4. Talk to Stone Mason Bria. Her dialogue must explicitly say to hold stone,
+   cobblestone, or stone bricks. Test each material on a separate donation; all
+   three must be accepted toward the same 16-unit total.
+5. Move the camera away while Bria's dialogue remains open and click Donate. The
+   donation must still reach Bria rather than depending on the crosshair target.
+6. Finish the stone total. The wall becomes stone, towers appear, the HUD reads
+   **Town · Tier 2/3**, and it requests iron from the Blacksmith.
+7. Donate iron ingots or raw iron to Blacksmith Dov. At eight total, the HUD reads
+   **City · Tier 3/3** and the iron gate and lamps are present.
+8. Save, reload, and revisit. Tier, walls, gate, lamps, and donation progress must
+   persist. Player-placed blocks near growing artisan lots must remain untouched.
+
+### Light ward, color, and music
+
+1. Stand within the village range shown by the bottom-center village panel. Place
+   torches around the settlement one at a time.
+2. Confirm the panel advances **Light ward: 1/8 nearby torches** through 7/8. A
+   torch placed farther than 32 blocks from every settlement must instead report
+   that it only creates a safe pocket and must not advance this meter.
+3. Place the eighth nearby torch. Required simultaneous results:
+   - the panel becomes gold and reads **Light ward shining — streets restored**;
+   - terrain, props, villagers, and creatures across the whole settlement regain
+     color without a hard region-boundary seam;
+   - the top-right **The Grey** status disappears while inside the restored area;
+   - the slow Grey music cross-fades back to normal music;
+   - the toast says the ward flared to life.
+4. Walk every street and just outside each wall. There must be no grey corner
+   inside the developed settlement. The wilderness beyond the bounded ward may
+   remain Grey; ancient beacons are still required to reclaim wild regions.
+5. Save and reload. The panel must still show the shining ward, the settlement
+   must remain colorful, and normal music must remain active there.
+
+### Night guards and the four Grey ranks
+
+Use Hard difficulty after completing the opening quest sequence. **Always Night**
+makes cadence easier to observe. Hard Creative is valid for harmless observation:
+the complete assault AI and animation still run, but the player is not damaged.
+
+1. At a Tier-1 walled Village, wait outside the wall at night. A bounded wave of
+   small pear-shaped **Smudgelings** should approach from outside protection. They
+   pause at a live perimeter light, steal one ward charge, visibly carry it, then
+   flee. Calming the thief restores the charge and drops color/glow dust.
+2. Confirm the Woodcutter takes the light-staff guard pose while civilians retreat
+   toward the center. The wall must block attackers; none may spawn inside it.
+3. At a Tier-2 Town, confirm **Hollows** join the wave as the rank-and-file. Two
+   guards should engage them. A complete ward slows and gradually damages a
+   Hollow, with a visible recoil pose.
+4. At a Tier-3 City, observe a normal wave: two Smudgelings, two Hollows, and one
+   tall **Crooked Herald**. The Herald pauses, then takes sudden elastic steps;
+   nearby troops move faster. A completed ward drives the Herald back.
+5. City waves remain capped at five. On the first and every third eligible siege
+   wave, the composition changes to two Smudgelings, one Hollow, one Herald, and
+   one **Dim Ramlord**.
+6. The Ramlord must remain outside wall collision, rally nearby lesser Grey, lower
+   its head and horns for a readable three-second gate/ward charge, then remove
+   exactly two ward charges. The ward also deals slow damage to the captain.
+7. Three city guards must hurt but not erase the Ramlord. Join the defense and
+   calm it; the reward is four crystal shards, four color dust, and three glow
+   dust. No assault should become a constant trickle while an active wave remains.
+
+### Lore and deterministic visual fixtures
+
+Talk to Elder Mira and choose **What follows the Grey?** Her branches must name
+the four ranks, explain why stronger settlements matter, describe the Grey as
+draining color, memory, rhythm, then shape, and leave its origin unresolved. Press
+`G` and ask the Guide about the Grey, a Ramlord, torches, and villages; the answers
+must use the same vocabulary. Quest 11 is **Captain of the Grey** and names the
+Dim Ramlord rather than the obsolete Dim Herald.
+
+```bash
+cd /Users/roy/gh/blockfall
+./ci/build.sh release
+BIN=./build/Blockfall.app/Contents/MacOS/Blockfall
+OUT="$(mktemp -d /private/tmp/blockfall-grey-validation.XXXXXX)"
+
+"$BIN" --villageshot "$OUT/village-ward-sheet.png"
+
+for KIND in 28 29 30; do
+  BF_SHOT_SEED=10 BF_SHOT_POS="170,13,62,3.14159,-0.12" \
+  BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_TESTCREATURE="$KIND" \
+  BF_SHOT_TOD=0.75 BF_SHOT_TCDIST=5 BF_SHOT_HELD=0 BF_CEL=1 \
+    "$BIN" --shot "$OUT/grey-$KIND.png"
+done
+
+BF_SHOT_SEED=10 BF_SHOT_POS="170,13,62,3.14159,-0.12" \
+BF_SHOT_NOWALK=1 BF_SHOT_PITCH=0 BF_SHOT_TESTCREATURE=3 \
+BF_SHOT_TOD=0.75 BF_SHOT_TCDIST=5 BF_SHOT_TCSCALE=2 BF_SHOT_HELD=0 \
+BF_SHOT_SOCIAL_ACTION=18 BF_SHOT_SOCIAL_PROGRESS=0.70 BF_CEL=1 \
+  "$BIN" --shot "$OUT/ramlord-siege-charge.png"
+
+open "$OUT"
+```
+
+The ward sheet must show incomplete and shining states without clipped text. The
+three Grey creatures must have distinct readable silhouettes. The Ramlord fixture
+must show one connected, squat creature with its head lowered, horns forward, and
+the forehead charge light visible.
+
+Final machine gate:
+
+```bash
+./ci/check.sh
+gh issue list --state open --limit 200
+```
+
+Required result on this closure build: `check.sh GREEN`, 177 Rust unit tests and
+77 world tests passing, content/dialogue probes green, release build assembled,
+and an empty issue list. Commit `57b3db4` measured 92.9 FPS median / 51.1 FPS
+1%-low with zero frames at or above 33.3 ms on the development Mac.
+
 ## Reporting failures
 
 For any visual or play failure, record:
