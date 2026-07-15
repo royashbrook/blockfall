@@ -1324,7 +1324,7 @@ func runCritterGallery(savePath: String) -> Bool {
     // The Necker's head sits more than four blocks above its feet at gallery
     // scale. Give that one motion strip a taller/wider frame so validation sees
     // the complete connected neck instead of cropping it at the shoulders.
-    let motionEye = motionKind == 1 ? SIMD3<Float>(cx, 4.05, 7.8)
+    let motionEye = motionKind == 1 ? SIMD3<Float>(cx, 4.20, 8.5)
         : (motionKind == 3 ? SIMD3<Float>(cx, 0.80 + motionScale * 0.78,
                                          3.00 + motionScale * 2.70)
                            : SIMD3<Float>(cx, 2.3, 4.8))

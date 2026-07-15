@@ -439,7 +439,14 @@ impl<'c> World<'c> {
                     _pad: u32::from(cr.ai.speed > 0.05),
                 }
             } else {
-                bf_entity_role_action::default()
+                // The additive sidecar is index-aligned for every creature, so
+                // authored species clips can consume the same stable locomotion
+                // state as villagers without estimating velocity from render
+                // positions. Role/action remain zero for non-villagers.
+                bf_entity_role_action {
+                    _pad: u32::from(cr.ai.speed > 0.05),
+                    ..bf_entity_role_action::default()
+                }
             });
             self.entity_appearances.push(bf_player_appearance::default());
         }

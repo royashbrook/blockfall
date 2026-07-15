@@ -208,9 +208,9 @@ final class EntityRenderer {
         var lastScale:  Float
         var lastSeen:   Float   // wall-clock time last observed
         var hitAt:      Float   // wall-clock time the last hit fired (-1 = none)
-        // Most creatures remain movement-matched from sampled ground position.
-        // Villagers instead use gaitSpeed as a 0...1 locomotion blend selected by
-        // the engine's semantic moving flag; their authored clip has fixed timing.
+        // Legacy creatures remain movement-matched from sampled ground position.
+        // Authored locomotion species instead use gaitSpeed as a 0...1 blend
+        // selected by the engine's semantic moving flag; their clips have fixed timing.
         var lastX:      Float
         var lastZ:      Float
         var gait:       Float   // accumulated gait phase (radians)
@@ -230,7 +230,7 @@ final class EntityRenderer {
     var curFlash: SIMD3<Float> = .zero   // additive color toward white/red
     var curFlashAmt: Float = 0           // 0..1 strength (for emissive parts)
     // Locomotion strength for the entity being drawn: measured speed for legacy
-    // species, authored state-machine blend for villagers.
+    // species, authored state-machine blend for selected species and villagers.
     var curGaitSpeed: Float = 0
     // Wall-clock phase stays separate from the locomotion clip, so blinking and
     // breathing continue while a planted walk phase is held.
@@ -648,7 +648,8 @@ final class EntityRenderer {
                     let dx = pos.x - h.lastX
                     let dz = pos.z - h.lastZ
                     let inst = sqrt(dx * dx + dz * dz) / max(frameDt, 1e-4)
-                    if e.kind == 20 || e.kind == 100 {
+                    let authoredLocomotion = e.kind == 1 || e.kind == 20 || e.kind == 100
+                    if authoredLocomotion {
                         // #270: locomotion is an animation state, not inverse
                         // kinematics reconstructed from render-frame displacement.
                         // Blend across short simulation stalls and play the authored
@@ -662,7 +663,9 @@ final class EntityRenderer {
                         let response: Float = target > h.gaitSpeed ? 9 : 5
                         h.gaitSpeed += (target - h.gaitSpeed) * min(1, frameDt * response)
                         if h.gaitSpeed > 0.01 {
-                            h.gait += frameDt * 8.5
+                            // Tall Neckers take quick, theatrical reaching steps;
+                            // humanoids keep the established authored cadence.
+                            h.gait += frameDt * (e.kind == 1 ? 11.2 : 8.5)
                         } else if !curEntityMoving {
                             h.gait = 0
                         }
@@ -676,7 +679,7 @@ final class EntityRenderer {
                     // Use the gait phase (plus the per-entity hash offset so a crowd
                     // doesn't step in sync) for the walk cycle this frame.
                     phase = h.gait + phaseHash * 3.14159
-                    curGaitSpeed = (e.kind == 20 || e.kind == 100)
+                    curGaitSpeed = authoredLocomotion
                         ? h.gaitSpeed * 1.3 : h.gaitSpeed
 
                     if h.hitAt >= 0, t - h.hitAt < hitDuration {

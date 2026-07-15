@@ -427,8 +427,8 @@ extension EntityRenderer {
     //   ankleCol = same as patchCol (dark bands)
     //
     // Parts: tubular leg sections(8) knees(4) feet(4) body(1) belly(1)
-    //        body-spots(4) neck sections(3) neck joints(2) head(1) muzzle(1)
-    //        nostrils(2) eyes(2) lashes(2) ossicones(2) tail(2) = 43 parts
+    //        body-spots(4) neck sections(4) neck joints(3) head(1) muzzle(1)
+    //        nostrils(2) eyes(2) lashes(2) ossicones(2) tail(2) = 45 parts
     // =========================================================================
     func drawKind1(enc: MTLRenderCommandEncoder,
                            viewProj: simd_float4x4,
@@ -472,14 +472,12 @@ extension EntityRenderer {
         let tailPhase   = curAmbientPhase + hash * 1.8
         let walk = villagerWalkPose(phase)
         let walkAmt = min(1.0, curGaitSpeed / 1.2)
-        let neckWave = phase * 1.52
+        // A slower travelling wave follows the faster foot cadence. The neck
+        // bends progressively from base to tip instead of translating as one rod.
+        let neckWave = phase * 0.78
         let idleNeckSway = sin(curAmbientPhase * 0.62 + hash * 2.0) * s * 0.025
         let neckSway = idleNeckSway
-            + sin(neckWave + 0.5) * s * 0.10 * walkAmt
-        // The head trails the long neck by a fraction of a beat instead of
-        // moving as one rigid tower.
-        let headSway = neckSway
-            + sin(neckWave + 0.18) * s * 0.035 * walkAmt
+            + sin(neckWave + 0.5) * s * 0.15 * walkAmt
 
         let breatheY   = breatheYOffset(breathPhase, scale: s)
         let eyeBlinkSY = blinkScale(blinkPhase)
@@ -491,7 +489,7 @@ extension EntityRenderer {
         // Legs: long two-section hoses. The knee/foot spheres overlap their
         // neighbours, so the silhouette stays continuous throughout the gait.
         let legW = s * 0.11
-        let upperLegH = s * 0.52; let lowerLegH = s * 0.48
+        let upperLegH = s * 0.56; let lowerLegH = s * 0.52
         let kneeS = s * 0.14
         let footW = s * 0.17; let footH = s * 0.11; let footD = s * 0.22
         // Neck: VERY long and THIN — unmistakable
@@ -501,8 +499,8 @@ extension EntityRenderer {
         // Ossicones: stubby horn knobs
         let ossW = s * 0.06; let ossH = s * 0.18; let ossD = s * 0.06
 
-        let cartoonLift = walk.lift * s * 0.45 * walkAmt
-        let stepSquash = walk.squash * 0.55 * walkAmt
+        let cartoonLift = walk.lift * s * 0.72 * walkAmt
+        let stepSquash = walk.squash * 0.78 * walkAmt
         let groundY = pos.y
         let bodyY   = groundY + upperLegH + lowerLegH + bH * 0.5
             + breatheY + cartoonLift
@@ -512,8 +510,8 @@ extension EntityRenderer {
                                         1 + stepSquash * 0.45)
         let R       = squashRig(Ryaw, squash: squash * landingShape,
                                 footLocalY: groundY - wc.y)
-        let bodyLean = EntityRenderer.rotZ(walk.bodyRoll * 0.60 * walkAmt)
-            * EntityRenderer.rotX(walk.bodyPitch * 0.45 * walkAmt)
+        let bodyLean = EntityRenderer.rotZ(walk.bodyRoll * 0.90 * walkAmt)
+            * EntityRenderer.rotX(walk.bodyPitch * 0.68 * walkAmt)
         let rig = R * bodyLean
 
         func pw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
@@ -522,18 +520,21 @@ extension EntityRenderer {
         func legPW(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
             EntityRenderer.trans(wc) * R * EntityRenderer.trans(lo) * EntityRenderer.scaleM(d)
         }
-        func legPoints(_ hip: SIMD3<Float>, _ legPose: Float,
+        func legPoints(_ hip: SIMD3<Float>, _ side: Float, _ legPose: Float,
                        _ anklePose: Float) -> (SIMD3<Float>, SIMD3<Float>) {
-            let upperAng = legPose * 0.48 * walkAmt
-            let lowerAng = upperAng + anklePose * 0.72 * walkAmt
-            let stepLift = max(0, anklePose) * s * 0.20 * walkAmt
+            let upperAng = legPose * 0.82 * walkAmt
+            let lowerAng = upperAng + anklePose * 1.16 * walkAmt
+            let stepLift = max(0, anklePose) * s * 0.34 * walkAmt
+            let hoseBow = side * sin(upperAng) * s * 0.11 * walkAmt
             var knee = hip + SIMD3<Float>(0,
                                           -cos(upperAng) * upperLegH,
                                            sin(upperAng) * upperLegH)
+            knee.x += hoseBow
             knee.y += stepLift * 0.35
             var foot = knee + SIMD3<Float>(0,
                                             -cos(lowerAng) * lowerLegH,
                                              sin(lowerAng) * lowerLegH)
+            foot.x -= hoseBow * 0.35
             foot.y += stepLift
             return (knee, foot)
         }
@@ -546,14 +547,14 @@ extension EntityRenderer {
 
         // Opposite diagonal pairs share contact phases, giving the tall body a
         // stable, cartoony four-beat walk instead of four scissoring rods.
-        let legPoses: [(SIMD3<Float>, Float, Float)] = [
-            (hipFL, walk.legL, walk.ankleL),
-            (hipFR, walk.legR, walk.ankleR),
-            (hipBL, walk.legR, walk.ankleR),
-            (hipBR, walk.legL, walk.ankleL),
+        let legPoses: [(SIMD3<Float>, Float, Float, Float)] = [
+            (hipFL, -1, walk.legL, walk.ankleL),
+            (hipFR,  1, walk.legR, walk.ankleR),
+            (hipBL, -1, walk.legR, walk.ankleR),
+            (hipBR,  1, walk.legL, walk.ankleL),
         ]
-        let rawLegs = legPoses.map { hip, legPose, anklePose in
-            let (knee, foot) = legPoints(hip, legPose, anklePose)
+        let rawLegs = legPoses.map { hip, side, legPose, anklePose in
+            let (knee, foot) = legPoints(hip, side, legPose, anklePose)
             return (hip, knee, foot)
         }
         // Stretch the whole hose chain just enough for the lowest diagonal pair
@@ -610,23 +611,23 @@ extension EntityRenderer {
         // Explicit endpoints remove the old tilt-sign mismatch that placed the
         // head on the opposite side of the neck's actual top.
         let neckBase = SIMD3<Float>(0, bH * 0.40, bD * 0.18)
-        let neckPoints = [
-            neckBase,
-            SIMD3<Float>(neckSway * 0.24, neckBase.y + neckH * 0.34,
-                         neckBase.z + s * 0.04),
-            SIMD3<Float>(neckSway * 0.64, neckBase.y + neckH * 0.68,
-                         neckBase.z + s * 0.12),
-            SIMD3<Float>(headSway, neckBase.y + neckH,
-                         neckBase.z + s * 0.24),
-        ]
-        let neckWidths = [s * 0.18, s * 0.155, s * 0.13]
+        let neckPoints: [SIMD3<Float>] = (0...4).map { index in
+            let t = Float(index) * 0.25
+            let travelling = sin(neckWave - t * 3.40) * s * 0.25 * t * walkAmt
+            let followThrough = cos(neckWave * 0.82 - t * 2.65)
+                * s * 0.14 * t * walkAmt
+            return SIMD3<Float>(neckSway * t + travelling,
+                                neckBase.y + neckH * t,
+                                neckBase.z + s * 0.24 * t + followThrough)
+        }
+        let neckWidths = [s * 0.18, s * 0.162, s * 0.143, s * 0.125]
         for index in 0..<(neckPoints.count - 1) {
             drawCube(enc: enc, viewProj: viewProj,
                      model: connectedSegment(wc, rig,
                                              from: neckPoints[index], to: neckPoints[index + 1],
                                              width: neckWidths[index], overlap: s * 0.09),
                      rgb: baseCol, sat: sat, shape: .cylinder)
-            if index < 2 {
+            if index < 3 {
                 drawCube(enc: enc, viewProj: viewProj,
                          model: pw(neckPoints[index + 1],
                                    SIMD3(repeating: neckWidths[index] * 1.14)),
@@ -637,10 +638,12 @@ extension EntityRenderer {
         // ---- HEAD — a true child of the neck tip with delayed roll/nod. Every
         // facial feature uses the same local transform, so nothing separates as
         // the head follows through.
-        let headCenter = neckPoints[3] + SIMD3<Float>(0, hH * 0.28, hD * 0.05)
+        let headCenter = neckPoints[4] + SIMD3<Float>(0, hH * 0.28, hD * 0.05)
         let headMotion = EntityRenderer.rotZ(walk.headRoll * 0.72 * walkAmt
+                                              + sin(neckWave - 1.35) * 0.10 * walkAmt
                                               + sin(curAmbientPhase * 0.55 + hash) * 0.025)
-            * EntityRenderer.rotX(walk.headPitch * 0.65 * walkAmt)
+            * EntityRenderer.rotX(walk.headPitch * 0.65 * walkAmt
+                                  + cos(neckWave - 1.65) * 0.075 * walkAmt)
         func hpw(_ lo: SIMD3<Float>, _ d: SIMD3<Float>) -> simd_float4x4 {
             EntityRenderer.trans(wc) * rig
                 * EntityRenderer.trans(headCenter) * headMotion
