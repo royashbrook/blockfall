@@ -139,6 +139,9 @@ impl<'c> World<'c> {
         let c = &self.creatures[i as usize];
         (c.pos.x, c.pos.y, c.pos.z)
     }
+    pub fn debug_creature_provoked(&self, i: i32) -> bool {
+        i >= 0 && i < self.creatures.len() as i32 && self.creatures[i as usize].provoked
+    }
     pub fn debug_set_creature_pos(&mut self, i: i32, x: f32, y: f32, z: f32) {
         if i >= 0 && i < self.creatures.len() as i32 {
             self.creatures[i as usize].pos = Self::wrap_v3_xz(V3::new(x, y, z));

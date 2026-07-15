@@ -57,6 +57,10 @@ impl<'c> World<'c> {
         let pz = self.pos.z;
         {
             let cr = &mut self.creatures[idx];
+            if cr.name == "curl_horn_ram" {
+                cr.provoked = true;
+                cr.friendly = false;
+            }
             cr.hp -= dmg;
             cr.hit_flash = 0.22;
             // #179: nearest-image so knockback pushes the right way at the seam.

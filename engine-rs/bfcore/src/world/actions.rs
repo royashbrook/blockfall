@@ -103,7 +103,10 @@ impl<'c> World<'c> {
                         let npc = self.creatures[idx as usize].npc_id;
                         self.fx(20, pv, npc);
                     }
-                } else if idx >= 0 && !self.creatures[idx as usize].hostile {
+                } else if idx >= 0
+                    && !self.creatures[idx as usize].hostile
+                    && !self.creatures[idx as usize].provoked
+                {
                     self.creatures[idx as usize].friendly = true;
                     self.creatures_befriended += 1;
                     // Feed the held berry (consume one).

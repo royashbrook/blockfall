@@ -303,6 +303,9 @@ struct Creature {
     is_boss: bool,
     friendly: bool,
     hostile: bool,
+    // Passive animals normally flee or graze. A few sturdy species retaliate
+    // after being struck without becoming monsters for spawning/loot purposes.
+    provoked: bool,
     skittish: bool,
     aquatic: bool,
     atk_cd: f32,
@@ -440,6 +443,7 @@ impl Default for Creature {
             is_boss: false,
             friendly: false,
             hostile: false,
+            provoked: false,
             skittish: false,
             aquatic: false,
             atk_cd: 0.0,

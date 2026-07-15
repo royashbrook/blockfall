@@ -742,11 +742,12 @@ impl<'c> World<'c> {
             // smoothed displacement through the EXISTING collision/climb code below.
             use crate::creature_ai as cai;
             let xzd = (to_player.x * to_player.x + to_player.z * to_player.z).sqrt();
+            let aggressive = c.hostile || c.provoked;
             let temper = if c.wander > 900.0 {
                 // Scripted straight-walker (set by debug_spawn_creature_at for the
                 // deterministic locomotion/climb tests): ignore the player, walk on.
                 cai::Temperament::Scripted
-            } else if c.hostile {
+            } else if aggressive {
                 cai::Temperament::Hunter
             } else if c.friendly {
                 // Befriended pet: follows the player, keeps comfortable spacing.
@@ -758,9 +759,9 @@ impl<'c> World<'c> {
                 // Animals (incl. skittish ones) graze + flee the player.
                 cai::Temperament::Passive
             };
-            // Hostiles only seek/attack in survival; outside survival they amble.
-            let hunting = c.hostile && self.mode == bf_game_mode::BF_MODE_SURVIVAL;
-            let eff_temper = if c.hostile && !hunting {
+            // Aggressive creatures only seek/attack in survival; outside it they amble.
+            let hunting = aggressive && self.mode == bf_game_mode::BF_MODE_SURVIVAL;
+            let eff_temper = if aggressive && !hunting {
                 cai::Temperament::Passive
             } else {
                 temper
@@ -891,12 +892,12 @@ impl<'c> World<'c> {
                         y: nv.y - 1,
                         z: nv.z,
                     }) == WATER);
-            // #95 walls keep monsters out: a hostile may not cross into a walled village's
+            // #95 walls keep monsters out: an aggressive creature may not cross into a walled village's
             // protected interior. (The wall blocks itself stop a creature that bumps the
-            // line; this is the belt-and-braces guard so a hostile can never slip through
-            // the gate or a worldgen seam into a protected interior.) A hostile already
+            // line; this is the belt-and-braces guard so it cannot slip through the gate
+            // or a worldgen seam into a protected interior.) A creature already
             // somehow inside is free to leave.
-            let into_protected = c.hostile
+            let into_protected = aggressive
                 && self.village_protects(nv.x, nv.z).is_some()
                 && self
                     .village_protects(Self::ifloor(c.pos.x), Self::ifloor(c.pos.z))
@@ -1058,19 +1059,26 @@ impl<'c> World<'c> {
                 }
             }
         }
-        // ---- collision: keep non-hostile creatures out of the player's space ----
+        // ---- collision: keep non-aggressive creatures out of the player's space ----
         let px = self.pos.x;
         let pz = self.pos.z;
         let survival = self.mode == bf_game_mode::BF_MODE_SURVIVAL;
         for i in 0..self.creatures.len() {
-            let (cx0, cz0, cy0, cscale, aquatic, hostile) = {
+            let (cx0, cz0, cy0, cscale, aquatic, aggressive) = {
                 let c = &self.creatures[i];
-                (c.pos.x, c.pos.z, c.pos.y, c.scale, c.aquatic, c.hostile)
+                (
+                    c.pos.x,
+                    c.pos.z,
+                    c.pos.y,
+                    c.scale,
+                    c.aquatic,
+                    c.hostile || c.provoked,
+                )
             };
             if aquatic {
                 continue;
             }
-            if hostile && survival {
+            if aggressive && survival {
                 continue;
             }
             let dx = Self::wrap_signed_f(cx0 - px);

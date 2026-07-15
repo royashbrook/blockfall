@@ -551,6 +551,51 @@ fn quest_engine() {
     }
 }
 
+#[test]
+fn curl_horn_ram_retaliates_when_struck() {
+    let mut content = ContentRegistry::new();
+    assert!(content.load(CONTENT), "content load");
+    let mut extra = ContentExtra::new();
+    assert!(extra.load(CONTENT), "extra load");
+    let attack = bf_action {
+        kind: bf_action_kind::BF_ACT_ATTACK,
+        arg_i: 0,
+        arg_j: 0,
+        arg_k: 0,
+    };
+
+    let mut ram_world = World::new(Some(TerrainGen::new()));
+    ram_world.set_content(&content);
+    ram_world.set_extra(&extra);
+    ram_world.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    ram_world.init_world(11);
+    ram_world.debug_spawn_named("curl_horn_ram");
+    assert!(ram_world.debug_aim_at_creature0(), "aimed at ram");
+    ram_world.action(&attack);
+    assert!(
+        ram_world.debug_creature_provoked(0),
+        "a struck curl-horn ram retaliates"
+    );
+    assert_eq!(
+        ram_world.debug_hostile_count(),
+        0,
+        "retaliating ram remains an animal, not a monster"
+    );
+
+    let mut passive_world = World::new(Some(TerrainGen::new()));
+    passive_world.set_content(&content);
+    passive_world.set_extra(&extra);
+    passive_world.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    passive_world.init_world(11);
+    passive_world.debug_spawn_named("sky_necker");
+    assert!(passive_world.debug_aim_at_creature0(), "aimed at sky-necker");
+    passive_world.action(&attack);
+    assert!(
+        !passive_world.debug_creature_provoked(0),
+        "other passive animals keep their current behavior"
+    );
+}
+
 // ============================================================================
 // test_questloop.cpp — campaign winnable + real beacon restores a Grey region.
 // ============================================================================
