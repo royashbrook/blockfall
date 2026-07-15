@@ -627,6 +627,18 @@ fn natural_dim_ramlord_pursues_and_attacks_after_being_struck() {
         }
     }
     assert!(world.debug_health() < health, "the provoked Ramlord pursues and damages the player");
+
+    world.debug_respawn_now();
+    assert_eq!(world.debug_creature_count(), 1, "the passive Ramlord survives respawn");
+    assert!(!world.debug_creature_provoked(0), "respawn clears retaliation aggro");
+    assert!(world.debug_aim_at_creature0());
+    for _ in 0..80 {
+        world.debug_update_creatures(0.05);
+    }
+    assert_eq!(world.debug_health(), 20.0, "the Ramlord does not keep attacking after death");
+    assert!(world.debug_aim_at_creature0());
+    world.action(&attack);
+    assert!(world.debug_creature_provoked(0), "another hit can provoke it again");
 }
 
 // ============================================================================

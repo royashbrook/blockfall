@@ -36,6 +36,12 @@ impl<'c> World<'c> {
             .map(|c| (c.home_x, c.home_z))
             .collect();
         self.creatures.retain(|c| !c.hostile);
+        for creature in self.creatures.iter_mut().filter(|c| c.provoked) {
+            creature.provoked = false;
+            creature.atk_cd = 0.0;
+            creature.ai = creature_ai::CreatureAi::default();
+            creature.ai.heading = creature.yaw;
+        }
         self.reconcile_danger_sites_after_cull(abandoned_sites);
         let pv = self.player_voxel();
         self.fx(6, pv, 0);
