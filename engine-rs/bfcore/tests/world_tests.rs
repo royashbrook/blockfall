@@ -596,6 +596,39 @@ fn curl_horn_ram_retaliates_when_struck() {
     );
 }
 
+#[test]
+fn natural_dim_ramlord_pursues_and_attacks_after_being_struck() {
+    let mut content = ContentRegistry::new();
+    assert!(content.load(CONTENT), "content load");
+    let mut extra = ContentExtra::new();
+    assert!(extra.load(CONTENT), "extra load");
+    let mut world = World::new(Some(TerrainGen::new()));
+    world.set_content(&content);
+    world.set_extra(&extra);
+    world.set_mode(bf_game_mode::BF_MODE_SURVIVAL);
+    world.init_world(11);
+    world.debug_spawn_named("dim_ramlord");
+    assert!(world.debug_aim_at_creature0(), "aimed at Ramlord");
+    let attack = bf_action {
+        kind: bf_action_kind::BF_ACT_ATTACK,
+        arg_i: 0,
+        arg_j: 0,
+        arg_k: 0,
+    };
+    world.action(&attack);
+    assert!(world.debug_creature_provoked(0), "a struck natural Ramlord retaliates");
+    assert_eq!(world.debug_hostile_count(), 0, "retaliation does not reclassify the boss");
+
+    let health = world.debug_health();
+    for _ in 0..120 {
+        world.debug_update_creatures(0.05);
+        if world.debug_health() < health {
+            break;
+        }
+    }
+    assert!(world.debug_health() < health, "the provoked Ramlord pursues and damages the player");
+}
+
 // ============================================================================
 // test_questloop.cpp — campaign winnable + real beacon restores a Grey region.
 // ============================================================================

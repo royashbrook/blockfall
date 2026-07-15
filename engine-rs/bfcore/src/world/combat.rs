@@ -57,7 +57,7 @@ impl<'c> World<'c> {
         let pz = self.pos.z;
         {
             let cr = &mut self.creatures[idx];
-            if cr.name == "curl_horn_ram" {
+            if cr.name == "curl_horn_ram" || cr.name == "dim_ramlord" {
                 cr.provoked = true;
                 cr.friendly = false;
             }
