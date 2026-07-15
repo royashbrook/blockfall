@@ -576,7 +576,7 @@ impl<'c> World<'c> {
                     self.toast("Woodcutter: bring me more logs for the wall.");
                     return true;
                 }
-                let cells = (held.count.min(8) as i32) / 2;
+                let cells = (held.count as i32) / 2;
                 let built = self.build_palisade_segment(ax, az, cells, Self::WALL_WOOD);
                 if built > 0 {
                     if let Some(inv) = self.inv.as_mut() {
@@ -624,7 +624,12 @@ impl<'c> World<'c> {
                     return true;
                 }
                 const STONE_NEEDED: i32 = 16;
-                let take = (held.count as i32).min(STONE_NEEDED);
+                let contributed = self
+                    .villages
+                    .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
+                    .map(|v| v.progress)
+                    .unwrap_or(0);
+                let take = (held.count as i32).min((STONE_NEEDED - contributed).max(0));
                 if let Some(inv) = self.inv.as_mut() {
                     inv.remove_item(held.item, take as u16);
                 }
@@ -671,7 +676,12 @@ impl<'c> World<'c> {
                     return true;
                 }
                 const IRON_NEEDED: i32 = 8;
-                let take = (held.count as i32).min(IRON_NEEDED);
+                let contributed = self
+                    .villages
+                    .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
+                    .map(|v| v.progress)
+                    .unwrap_or(0);
+                let take = (held.count as i32).min((IRON_NEEDED - contributed).max(0));
                 if let Some(inv) = self.inv.as_mut() {
                     inv.remove_item(held.item, take as u16);
                 }

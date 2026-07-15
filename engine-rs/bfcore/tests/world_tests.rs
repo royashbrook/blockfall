@@ -2813,12 +2813,18 @@ fn village_woodcutter_builds_wall_to_tier1() {
     assert_ne!(log, 0, "content has oak_log");
     assert_eq!(w.debug_village_tier(ax, az), 0, "starts at tier 0");
 
-    // Donate logs repeatedly until the whole ring is up. Each donation builds up to 4
-    // cells (8 logs -> 4 cells). Refill and donate enough times to close the ring.
+    // One donation uses the whole useful held stack instead of the old eight-log cap.
     let total = World::debug_palisade_cells_total();
-    for _ in 0..40 {
+    w.debug_give(log, 64);
+    w.debug_set_selected(0);
+    assert!(w.debug_try_donation(wc));
+    assert_eq!(w.debug_count_wall(ax, az, 21), 32);
+    assert_eq!(w.debug_item_count(log), 0);
+
+    // Refill only as needed to finish a wall larger than one inventory stack.
+    for _ in 0..3 {
         w.debug_clear_inventory();
-        w.debug_give(log, 8);
+        w.debug_give(log, 64);
         w.debug_set_selected(0);
         let _ = w.debug_try_donation(wc);
         if w.debug_count_wall(ax, az, 21) >= total {
@@ -2830,6 +2836,11 @@ fn village_woodcutter_builds_wall_to_tier1() {
         "wood palisade ring is complete ({} of {})",
         w.debug_count_wall(ax, az, 21),
         total
+    );
+    assert_eq!(
+        w.debug_item_count(log),
+        64 - (total - 32) * 2,
+        "the final donation keeps logs the wall did not use"
     );
     assert_eq!(
         w.debug_village_tier(ax, az),
@@ -2911,11 +2922,18 @@ fn village_mason_upgrades_wood_to_stone_tier2() {
     let wood_before = w.debug_count_wall(ax, az, 21);
     assert!(wood_before > 0, "wood wall stands before mason upgrade");
 
-    // Donate stone: 16 needed for the upgrade.
+    // Donate stone in two batches: the completing batch consumes only the six
+    // still needed, not another fixed sixteen from the held stack.
+    w.debug_clear_inventory();
+    w.debug_give(stone, 10);
+    w.debug_set_selected(0);
+    let _ = w.debug_try_donation(mason);
+    assert_eq!(w.debug_village_tier(ax, az), 1);
     w.debug_clear_inventory();
     w.debug_give(stone, 64);
     w.debug_set_selected(0);
-    let _ = w.debug_try_donation(mason); // first donation: spends 16, flips tier
+    let _ = w.debug_try_donation(mason);
+    assert_eq!(w.debug_item_count(stone), 58);
     assert_eq!(
         w.debug_village_tier(ax, az),
         2,
@@ -2966,11 +2984,17 @@ fn village_blacksmith_adds_iron_gate_tier3() {
         "reached tier 2 before iron"
     );
 
-    // Donate iron: 8 needed; flips to tier 3 and stamps the iron gate (block 53).
+    // Partial progress plus an oversized final stack consumes exactly eight total.
+    w.debug_clear_inventory();
+    w.debug_give(iron, 3);
+    w.debug_set_selected(0);
+    let _ = w.debug_try_donation(bs);
+    assert_eq!(w.debug_village_tier(ax, az), 2);
     w.debug_clear_inventory();
     w.debug_give(iron, 16);
     w.debug_set_selected(0);
     let _ = w.debug_try_donation(bs);
+    assert_eq!(w.debug_item_count(iron), 11);
     assert_eq!(w.debug_village_tier(ax, az), 3, "tier advances to 3 (iron)");
     // Iron gate (block id 53) stands somewhere in the south gate columns.
     let mut iron_blocks = 0;
