@@ -2562,6 +2562,50 @@ mod worldgen_tests {
         }
     }
 
+    #[test]
+    fn homes_clear_preexisting_plants_from_room_volume() {
+        const FLOOR: i32 = 4;
+        const CENTER: i32 = 8;
+
+        let mut hut = DenseChunk::new(AIR);
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                hut.set(CENTER + dx, FLOOR + 1, CENTER + dz, TALL_GRASS);
+            }
+        }
+        place_hut_at_floor(
+            CENTER, CENTER, 0, 0, SEED, 2, 2, FLOOR, true, &mut hut, 0, 0, 0,
+        );
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                assert_ne!(
+                    hut.get(CENTER + dx, FLOOR + 1, CENTER + dz),
+                    TALL_GRASS,
+                    "hut left a surface plant inside its room at {dx},{dz}"
+                );
+            }
+        }
+
+        let mut cabin = DenseChunk::new(AIR);
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                cabin.set(CENTER + dx, FLOOR + 1, CENTER + dz, FLOWER_RED);
+            }
+        }
+        place_cabin_at_floor(
+            CENTER, CENTER, 0, 0, SEED, 2, 2, FLOOR, true, &mut cabin, 0, 0, 0,
+        );
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                assert_ne!(
+                    cabin.get(CENTER + dx, FLOOR + 1, CENTER + dz),
+                    FLOWER_RED,
+                    "cabin left a surface plant inside its room at {dx},{dz}"
+                );
+            }
+        }
+    }
+
     // Big structures (tower / keep / ruin / city) must conform to the ground with
     // no floating columns, including on sloped / mountain sites. Scan an area and
     // stamp every tower / keep / ruin (the #108 regression structures); cities are

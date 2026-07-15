@@ -777,6 +777,16 @@ fn place_cabin_at_floor<C: Chunk>(
         }
     }
 
+    // #301: decorations run before structures. Clear the enclosed room so a
+    // surface flower, grass tuft, or bush cannot survive inside the finished home.
+    for dz in (-hz + 1)..hz {
+        for dx in (-hx + 1)..hx {
+            for wy in (floor_h + 1)..=wall_top {
+                struct_clear(chunk, ax + dx, wy, az + dz, wx_min, wy_min, wz_min);
+            }
+        }
+    }
+
     for dz in -hz..=hz {
         for dx in -hx..=hx {
             let on_x = dx == -hx || dx == hx;
@@ -1287,6 +1297,16 @@ fn place_hut_at_floor<C: Chunk>(
                     wz_min,
                     OAK_PLANKS,
                 );
+            }
+        }
+    }
+
+    // #301: this volume is authored interior air, not untouched terrain. Clearing
+    // it here preserves village landscaping while removing pre-structure plants.
+    for dz in (-rz + 1)..rz {
+        for dx in (-rx + 1)..rx {
+            for wy in (floor_h + 1)..=wall_top {
+                struct_clear(chunk, cx + dx, wy, cz + dz, wx_min, wy_min, wz_min);
             }
         }
     }
