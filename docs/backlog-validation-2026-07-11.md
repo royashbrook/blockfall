@@ -1037,6 +1037,154 @@ threshold. The JSON must explicitly report `seconds: 600`, `pass_fps: true`, and
 minute in Activity Monitor; fail the gate if the samples show a continuing upward
 trend rather than settling. The JSON records peak memory only, not that trend.
 
+## July 15 backlog closure checks
+
+This final pass closed the remaining three product items and the documentation
+handoff:
+
+- `906b850` / #302 — widened every small door-gated structure that had a one-cell
+  interior. The small keep and tall tower now provide a clear 3x3 room.
+- `b09ffa3` / #303 — Curl-Horn Rams retaliate after being struck in Survival while
+  remaining animals for population, loot, and quest purposes.
+- `7bf29ae` / #271 — exaggerated the shared authored humanoid animation used by
+  villagers and customized multiplayer avatars.
+
+Start from a fresh build:
+
+```bash
+cd /Users/roy/gh/blockfall
+./ci/build.sh
+BIN=./build/Blockfall.app/Contents/MacOS/Blockfall
+OUT="$(mktemp -d /private/tmp/blockfall-july15-validation.XXXXXX)"
+```
+
+### Door-gated keeps and towers (#302)
+
+Worldgen changes only appear in newly generated chunks. Use a new seed-11 world,
+or travel beyond every previously visited chunk before judging this check.
+
+1. Enter Creative, fly away from the starter city, and find a small keep (the
+   little castle with a central loot barrel).
+2. Confirm the keep is now 11x11 overall and its enclosed central hall has a
+   clear 3x3 walkable floor. Corner posts and the surrounding wall may occupy the
+   outer footprint; the usable room is the important measurement.
+3. Open the door, walk fully inside, aim at the loot barrel from beside or in
+   front of it, and interact. The barrel must open without the door toggling.
+4. Close and reopen the door from both sides. It must never trap the player or
+   become the only selectable object while standing inside.
+5. Find a common tall tower. Its shaft shell is now 5x5 with a clear 3x3 interior.
+   Enter it, turn around inside, target its interior fixture, and leave normally.
+6. Spot-check huts, cabins, grand towers, and boss castles. No enclosed one-block
+   room may put a barrel, fixture, or other interaction target directly behind
+   its only door. Open decorative niches are not enclosed rooms and are exempt.
+
+Expected: both formerly narrow structures have real standing room; existing huts,
+cabins, grand towers, and boss-castle rooms remain unchanged and traversable.
+
+### Curl-Horn Ram retaliation (#303)
+
+1. Start Survival on Normal or Hard and find a Curl-Horn Ram.
+2. Observe it before attacking: it should retain normal passive animal behavior.
+3. Strike it once with an empty hand or weak tool, then back away without landing
+   another hit.
+4. Confirm it turns toward the player, pursues smoothly, and deals melee damage
+   when it reaches range. It should not jitter, teleport, or instantly forget the
+   hit.
+5. While it is angry, hold berries and interact. It must not become friendly.
+6. Repeat the one-hit check against a Sky-Necker or another ordinary passive
+   animal. That animal must keep its existing behavior rather than retaliating.
+7. Repeat in Creative. The ram may become provoked internally, but—as with normal
+   hostiles in Creative—it should amble instead of damaging the player.
+
+The provoked state lasts for that loaded creature's lifetime. It intentionally
+does not convert the ram into a monster: defeating it still uses animal loot and
+animal quest accounting, and passive population/night spawning rules do not
+change. Creatures are transient, so save/reload is not a persistence test for
+this state.
+
+### Exaggerated humanoid animation (#271)
+
+Live villager check:
+
+1. Walk beside several moving villagers at normal speed, then watch one from the
+   front and one from the side.
+2. Confirm the eight-pose gait has distinct contact, down, passing, and up beats:
+   the stride reaches farther, the body widens and compresses on the down beat,
+   lengthens on the up beat, and the head follows through after the torso.
+3. Arms must bow through shoulder/elbow child joints instead of swinging as rigid
+   rods. Legs should stretch slightly on long reaches without separating from the
+   feet. No limb may tremble while the villager translates.
+4. Block and unblock a villager's route and let it stop/restart. The blend to idle
+   and back to the authored clip must stay smooth, with no phase snap.
+5. Watch woodcutter, builder, herbalist, mason, and blacksmith shifts plus greet,
+   chat, sit, and sweep social actions. Each action should read in silhouette;
+   held tools must remain connected to the hand and travel toward the station.
+
+Customized multiplayer-avatar check:
+
+1. Launch a host and client, choose a visibly different body/head/hair/shirt on
+   each Character screen, and join the same world.
+2. From the other machine, confirm the selected appearance is preserved while
+   walking and that the avatar plays the same exaggerated gait as villagers.
+3. Mine, place, and attack while the other player watches. The remote avatar must
+   show a backward wind-up, a strong forward contact pose with full-body squash,
+   and a clean recovery. Actions must not freeze the walk clip or detach hands.
+
+Deterministic renderer checks for the same shared rig:
+
+```bash
+BF_CRITTER_MOTION=1 BF_CRITTER_KIND=20 BF_CEL=1 \
+  "$BIN" --critters "$OUT/villager-walk.png"
+
+BF_CRITTER_MOTION=1 BF_CRITTER_KIND=100 BF_CEL=1 \
+  "$BIN" --critters "$OUT/custom-avatar-walk.png"
+
+for P in 0.14 0.55 0.88; do
+  BF_CRITTER_MOTION=1 BF_CRITTER_KIND=100 BF_CRITTER_ACTION=11 \
+  BF_CRITTER_ACTION_PROGRESS="$P" BF_CEL=1 \
+    "$BIN" --critters "$OUT/custom-avatar-action-$P.png"
+done
+
+BF_CRITTER_MOTION=1 BF_CRITTER_KIND=20 BF_CRITTER_ROLE=6 \
+BF_CRITTER_ACTION=3 BF_CRITTER_ACTION_PROGRESS=0.50 BF_CEL=1 \
+  "$BIN" --critters "$OUT/blacksmith-contact.png"
+```
+
+Inspect all PNGs at full size. The two walk strips must show four materially
+different gait silhouettes. The three avatar-action images must progress from
+anticipation through contact to recovery. The blacksmith hammer must stay joined
+to the hand. The harness asserts that villager and avatar action poses remain at
+or below the 29-part budget.
+
+### Final automated and performance gates
+
+```bash
+cd /Users/roy/gh/blockfall
+./ci/check.sh
+./ci/build.sh
+
+BF_ENTITY_STRESS=1 \
+BF_METAL_PERF_JSON="$OUT/entity-model-32-villagers.json" \
+BF_PERF_SAVE_DIR="$OUT/entity-model-save" \
+  "$BIN" --perftest 60
+
+python3 -m json.tool "$OUT/entity-model-32-villagers.json"
+gh issue list --state open --limit 200
+```
+
+Required results:
+
+- `check.sh GREEN` and a successfully assembled `build/Blockfall.app`.
+- the stress JSON reports 32 entities, populated part/triangle metrics,
+  `pass_fps: true`, `pass_mem: true`, and no 33.3 ms hitch cluster.
+- the GitHub issue list is empty. It was empty immediately after closing #271,
+  #302, #303, and this documentation issue.
+
+The July 15 five-second dev-box smoke references were 90.8 FPS median / 59.6 FPS
+1% low for the normal scene and 94.3 / 60.3 for the fixed 32-villager scene, with
+zero frames at or above 33.3 ms in either run. These are regression references,
+not substitutes for the ten-minute M1 Air gate documented above.
+
 ## Reporting failures
 
 For any visual or play failure, record:
