@@ -2953,6 +2953,40 @@ fn village_mason_upgrades_wood_to_stone_tier2() {
 }
 
 #[test]
+fn mason_dialogue_accepts_all_stone_materials_without_a_camera_target() {
+    let (mut w, (ax, az)) = village_world(11);
+    w.debug_set_village_tier(ax, az, 1);
+    let mason = w.debug_spawn_villager_role(ax, az, 5);
+    let donate = bf_action {
+        kind: bf_action_kind::BF_ACT_INTERACT,
+        arg_i: 1,
+        arg_j: 0,
+        arg_k: 0,
+    };
+
+    for (name, count) in [("stone", 5), ("cobblestone", 5), ("stone_brick", 6)] {
+        let material = w.debug_item_id(name);
+        w.debug_clear_inventory();
+        w.debug_give(material, count);
+        w.debug_set_selected(0);
+        // The camera is nowhere near the Mason: the active dialogue owns the target.
+        w.debug_set_camera(1000.5, 40.0, 1000.5, 0.0, 0.0);
+        assert!(w.debug_begin_villager_dialogue(mason));
+        w.action(&donate);
+        assert_eq!(w.debug_item_count(material), 0, "Mason rejected {name}");
+    }
+    assert_eq!(w.debug_village_tier(ax, az), 2);
+
+    let dirt = w.debug_item_id("dirt");
+    w.debug_clear_inventory();
+    w.debug_give(dirt, 1);
+    w.debug_set_selected(0);
+    assert!(w.debug_begin_villager_dialogue(mason));
+    w.action(&donate);
+    assert!(w.debug_ach_toast().contains("stone, cobblestone, or stone bricks"));
+}
+
+#[test]
 fn village_blacksmith_adds_iron_gate_tier3() {
     let (mut w, (ax, az)) = village_world(11);
     let bs = w.debug_spawn_villager_role(ax, az, 6);

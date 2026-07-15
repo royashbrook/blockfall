@@ -151,12 +151,18 @@ final class DialogueController {
         // #227: trade-role villagers (Woodcutter 4, Mason 5, Blacksmith 6) take
         // building donations, but only when the player ASKS.
         if [4, 5, 6].contains(currentNpcId), onDonate != nil {
-            let db = NSButton(title: "Donate held items to the village",
+            let donationTitle: String
+            switch currentNpcId {
+            case 4: donationTitle = "Donate held logs"
+            case 5: donationTitle = "Donate held stone, cobblestone, or stone brick"
+            default: donationTitle = "Donate held iron or raw iron"
+            }
+            let db = NSButton(title: donationTitle,
                               target: self, action: #selector(donateClicked(_:)))
             db.bezelStyle = .regularSquare; db.isBordered = false; db.wantsLayer = true
             db.layer?.backgroundColor = NSColor(calibratedRed: 0.36, green: 0.46, blue: 0.72, alpha: 1).cgColor
             db.layer?.cornerRadius = 10
-            db.attributedTitle = NSAttributedString(string: "Donate held items to the village", attributes: [
+            db.attributedTitle = NSAttributedString(string: donationTitle, attributes: [
                 .font: NSFont.boldSystemFont(ofSize: 16), .foregroundColor: NSColor.white])
             db.translatesAutoresizingMaskIntoConstraints = false
             db.widthAnchor.constraint(equalToConstant: 460).isActive = true

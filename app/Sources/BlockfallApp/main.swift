@@ -1193,6 +1193,7 @@ if CommandLine.arguments.contains("--dialogueprobe") {
     var ended = 0
     dc.onEnd = { ended += 1 }
     dc.onClose = { closed += 1 }
+    dc.onDonate = { _ in }
     dc.show(npcId: 4, in: parent, title: "Pip the Woodcutter")
     guard dc.isOpen, let ov = parent.subviews.first else {
         print("dialogueprobe FAIL: overlay did not open")
@@ -1216,10 +1217,14 @@ if CommandLine.arguments.contains("--dialogueprobe") {
         print("dialogueprobe FAIL: walk-away did not close/end (closed=\(closed), ended=\(ended))")
         exit(1)
     }
-    // Reopen with no title override: roster name path.
-    dc.show(npcId: 1, in: parent)
-    guard dc.isOpen else {
-        print("dialogueprobe FAIL: reopen failed")
+    // Reopen as the Mason: the action must name all three accepted stone blocks.
+    dc.show(npcId: 5, in: parent)
+    let masonButtons = parent.subviews.first.map(allButtons) ?? []
+    let hasMasonMaterials = masonButtons.contains {
+        $0.attributedTitle.string == "Donate held stone, cobblestone, or stone brick"
+    }
+    guard dc.isOpen, hasMasonMaterials else {
+        print("dialogueprobe FAIL: Mason material guidance missing")
         exit(1)
     }
     print("dialogueprobe OK")

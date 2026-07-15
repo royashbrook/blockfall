@@ -547,15 +547,16 @@ impl<'c> World<'c> {
     }
 
     pub(super) fn try_village_donation(&mut self, idx: usize) -> bool {
+        let npc_id = self.creatures[idx].npc_id;
         let held = match self.inv.as_ref() {
             Some(i) => i.get(self.selected as usize),
             None => return false,
         };
         if held.item == 0 {
-            return false;
+            self.toast("Hold the material you want to donate, then ask again.");
+            return true;
         }
         let in_name = self.item_name(held.item);
-        let npc_id = self.creatures[idx].npc_id;
         let (ax, az) = (self.creatures[idx].home_x, self.creatures[idx].home_z);
         if self.settlement_is_procedural_city(ax, az) {
             self.toast("This city is already complete — trade with its artisans instead!");
@@ -566,7 +567,8 @@ impl<'c> World<'c> {
                 let is_log =
                     in_name == "oak_log" || in_name == "birch_log" || in_name == "pine_log";
                 if !is_log {
-                    return false;
+                    self.toast("Woodcutter: I need oak, birch, or pine logs.");
+                    return true;
                 }
                 if self.raw_village_tier(ax, az) >= 2 {
                     self.toast("Woodcutter: our stone walls need no more logs.");
@@ -608,7 +610,8 @@ impl<'c> World<'c> {
                 let is_stone =
                     in_name == "stone_brick" || in_name == "cobblestone" || in_name == "stone";
                 if !is_stone {
-                    return false;
+                    self.toast("Stone Mason: I need stone, cobblestone, or stone bricks.");
+                    return true;
                 }
                 let tier = self
                     .villages
@@ -658,7 +661,8 @@ impl<'c> World<'c> {
             6 => {
                 let is_iron = in_name == "iron_ingot" || in_name == "raw_iron";
                 if !is_iron {
-                    return false;
+                    self.toast("Blacksmith: I need iron ingots or raw iron.");
+                    return true;
                 }
                 let tier = self
                     .villages
