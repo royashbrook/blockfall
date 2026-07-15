@@ -40,6 +40,8 @@ final class DialogueController {
     private var currentNpcId: Int = 0
     private var npcs: [DialogueNPC] = []
     private weak var overlay: NSView?
+    // Releases the addressed villager on every exit path, including trade handoff.
+    var onEnd: (() -> Void)?
     var onClose: (() -> Void)?
     var isOpen: Bool { overlay != nil }
     // #240: nameplate title ("Pip the Woodcutter") shown instead of the roster
@@ -200,8 +202,8 @@ final class DialogueController {
 
     @objc private func donateClicked(_ sender: NSButton) {
         let npc = currentNpcId
-        close()   // engine toast reports the result on the HUD
         onDonate?(npc)
+        close()   // engine toast reports the result on the HUD
     }
 
     @objc private func tradeClicked(_ sender: NSButton) {
@@ -219,17 +221,21 @@ final class DialogueController {
     @objc private func closeClicked() { close() }
 
     func close() {
+        let wasOpen = isOpen
         overlay?.removeFromSuperview(); overlay = nil
         if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
         openPos = nil
+        if wasOpen { onEnd?() }
         onClose?()
     }
 
     // #227: hand off to another overlay (the trade panel) WITHOUT firing onClose,
     // which grabs the mouse back and traps the pointer under the new panel.
     private func closeForHandoff() {
+        let wasOpen = isOpen
         overlay?.removeFromSuperview(); overlay = nil
         if let m = escMonitor { NSEvent.removeMonitor(m); escMonitor = nil }
         openPos = nil
+        if wasOpen { onEnd?() }
     }
 }

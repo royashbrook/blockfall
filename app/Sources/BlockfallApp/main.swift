@@ -296,11 +296,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // #82 villager dialogue: load the trees and open the overlay when the engine reports
         // a right-click on a villager. Release the pointer so the player can click choices.
         dialogue.load()
+        dialogue.onEnd = { [weak self] in self?.gameView?.requestDialogueEnd() }
         dialogue.onClose = { [weak self] in self?.gameView?.grabMouse() }
         // #203: villagers with an offer sheet grow a Trade button in dialogue.
         dialogue.hasTrade = { [weak r] npc in r?.tradeOffers(npcId: Int32(npc)) != nil }
         dialogue.onOpenTrade = { [weak self] npc in self?.openTrade(npcId: Int32(npc)) }
-        // #227: explicit donation, INTERACT with arg 1 (must still be facing them).
+        // #227/#305: donate to the villager held by this dialogue.
         dialogue.onDonate = { [weak mtkView] _ in mtkView?.requestDonate() }
         r.onDialogue = { [weak self, weak r] npcId in
             // The guard-fail logs stay: a silently-refused open is exactly the
@@ -312,7 +313,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.gameView?.releaseMouse()
             // #240: header carries the clicked villager's full nameplate.
             self.dialogue.show(npcId: npcId, in: cv, title: r?.lookName)
-            if !self.dialogue.isOpen { NSLog("dlg: show refused (npc trees loaded?)") }
+            if !self.dialogue.isOpen {
+                NSLog("dlg: show refused (npc trees loaded?)")
+                self.gameView?.requestDialogueEnd()
+            }
         }
         // #239: walking ~5 blocks away ends the chat naturally.
         r.onPlayerPos = { [weak self] x, z in self?.dialogue.playerMoved(x: x, z: z) }
@@ -1186,6 +1190,8 @@ if CommandLine.arguments.contains("--dialogueprobe") {
         exit(1)
     }
     var closed = 0
+    var ended = 0
+    dc.onEnd = { ended += 1 }
     dc.onClose = { closed += 1 }
     dc.show(npcId: 4, in: parent, title: "Pip the Woodcutter")
     guard dc.isOpen, let ov = parent.subviews.first else {
@@ -1206,8 +1212,8 @@ if CommandLine.arguments.contains("--dialogueprobe") {
     // Walk-away: anchor, then move 10 blocks; the chat must close exactly once.
     dc.playerMoved(x: 100, z: 100)
     dc.playerMoved(x: 110, z: 100)
-    guard closed == 1, !dc.isOpen else {
-        print("dialogueprobe FAIL: walk-away did not close (closed=\(closed))")
+    guard closed == 1, ended == 1, !dc.isOpen else {
+        print("dialogueprobe FAIL: walk-away did not close/end (closed=\(closed), ended=\(ended))")
         exit(1)
     }
     // Reopen with no title override: roster name path.

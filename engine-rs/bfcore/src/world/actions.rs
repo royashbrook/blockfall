@@ -37,6 +37,26 @@ impl<'c> World<'c> {
                 }
             }
             BF_ACT_INTERACT => {
+                // #305 dialogue-owned interaction variants bypass the block under
+                // the crosshair and stay bound to the villager who opened the UI.
+                if a.arg_i == 2 {
+                    self.end_villager_dialogue();
+                    return;
+                }
+                if a.arg_i == 1 {
+                    let idx = self
+                        .creatures
+                        .iter()
+                        .position(|c| c.model == 20 && c.dialogue_held)
+                        .or_else(|| {
+                            let looked = self.creature_in_view();
+                            (looked >= 0).then_some(looked as usize)
+                        });
+                    if let Some(idx) = idx.filter(|&i| self.creatures[i].model == 20) {
+                        let _ = self.try_village_donation(idx);
+                    }
+                    return;
+                }
                 // #69 doors: open/close a targeted door (takes priority).
                 if self.has_target {
                     let tb = self.block_at(self.target);
@@ -93,16 +113,10 @@ impl<'c> World<'c> {
                 }
                 let idx = self.creature_in_view();
                 if idx >= 0 && self.creatures[idx as usize].model == 20 {
-                    // #227: interact ALWAYS opens dialogue now. Donation is an
-                    // explicit dialogue button (INTERACT with arg_i == 1), never a
-                    // silent grab of whatever the player happens to be holding.
-                    if a.arg_i == 1 {
-                        let _ = self.try_village_donation(idx as usize);
-                    } else {
-                        let pv = self.player_voxel();
-                        let npc = self.creatures[idx as usize].npc_id;
-                        self.fx(20, pv, npc);
-                    }
+                    self.begin_villager_dialogue(idx as usize);
+                    let pv = self.player_voxel();
+                    let npc = self.creatures[idx as usize].npc_id;
+                    self.fx(20, pv, npc);
                 } else if idx >= 0
                     && !self.creatures[idx as usize].hostile
                     && !self.creatures[idx as usize].provoked
@@ -170,6 +184,19 @@ impl<'c> World<'c> {
             // #184: creative-only testing toggle; ignored in survival so it can
             // never become a movement cheat there.
             BF_ACT_SET_HYPERSPEED => self.hyperspeed = a.arg_i != 0,
+        }
+    }
+
+    pub(super) fn begin_villager_dialogue(&mut self, idx: usize) {
+        self.end_villager_dialogue();
+        if let Some(c) = self.creatures.get_mut(idx).filter(|c| c.model == 20) {
+            c.dialogue_held = true;
+        }
+    }
+
+    pub(super) fn end_villager_dialogue(&mut self) {
+        for c in &mut self.creatures {
+            c.dialogue_held = false;
         }
     }
 }

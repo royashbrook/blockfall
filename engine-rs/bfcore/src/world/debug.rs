@@ -269,6 +269,27 @@ impl<'c> World<'c> {
     pub fn debug_try_donation(&mut self, idx: i32) -> bool {
         self.try_village_donation(idx as usize)
     }
+    pub fn debug_begin_villager_dialogue(&mut self, idx: i32) -> bool {
+        if idx < 0
+            || idx as usize >= self.creatures.len()
+            || self.creatures[idx as usize].model != 20
+        {
+            return false;
+        }
+        self.begin_villager_dialogue(idx as usize);
+        true
+    }
+    pub fn debug_end_villager_dialogue(&mut self) {
+        self.end_villager_dialogue();
+    }
+    pub fn debug_villager_dialogue_held(&self, idx: i32) -> bool {
+        idx >= 0
+            && self
+                .creatures
+                .get(idx as usize)
+                .map(|c| c.dialogue_held)
+                .unwrap_or(false)
+    }
     pub fn debug_set_wall_block(&mut self, wx: i32, wy: i32, wz: i32, b: BlockId) {
         self.set_block_internal(
             IVec3 {

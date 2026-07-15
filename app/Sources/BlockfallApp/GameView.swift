@@ -119,6 +119,10 @@ final class GameView: MTKView {
         queue(BF_ACT_INTERACT, 1)
     }
 
+    func requestDialogueEnd() {
+        queue(BF_ACT_INTERACT, 2)
+    }
+
     // #184: creative hyperspeed flight (100x sprint) for circumnavigation testing.
     func setHyperspeed(_ on: Bool) {
         queue(BF_ACT_SET_HYPERSPEED, on ? 1 : 0)

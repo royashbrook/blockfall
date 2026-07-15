@@ -791,14 +791,17 @@ impl<'c> World<'c> {
             }
             let mut seed = self.rng;
             let artisan = c.model == 20 && Self::profession_station_spec(c.npc_id).is_some();
-            let tether_decision = if c.model == 20
+            let dialogue_held = c.model == 20 && c.dialogue_held;
+            let tether_decision = if !dialogue_held
+                && c.model == 20
                 && (!artisan || c.routine.state == VillagerRoutineState::Idle)
             {
                 self.villager_tether_decision(&c)
             } else {
                 None
             };
-            let social_allowed = c.model == 20
+            let social_allowed = !dialogue_held
+                && c.model == 20
                 && tether_decision.is_none()
                 && Self::villager_social_window(&c);
             if !social_allowed && c.social.action != 0 {
@@ -814,8 +817,16 @@ impl<'c> World<'c> {
             }
             let social_driven = social_decision.is_some();
             let tether_driven = tether_decision.is_some() && !social_driven;
-            let routine_driven = artisan && !social_driven && !tether_driven;
-            let dec = if let Some(dec) = social_decision {
+            let routine_driven = artisan && !dialogue_held && !social_driven && !tether_driven;
+            let dec = if dialogue_held {
+                c.ai.path.clear();
+                c.ai.speed = 0.0;
+                cai::Decision {
+                    desired_heading: (ppx - c.pos.x).atan2(ppz - c.pos.z),
+                    speed_frac: 0.0,
+                    path_goal: None,
+                }
+            } else if let Some(dec) = social_decision {
                 dec
             } else if let Some(dec) = tether_decision {
                 dec

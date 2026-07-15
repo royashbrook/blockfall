@@ -2377,6 +2377,46 @@ fn villager_social_loop_is_visible_home_bound_and_cancels_failed_prop_paths() {
 }
 
 #[test]
+fn dialogue_holds_only_the_addressed_villager_until_close() {
+    let mut w = World::new(None);
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.generate_test_world();
+    let villager = w.debug_spawn_villager_role(8, 8, 4);
+    w.debug_set_creature_pos(villager, 21.5, 8.0, 8.5);
+    let start = w.debug_creature_pos(villager);
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+
+    assert!(w.debug_begin_villager_dialogue(villager));
+    assert!(w.debug_villager_dialogue_held(villager));
+    for _ in 0..80 {
+        w.update(&zero, 0.05);
+    }
+    let held = w.debug_creature_pos(villager);
+    assert!(
+        (held.0 - start.0).hypot(held.2 - start.2) < 0.001,
+        "dialogue villager moved: {start:?} -> {held:?}"
+    );
+    assert_eq!(w.debug_creature_path_len(villager), 0);
+
+    w.action(&bf_action {
+        kind: bf_action_kind::BF_ACT_INTERACT,
+        arg_i: 2,
+        arg_j: 0,
+        arg_k: 0,
+    });
+    assert!(!w.debug_villager_dialogue_held(villager));
+    for _ in 0..160 {
+        w.update(&zero, 0.05);
+    }
+    let released = w.debug_creature_pos(villager);
+    assert!(
+        (released.0 - held.0).hypot(released.2 - held.2) > 0.5,
+        "released villager stayed pinned: {released:?}"
+    );
+}
+
+#[test]
 fn woodcutter_station_goal_uses_nearest_torus_image() {
     let period = worldgen::WORLD_PERIOD;
     let (gx, gz) = World::debug_villager_nearest_goal(

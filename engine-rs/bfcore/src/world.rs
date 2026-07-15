@@ -341,6 +341,9 @@ struct Creature {
     // #251 transient social action. Villagers are reconstructed after load, so
     // pairing/pose/cooldown state needs no save migration or global scheduler.
     social: VillagerSocial,
+    // #305 transient UI conversation hold. Only the addressed villager pauses;
+    // the rest of the simulation keeps running behind the dialogue overlay.
+    dialogue_held: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -461,6 +464,7 @@ impl Default for Creature {
             ai: creature_ai::CreatureAi::default(),
             routine: VillagerRoutine::default(),
             social: VillagerSocial::default(),
+            dialogue_held: false,
         }
     }
 }
