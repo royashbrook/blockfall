@@ -51,7 +51,9 @@ const EPIC_TARGET_OFFSET_CHOICES: u64 = 32;
 // only settlement that hosts the full profession chain, so they need to be findable in
 // normal exploration; settlements are already a small slice of all structures, so this
 // only lifts cities to "reliably encountered", not "everywhere".
-const STRUCT_CITY_UPGRADE_THRESH: u64 = 150;
+// Most settlements should have room to grow. Cities remain occasional authored
+// destinations, while HOME explicitly searches for the nearest one at spawn.
+const STRUCT_CITY_UPGRADE_THRESH: u64 = 48;
 
 // #222: settlement thinning. Structure cells are 64 blocks wide, so a 500-block
 // spacing rule is roughly eight structure cells. Cities get a wider city-vs-city
@@ -362,18 +364,15 @@ fn raw_struct_for_cell(scx: i32, scz: i32, seed: u64) -> StructDesc {
         _ => STRUCT_CAIRN,
     };
 
-    // City clustering: a good share of would-be villages grow into a larger town /
+    // City clustering: an occasional would-be village grows into a larger town /
     // city (more buildings, a denser layout with a center and simple paths). The roll
     // is a stable per-cell hash slice so the same cell is always a city or always a
     // village for a given seed. The city's buildings (huts / cabins) each carry their
     // own foundation fill, so a city also conforms to sloped ground without floating.
     //
-    // Settlements (village + city) are themselves a small slice of all structures, so
-    // a low upgrade rate left cities far too rare to stumble onto in normal play (the
-    // player found plenty of structures but no city). Raising the cutoff to 150/256
-    // (~59% of would-be villages) roughly triples the city count without carpeting the
-    // world: cities still trail behind the many big structures and the remaining
-    // villages, so finding one stays a moment. See STRUCT_CITY_UPGRADE_THRESH.
+    // Cities retain spacing priority because they are gameplay-significant, so the
+    // raw 48/256 upgrade chance stays well below their desired final share. This
+    // leaves villages as the majority while HOME still searches explicitly for a city.
     let stype = if stype == STRUCT_VILLAGE && ((h2s >> 56) & 0xFF) < STRUCT_CITY_UPGRADE_THRESH {
         STRUCT_CITY
     } else {

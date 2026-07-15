@@ -3215,9 +3215,13 @@ fn nearby_caravan_advances_and_joins_the_render_sidecar() {
         w.debug_road_route_count() > 0,
         "HOME city has a trade route"
     );
-    let (x, z, y) = w
-        .debug_road_sample(0, 0)
-        .expect("caravan starts at a road gate");
+    let (sample, (x, z, y)) = (0..w.debug_road_sample_count(0))
+        .filter_map(|sample| w.debug_road_sample(0, sample).map(|point| (sample, point)))
+        .find(|(_, (x, z, _))| !worldgen::worldgen_structure_footprint(*x, *z, 11))
+        .expect("route reaches an unprotected paved cell");
+    // Caravan progress is 1/256 block fixed point; put this fixture on the road
+    // rather than assuming the route's lexicographically first endpoint is a city.
+    assert!(w.debug_set_caravan_state(0, sample as u32 * 256, true, 0, 0));
     let _ = w.debug_generate_chunk_at(x, y, z);
     assert_ne!(w.debug_block_at(x, y, z), world::AIR);
     w.debug_set_camera(x as f32 + 0.5, y as f32 + 3.0, z as f32 + 0.5, 0.0, 0.0);

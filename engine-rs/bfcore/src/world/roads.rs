@@ -538,7 +538,7 @@ impl<'c> World<'c> {
         }
         // #248 HOME is always a procedural city and therefore complete even
         // though its raw village tier is intentionally not persisted.
-        if let Some((_typ, ax, az)) = worldgen::worldgen_city_near(0, 0, 2048, self.seed) {
+        if let Some((_typ, ax, az)) = worldgen::worldgen_city_near(0, 0, 4096, self.seed) {
             developed.insert((ax, az), 3);
         }
         // A discovered procedural city joins the road network without adding a
@@ -1239,7 +1239,7 @@ mod tests {
     #[test]
     fn generated_settlements_have_a_stable_partner() {
         for seed in [11, 42, 99, 2026] {
-            let (_, ax, az) = worldgen::worldgen_city_near(0, 0, 2048, seed)
+            let (_, ax, az) = worldgen::worldgen_city_near(0, 0, 4096, seed)
                 .expect("spawn search seeds have a city");
             let a = worldgen::worldgen_settlement_partner(ax, az, seed)
                 .expect("a generated settlement has another settlement on the torus");
@@ -1253,7 +1253,7 @@ mod tests {
     #[test]
     fn representative_real_routes_have_walkable_deterministic_grades() {
         for seed in [11, 42, 99, 2026] {
-            let (_, ax, az) = worldgen::worldgen_city_near(0, 0, 2048, seed)
+            let (_, ax, az) = worldgen::worldgen_city_near(0, 0, 4096, seed)
                 .expect("spawn search seeds have a city");
             let (_, bx, bz) = worldgen::worldgen_settlement_partner(ax, az, seed)
                 .expect("city has a route partner");
@@ -1299,7 +1299,7 @@ mod tests {
     #[test]
     fn effective_home_and_visited_cities_join_routes_without_raw_tiers() {
         let seed = 11;
-        let (_, hx, hz) = worldgen::worldgen_city_near(0, 0, 2048, seed).unwrap();
+        let (_, hx, hz) = worldgen::worldgen_city_near(0, 0, 4096, seed).unwrap();
         let mut world = World::new(Some(TerrainGen::new()));
         world.seed = seed;
         world.rebuild_road_routes();

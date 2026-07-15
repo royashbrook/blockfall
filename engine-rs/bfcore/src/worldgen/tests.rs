@@ -18,15 +18,11 @@ mod worldgen_tests {
         }
     }
 
-    // Cities must be findable. A player who explores a reasonable area should reliably
-    // run into at least one city, and cities should turn up at a healthy share of all
-    // settlements (city + village) without carpeting the world. Scanning a wide area for
-    // several seeds, every seed must yield a city within a modest distance of origin and
-    // cities must be a substantial fraction of settlements (the #108 fix made them too
-    // rare). Guards against regressing STRUCT_CITY_UPGRADE_THRESH back down.
+    // HOME must still find a city, but ordinary exploration should encounter more
+    // villages than finished cities so settlements retain room for player growth.
     #[test]
     fn cities_are_findable() {
-        for seed in [11u64, 1, 42, 7, 1234] {
+        for seed in [11u64, 1, 42, 7, 99, 1234, 2026] {
             let (mut cities, mut villages) = (0i64, 0i64);
             let mut nearest_city2: i64 = i64::MAX;
             let r = 80; // structure cells; 80*64 = 5120 blocks half-extent each way
@@ -49,18 +45,22 @@ mod worldgen_tests {
             }
             let settlements = cities + villages;
             assert!(cities > 0, "seed {seed}: no cities found in scan");
+            assert!(villages > 0, "seed {seed}: no villages found in scan");
+            assert!(
+                worldgen_city_near(0, 0, 4096, seed).is_some(),
+                "seed {seed}: HOME cannot find its starter city"
+            );
             // A city should sit within a few thousand blocks of origin for every seed.
             let nearest = (nearest_city2 as f64).sqrt();
             assert!(
                 nearest < 4000.0,
                 "seed {seed}: nearest city {nearest:.0} blocks from origin is too far"
             );
-            // Cities should be a meaningful share of settlements (target ~55-60% per the
-            // tuned threshold), so a wandering player meets cities, not only villages.
+            // Cities remain discoverable destinations, but villages are the majority.
             let share = cities as f64 / settlements as f64;
             assert!(
-                share > 0.4,
-                "seed {seed}: cities only {share:.2} of settlements ({cities}/{settlements}), too rare"
+                share >= 0.10 && cities < villages,
+                "seed {seed}: expected occasional cities and majority villages, got {cities} cities / {villages} villages ({share:.2} city share)"
             );
         }
     }
@@ -917,7 +917,7 @@ mod worldgen_tests {
         }
         assert_eq!(
             (common, landmarks, settlements),
-            (1_155, 505, 19),
+            (1_155, 505, 23),
             "seed-11 structure distribution changed"
         );
         assert!(seen.len() > 1, "expected more than one structure type, saw {seen:?}");

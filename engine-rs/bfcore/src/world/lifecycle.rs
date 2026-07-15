@@ -323,7 +323,7 @@ impl<'c> World<'c> {
         // changes. Offset off the anchor so the player stands at the plaza edge, not
         // inside the civic marker.
         let mut found_home = false;
-        if let Some((_typ, ax, az)) = worldgen::worldgen_city_near(0, 0, 2048, self.seed) {
+        if let Some((_typ, ax, az)) = worldgen::worldgen_city_near(0, 0, 4096, self.seed) {
             // Dry check: settlements sit on land, but verify so a shoreline
             // anchor can never put the bed in the water.
             if worldgen::worldgen_surface_height(ax, az, self.seed) >= SEA_LEVEL + 1 {
