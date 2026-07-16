@@ -7,11 +7,13 @@ Blockfall releases are Apple Silicon-only and require macOS 14 or newer.
 1. Install a **Developer ID Application** certificate and its private key in
    Keychain Access.
 2. Create an app-specific password for the Apple ID used for notarization.
-3. Save the credentials in Keychain (never in this repository):
+3. Save the credentials in Keychain (never in this repository or shell
+   history). Omit `--password` so `notarytool` prompts for the app-specific
+   password securely:
 
    ```bash
    xcrun notarytool store-credentials blockfall-notary \
-     --apple-id "APPLE_ID" --team-id "TEAM_ID" --password "APP_PASSWORD"
+     --apple-id "APPLE_ID" --team-id "TEAM_ID"
    ```
 
 Confirm that the signing identity is available:
