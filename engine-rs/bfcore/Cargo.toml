@@ -1,6 +1,6 @@
 [package]
 name = "bfcore"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 description = "Rust port of the Blockfall blockcore engine (migration in progress, parity-gated)"
 

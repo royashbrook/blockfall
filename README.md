@@ -101,7 +101,7 @@ incremental lighting (Track F), day/night, Dim desaturation. See `docs/ROADMAP.m
 ```bash
 ./ci/build.sh debug      # -> build/Blockfall.app
 ./ci/check.sh            # the green-bar gate (must pass before anything is "done")
-./ci/package.sh          # -> dist/Blockfall.dmg (arm64, ad-hoc signed)
+./ci/package.sh          # -> dist/Blockfall-0.1.0.dmg (arm64, signed + notarized)
 open build/Blockfall.app # or run the headless boundary test:
 build/Blockfall.app/Contents/MacOS/Blockfall --selftest
 ```
@@ -112,7 +112,8 @@ build/Blockfall.app/Contents/MacOS/Blockfall --selftest
 - For precompiled shaders (Track E): `xcodebuild -downloadComponent MetalToolchain`
   (see `docs/adr/0003-metal-toolchain-prereq.md`). Not needed for M0.
 
-Clients (the kids' M1 Airs) need none of this — just the `.dmg`.
+Clients need an Apple Silicon Mac running macOS 14 or newer and the `.dmg`.
+See [`docs/RELEASING.md`](docs/RELEASING.md) for Developer ID setup and releases.
 
 ## The contract is law
 

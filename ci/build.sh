@@ -8,6 +8,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${1:-debug}"          # debug | release
+VERSION="${VERSION:-0.1.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-100}"
+
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  echo "ERROR: VERSION must look like 0.1.0"; exit 1;
+}
+[[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || {
+  echo "ERROR: BUILD_NUMBER must be an integer"; exit 1;
+}
 
 # Self-install the commit hook (require a #issue ref on every commit). Idempotent;
 # this is how the hook gets enforced on a fresh clone without a manual step.
@@ -46,15 +55,15 @@ cp "$BIN" "$APP_OUT/Contents/MacOS/Blockfall"
 # Bundle content (data-driven; spec §4.10) and assets.
 cp -R "$ROOT/content" "$APP_OUT/Contents/Resources/content"
 [ -d "$ROOT/assets" ] && cp -R "$ROOT/assets" "$APP_OUT/Contents/Resources/assets" || true
-cat > "$APP_OUT/Contents/Info.plist" <<'PLIST'
+cat > "$APP_OUT/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleName</key><string>Blockfall</string>
   <key>CFBundleDisplayName</key><string>Blockfall</string>
   <key>CFBundleIdentifier</key><string>com.blockfall.game</string>
-  <key>CFBundleVersion</key><string>0.0.1</string>
-  <key>CFBundleShortVersionString</key><string>0.0.1</string>
+  <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleExecutable</key><string>Blockfall</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
@@ -62,6 +71,7 @@ cat > "$APP_OUT/Contents/Info.plist" <<'PLIST'
   <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict></plist>
 PLIST
+plutil -lint "$APP_OUT/Contents/Info.plist" >/dev/null
 
 # Ad-hoc sign (spec §4.11). Real .dmg signing happens in package.sh.
 codesign --force --deep --sign - "$APP_OUT" >/dev/null 2>&1 || \
