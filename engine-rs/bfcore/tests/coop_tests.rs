@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use std::os::raw::c_void;
 use std::rc::Rc;
 
-const CONTENT: &str = "/Users/roy/gh/blockfall/content";
+const CONTENT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../content");
 
 extern "C" fn alloc_fn(_user: *mut c_void, bytes: u32) -> bf_gpu_buffer {
     let n = if bytes != 0 { bytes } else { 16 } as usize;

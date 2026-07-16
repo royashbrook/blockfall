@@ -121,3 +121,8 @@ See [`docs/RELEASING.md`](docs/RELEASING.md) for Developer ID setup and releases
 `/contract` beats prose on any conflict. Changing the C ABI, an internal
 interface, or a binary/wire/schema format requires an ADR in `docs/adr` and a
 `BF_ABI_VERSION` bump where it crosses the boundary. See `docs/adr/0001`.
+
+## License
+
+Blockfall is available under the [MIT License](LICENSE). Bundled dependency
+licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

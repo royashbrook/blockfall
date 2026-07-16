@@ -58,6 +58,10 @@ ditto "$SPARKLE" "$APP_OUT/Contents/Frameworks/Sparkle.framework"
 # Bundle content (data-driven; spec §4.10) and assets.
 cp -R "$ROOT/content" "$APP_OUT/Contents/Resources/content"
 [ -d "$ROOT/assets" ] && cp -R "$ROOT/assets" "$APP_OUT/Contents/Resources/assets" || true
+cp "$ROOT/LICENSE" "$APP_OUT/Contents/Resources/LICENSE.txt"
+cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP_OUT/Contents/Resources/THIRD_PARTY_NOTICES.md"
+cp "$ROOT/app/.build/artifacts/sparkle/Sparkle/LICENSE" \
+  "$APP_OUT/Contents/Resources/Sparkle-LICENSE.txt"
 cat > "$APP_OUT/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
