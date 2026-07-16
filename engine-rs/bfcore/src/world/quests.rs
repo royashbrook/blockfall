@@ -547,6 +547,9 @@ impl<'c> World<'c> {
             match artisan.npc_id {
                 4 => "Woodcutter - donate logs",
                 5 => "Stone Mason - donate stone",
+                6 if self.effective_village_tier(artisan.home_x, artisan.home_z) >= 3 => {
+                    "Blacksmith - fortify the City"
+                }
                 6 => "Blacksmith - donate iron",
                 _ => return false,
             },

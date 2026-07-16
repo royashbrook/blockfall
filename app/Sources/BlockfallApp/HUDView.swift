@@ -941,7 +941,8 @@ final class HUDView: NSView {
         case "wood":  hint = "Bring the Woodcutter LOGS for the wall"
         case "stone": hint = "Bring the Stone Mason STONE to reinforce it"
         case "iron":  hint = "Bring the Blacksmith IRON for the gate + lamps"
-        default:      hint = "City guards are ready — Grey assaults still come at night"
+        case "garrison": hint = "Bring the Blacksmith 32 IRON for the Fortress Garrison"
+        default:      hint = "⚔ Fortress sanctuary — gates and garrison secure every street"
         }
         let ward = v.ward_active != 0
             ? "✦ Light ward shining — streets restored"

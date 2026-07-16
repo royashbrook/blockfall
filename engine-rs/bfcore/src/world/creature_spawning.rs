@@ -251,6 +251,12 @@ impl<'c> World<'c> {
     }
 
     fn smudgeling_objective(&self, from: V3, ax: i32, az: i32) -> (IVec3, bool) {
+        if self.city_is_fortified(ax, az) {
+            let x = Self::wrap_block(ax + 1);
+            let z = Self::wrap_block(az + Self::FORTRESS_R);
+            let y = worldgen::worldgen_surface_height(x, z, self.seed) + 1;
+            return (IVec3 { x, y, z }, false);
+        }
         let torch = self.block_id_by_name("torch");
         let lamp = self.block_id_by_name("crystal_lamp");
         let glow = self.block_id_by_name("glow_block");
@@ -329,9 +335,15 @@ impl<'c> World<'c> {
         self.assault_wave_serial = self.assault_wave_serial.wrapping_add(1);
         let mut spawned = 0;
         let mut attempts = 0;
+        let fortified = self.city_is_fortified(ax, az);
         while spawned < wanted && attempts < wanted * 8 {
             attempts += 1;
-            if !self.spawn_hostile(11.0, 19.0) {
+            let (rmin, rmax) = if fortified {
+                (Self::FORTRESS_R as f32 + 6.0, Self::FORTRESS_R as f32 + 18.0)
+            } else {
+                (11.0, 19.0)
+            };
+            if !self.spawn_hostile(rmin, rmax) {
                 continue;
             }
             let index = self.creatures.len() - 1;
@@ -364,7 +376,7 @@ impl<'c> World<'c> {
             let from = self.creatures[index].pos;
             let (goal, goal_is_light) = if is_hollow || is_herald || is_ramlord {
                 let x = Self::wrap_block(ax + 1 + (spawned % 3 - 1));
-                let z = Self::wrap_block(az + Self::PALISADE_R);
+                let z = Self::wrap_block(az + self.settlement_defense_radius(ax, az));
                 let y = worldgen::worldgen_surface_height(x, z, self.seed) + 1;
                 (IVec3 { x, y, z }, false)
             } else {

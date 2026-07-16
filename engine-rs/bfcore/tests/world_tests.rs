@@ -2886,7 +2886,10 @@ fn settlement_growth_marker_follows_next_artisan_only_while_local() {
 
     w.debug_set_camera(ax as f32, y + 2.0, az as f32, 0.0, 0.0);
     w.debug_set_village_tier(ax, az, 3);
-    assert!(!w.fill_quest_target(&mut target), "a completed city needs no artisan marker");
+    assert!(w.fill_quest_target(&mut target));
+    assert_eq!(cstr_str(&target.label), "Blacksmith - fortify the City");
+    w.debug_set_city_fortified(ax, az, true);
+    assert!(!w.fill_quest_target(&mut target), "a fortified city needs no artisan marker");
 }
 
 #[test]
@@ -3153,6 +3156,90 @@ fn village_blacksmith_adds_iron_gate_tier3() {
         assert_eq!(loaded.debug_block_at(wx, surf + 3, wz), 53);
         assert_eq!(loaded.debug_block_at(wx, surf + 4, wz), 53);
     }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn city_blacksmith_builds_persistent_full_footprint_fortress_sanctuary() {
+    let (mut w, _) = village_world(11);
+    let (px, _, pz, _) = w.get_player();
+    let (typ, ax, az) = worldgen::worldgen_settlement_near(px as i32, pz as i32, 80, 11)
+        .expect("fresh HOME city");
+    assert!(worldgen::worldgen_is_city(typ));
+    assert!(
+        worldgen::worldgen_city_layout_reach() < World::debug_fortress_radius(),
+        "outer fortress must enclose every authored City lot"
+    );
+
+    let blacksmith = w.debug_spawn_villager_role(ax, az, 6);
+    let iron = w.debug_item_id("iron_ingot");
+    w.debug_give(iron, 64);
+    w.debug_set_selected(0);
+    assert!(w.debug_try_donation(blacksmith));
+    assert!(w.debug_city_fortified(ax, az));
+    assert_eq!(w.debug_item_count(iron), 32, "fortress consumes exactly 32 iron");
+
+    let r = World::debug_fortress_radius();
+    for dz in -r..=r {
+        for dx in -r..=r {
+            if dx.abs() != r && dz.abs() != r {
+                continue;
+            }
+            let wx = ax + dx;
+            let wz = az + dz;
+            let surf = worldgen::worldgen_surface_height(wx, wz, 11);
+            let gate = (dx.abs() == r && dz.abs() <= 1)
+                || (dz.abs() == r && dx.abs() <= 1);
+            assert_eq!(
+                w.debug_block_at(wx, surf + 1, wz),
+                if gate { 53 } else { 8 },
+                "fortress ring gap at offset ({dx}, {dz})"
+            );
+        }
+    }
+    assert!(w.debug_village_protects(ax + r - 1, az + r - 1));
+    assert!(!w.debug_village_protects(ax + r + 1, az));
+
+    // The three-wide south portcullis raises and lowers as one gate.
+    let gate_x = ax;
+    let gate_z = az + r;
+    let gate_y = worldgen::worldgen_surface_height(gate_x, gate_z, 11);
+    assert_eq!(w.debug_block_at(gate_x, gate_y + 1, gate_z), 53);
+    assert!(w.debug_toggle_fortress_gate(gate_x, gate_y + 1, gate_z));
+    assert_eq!(w.debug_block_at(gate_x, gate_y + 1, gate_z), 0);
+    assert_eq!(w.debug_block_at(gate_x, gate_y + 4, gate_z), 53);
+    assert!(w.debug_toggle_fortress_gate(gate_x, gate_y + 4, gate_z));
+    assert_eq!(w.debug_block_at(gate_x, gate_y + 1, gate_z), 53);
+
+    // The garrison is visible behavior: four working professions take one gate
+    // each and walk a night watch even before an assault reaches the wall.
+    w.debug_set_day_time(0.90);
+    let mason = w.debug_spawn_villager_role(ax, az, 5);
+    let patrol_start = w.debug_creature_pos(mason);
+    for _ in 0..30 {
+        w.debug_update_creatures(0.05);
+    }
+    let patrol_now = w.debug_creature_pos(mason);
+    let patrol_move = (patrol_now.0 - patrol_start.0).abs() + (patrol_now.2 - patrol_start.2).abs();
+    assert!(patrol_move > 0.25, "fortress guard did not begin its night patrol");
+
+    // A hostile introduced inside by any exceptional path is removed before AI.
+    let hostile_y = worldgen::worldgen_surface_height(ax, az, 11) as f32 + 1.0;
+    w.debug_spawn_hostile_at(ax as f32 + 0.5, hostile_y, az as f32 + 0.5);
+    assert_eq!(w.debug_hostile_count(), 1);
+    w.debug_update_creatures(0.05);
+    assert_eq!(w.debug_hostile_count(), 0, "fortress interior is a hard sanctuary");
+
+    let dir = std::env::temp_dir().join(format!("bf_fortress_rt_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(w.save(dir.to_str().unwrap()));
+    let mut loaded = World::new(Some(TerrainGen::new()));
+    loaded.debug_set_sync_streaming(true);
+    loaded.set_allocator(allocator());
+    assert!(loaded.load(dir.to_str().unwrap()));
+    assert!(loaded.debug_city_fortified(ax, az));
+    assert!(loaded.debug_village_protects(ax + r - 1, az));
     let _ = std::fs::remove_dir_all(dir);
 }
 

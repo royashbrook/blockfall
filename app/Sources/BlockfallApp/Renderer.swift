@@ -305,7 +305,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 switch m.kind {
                 case 1: name = TownNames.name(x: m.pos.x, z: m.pos.z)
                 case 4: name = "Town of " + TownNames.name(x: m.pos.x, z: m.pos.z)
-                case 3: name = "City of " + TownNames.name(x: m.pos.x, z: m.pos.z)
+                case 3, 5: name = "City of " + TownNames.name(x: m.pos.x, z: m.pos.z)
                 default: name = engineName
                 }
                 markers.append(MapView.Marker(x: m.pos.x, z: m.pos.z,

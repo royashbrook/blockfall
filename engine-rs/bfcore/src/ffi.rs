@@ -1098,6 +1098,7 @@ pub unsafe extern "C" fn bf_village_query(e: bf_engine, out: *mut bf_village_vie
             1 if wood_cells < wood_total => b"wood",
             1 => b"stone",
             2 => b"iron",
+            3 if !e.world.city_is_fortified(ax, az) => b"garrison",
             _ => b"",
         };
         let n = want.len().min(15);

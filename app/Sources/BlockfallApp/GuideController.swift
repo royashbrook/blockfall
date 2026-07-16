@@ -53,7 +53,8 @@ color dust and crystal shards. Beacons use crystal shards and iron to reclaim wi
 Grey assaults approach settlements. Smudgelings steal ward light, Hollows are foot soldiers, \
 Crooked Heralds coordinate them, and rare Dim Ramlords lead sieges.
 - VILLAGERS: friendly villagers like Elder Mira give quests. Donating logs builds a village wall; \
-stone, cobblestone, or stone bricks make a town; iron makes a guarded city. Stronger settlements \
+stone, cobblestone, or stone bricks make a town; iron makes a city. Bring its Blacksmith 32 more \
+iron for a full outer fortress, four working portcullises, night patrols, and a truly safe sanctuary. Stronger settlements \
 have more guards, but the player is still needed against a Dim Ramlord.
 - FOOD AND PLANTS: berry bushes drop berry clusters, and forests and swamps have mushrooms. \
 You CAN eat berries and mushrooms, and cook mushroom stew and honey cake. Berries also feed \
@@ -434,7 +435,7 @@ final class GuideController: NSObject {
             return "Beacons are special lights that bring color back! Build one from crystal shards and iron, then light it to heal the grey. 🔆"
         }
         if has("villager", "elder", "mira", "village", "npc", "quest", "task", "talk") {
-            return "Talk to villagers for quests, then donate logs, stone, and iron to grow their home into a guarded city. The village HUD also shows its 8-light ward! 🧑‍🌾"
+            return "Donate logs, stone, and iron to grow a City, then bring its Blacksmith 32 more iron for a sword-marked Fortress sanctuary. The village HUD also shows its 8-light ward! 🧑‍🌾"
         }
         if has("achievement", "trophy", "reward", "goal", "unlock") {
             return "You earn achievements by exploring, mining, and building cool things! Keep adventuring and you'll unlock lots of them. 🏆"

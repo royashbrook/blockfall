@@ -240,7 +240,7 @@
     "nodes": [
       {
         "id": 0,
-        "text": "The village blacksmith! When Bria's stone wall is complete, hold iron or raw iron and choose Donate. I will forge gates, lamps, and guard gear so the city can face Heralds at night — though a Dim Ramlord still calls for a hero.",
+        "text": "After the City gate, bring me 32 more iron. I will wall every home, fit four portcullises, and muster a night garrison. The map marks the safe Fortress with crossed swords.",
         "choices": [
           { "label": "I look forward to it.", "goto": -1 }
         ]

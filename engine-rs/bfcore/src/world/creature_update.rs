@@ -674,6 +674,22 @@ impl<'c> World<'c> {
     }
 
     pub(super) fn update_creatures(&mut self, dt: f32) {
+        // A completed fortress is a hard sanctuary invariant, not merely a wall
+        // the pathfinder is expected to respect. Cull any hostile introduced by
+        // an old save, debug spawn, or streaming race before it can act inside.
+        let fortresses: Vec<(i32, i32)> = self
+            .villages
+            .iter()
+            .filter_map(|(&anchor, state)| state.fortified.then_some(anchor))
+            .collect();
+        self.creatures.retain(|c| {
+            !c.hostile
+                || !fortresses.iter().any(|&(ax, az)| {
+                    let dx = Self::wrap_signed_block(Self::ifloor(c.pos.x) - ax);
+                    let dz = Self::wrap_signed_block(Self::ifloor(c.pos.z) - az);
+                    dx.abs() < Self::FORTRESS_R && dz.abs() < Self::FORTRESS_R
+                })
+        });
         // Smooth step-up tuning. A creature blocked by a ledge it can stand on climbs
         // its Y up at CLIMB_SPEED blocks/sec (a clamber that reads over a few ticks at
         // the usual ~0.05s dt) instead of teleporting up a whole block. MAX_CLIMB caps
@@ -1009,15 +1025,24 @@ impl<'c> World<'c> {
             } else {
                 0
             };
+            let fortified = c.model == 20 && self.city_is_fortified(c.home_x, c.home_z);
             let assault_target = if c.model == 20 {
                 self.creatures
                     .iter()
                     .enumerate()
                     .filter(|(_, target)| {
-                        target.hostile
-                            && target.from_assault
+                        if !target.hostile {
+                            return false;
+                        }
+                        let assigned = target.from_assault
                             && target.home_x == c.home_x
-                            && target.home_z == c.home_z
+                            && target.home_z == c.home_z;
+                        let hdx = Self::wrap_signed_f(target.pos.x - c.home_x as f32);
+                        let hdz = Self::wrap_signed_f(target.pos.z - c.home_z as f32);
+                        assigned
+                            || (fortified
+                                && hdx * hdx + hdz * hdz
+                                    <= (Self::FORTRESS_R as f32 + 16.0).powi(2))
                     })
                     .min_by(|(_, a), (_, b)| {
                         let adx = Self::wrap_signed_f(a.pos.x - c.pos.x);
@@ -1032,6 +1057,7 @@ impl<'c> World<'c> {
             };
             let settlement_under_attack = assault_target.is_some();
             let guard_role = match tier {
+                3.. if fortified => matches!(c.npc_id, 2 | 4 | 5 | 6),
                 3.. => matches!(c.npc_id, 2 | 4 | 6),
                 2 => matches!(c.npc_id, 2 | 4),
                 1 => c.npc_id == 4,
@@ -1048,16 +1074,20 @@ impl<'c> World<'c> {
                             .get(&(c.home_x, c.home_z))
                             .map(|v| v.lights >= 8)
                             .unwrap_or(false);
-                        let cooldown = match tier {
+                        let cooldown = if fortified {
+                            0.8
+                        } else {
+                            match tier {
                             3.. => 1.2,
                             2 => 1.7,
                             _ => 3.0,
+                            }
                         };
                         c.atk_cd = (c.atk_cd - dt).max(0.0);
                         c.guarding = true;
                         c.guard_progress = (1.0 - c.atk_cd / cooldown).clamp(0.0, 1.0);
                         if c.atk_cd <= 0.0 {
-                            let damage = tier as i32 + i32::from(ward_lit);
+                            let damage = tier as i32 + i32::from(ward_lit) + 2 * i32::from(fortified);
                             guard_damage[target_idx] += damage.max(1);
                             c.atk_cd = cooldown;
                             c.guard_progress = 1.0;
@@ -1072,12 +1102,17 @@ impl<'c> World<'c> {
                         let adx = Self::wrap_signed_f(target_pos.x - c.home_x as f32);
                         let adz = Self::wrap_signed_f(target_pos.z - c.home_z as f32);
                         let len = (adx * adx + adz * adz).sqrt().max(0.001);
+                        let post_r = if fortified {
+                            (Self::FORTRESS_R - 3) as f32
+                        } else {
+                            6.0
+                        };
                         cai::Decision {
                             desired_heading: dx.atan2(dz),
                             speed_frac: 0.9,
                             path_goal: Some((
-                                Self::wrap_block(c.home_x + (adx / len * 6.0).round() as i32),
-                                Self::wrap_block(c.home_z + (adz / len * 6.0).round() as i32),
+                                Self::wrap_block(c.home_x + (adx / len * post_r).round() as i32),
+                                Self::wrap_block(c.home_z + (adz / len * post_r).round() as i32),
                             )),
                         }
                     } else {
@@ -1099,8 +1134,33 @@ impl<'c> World<'c> {
             } else {
                 None
             };
+            let night_watch = !dialogue_held
+                && assault_target.is_none()
+                && fortified
+                && guard_role
+                && Self::is_night_phase(Self::day_time(self.world_clock));
+            let watch_decision = night_watch.then(|| {
+                let r = Self::FORTRESS_R - 3;
+                let (ox, oz) = match c.npc_id {
+                    4 => (0, -r),
+                    5 => (r, 0),
+                    6 => (0, r),
+                    _ => (-r, 0),
+                };
+                let gx = Self::wrap_block(c.home_x + ox);
+                let gz = Self::wrap_block(c.home_z + oz);
+                let dx = Self::wrap_signed_f(gx as f32 + 0.5 - c.pos.x);
+                let dz = Self::wrap_signed_f(gz as f32 + 0.5 - c.pos.z);
+                let dist = (dx * dx + dz * dz).sqrt();
+                cai::Decision {
+                    desired_heading: dx.atan2(dz),
+                    speed_frac: if dist > 2.0 { 0.75 } else { 0.0 },
+                    path_goal: (dist > 2.0).then_some((gx, gz)),
+                }
+            });
+            let settlement_defense_active = settlement_under_attack || night_watch;
             let tether_decision = if !dialogue_held
-                && !settlement_under_attack
+                && !settlement_defense_active
                 && c.model == 20
                 && (!artisan || c.routine.state == VillagerRoutineState::Idle)
             {
@@ -1109,7 +1169,7 @@ impl<'c> World<'c> {
                 None
             };
             let social_allowed = !dialogue_held
-                && !settlement_under_attack
+                && !settlement_defense_active
                 && c.model == 20
                 && tether_decision.is_none()
                 && Self::villager_social_window(&c);
@@ -1128,7 +1188,7 @@ impl<'c> World<'c> {
             let tether_driven = tether_decision.is_some() && !social_driven;
             let routine_driven = artisan
                 && !dialogue_held
-                && !settlement_under_attack
+                && !settlement_defense_active
                 && !social_driven
                 && !tether_driven;
             let dec = if dialogue_held {
@@ -1140,6 +1200,8 @@ impl<'c> World<'c> {
                     path_goal: None,
                 }
             } else if let Some(dec) = assault_decision {
+                dec
+            } else if let Some(dec) = watch_decision {
                 dec
             } else if let Some(dec) = social_decision {
                 dec

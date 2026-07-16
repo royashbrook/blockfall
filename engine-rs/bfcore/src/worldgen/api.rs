@@ -346,6 +346,12 @@ pub fn worldgen_city_floor_at(ax: i32, az: i32, seed: u64) -> Option<i32> {
     worldgen_city_near(ax, az, 0, seed).map(|_| city_floor_height(ax, az, seed))
 }
 
+/// Maximum authored City footprint from its anchor, used by the runtime
+/// fortress upgrade to prove its perimeter encloses every procedural lot.
+pub fn worldgen_city_layout_reach() -> i32 {
+    CITY_LAYOUT_REACH
+}
+
 /// #201: dominant biome index at a world column (0 Plains, 1 Forest, 2 Mountains,
 /// 3 Desert, 4 Snowy, 5 Swamp, 6 Beach), for biome-culture villager looks.
 pub fn worldgen_biome_at(wx: i32, wz: i32, seed: u64) -> u8 {

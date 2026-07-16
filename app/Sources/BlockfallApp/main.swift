@@ -1462,7 +1462,7 @@ if let idx = CommandLine.arguments.firstIndex(of: "--mapshot"), idx + 1 < Comman
         MapView.Marker(x: Int32(px), z: Int32(pz), kind: 0, id: 1, name: "Home"),
         MapView.Marker(x: Int32(px + 550), z: Int32(pz - 350), kind: 4, id: 100,
                        name: "Town of " + TownNames.name(x: Int32(px + 550), z: Int32(pz - 350))),
-        MapView.Marker(x: Int32(px - 620), z: Int32(pz - 480), kind: 3, id: 101,
+        MapView.Marker(x: Int32(px - 620), z: Int32(pz - 480), kind: 5, id: 101,
                        name: "City of " + TownNames.name(x: Int32(px - 620), z: Int32(pz - 480))),
         MapView.Marker(x: Int32(px + 260), z: Int32(pz + 520), kind: 2, id: 200, name: "Totem 1"),
         MapView.Marker(x: Int32(px + 1500), z: Int32(pz - 1180), kind: 2, id: 201, name: "Totem 2"),
@@ -1521,16 +1521,17 @@ if let idx = CommandLine.arguments.firstIndex(of: "--mapshot"), idx + 1 < Comman
 }
 
 // #95 --villageshot <path>: render the living-villages donation HUD panel at each tier
-// (wood -> stone -> iron) stacked into one PNG, so the kid-facing donation panel can be
+// (wood -> stone -> iron -> fortress) stacked into one PNG, so the kid-facing donation panel can be
 // reviewed without driving the live app. Mirrors --chestshot.
 if let idx = CommandLine.arguments.firstIndex(of: "--villageshot"), idx + 1 < CommandLine.arguments.count {
     let W = 900, rowH = 220
-    // Four sample states: tier 0 (needs wood, half ring), tier 1->stone, tier 2->iron, tier 3 done.
+    // Five states: the three City tiers, the garrison upgrade, and fortified completion.
     let states: [(UInt8, UInt32, UInt32, UInt32, UInt32, String, UInt8)] = [
         (0, 30, 62, 0, 0, "wood", 3),    // building the wooden wall + ward
         (1, 62, 62, 8, 16, "stone", 7),  // one light short, donating stone
         (2, 62, 62, 5, 8, "iron", 8),    // active ward, donating iron
-        (3, 62, 62, 0, 0, "", 8),        // guarded city + active ward
+        (3, 62, 62, 18, 32, "garrison", 8), // City building its outer fortress
+        (3, 62, 62, 0, 0, "", 8),        // fortified sanctuary + active ward
     ]
     let H = rowH * states.count
     let cs = CGColorSpace(name: CGColorSpace.sRGB)!

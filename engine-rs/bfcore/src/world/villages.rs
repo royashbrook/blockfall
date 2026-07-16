@@ -8,6 +8,7 @@ pub(super) struct VillageState {
     pub(super) lights: u8,
     pub(super) wood_cells: i32,
     pub(super) progress: i32,
+    pub(super) fortified: bool,
 }
 
 /// #256: player-facing settlement size is derived, never separately saved.
@@ -41,6 +42,8 @@ impl SettlementClass {
 impl<'c> World<'c> {
     // The palisade / wall ring is an R-radius square centred on the settlement anchor.
     pub(super) const PALISADE_R: i32 = 8;
+    /// One block beyond the complete procedural City footprint (houses included).
+    pub(super) const FORTRESS_R: i32 = 52;
     const PALISADE_CELLS: i32 = 8 * Self::PALISADE_R - 2;
     const WALL_WOOD: BlockId = 21; // oak_log
     const WALL_STONE: BlockId = 8; // stone_brick
@@ -52,6 +55,7 @@ impl<'c> World<'c> {
     const TOWN_VILLAGERS: i32 = 5;
     const CITY_VILLAGERS: i32 = 6;
     pub(super) const VILLAGE_WARD_LIGHTS: u8 = 8;
+    const FORTRESS_IRON_NEEDED: i32 = 32;
 
     pub fn village_view_nearest(&self) -> Option<(i32, i32, u8, i32, i32, i32, i32, u8)> {
         let px = Self::ifloor(self.pos.x);
@@ -68,6 +72,7 @@ impl<'c> World<'c> {
             0 => 4, // Woodcutter: logs for the palisade.
             1 => 5, // Stone Mason: reinforce it with stone.
             2 => 6, // Blacksmith: finish the gate with iron.
+            3 if !self.city_is_fortified(ax, az) => 6, // Blacksmith: raise the garrison.
             _ => return None,
         };
         let home_x = Self::wrap_block(ax);
@@ -275,6 +280,140 @@ impl<'c> World<'c> {
                 self.set_block_internal(p, Self::LAMP);
             }
         }
+    }
+
+    fn fortress_gate_cell(dx: i32, dz: i32) -> bool {
+        let r = Self::FORTRESS_R;
+        (dx.abs() == r && dz.abs() <= 1) || (dz.abs() == r && dx.abs() <= 1)
+    }
+
+    fn stamp_fortress(&mut self, cx: i32, cz: i32) {
+        let r = Self::FORTRESS_R;
+        for dz in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dz.abs() != r {
+                    continue;
+                }
+                let wx = Self::wrap_block(cx + dx);
+                let wz = Self::wrap_block(cz + dz);
+                let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
+                let gate = Self::fortress_gate_cell(dx, dz);
+                for dy in 1..=3 {
+                    self.set_block_internal(
+                        IVec3 {
+                            x: wx,
+                            y: surf + dy,
+                            z: wz,
+                        },
+                        if gate { Self::IRON_GATE } else { Self::WALL_STONE },
+                    );
+                }
+                if !gate && (dx + dz).rem_euclid(2) == 0 {
+                    self.set_block_internal(
+                        IVec3 {
+                            x: wx,
+                            y: surf + 4,
+                            z: wz,
+                        },
+                        Self::WALL_STONE,
+                    );
+                }
+            }
+        }
+        // Lamps flank all four three-wide portcullises.
+        for &(dx, dz) in &[
+            (-2, -r),
+            (2, -r),
+            (-2, r),
+            (2, r),
+            (-r, -2),
+            (-r, 2),
+            (r, -2),
+            (r, 2),
+        ] {
+            let wx = Self::wrap_block(cx + dx);
+            let wz = Self::wrap_block(cz + dz);
+            let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
+            self.set_block_internal(
+                IVec3 {
+                    x: wx,
+                    y: surf + 5,
+                    z: wz,
+                },
+                Self::LAMP,
+            );
+        }
+    }
+
+    pub(crate) fn city_is_fortified(&self, ax: i32, az: i32) -> bool {
+        self.villages
+            .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
+            .map(|v| v.fortified)
+            .unwrap_or(false)
+    }
+
+    pub(super) fn settlement_defense_radius(&self, ax: i32, az: i32) -> i32 {
+        if self.city_is_fortified(ax, az) {
+            Self::FORTRESS_R
+        } else {
+            Self::PALISADE_R
+        }
+    }
+
+    /// Toggle the complete three-wide portcullis containing `target`.
+    /// Closed bars occupy walking height; open bars lift overhead.
+    pub(super) fn toggle_fortress_gate(&mut self, target: IVec3) -> bool {
+        let gate = self.villages.iter().find_map(|(&(ax, az), state)| {
+            if !state.fortified {
+                return None;
+            }
+            let dx = Self::wrap_signed_block(target.x - ax);
+            let dz = Self::wrap_signed_block(target.z - az);
+            let r = Self::FORTRESS_R;
+            if dx.abs() == r && dz.abs() <= 1 {
+                Some((ax, az, true, dx.signum()))
+            } else if dz.abs() == r && dx.abs() <= 1 {
+                Some((ax, az, false, dz.signum()))
+            } else {
+                None
+            }
+        });
+        let Some((ax, az, x_gate, side)) = gate else {
+            return false;
+        };
+        let columns: Vec<(i32, i32, i32)> = (-1..=1)
+            .map(|offset| {
+                let (x, z) = if x_gate {
+                    (ax + side * Self::FORTRESS_R, az + offset)
+                } else {
+                    (ax + offset, az + side * Self::FORTRESS_R)
+                };
+                let x = Self::wrap_block(x);
+                let z = Self::wrap_block(z);
+                (x, z, worldgen::worldgen_surface_height(x, z, self.seed))
+            })
+            .collect();
+        let closed = columns.iter().any(|&(x, z, surf)| {
+            (1..=3).any(|dy| self.block_at(IVec3 { x, y: surf + dy, z }) == Self::IRON_GATE)
+        });
+        for &(x, z, surf) in &columns {
+            for dy in 1..=6 {
+                let p = IVec3 { x, y: surf + dy, z };
+                if self.block_at(p) == Self::IRON_GATE {
+                    self.set_block_internal(p, AIR);
+                }
+            }
+            for dy in if closed { 4..=6 } else { 1..=3 } {
+                self.set_block_internal(IVec3 { x, y: surf + dy, z }, Self::IRON_GATE);
+            }
+        }
+        self.fx(1, target, 0);
+        self.toast(if closed {
+            "The fortress portcullis rises."
+        } else {
+            "The fortress portcullis lowers."
+        });
+        true
     }
 
     /// One-time old-save repair for the pre-#319 portcullis, which occupied the
@@ -678,12 +817,12 @@ impl<'c> World<'c> {
         }
         let in_name = self.item_name(held.item);
         let (ax, az) = (self.creatures[idx].home_x, self.creatures[idx].home_z);
-        if self.settlement_is_procedural_city(ax, az) {
-            self.toast("This city is already complete — trade with its artisans instead!");
-            return true;
-        }
         match npc_id {
             4 => {
+                if self.effective_village_tier(ax, az) >= 3 {
+                    self.toast("Woodcutter: the city is built. Dov can still raise a fortress garrison.");
+                    return true;
+                }
                 let is_log =
                     in_name == "oak_log" || in_name == "birch_log" || in_name == "pine_log";
                 if !is_log {
@@ -727,6 +866,10 @@ impl<'c> World<'c> {
                 true
             }
             5 => {
+                if self.effective_village_tier(ax, az) >= 3 {
+                    self.toast("Mason: the city stands. Bring Dov iron for the outer fortress.");
+                    return true;
+                }
                 let is_stone =
                     in_name == "stone_brick" || in_name == "cobblestone" || in_name == "stone";
                 if !is_stone {
@@ -784,28 +927,28 @@ impl<'c> World<'c> {
                     self.toast("Blacksmith: I need iron ingots or raw iron.");
                     return true;
                 }
-                let tier = self
-                    .villages
-                    .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
-                    .map(|v| v.tier)
-                    .unwrap_or(0);
+                let tier = self.effective_village_tier(ax, az);
                 if tier < 2 {
                     self.toast("Blacksmith: get Bria to finish the stonework, then bring me iron.");
                     return true;
                 }
-                if tier >= 3 {
-                    self.toast(
-                        "Blacksmith: the gate is hung and the lamps are lit. Our town is safe!",
-                    );
+                let fortifying = tier >= 3;
+                if fortifying && self.city_is_fortified(ax, az) {
+                    self.toast("Blacksmith: the fortress is secure and the garrison is on watch.");
                     return true;
                 }
                 const IRON_NEEDED: i32 = 8;
+                let needed = if fortifying {
+                    Self::FORTRESS_IRON_NEEDED
+                } else {
+                    IRON_NEEDED
+                };
                 let contributed = self
                     .villages
                     .get(&(Self::wrap_block(ax), Self::wrap_block(az)))
                     .map(|v| v.progress)
                     .unwrap_or(0);
-                let take = (held.count as i32).min((IRON_NEEDED - contributed).max(0));
+                let take = (held.count as i32).min((needed - contributed).max(0));
                 if let Some(inv) = self.inv.as_mut() {
                     inv.remove_item(held.item, take as u16);
                 }
@@ -816,14 +959,24 @@ impl<'c> World<'c> {
                 };
                 let pv = self.player_voxel();
                 self.fx(1, pv, 0);
-                if progress >= IRON_NEEDED {
-                    self.stamp_iron_gate_and_lamps(ax, az);
-                    self.promote_village(ax, az, 3);
-                    self.toast("Blacksmith: iron gate hung, lamps lit! Our town will shine through the night.");
+                if progress >= needed {
+                    if fortifying {
+                        self.stamp_fortress(ax, az);
+                        let state = self.village_state_mut(ax, az);
+                        state.fortified = true;
+                        state.progress = 0;
+                        self.toast("Blacksmith: fortress complete! Four gates, a full outer wall, and a garrison now guard every city street.");
+                    } else {
+                        self.stamp_iron_gate_and_lamps(ax, az);
+                        self.promote_village(ax, az, 3);
+                        self.toast("Blacksmith: the city is built! Bring 32 more iron when you are ready to raise its fortress garrison.");
+                    }
                 } else {
                     self.toast(&format!(
-                        "Blacksmith: fine iron. ({}/{} for the gate)",
-                        progress, IRON_NEEDED
+                        "Blacksmith: fine iron. ({}/{} for the {})",
+                        progress,
+                        needed,
+                        if fortifying { "fortress garrison" } else { "city gate" }
                     ));
                 }
                 true
@@ -833,14 +986,20 @@ impl<'c> World<'c> {
     }
 
     pub(super) fn village_protects(&self, wx: i32, wz: i32) -> Option<(i32, i32)> {
-        const R: i32 = World::PALISADE_R;
         for (&(ax, az), vs) in self.villages.iter() {
             if vs.tier < 1 {
-                continue;
+                if !vs.fortified {
+                    continue;
+                }
             }
+            let r = if vs.fortified {
+                Self::FORTRESS_R
+            } else {
+                Self::PALISADE_R
+            };
             let dx = Self::wrap_signed_block(wx - ax);
             let dz = Self::wrap_signed_block(wz - az);
-            if dx > -R && dx < R && dz > -R && dz < R {
+            if dx > -r && dx < r && dz > -r && dz < r {
                 return Some((ax, az));
             }
         }
@@ -882,6 +1041,7 @@ impl<'c> World<'c> {
         let (progress_needed, progress) = match tier {
             1 => (16, vs.progress),
             2 => (8, vs.progress),
+            3 if !vs.fortified => (Self::FORTRESS_IRON_NEEDED, vs.progress),
             _ => (0, 0),
         };
         Some((
@@ -906,6 +1066,26 @@ impl<'c> World<'c> {
 
     pub fn debug_village_raw_tier(&self, ax: i32, az: i32) -> i32 {
         self.raw_village_tier(ax, az) as i32
+    }
+
+    pub fn debug_set_city_fortified(&mut self, ax: i32, az: i32, fortified: bool) {
+        let state = self.village_state_mut(ax, az);
+        state.fortified = fortified;
+        if fortified {
+            state.tier = state.tier.max(3);
+        }
+    }
+
+    pub fn debug_city_fortified(&self, ax: i32, az: i32) -> bool {
+        self.city_is_fortified(ax, az)
+    }
+
+    pub fn debug_fortress_radius() -> i32 {
+        Self::FORTRESS_R
+    }
+
+    pub fn debug_toggle_fortress_gate(&mut self, x: i32, y: i32, z: i32) -> bool {
+        self.toggle_fortress_gate(IVec3 { x, y, z })
     }
 
     pub fn debug_settlement_class(&self, ax: i32, az: i32) -> i32 {

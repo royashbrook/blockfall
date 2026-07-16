@@ -20,7 +20,7 @@ final class MapView: NSView {
     struct Marker {
         let x: Int32
         let z: Int32
-        let kind: UInt32   // 0 home, 1 village, 2 totem, 3 city, 4 town
+        let kind: UInt32   // 0 home, 1 village, 2 totem, 3 city, 4 town, 5 fortified city
         let id: UInt32
         let name: String
     }
@@ -124,7 +124,7 @@ final class MapView: NSView {
     }
 
     private func isDevelopedSettlement(_ kind: UInt32) -> Bool {
-        kind == 3 || kind == 4
+        kind == 3 || kind == 4 || kind == 5
     }
 
     // ---- map backdrop ------------------------------------------------------
@@ -347,7 +347,7 @@ final class MapView: NSView {
                 roof.fill()
                 outline(roof)
             }
-        case 3: // CITY (#221): a walled keep, wall slab + two towers + centre roof.
+        case 3, 5: // CITY / FORTIFIED CITY: keep plus optional crossed-sword badge.
             let wall = NSRect(x: p.x - s * 1.1, y: p.y - s * 0.7, width: s * 2.2, height: s * 0.7)
             NSColor(calibratedRed: 0.55, green: 0.56, blue: 0.62, alpha: 1).setFill()
             NSBezierPath(rect: wall).fill()
@@ -365,6 +365,18 @@ final class MapView: NSView {
             NSColor(calibratedRed: 0.72, green: 0.32, blue: 0.28, alpha: 1).setFill()
             roof.fill()
             outline(roof); outline(NSBezierPath(rect: wall))
+            if m.kind == 5 {
+                ctx.saveGState()
+                ctx.setLineCap(.round)
+                ctx.setStrokeColor(NSColor(calibratedRed: 1.0, green: 0.82, blue: 0.30, alpha: 1).cgColor)
+                ctx.setLineWidth(3.0)
+                ctx.move(to: CGPoint(x: p.x - s * 0.55, y: p.y - s * 0.95))
+                ctx.addLine(to: CGPoint(x: p.x + s * 0.58, y: p.y + s * 0.35))
+                ctx.move(to: CGPoint(x: p.x + s * 0.55, y: p.y - s * 0.95))
+                ctx.addLine(to: CGPoint(x: p.x - s * 0.58, y: p.y + s * 0.35))
+                ctx.strokePath()
+                ctx.restoreGState()
+            }
         default: // TOTEM: a glowing crystal diamond.
             let d = NSBezierPath()
             d.move(to: NSPoint(x: p.x, y: p.y + s))

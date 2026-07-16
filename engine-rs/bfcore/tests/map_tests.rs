@@ -244,12 +244,21 @@ fn settlement_markers_follow_derived_class_and_raw_tier_persists() {
     let city = &loaded.map_markers()[1];
     assert_eq!((city.kind, city.name.as_str()), (3, "City 1"));
     assert_eq!(loaded.debug_village_raw_tier(vx, vz), 3, "no regression");
+    loaded.debug_set_city_fortified(vx, vz, true);
+    let fortress = &loaded.map_markers()[1];
+    assert_eq!(
+        (fortress.kind, fortress.name.as_str()),
+        (5, "City 1"),
+        "fortification adds a sword-badge kind without changing the City label"
+    );
 
     let mut natural = make_world(&content, seed);
     natural.debug_visit_village(cx, cz);
     let city = &natural.map_markers()[1];
     assert_eq!((city.kind, city.name.as_str()), (3, "City 1"));
     assert_eq!(natural.debug_village_raw_tier(cx, cz), 0);
+    natural.debug_set_city_fortified(cx, cz, true);
+    assert_eq!(natural.map_markers()[1].kind, 5);
     assert_eq!(
         natural.debug_village_tier(cx, cz),
         3,

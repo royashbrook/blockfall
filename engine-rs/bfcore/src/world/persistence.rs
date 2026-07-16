@@ -151,7 +151,7 @@ impl<'c> World<'c> {
         {
             let path = format!("{}/villages.dat", dir);
             let mut buf: Vec<u8> = Vec::new();
-            buf.extend_from_slice(b"BFV2");
+            buf.extend_from_slice(b"BFV3");
             buf.extend_from_slice(&(self.villages.len() as u32).to_le_bytes());
             for (&(ax, az), v) in self.villages.iter() {
                 buf.extend_from_slice(&ax.to_le_bytes());
@@ -160,6 +160,7 @@ impl<'c> World<'c> {
                 buf.push(v.lights);
                 buf.extend_from_slice(&v.wood_cells.to_le_bytes());
                 buf.extend_from_slice(&v.progress.to_le_bytes());
+                buf.push(u8::from(v.fortified));
             }
             let mut f = match std::fs::File::create(&path) {
                 Ok(f) => f,
@@ -425,8 +426,9 @@ impl<'c> World<'c> {
         if let Ok(b) = std::fs::read(format!("{}/villages.dat", dir)) {
             let mut cr = ByteReader::new(&b);
             let magic = cr.take(4);
-            if magic == Some(b"BFVL") || magic == Some(b"BFV2") {
-                let has_lights = magic == Some(b"BFV2");
+            if magic == Some(b"BFVL") || magic == Some(b"BFV2") || magic == Some(b"BFV3") {
+                let has_lights = magic == Some(b"BFV2") || magic == Some(b"BFV3");
+                let has_fortress = magic == Some(b"BFV3");
                 let n = cr.u32().unwrap_or(0);
                 for _ in 0..n {
                     let ax = cr.i32();
@@ -439,6 +441,7 @@ impl<'c> World<'c> {
                     let lights = if has_lights { cr.u8().unwrap_or(0) } else { 0 };
                     let wood_cells = cr.i32().unwrap_or(0);
                     let progress = cr.i32().unwrap_or(0);
+                    let fortified = has_fortress && cr.u8().unwrap_or(0) != 0;
                     self.villages.insert(
                         (Self::wrap_block(ax), Self::wrap_block(az)),
                         VillageState {
@@ -446,6 +449,7 @@ impl<'c> World<'c> {
                             lights,
                             wood_cells,
                             progress,
+                            fortified,
                         },
                     );
                 }

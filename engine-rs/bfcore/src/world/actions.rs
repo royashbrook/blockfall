@@ -60,6 +60,9 @@ impl<'c> World<'c> {
                 // #69 doors: open/close a targeted door (takes priority).
                 if self.has_target {
                     let tb = self.block_at(self.target);
+                    if tb == 53 && self.toggle_fortress_gate(self.target) {
+                        return;
+                    }
                     if tb == 33 || tb == 50 {
                         let target = self.target;
                         let mut low_y = target.y;

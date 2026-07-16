@@ -1501,3 +1501,34 @@ ms frame p99, 20.40 ms maximum, and zero frames at or above 33.3 ms. The release
 was opened at 1182×760: the equipment targets and instruction line were centered,
 readable, and did not clip the inventory. The issue-list command must return no open
 issues after #324 and #325 are closed.
+
+## July 16 City Fortress/Garrison upgrade (#327)
+
+A City remains a City, but its Blacksmith now owns one final 32-iron upgrade. The
+completed Fortress encloses the full developed footprint, marks the City with
+crossed swords, and makes the entire interior a hard sanctuary while its garrison
+meets night assaults at the perimeter.
+
+1. Enter either a natural City or a Village promoted through City. The settlement
+   panel must say to bring the Blacksmith **32 IRON for the Fortress Garrison**, and
+   the local objective marker must point to that City's Blacksmith only while local.
+2. Donate less than 32 iron or raw iron, save, quit, and reload. Exact progress must
+   survive. Finish the donation with an oversized stack; only the remaining amount
+   is consumed.
+3. On completion, walk or fly the perimeter. A detailed stone wall must sit beyond
+   every house and civic building, with one lit three-wide iron portcullis on each
+   cardinal road. No house should be stranded outside.
+4. Interact with one bar in each gate. All three columns must lift overhead together;
+   interact with the raised bars to lower the full gate. The player must be able to
+   enter and leave through every raised gate.
+5. Open the world map. The marker name must still read **City of ...**, now with a
+   gold crossed-sword badge. The minimap uses the matching gold sword-marked dot.
+6. Set night and watch without starting a fight. Builder, Woodcutter, Stone Mason,
+   and Blacksmith guards should leave ordinary routines for four distinct gate posts.
+   Dialogue still freezes the specific villager being addressed.
+7. In Normal Survival after the hostile quest gate is open, remain inside through a
+   night assault. Grey creatures should form outside, guards should move to the
+   threatened perimeter and attack, and no hostile may cross the sanctuary boundary
+   even while a portcullis is raised.
+8. Save inside the Fortress at night, quit fully, and reload. The wall edits, gate
+   positions, sword badge, garrison state, patrol behavior, and sanctuary must remain.

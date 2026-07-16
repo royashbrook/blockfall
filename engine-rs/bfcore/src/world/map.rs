@@ -51,7 +51,7 @@ pub(super) struct TotemMark {
 /// One marker row handed to the FFI layer (which packs it into bf_map_marker).
 pub struct MapMarkerInfo {
     pub pos: IVec3,
-    pub kind: u32, // 0 home, 1 village, 2 totem, 3 city, 4 town
+    pub kind: u32, // 0 home, 1 village, 2 totem, 3 city, 4 town, 5 fortified city
     pub id: u32,
     pub name: String,
 }
@@ -242,7 +242,11 @@ impl<'c> World<'c> {
             let class = self.settlement_class_at(ax, az);
             out.push(MapMarkerInfo {
                 pos: IVec3 { x: ax, y: 0, z: az },
-                kind: class.map_kind(),
+                kind: if class.map_kind() == 3 && self.city_is_fortified(ax, az) {
+                    5
+                } else {
+                    class.map_kind()
+                },
                 id: MARKER_ID_VILLAGE_BASE + i as u32,
                 name: format!("{} {}", class.label(), i + 1),
             });

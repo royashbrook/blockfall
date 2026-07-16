@@ -156,12 +156,16 @@ final class MinimapView: NSView {
         case 1: col = NSColor(calibratedRed: 0.70, green: 0.52, blue: 0.26, alpha: 1); r = 4    // village
         case 4: col = NSColor(calibratedRed: 0.88, green: 0.55, blue: 0.22, alpha: 1); r = 5    // town
         case 3: col = NSColor(calibratedRed: 0.62, green: 0.63, blue: 0.72, alpha: 1); r = 5.5 // city (#221): bigger grey keep dot
+        case 5: col = NSColor(calibratedRed: 1.0, green: 0.78, blue: 0.24, alpha: 1); r = 6.5 // fortified City: gold sword-badge dot
         default: col = NSColor(calibratedRed: 0.70, green: 0.54, blue: 1.0, alpha: 1); r = 4    // totem
         }
         NSColor.black.withAlphaComponent(0.7).setStroke()
         col.setFill()
         let d = NSBezierPath(ovalIn: NSRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2))
         d.fill(); d.lineWidth = 1.5; d.stroke()
+        if kind == 5 {
+            drawLabel("⚔", at: p, size: 8, color: .black)
+        }
     }
 
     // 8-point compass from the player's world facing (north = -z).
