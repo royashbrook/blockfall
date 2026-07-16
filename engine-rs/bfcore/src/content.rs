@@ -47,6 +47,10 @@ pub struct ItemDef {
     pub tool_tier: u8,
     pub tool_kind: u8,
     pub tool_durability: u16,
+    pub armor_slot: u8,
+    pub armor_tier: u8,
+    pub armor_points: u8,
+    pub armor_durability: u16,
     pub places_block: BlockId,
 }
 
@@ -413,6 +417,10 @@ impl ContentRegistry {
                         tool_tier: 0,
                         tool_kind: 0,
                         tool_durability: 0,
+                        armor_slot: 0,
+                        armor_tier: 0,
+                        armor_points: 0,
+                        armor_durability: 0,
                         places_block: 0, // resolved in cross-ref pass
                     };
                     if let Some(tool) = get(obj, "tool") {
@@ -426,6 +434,21 @@ impl ContentRegistry {
                             if let Some(dur) = get(tool, "durability") {
                                 def.tool_durability = as_int(dur) as u16;
                             }
+                        }
+                    }
+                    if let Some(armor) = get(obj, "armor") {
+                        if is_object(armor) {
+                            def.armor_slot = match get(armor, "slot").map(as_str) {
+                                Some("head") => 1,
+                                Some("body") => 2,
+                                Some("feet") => 3,
+                                _ => 0,
+                            };
+                            def.armor_tier = get(armor, "tier").map(as_int).unwrap_or(0) as u8;
+                            def.armor_points =
+                                get(armor, "points").map(as_int).unwrap_or(0) as u8;
+                            def.armor_durability =
+                                get(armor, "durability").map(as_int).unwrap_or(0) as u16;
                         }
                     }
 
@@ -919,14 +942,15 @@ mod tests {
     // when chopping_block (block 56, item 97) became the first physical workstation (#245),
     // then 56 to 57 for generated, shaped stone_rubble (#247; drops existing cobblestone),
     // then 57 to 61 (items 64 to 68) for the four finished artisan stations (#253),
-    // then 61 to 63 (items 68 to 70) for social bench/broom props (#251).
+    // then 61 to 63 (items 68 to 70) for social bench/broom props (#251), then
+    // items 70 to 76 and recipes 36 to 42 for two three-piece armor sets (#325).
     #[test]
     fn loads_with_cpp_parity_counts() {
         let mut reg = ContentRegistry::new();
         assert!(reg.load(CONTENT));
         assert_eq!(reg.block_count(), 63);
-        assert_eq!(reg.item_count(), 70); // #177 charm, #203 coin, #245/#251/#253 stations/props
-        assert_eq!(reg.recipe_count(), 36); // #177 magnet_charm_craft
+        assert_eq!(reg.item_count(), 76);
+        assert_eq!(reg.recipe_count(), 42);
         let oak = reg.block_by_name("oak_log").expect("oak_log");
         assert_eq!((oak.id, oak.drop_item), (21, 12));
         let dirt_item = reg.item_by_name("dirt").expect("dirt item");

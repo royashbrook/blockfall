@@ -89,6 +89,13 @@ impl<'c> World<'c> {
             for id in done {
                 buf.extend_from_slice(&id.to_le_bytes());
             }
+            // #325 optional equipment trailer: head, body, feet.
+            buf.extend_from_slice(b"BFEQ");
+            for slot in self.equipment {
+                buf.extend_from_slice(&slot.item.to_le_bytes());
+                buf.extend_from_slice(&slot.count.to_le_bytes());
+                buf.extend_from_slice(&slot.durability.to_le_bytes());
+            }
             let mut f = match std::fs::File::create(&path) {
                 Ok(f) => f,
                 Err(_) => return false,
@@ -314,6 +321,24 @@ impl<'c> World<'c> {
                             for _ in 0..done_n {
                                 if let Some(id) = p.u32() {
                                     self.side_quests_done.insert(id);
+                                }
+                            }
+                            if p.take(4) == Some(b"BFEQ") {
+                                for i in 0..self.equipment.len() {
+                                    let stack = ItemStack {
+                                        item: p.u16().unwrap_or(0),
+                                        count: p.u16().unwrap_or(0),
+                                        durability: p.u16().unwrap_or(0xFFFF),
+                                    };
+                                    let valid = self
+                                        .content
+                                        .and_then(|c| c.item_by_id(stack.item))
+                                        .is_some_and(|def| usize::from(def.armor_slot) == i + 1);
+                                    self.equipment[i] = if valid {
+                                        stack
+                                    } else {
+                                        ItemStack::default()
+                                    };
                                 }
                             }
                         }

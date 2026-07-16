@@ -87,13 +87,17 @@ final class GameView: MTKView {
         let a = actionQueue; actionQueue.removeAll(keepingCapacity: true); return a
     }
 
-    private func queue(_ kind: bf_action_kind, _ i: Int32 = 0) {
-        var a = bf_action(); a.kind = kind; a.arg_i = i
+    private func queue(_ kind: bf_action_kind, _ i: Int32 = 0, _ j: Int32 = 0) {
+        var a = bf_action(); a.kind = kind; a.arg_i = i; a.arg_j = j
         actionQueue.append(a)
     }
 
     // Craft a specific craftable index, clicked in the HUD's crafting list.
     func enqueueCraft(_ index: Int) { queue(BF_ACT_CRAFT, Int32(index)) }
+    func enqueueEquip(_ inventorySlot: Int) { queue(BF_ACT_EQUIP, Int32(inventorySlot)) }
+    func enqueueUnequip(_ equipmentSlot: Int) {
+        queue(BF_ACT_EQUIP, -1, Int32(equipmentSlot))
+    }
 
     // Creative item picker: grant an item id to the player.
     func enqueueGive(_ itemId: UInt16) { queue(BF_ACT_GIVE_ITEM, Int32(itemId)) }

@@ -98,6 +98,7 @@ impl<'c> World<'c> {
             drown_cd: 0.0,
             content: None,
             inv: None,
+            equipment: [ItemStack::default(); 3],
             glow_id: GLOW,
             beacon_id: 0,
             inv_open: false,

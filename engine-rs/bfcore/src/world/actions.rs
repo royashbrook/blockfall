@@ -184,6 +184,13 @@ impl<'c> World<'c> {
             // #184: creative-only testing toggle; ignored in survival so it can
             // never become a movement cheat there.
             BF_ACT_SET_HYPERSPEED => self.hyperspeed = a.arg_i != 0,
+            BF_ACT_EQUIP => {
+                if a.arg_i >= 0 {
+                    self.equip_from_inventory(a.arg_i as usize);
+                } else if a.arg_j >= 0 {
+                    self.unequip(a.arg_j as usize);
+                }
+            }
         }
     }
 

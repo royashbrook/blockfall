@@ -341,12 +341,16 @@ impl NetSession {
                 let y = match r.get_f32() { Some(v) => v, None => return };
                 let z = match r.get_f32() { Some(v) => v, None => return };
                 let yaw = match r.get_f32() { Some(v) => v, None => return };
-                let appearance = match Self::read_appearance(&mut r) { Some(v) => v, None => return };
+                let mut appearance = match Self::read_appearance(&mut r) { Some(v) => v, None => return };
                 // Appended animation fields are optional so v29 peers remain
                 // compatible: older packets simply render an idle avatar.
                 let moving = r.get_u8().unwrap_or(0) != 0;
                 let action = r.get_u8().unwrap_or(0) as u32;
                 let action_progress = r.get_f32().unwrap_or(0.0).clamp(0.0, 1.0);
+                // v30 armor metadata is appended after the v29 packet, so old
+                // peers remain readable and simply render no equipment.
+                appearance._reserved[0] = r.get_u8().unwrap_or(0);
+                appearance._reserved[1] = r.get_u8().unwrap_or(0);
                 // Clients cannot spoof another peer id. The host assigns the
                 // transport id, then relays that canonical state to all others.
                 let origin = if self.role == NetRole::Host { peer } else { claimed_origin };
@@ -486,6 +490,8 @@ impl NetSession {
         w.put_u8(u8::from(moving));
         w.put_u8(action.min(u8::MAX as u32) as u8);
         w.put_f32(action_progress.clamp(0.0, 1.0));
+        w.put_u8(appearance._reserved[0]);
+        w.put_u8(appearance._reserved[1]);
         w.buf
     }
 
@@ -638,7 +644,7 @@ mod tests {
         let appearance = bf_player_appearance {
             skin: 2, shirt: 3, hair_color: 4, hair_style: 5, nose: 6,
             mouth: 7, eye_style: 8, eye_color: 9, head_shape: 1,
-            body_shape: 2, _reserved: [0; 2],
+            body_shape: 2, _reserved: [0x7, 0x2A],
         };
         let spoofed = NetSession::player_state(
             999, 10.0, 11.0, 12.0, 1.5, appearance, true, 11, 0.5,

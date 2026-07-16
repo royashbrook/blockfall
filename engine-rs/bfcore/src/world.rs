@@ -41,6 +41,7 @@ mod creature_spawning;
 mod creature_update;
 mod danger_sites;
 mod debris;
+mod equipment;
 mod debug;
 mod falling;
 mod interaction;
@@ -630,6 +631,7 @@ pub struct World<'c> {
     // Track J content + gameplay state.
     content: Option<&'c ContentRegistry>,
     inv: Option<Inventory<'c>>,
+    equipment: [ItemStack; 3],
     glow_id: BlockId,
     beacon_id: BlockId,
     inv_open: bool,

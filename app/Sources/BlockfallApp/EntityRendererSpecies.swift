@@ -4189,6 +4189,17 @@ extension EntityRenderer {
             SIMD3(0.55, 0.28, 0.14), SIMD3(0.74, 0.74, 0.76), SIMD3(0.20, 0.14, 0.10),
         ]
         let player = curPlayerAppearance
+        let armorMask = player.map { $0._reserved.0 } ?? 0
+        let armorTierBits = player.map { $0._reserved.1 } ?? 0
+        func armorColor(_ slot: Int) -> SIMD3<Float> {
+            let tier = (armorTierBits >> UInt8(slot * 2)) & 0x3
+            if tier == 2 {
+                return [SIMD3(0.62, 0.70, 0.79), SIMD3(0.54, 0.63, 0.73),
+                        SIMD3(0.46, 0.54, 0.64)][slot]
+            }
+            return [SIMD3(0.76, 0.58, 0.32), SIMD3(0.70, 0.45, 0.23),
+                    SIMD3(0.48, 0.30, 0.16)][slot]
+        }
         let skinCol = player.map { CharacterAppearance.skinPalette[Int($0.skin) % CharacterAppearance.skinPalette.count] }
             ?? skinPalette[Int(vs % UInt32(skinPalette.count))]
         // Clothing comes from the entity tint so villager/elder/trader differ.
@@ -4377,6 +4388,16 @@ extension EntityRenderer {
         drawCube(enc: enc, viewProj: viewProj,
                  model: footM(hipR, legAngR, ankleR, legHoseR, legReachR),
                  rgb: shoeCol, sat: sat, shape: .sphere)
+        if armorMask & 0x4 != 0 {
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: footM(hipL, legAngL, ankleL, legHoseL, legReachL)
+                        * EntityRenderer.scaleM(SIMD3(1.16, 1.18, 1.14)),
+                     rgb: armorColor(2), sat: sat, shape: .sphere)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: footM(hipR, legAngR, ankleR, legHoseR, legReachR)
+                        * EntityRenderer.scaleM(SIMD3(1.16, 1.18, 1.14)),
+                     rgb: armorColor(2), sat: sat, shape: .sphere)
+        }
 
         // ---- TORSO (tunic) ----
         drawCube(enc: enc, viewProj: viewProj,
@@ -4390,6 +4411,12 @@ extension EntityRenderer {
         drawCube(enc: enc, viewProj: viewProj,
                  model: pw(SIMD3(0, -tH * 0.40, 0), SIMD3(tW * 1.04, tH * 0.14, tD * 1.04)),
                  rgb: beltCol, sat: sat, shape: .cylinder)
+        if armorMask & 0x2 != 0 {
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(0, tH * 0.02, 0),
+                                SIMD3(tW * 1.10, tH * 0.76, tD * 1.12)),
+                     rgb: armorColor(1), sat: sat, shape: .cylinder)
+        }
 
         // ---- ARMS + HANDS ---- The forearm and hand are true child segments;
         // their phase lag supplies the loose cartoon follow-through.
@@ -4661,6 +4688,12 @@ extension EntityRenderer {
             drawCube(enc: enc, viewProj: viewProj,
                      model: hpw(SIMD3(0, headY + hH * 0.34, -hD * 0.06), SIMD3(hW * 1.04, hH * 0.36, hD * 1.04)),
                      rgb: hairCol, sat: sat, shape: .sphere)
+        }
+        if armorMask & 0x1 != 0 {
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: hpw(SIMD3(0, headY + hH * 0.31, -hD * 0.03),
+                                SIMD3(hW * 1.11, hH * 0.55, hD * 1.11)),
+                     rgb: armorColor(0), sat: sat, shape: .sphere)
         }
 
         // ---- FACE (on the +Z front of the head, so it faces the heading dir) ----

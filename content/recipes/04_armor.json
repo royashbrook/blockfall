@@ -1,0 +1,38 @@
+[
+  {
+    "id": "padded_cap",
+    "grid_size": 3,
+    "grid": ["wool_block", "wool_block", "wool_block", "string_fiber", null, "string_fiber", null, null, null],
+    "result": { "item": "padded_cap", "count": 1 }
+  },
+  {
+    "id": "padded_vest",
+    "grid_size": 3,
+    "grid": ["wool_block", null, "wool_block", "wool_block", "wool_block", "wool_block", "wool_block", "wool_block", "wool_block"],
+    "result": { "item": "padded_vest", "count": 1 }
+  },
+  {
+    "id": "padded_boots",
+    "grid_size": 3,
+    "grid": [null, null, null, "wool_block", null, "wool_block", "string_fiber", null, "string_fiber"],
+    "result": { "item": "padded_boots", "count": 1 }
+  },
+  {
+    "id": "iron_helmet",
+    "grid_size": 3,
+    "grid": ["iron_ingot", "iron_ingot", "iron_ingot", "iron_ingot", null, "iron_ingot", null, null, null],
+    "result": { "item": "iron_helmet", "count": 1 }
+  },
+  {
+    "id": "iron_chestplate",
+    "grid_size": 3,
+    "grid": ["iron_ingot", null, "iron_ingot", "iron_ingot", "iron_ingot", "iron_ingot", "iron_ingot", "iron_ingot", "iron_ingot"],
+    "result": { "item": "iron_chestplate", "count": 1 }
+  },
+  {
+    "id": "iron_boots",
+    "grid_size": 3,
+    "grid": [null, null, null, "iron_ingot", null, "iron_ingot", "iron_ingot", null, "iron_ingot"],
+    "result": { "item": "iron_boots", "count": 1 }
+  }
+]

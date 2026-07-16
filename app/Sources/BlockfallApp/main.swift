@@ -218,6 +218,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         h.onCraft = { [weak mtkView] index in
             mtkView?.enqueueCraft(index)
         }
+        h.onEquip = { [weak mtkView] slot in mtkView?.enqueueEquip(slot) }
+        h.onUnequip = { [weak mtkView] slot in mtkView?.enqueueUnequip(slot) }
         h.onGiveItem = { [weak mtkView] itemId in
             mtkView?.enqueueGive(itemId)
         }

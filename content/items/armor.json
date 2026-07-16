@@ -1,0 +1,44 @@
+[
+  {
+    "id": 104,
+    "name": "padded_cap",
+    "display_name": "Padded Cap",
+    "max_stack": 1,
+    "armor": { "slot": "head", "tier": 1, "points": 1, "durability": 80 }
+  },
+  {
+    "id": 105,
+    "name": "padded_vest",
+    "display_name": "Padded Vest",
+    "max_stack": 1,
+    "armor": { "slot": "body", "tier": 1, "points": 2, "durability": 140 }
+  },
+  {
+    "id": 106,
+    "name": "padded_boots",
+    "display_name": "Padded Boots",
+    "max_stack": 1,
+    "armor": { "slot": "feet", "tier": 1, "points": 1, "durability": 100 }
+  },
+  {
+    "id": 107,
+    "name": "iron_helmet",
+    "display_name": "Iron Helmet",
+    "max_stack": 1,
+    "armor": { "slot": "head", "tier": 2, "points": 2, "durability": 240 }
+  },
+  {
+    "id": 108,
+    "name": "iron_chestplate",
+    "display_name": "Iron Chestplate",
+    "max_stack": 1,
+    "armor": { "slot": "body", "tier": 2, "points": 4, "durability": 400 }
+  },
+  {
+    "id": 109,
+    "name": "iron_boots",
+    "display_name": "Iron Boots",
+    "max_stack": 1,
+    "armor": { "slot": "feet", "tier": 2, "points": 2, "durability": 300 }
+  }
+]

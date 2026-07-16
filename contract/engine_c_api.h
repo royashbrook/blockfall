@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 29u  /* v29: replicated player appearance (#264) */
+#define BF_ABI_VERSION 30u  /* v30: visible persistent armor (#325) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -173,7 +173,8 @@ typedef enum bf_action_kind {
     BF_ACT_ATTACK       = 12, /* swing at targeted creature (calm-not-kill)   */
     BF_ACT_GIVE_ITEM    = 13, /* creative only: arg_i = item id to grant      */
     BF_ACT_SET_TIME_MODE= 14, /* arg_i = 0 auto, 1 always-day, 2 always-night */
-    BF_ACT_SET_HYPERSPEED=15  /* v24: arg_i 0/1, creative-only 100x flight (testing) */
+    BF_ACT_SET_HYPERSPEED=15, /* v24: arg_i 0/1, creative-only 100x flight (testing) */
+    BF_ACT_EQUIP        = 16  /* v30: arg_i=inventory slot; arg_i<0 unequips arg_j */
 } bf_action_kind;
 
 typedef struct bf_action {
@@ -333,6 +334,7 @@ typedef struct bf_hud_state {
     uint8_t      weather;          /* 0=clear, 1=rain, 2=snow (for the HUD label) */
     char         biome_name[24];   /* current biome, e.g. "Meadow", "Desert"       */
     uint8_t      in_dim;           /* 1 = standing in an unrestored "Grey" region   */
+    bf_hud_slot  equipment[3];     /* v30: head, body, feet                           */
 } bf_hud_state;
 
 /* One quest in the full progression list (for the quest/achievement screen). */

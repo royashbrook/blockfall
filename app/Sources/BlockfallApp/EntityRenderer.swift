@@ -771,7 +771,7 @@ final class EntityRenderer {
             let detailedHumanoidPose = ((2...6).contains(curEntityRole) && curEntityAction == 3)
                 || (5...11).contains(curEntityAction)
             if (e.kind == 20 || e.kind == 100) && detailedHumanoidPose {
-                assert(lastBodyPartDraws - bodyPartsBefore <= 29,
+                assert(lastBodyPartDraws - bodyPartsBefore <= 33,
                        "humanoid action pose exceeded the #257 part cap")
             }
             // Clear so kind 6 (and the next iter before it sets) never inherit.

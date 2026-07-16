@@ -411,6 +411,13 @@ pub unsafe extern "C" fn bf_frame_begin(
     e.clock += real_dt;
     if e.world_ready {
         e.world.update(&input, real_dt);
+        let armor = [e.world.armor_mask(), e.world.armor_tier_bits()];
+        if e.player_appearance._reserved != armor {
+            e.player_appearance._reserved = armor;
+            if let Some(session) = e.session.as_mut() {
+                session.set_local_appearance(e.player_appearance);
+            }
+        }
     }
 
     // NET: pump the transport + session each frame (mirrors the C++
@@ -844,6 +851,7 @@ pub unsafe extern "C" fn bf_player_appearance_set(
         return bf_result::BF_ERR_BAD_ARG;
     }
     e.player_appearance = unsafe { *appearance };
+    e.player_appearance._reserved = [e.world.armor_mask(), e.world.armor_tier_bits()];
     if let Some(session) = e.session.as_mut() {
         session.set_local_appearance(e.player_appearance);
     }

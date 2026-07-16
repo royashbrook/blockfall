@@ -501,7 +501,42 @@ extension HUDView {
         case 98, 99, 100, 101: drawArtisanStation(id: id, in: r)
         case 102: drawCommunalBench(in: r)
         case 103: drawBroomStand(in: r)
+        case 104...109: drawArmor(id: id, in: r, color: base)
         default: drawBlob(in: r, color: base)                   // graceful fallback
+        }
+    }
+
+    private func drawArmor(id: bf_item_id, in r: NSRect, color: NSColor) {
+        let outline = shade(color, 0.48)
+        switch id {
+        case 104, 107:
+            let crown = NSRect(x: r.minX + r.width * 0.18, y: r.minY + r.height * 0.32,
+                               width: r.width * 0.64, height: r.height * 0.50)
+            let path = NSBezierPath(roundedRect: crown, xRadius: r.width * 0.25,
+                                    yRadius: r.height * 0.25)
+            color.setFill(); path.fill(); outline.setStroke(); path.lineWidth = 2; path.stroke()
+            tick(NSPoint(x: crown.minX, y: crown.minY), NSPoint(x: crown.maxX, y: crown.minY),
+                 lighten(color, 0.22), width: max(2, r.width * 0.08))
+        case 105, 108:
+            let vest = [
+                NSPoint(x: r.minX + r.width * 0.28, y: r.maxY - r.height * 0.16),
+                NSPoint(x: r.minX + r.width * 0.12, y: r.maxY - r.height * 0.34),
+                NSPoint(x: r.minX + r.width * 0.24, y: r.minY + r.height * 0.12),
+                NSPoint(x: r.maxX - r.width * 0.24, y: r.minY + r.height * 0.12),
+                NSPoint(x: r.maxX - r.width * 0.12, y: r.maxY - r.height * 0.34),
+                NSPoint(x: r.maxX - r.width * 0.28, y: r.maxY - r.height * 0.16),
+            ]
+            strokePoly(vest, color, width: 2)
+            tick(NSPoint(x: r.midX, y: r.minY + r.height * 0.16),
+                 NSPoint(x: r.midX, y: r.maxY - r.height * 0.23), outline, width: 2)
+        default:
+            for x in [r.minX + r.width * 0.15, r.midX + r.width * 0.05] {
+                let boot = NSRect(x: x, y: r.minY + r.height * 0.18,
+                                  width: r.width * 0.30, height: r.height * 0.52)
+                let path = NSBezierPath(roundedRect: boot, xRadius: r.width * 0.09,
+                                        yRadius: r.width * 0.09)
+                color.setFill(); path.fill(); outline.setStroke(); path.lineWidth = 2; path.stroke()
+            }
         }
     }
 

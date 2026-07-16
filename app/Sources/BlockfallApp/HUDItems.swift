@@ -77,6 +77,12 @@ private let kItemTable: [UInt16: ItemInfo] = [
     101: .init(name: "Builder Sawbench", color: itemColor(0.68, 0.48, 0.25)),
     102: .init(name: "Communal Bench", color: itemColor(0.60, 0.42, 0.22)),
     103: .init(name: "Broom Stand", color: itemColor(0.66, 0.51, 0.25)),
+    104: .init(name: "Padded Cap", color: itemColor(0.74, 0.56, 0.31)),
+    105: .init(name: "Padded Vest", color: itemColor(0.72, 0.48, 0.25)),
+    106: .init(name: "Padded Boots", color: itemColor(0.54, 0.35, 0.18)),
+    107: .init(name: "Iron Helmet", color: itemColor(0.72, 0.78, 0.84)),
+    108: .init(name: "Iron Chestplate", color: itemColor(0.64, 0.71, 0.79)),
+    109: .init(name: "Iron Boots", color: itemColor(0.54, 0.61, 0.70)),
 ]
 func itemName(_ id: UInt16) -> String { kItemTable[id]?.name ?? "Item \(id)" }
 func itemChipColor(_ id: UInt16) -> NSColor { kItemTable[id]?.color ?? NSColor(hue: CGFloat(id % 12)/12, saturation: 0.6, brightness: 0.9, alpha: 1) }
@@ -161,6 +167,8 @@ func itemDescription(id: UInt16) -> String {
     case 101: return "A sturdy trestle bench with a plank and saw for the village builder."
     case 102: return "A warm oak bench where villagers can sit together in the square."
     case 103: return "A little rack with a real broom and dustpan for keeping the square tidy."
+    case 104...106: return "Soft starter armor. Pick it up, then click its equipment slot to wear it."
+    case 107...109: return "Sturdy iron armor that visibly protects your character until it wears out."
     default: return "A useful item. Try crafting with it or placing it in the world!"
     }
 }

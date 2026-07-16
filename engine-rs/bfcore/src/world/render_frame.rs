@@ -642,6 +642,14 @@ impl<'c> World<'c> {
                 _pad: 0,
             };
         }
+        for (i, slot) in self.equipment.iter().enumerate() {
+            h.equipment[i] = bf_hud_slot {
+                item: slot.item,
+                count: slot.count,
+                durability: slot.durability,
+                _pad: 0,
+            };
+        }
         h.craftable_count = 0;
         if let Some(inv) = self.inv.as_ref() {
             for i in 0..BF_HOTBAR_SLOTS {

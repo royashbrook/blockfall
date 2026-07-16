@@ -5,6 +5,7 @@ impl<'c> World<'c> {
         if self.hurt_cd > 0.0 {
             return;
         }
+        let dmg = self.absorb_armor_damage(dmg);
         self.health = (self.health - dmg).max(0.0);
         self.hurt_cd = 0.6;
         self.regen_cd = 5.0;

@@ -1,7 +1,7 @@
 //! Blockfall engine C ABI, ported to Rust #[repr(C)].
 //!
 //! This is a faithful, byte-for-byte port of `contract/engine_c_api.h` (the
-//! frozen C ABI, currently BF_ABI_VERSION 29). Every typedef, enum, and struct here
+//! frozen C ABI, currently BF_ABI_VERSION 30). Every typedef, enum, and struct here
 //! mirrors the C declaration: same field names, same types, same order. The
 //! layout must match the C structs exactly so the Swift app reads the same
 //! bytes whether the engine is the C++ core or this Rust port.
@@ -39,7 +39,8 @@ use core::ffi::{c_char, c_void};
 /// v28: appended bf_entity_role_actions + its borrowed role/action sidecar
 ///      (#254). bf_entity_draw remains frozen at 44 bytes.
 /// v29: replicated player appearance setter + entity sidecar (#264).
-pub const BF_ABI_VERSION: u32 = 29;
+/// v30: appended equipment action + three HUD equipment slots (#325).
+pub const BF_ABI_VERSION: u32 = 30;
 
 // ---------------------------------------------------------------------------
 // Primitive types
@@ -185,6 +186,9 @@ pub enum bf_action_kind {
     BF_ACT_SET_TIME_MODE = 14,
     /// v24 (#184): arg_i = 0 off, 1 on. Creative-only hyperspeed flight (100x sprint).
     BF_ACT_SET_HYPERSPEED = 15,
+    /// v30 (#325): arg_i >= 0 equips from that inventory slot; arg_i < 0
+    /// unequips arg_j (0=head, 1=body, 2=feet).
+    BF_ACT_EQUIP = 16,
 }
 
 #[repr(C)]
@@ -382,6 +386,7 @@ pub struct bf_hud_state {
     pub weather: u8,
     pub biome_name: [u8; 24],
     pub in_dim: u8,
+    pub equipment: [bf_hud_slot; 3],
 }
 
 #[repr(i32)]
@@ -678,10 +683,10 @@ mod parity {
         assert_eq!(size_of::<bf_prop_instance>(), 24, "bf_prop_instance");
         assert_eq!(size_of::<bf_camera>(), 188, "bf_camera");
         assert_eq!(size_of::<bf_hud_slot>(), 8, "bf_hud_slot");
-        assert_eq!(size_of::<bf_hud_state>(), 880, "bf_hud_state");
+        assert_eq!(size_of::<bf_hud_state>(), 904, "bf_hud_state");
         assert_eq!(size_of::<bf_quest_entry>(), 168, "bf_quest_entry");
         assert_eq!(size_of::<bf_quest_target>(), 68, "bf_quest_target");
-        assert_eq!(size_of::<bf_render_frame>(), 1152, "bf_render_frame");
+        assert_eq!(size_of::<bf_render_frame>(), 1176, "bf_render_frame");
         assert_eq!(size_of::<bf_gpu_buffer>(), 24, "bf_gpu_buffer");
         assert_eq!(size_of::<bf_gpu_allocator>(), 24, "bf_gpu_allocator");
         assert_eq!(size_of::<bf_event>(), 36, "bf_event");
@@ -888,6 +893,7 @@ mod parity {
         assert_eq!(offset_of!(bf_hud_state, weather), 854);
         assert_eq!(offset_of!(bf_hud_state, biome_name), 855);
         assert_eq!(offset_of!(bf_hud_state, in_dim), 879);
+        assert_eq!(offset_of!(bf_hud_state, equipment), 880);
     }
 
     #[test]
@@ -901,9 +907,9 @@ mod parity {
         assert_eq!(offset_of!(bf_render_frame, entities), 224);
         assert_eq!(offset_of!(bf_render_frame, entity_count), 232);
         assert_eq!(offset_of!(bf_render_frame, hud), 236);
-        assert_eq!(offset_of!(bf_render_frame, shadow_draws), 1120);
-        assert_eq!(offset_of!(bf_render_frame, shadow_draw_count), 1128);
-        assert_eq!(offset_of!(bf_render_frame, prop_instances), 1136);
-        assert_eq!(offset_of!(bf_render_frame, prop_instance_count), 1144);
+        assert_eq!(offset_of!(bf_render_frame, shadow_draws), 1144);
+        assert_eq!(offset_of!(bf_render_frame, shadow_draw_count), 1152);
+        assert_eq!(offset_of!(bf_render_frame, prop_instances), 1160);
+        assert_eq!(offset_of!(bf_render_frame, prop_instance_count), 1168);
     }
 }

@@ -19,6 +19,8 @@ final class HUDView: NSView {
     var onMove: ((_ from: Int, _ to: Int, _ count: Int) -> Void)?
     // Called when the player clicks a craftable row. index = 0-based craftable slot.
     var onCraft: ((Int) -> Void)?
+    var onEquip: ((Int) -> Void)?
+    var onUnequip: ((Int) -> Void)?
     // #15: creative item picker — clicking an item in the picker gives it to the
     // player. Wired by the lead to BF_ACT_GIVE_ITEM (or equivalent). nil = no-op.
     var onGiveItem: ((UInt16) -> Void)?
@@ -33,6 +35,7 @@ final class HUDView: NSView {
     // closed or when there are no craftable recipes. Tracked exactly like
     // slotRects so hover hit-testing stays in sync with what we draw.
     private var craftRects: [NSRect] = []
+    private var equipmentRects: [NSRect] = []
     // Current mouse position in view coords (for tooltip + held-stack ghost).
     private var mousePos: NSPoint = .zero
     private var mouseInside = false
@@ -524,6 +527,20 @@ final class HUDView: NSView {
         guard hud.inventory_open != 0 else { return }   // gameplay: ignore
         let p = convert(event.locationInWindow, from: nil)
         mousePos = p
+
+        for (equipmentSlot, rect) in equipmentRects.enumerated() where rect.contains(p) {
+            if let source = heldSlot {
+                let stack = inventorySlot(source)
+                if armorSlot(for: stack.item) == equipmentSlot {
+                    onEquip?(source)
+                    clearHeld()
+                }
+            } else if self.equipmentSlot(equipmentSlot).item != 0 {
+                onUnequip?(equipmentSlot)
+            }
+            needsDisplay = true
+            return
+        }
 
         // #34: Trash slot — if carrying a stack and clicking the trash, destroy
         // the held stack's source slot. Checked first so the trash always wins
@@ -1561,6 +1578,20 @@ final class HUDView: NSView {
             }
         }
 
+        // #325: three visible loadout slots. Pick up armor, then click its matching
+        // slot; click worn armor to return it to the inventory.
+        let equipmentX = originX - slot - 30
+        equipmentRects = [9, 18, 27].map {
+            NSRect(x: equipmentX, y: rects[$0].minY, width: slot, height: slot)
+        }
+        let equipmentLabels = ["Head", "Body", "Feet"]
+        for i in 0..<equipmentRects.count {
+            cell(equipmentRects[i], equipmentSlot(i), sel: false, picked: false)
+            drawText(equipmentLabels[i],
+                     at: NSPoint(x: equipmentRects[i].minX - 2, y: equipmentRects[i].maxY + 3),
+                     size: fs(10), color: .white, bold: true)
+        }
+
         // --- #34: Trash slot — drop a picked-up stack here to delete it. Sits
         // just to the right of the hotbar row so it reads as part of the
         // inventory area. Red box + 🗑 glyph; it lights up while a stack is held
@@ -1684,14 +1715,19 @@ final class HUDView: NSView {
         }
 
         // Bottom hint — sits at the very bottom of the screen.
-        drawText("Esc / E to close   •   click a stack to pick it up, click a slot to place it",
+        drawText("Esc / E to close   •   pick up armor, then click Head / Body / Feet to wear it",
                  at: NSPoint(x: originX, y: 18), size: fs(12), color: .white, bold: false)
 
         // --- Hover tooltips (only when not carrying a stack, so the tooltip
         //     doesn't fight the ghost). A craftable row under the cursor takes
         //     priority and shows what the recipe makes + its number key. ---
         if mouseInside && heldSlot == nil {
-            if let pid = pickerItemId(at: mousePos) {
+            if let i = equipmentRects.firstIndex(where: { $0.contains(mousePos) }),
+               equipmentSlot(i).item != 0 {
+                let s = equipmentSlot(i)
+                drawTooltip(name: itemName(s.item), count: s.count, itemId: s.item,
+                            hint: "click to take off", near: mousePos)
+            } else if let pid = pickerItemId(at: mousePos) {
                 drawTooltip(name: itemName(pid), count: 1, itemId: pid,
                             hint: "click to get", near: mousePos)
             } else if let c = craftIndex(at: mousePos) {
@@ -1728,6 +1764,22 @@ final class HUDView: NSView {
         guard i >= 0 && i < 36 else { return bf_hud_slot() }
         return withUnsafeBytes(of: hud.inventory) { raw in
             raw.bindMemory(to: bf_hud_slot.self)[i]
+        }
+    }
+
+    private func equipmentSlot(_ i: Int) -> bf_hud_slot {
+        guard i >= 0 && i < 3 else { return bf_hud_slot() }
+        return withUnsafeBytes(of: hud.equipment) { raw in
+            raw.bindMemory(to: bf_hud_slot.self)[i]
+        }
+    }
+
+    private func armorSlot(for item: bf_item_id) -> Int? {
+        switch item {
+        case 104, 107: return 0
+        case 105, 108: return 1
+        case 106, 109: return 2
+        default: return nil
         }
     }
 
