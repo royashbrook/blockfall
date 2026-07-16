@@ -26,8 +26,8 @@ echo "==> release build"
 VERSION="$VERSION" BUILD_NUMBER="$BUILD_NUMBER" "$ROOT/ci/build.sh" release >/dev/null
 [ -d "$APP" ] || { echo "ERROR: $APP not found"; exit 1; }
 
-# Verify arm64-only (Track I acceptance: otool shows no external deps beyond
-# system frameworks; arch is arm64).
+# Verify the app is arm64-only and links only system frameworks plus the
+# bundled Sparkle framework.
 echo "==> arch check"
 file "$APP/Contents/MacOS/Blockfall" | grep -q arm64 || { echo "ERROR: not arm64"; exit 1; }
 if lipo -archs "$APP/Contents/MacOS/Blockfall" 2>/dev/null | grep -qw x86_64; then
@@ -35,6 +35,16 @@ if lipo -archs "$APP/Contents/MacOS/Blockfall" 2>/dev/null | grep -qw x86_64; th
 fi
 
 echo "==> Developer ID sign"
+SPARKLE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+for CODE in \
+  "$SPARKLE/Autoupdate" \
+  "$SPARKLE/Updater.app" \
+  "$SPARKLE/XPCServices/Downloader.xpc" \
+  "$SPARKLE/XPCServices/Installer.xpc" \
+  "$APP/Contents/Frameworks/Sparkle.framework"; do
+  codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp \
+    --preserve-metadata=entitlements "$CODE"
+done
 codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
@@ -58,8 +68,8 @@ spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG
 
 echo "==> dependency check (otool)"
 otool -L "$APP/Contents/MacOS/Blockfall" | tail -n +2 | \
-  grep -vE '/usr/lib/|/System/Library/' && \
-  { echo "WARNING: non-system dynamic dependency present"; } || echo "   only system frameworks ✔"
+  grep -vE '/usr/lib/|/System/Library/|@rpath/Sparkle\.framework/' && \
+  { echo "WARNING: unexpected dynamic dependency present"; } || echo "   only system frameworks + bundled Sparkle ✔"
 
 echo "==> packaged: $DMG"
 echo "   version $VERSION ($BUILD_NUMBER), signed + notarized"

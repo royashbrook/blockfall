@@ -102,6 +102,7 @@ incremental lighting (Track F), day/night, Dim desaturation. See `docs/ROADMAP.m
 ./ci/build.sh debug      # -> build/Blockfall.app
 ./ci/check.sh            # the green-bar gate (must pass before anything is "done")
 ./ci/package.sh          # -> dist/Blockfall-0.1.0.dmg (arm64, signed + notarized)
+./ci/release.sh          # notarize + publish DMG/appcast to GitHub Releases
 open build/Blockfall.app # or run the headless boundary test:
 build/Blockfall.app/Contents/MacOS/Blockfall --selftest
 ```

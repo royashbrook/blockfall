@@ -46,12 +46,15 @@ SWIFT_FLAGS=()
 SWIFT_FLAGS+=(-Xlinker -w)
 ( cd "$ROOT/app" && BLOCKCORE_LIB_DIR="$LIB_DIR" swift build ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"} )
 BIN="$ROOT/app/.build/$CONFIG/BlockfallApp"
+SPARKLE="$ROOT/app/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
 [ -f "$BIN" ] || { echo "ERROR: app binary missing at $BIN"; exit 1; }
+[ -d "$SPARKLE" ] || { echo "ERROR: Sparkle.framework missing at $SPARKLE"; exit 1; }
 
 echo "==> [4/4] assemble $APP_OUT"
 rm -rf "$APP_OUT"
-mkdir -p "$APP_OUT/Contents/MacOS" "$APP_OUT/Contents/Resources"
+mkdir -p "$APP_OUT/Contents/MacOS" "$APP_OUT/Contents/Resources" "$APP_OUT/Contents/Frameworks"
 cp "$BIN" "$APP_OUT/Contents/MacOS/Blockfall"
+ditto "$SPARKLE" "$APP_OUT/Contents/Frameworks/Sparkle.framework"
 # Bundle content (data-driven; spec §4.10) and assets.
 cp -R "$ROOT/content" "$APP_OUT/Contents/Resources/content"
 [ -d "$ROOT/assets" ] && cp -R "$ROOT/assets" "$APP_OUT/Contents/Resources/assets" || true
@@ -69,6 +72,8 @@ cat > "$APP_OUT/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>SUFeedURL</key><string>https://github.com/royashbrook/blockfall/releases/latest/download/appcast.xml</string>
+  <key>SUPublicEDKey</key><string>7tBlyVffiHJNDDc76Chm2CZ7Y61/xfUVk3sPWvC9dm8=</string>
 </dict></plist>
 PLIST
 plutil -lint "$APP_OUT/Contents/Info.plist" >/dev/null

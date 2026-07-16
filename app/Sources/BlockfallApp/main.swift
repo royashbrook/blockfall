@@ -9,6 +9,7 @@ import AppKit
 import MetalKit
 import QuartzCore
 import CBlockcore
+import Sparkle
 
 // Keep C strings alive for the engine's lifetime (process-scoped).
 func persistentCString(_ s: String) -> UnsafePointer<CChar> {
@@ -88,6 +89,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var bloomSlider: NSSlider?   // #205 greyed when Bloom is toggled off
     private var uncappedDrawTimer: DispatchSourceTimer?
     private var pauseRebuildPending = false
+    private lazy var updaterController = SPUStandardUpdaterController(
+        startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+
+    private func installApplicationMenu() {
+        let menuBar = NSMenu()
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenuItem.submenu = appMenu
+        menuBar.addItem(appMenuItem)
+
+        let about = NSMenuItem(title: "About Blockfall",
+                               action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+                               keyEquivalent: "")
+        about.target = NSApp
+        appMenu.addItem(about)
+
+        let updates = NSMenuItem(title: "Check for Updates…",
+                                 action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+                                 keyEquivalent: "")
+        updates.target = updaterController
+        appMenu.addItem(updates)
+        appMenu.addItem(.separator())
+
+        let quit = NSMenuItem(title: "Quit Blockfall",
+                              action: #selector(NSApplication.terminate(_:)),
+                              keyEquivalent: "q")
+        quit.target = NSApp
+        appMenu.addItem(quit)
+        NSApp.mainMenu = menuBar
+    }
 
     // ---- HUD option persistence (#: text size + visibility) ----
     // UserDefaults keys. Loaded at startup (startGame) and written on change.
@@ -140,6 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard bf_abi_version() == BF_ABI_VERSION else {
             fatalError("ABI mismatch: app=\(BF_ABI_VERSION) engine=\(bf_abi_version())")
         }
+        installApplicationMenu()
         let frame = NSRect(x: 0, y: 0, width: 1280, height: 800)
         window = NSWindow(contentRect: frame,
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
