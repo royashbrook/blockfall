@@ -681,6 +681,14 @@ pub struct World<'c> {
     obj_progress: Vec<u32>,
     all_quests_done: bool,
     quests_completed: i32,
+    // #324: side quests are villager-owned, not extra steps in the main arc.
+    // One active local errand keeps the interaction and marker rules legible.
+    active_side_quest: Option<usize>,
+    side_obj_progress: Vec<u32>,
+    side_quests_done: HashSet<u32>,
+    side_quest_giver_npc: i32,
+    side_quest_home_x: i32,
+    side_quest_home_z: i32,
     // #238 difficulty: 0 easy (no hostiles at all), 1 normal, 2 hard (more
     // frequent night monsters). Runtime-only; the app persists it per world
     // and re-applies on load via bf_set_difficulty.

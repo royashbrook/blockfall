@@ -303,6 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dialogue.onOpenTrade = { [weak self] npc in self?.openTrade(npcId: Int32(npc)) }
         // #227/#305: donate to the villager held by this dialogue.
         dialogue.onDonate = { [weak mtkView] _ in mtkView?.requestDonate() }
+        dialogue.onQuest = { [weak r] quest in r?.sideQuestTalk(questId: UInt32(quest)) }
         r.onDialogue = { [weak self, weak r] npcId in
             // The guard-fail logs stay: a silently-refused open is exactly the
             // "interact froze me with no dialogue" report, and these only fire

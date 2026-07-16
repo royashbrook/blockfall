@@ -1,7 +1,7 @@
 // #82 villager dialogue: loads content/dialogue/village_npcs.json and shows a simple
 // branching dialogue overlay when the player right-clicks a villager (the engine fires a
 // dialogue event with the villager's npc_id). Quests are driven by the engine; this is the
-// flavour + objective text, so the UI only navigates nodes and never starts quests itself.
+// flavour + objective text. A gives_quest node delegates acceptance/turn-in to the engine.
 import AppKit
 
 struct DialogueChoice: Codable {
@@ -37,6 +37,7 @@ final class DialogueController {
     // #227: explicit donation. Set for trade-role villagers; clicking sends the
     // donate action (the engine validates the held item and toasts the result).
     var onDonate: ((Int) -> Void)? = nil
+    var onQuest: ((Int) -> Void)? = nil
     private var currentNpcId: Int = 0
     private var npcs: [DialogueNPC] = []
     private weak var overlay: NSView?
@@ -103,6 +104,7 @@ final class DialogueController {
         guard let ov = overlay else { return }
         ov.subviews.forEach { $0.removeFromSuperview() }
         guard nodeId >= 0, let node = npc.nodes.first(where: { $0.id == nodeId }) else { close(); return }
+        currentQuestId = node.gives_quest
 
         // #240: prefer the live nameplate title ("Pip the Woodcutter") so the
         // chat header names the exact villager clicked, not a roster stand-in.
@@ -219,8 +221,10 @@ final class DialogueController {
     }
 
     private var currentNPC: DialogueNPC?
+    private var currentQuestId: Int?
     @objc private func choiceClicked(_ sender: NSButton) {
         guard let npc = currentNPC else { close(); return }
+        if let quest = currentQuestId { onQuest?(quest) }
         if sender.tag < 0 { close() } else { showNode(npc, sender.tag) }
     }
 

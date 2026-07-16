@@ -406,6 +406,9 @@ BF_API uint32_t bf_quest_list(bf_engine e, bf_quest_entry* out, uint32_t cap);
  * next local settlement growth artisan when no creature target is loaded. Returns
  * 0 and zeroes `out` when neither applies. Powers the quest-target compass (#41). */
 BF_API uint8_t bf_quest_target_get(bf_engine e, bf_quest_target* out);
+/* #324: accept/inspect/turn in a side quest through the villager currently
+ * held by dialogue. Returns 0 for main-arc IDs or invalid dialogue state. */
+BF_API uint8_t bf_side_quest_talk(bf_engine e, uint32_t quest_id);
 /* [MAIN] Release the borrow. After this, pointers from acquire are invalid. */
 BF_API void      bf_frame_end(bf_engine e);
 

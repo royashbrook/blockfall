@@ -67,6 +67,28 @@ impl<'c> World<'c> {
             buf.extend_from_slice(&self.spawn.x.to_le_bytes());
             buf.extend_from_slice(&self.spawn.y.to_le_bytes());
             buf.extend_from_slice(&self.spawn.z.to_le_bytes());
+            // #324 optional side-quest trailer. IDs, rather than content-array
+            // indices, keep saves stable if quest files are reordered.
+            buf.extend_from_slice(b"BFSQ");
+            let active_side_id = self
+                .active_side_quest
+                .and_then(|i| self.extra.and_then(|x| x.quests().get(i)))
+                .map(|q| q.id)
+                .unwrap_or(0);
+            buf.extend_from_slice(&active_side_id.to_le_bytes());
+            buf.extend_from_slice(&self.side_quest_giver_npc.to_le_bytes());
+            buf.extend_from_slice(&self.side_quest_home_x.to_le_bytes());
+            buf.extend_from_slice(&self.side_quest_home_z.to_le_bytes());
+            buf.extend_from_slice(&(self.side_obj_progress.len() as u32).to_le_bytes());
+            for &v in &self.side_obj_progress {
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+            buf.extend_from_slice(&(self.side_quests_done.len() as u32).to_le_bytes());
+            let mut done: Vec<u32> = self.side_quests_done.iter().copied().collect();
+            done.sort_unstable();
+            for id in done {
+                buf.extend_from_slice(&id.to_le_bytes());
+            }
             let mut f = match std::fs::File::create(&path) {
                 Ok(f) => f,
                 Err(_) => return false,
@@ -231,6 +253,17 @@ impl<'c> World<'c> {
                     }
                     self.quests_completed = qc as i32;
                     self.all_quests_done = aqd != 0;
+                    // Saves from before #324 could have automatically advanced
+                    // into IDs 101+; those were never accepted side quests.
+                    if self
+                        .extra
+                        .and_then(|x| x.quests().get(self.active_quest))
+                        .map(|q| q.arc == "side")
+                        .unwrap_or(false)
+                    {
+                        self.all_quests_done = true;
+                        self.obj_progress.clear();
+                    }
                     let an = p.u32().unwrap_or(0);
                     for i in 0..an.min(K_ACHIEVEMENT_COUNT as u32) {
                         // #216 cap
@@ -252,6 +285,36 @@ impl<'c> World<'c> {
                         if let (Some(x), Some(y), Some(z)) = (p.f32(), p.f32(), p.f32()) {
                             if x.is_finite() && y.is_finite() && z.is_finite() {
                                 saved_spawn = Some(V3::new(x, y, z));
+                            }
+                        }
+                        if p.take(4) == Some(b"BFSQ") {
+                            let active_id = p.u32().unwrap_or(0);
+                            self.side_quest_giver_npc = p.i32().unwrap_or(0);
+                            self.side_quest_home_x = p.i32().unwrap_or(0);
+                            self.side_quest_home_z = p.i32().unwrap_or(0);
+                            let progress_n = p.u32().unwrap_or(0).min(64);
+                            let saved_progress: Vec<u32> =
+                                (0..progress_n).map(|_| p.u32().unwrap_or(0)).collect();
+                            self.active_side_quest = self.extra.and_then(|extra| {
+                                extra
+                                    .quests()
+                                    .iter()
+                                    .position(|q| q.id == active_id && q.arc == "side")
+                            });
+                            self.side_obj_progress = self
+                                .active_side_quest
+                                .and_then(|i| self.extra.and_then(|x| x.quests().get(i)))
+                                .map(|q| {
+                                    (0..q.objectives.len())
+                                        .map(|i| saved_progress.get(i).copied().unwrap_or(0))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let done_n = p.u32().unwrap_or(0).min(1024);
+                            for _ in 0..done_n {
+                                if let Some(id) = p.u32() {
+                                    self.side_quests_done.insert(id);
+                                }
                             }
                         }
                     }

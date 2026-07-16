@@ -598,6 +598,21 @@ pub unsafe extern "C" fn bf_quest_target_get(e: bf_engine, out: *mut bf_quest_ta
     }
 }
 
+/// #324: accept, inspect, or turn in a side quest through the villager held by
+/// the current dialogue. Main-arc IDs and invalid dialogue state return 0.
+#[no_mangle]
+pub unsafe extern "C" fn bf_side_quest_talk(e: bf_engine, quest_id: u32) -> u8 {
+    let e = match engine_mut(e) {
+        Some(e) if e.world_ready => e,
+        _ => return 0,
+    };
+    if e.world.side_quest_talk(quest_id) {
+        1
+    } else {
+        0
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 3. DISCRETE INPUT / ACTIONS
 // ---------------------------------------------------------------------------

@@ -362,6 +362,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         guard let e = engine else { return false }
         return bf_trade_execute(e, npcId, index) != 0
     }
+    func sideQuestTalk(questId: UInt32) {
+        guard let e = engine else { return }
+        _ = bf_side_quest_talk(e, questId)
+    }
     func inventoryCount(item: UInt16) -> Int {
         guard let h = lastHudState else { return 0 }
         var n = 0

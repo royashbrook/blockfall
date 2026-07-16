@@ -145,6 +145,9 @@ impl<'c> World<'c> {
     }
 
     fn quest_done(q: &QuestDefX, prog: &[u32]) -> bool {
+        if prog.len() != q.objectives.len() {
+            return false;
+        }
         for (i, o) in q.objectives.iter().enumerate() {
             if prog[i] < o.count {
                 return false;
@@ -180,48 +183,145 @@ impl<'c> World<'c> {
             Some(x) => x,
             None => return,
         };
-        if self.active_quest >= extra.quests().len() {
-            return;
-        }
-        let q = &extra.quests()[self.active_quest];
-        if self.obj_progress.len() != q.objectives.len() {
-            return;
-        }
-        let mut changed = false;
-        for (i, o) in q.objectives.iter().enumerate() {
-            if o.trigger == trig
-                && (o.target.is_empty() || o.target == target)
-                && self.obj_progress[i] < o.count
-            {
-                self.obj_progress[i] += 1;
-                changed = true;
+        if !self.all_quests_done && self.active_quest < extra.quests().len() {
+            let q = &extra.quests()[self.active_quest];
+            let mut changed = false;
+            if q.arc != "side" && self.obj_progress.len() == q.objectives.len() {
+                for (i, o) in q.objectives.iter().enumerate() {
+                    if o.trigger == trig
+                        && (o.target.is_empty() || o.target == target)
+                        && self.obj_progress[i] < o.count
+                    {
+                        self.obj_progress[i] += 1;
+                        changed = true;
+                    }
+                }
+            }
+            if changed && Self::quest_done(q, &self.obj_progress) {
+                let rewards: Vec<(String, u32)> = q.rewards.clone();
+                let next = extra
+                    .quests()
+                    .iter()
+                    .enumerate()
+                    .skip(self.active_quest + 1)
+                    .find(|(_, candidate)| candidate.arc != "side")
+                    .map(|(i, _)| i);
+                for (item, cnt) in rewards {
+                    let id = self.item_id_by_name(&item);
+                    if id != 0 {
+                        if let Some(inv) = self.inv.as_mut() {
+                            inv.add(ItemStack {
+                                item: id,
+                                count: cnt as u16,
+                                durability: 0xFFFF,
+                            });
+                        }
+                    }
+                }
+                self.quests_completed += 1;
+                let pv = self.player_voxel();
+                self.fx(6, pv, 0);
+                if let Some(next) = next {
+                    self.start_quest(next);
+                } else {
+                    self.all_quests_done = true;
+                }
             }
         }
-        if changed && Self::quest_done(q, &self.obj_progress) {
-            let rewards: Vec<(String, u32)> = q.rewards.clone();
-            let next = self.active_quest + 1;
-            let total = extra.quests().len();
-            for (item, cnt) in rewards {
+
+        // A side quest becomes ready here, but its villager owns completion and
+        // rewards: the player must return and choose the quest response again.
+        if let Some(i) = self.active_side_quest {
+            let q = &extra.quests()[i];
+            if self.side_obj_progress.len() == q.objectives.len()
+                && !Self::quest_done(q, &self.side_obj_progress)
+            {
+                for (k, o) in q.objectives.iter().enumerate() {
+                    if o.trigger == trig
+                        && (o.target.is_empty() || o.target == target)
+                        && self.side_obj_progress[k] < o.count
+                    {
+                        self.side_obj_progress[k] += 1;
+                    }
+                }
+                if Self::quest_done(q, &self.side_obj_progress) {
+                    self.toast("Side quest ready — return to the villager.");
+                }
+            }
+        }
+    }
+
+    /// Accept, inspect, or turn in a side quest through the villager currently
+    /// held by the dialogue. Main-arc IDs intentionally do nothing here.
+    pub fn side_quest_talk(&mut self, quest_id: u32) -> bool {
+        let extra = match self.extra {
+            Some(x) => x,
+            None => return false,
+        };
+        let quest_i = match extra
+            .quests()
+            .iter()
+            .position(|q| q.id == quest_id && q.arc == "side")
+        {
+            Some(i) => i,
+            None => return false,
+        };
+        let giver = match self
+            .creatures
+            .iter()
+            .find(|c| c.model == 20 && c.dialogue_held)
+            .map(|c| (c.npc_id, c.home_x, c.home_z))
+        {
+            Some(giver) => giver,
+            None => return false,
+        };
+        if self.side_quests_done.contains(&quest_id) {
+            self.toast("You already completed that side quest.");
+            return true;
+        }
+        if self.active_side_quest == Some(quest_i) {
+            let q = &extra.quests()[quest_i];
+            if !Self::quest_done(q, &self.side_obj_progress) {
+                self.toast("That side quest is still in progress.");
+                return true;
+            }
+            let rewards = q.rewards.clone();
+            let title = q.title.clone();
+            for (item, count) in rewards {
                 let id = self.item_id_by_name(&item);
                 if id != 0 {
                     if let Some(inv) = self.inv.as_mut() {
                         inv.add(ItemStack {
                             item: id,
-                            count: cnt as u16,
+                            count: count as u16,
                             durability: 0xFFFF,
                         });
                     }
                 }
             }
+            self.side_quests_done.insert(quest_id);
+            self.active_side_quest = None;
+            self.side_obj_progress.clear();
             self.quests_completed += 1;
+            self.toast(&format!("Side quest complete: {title}"));
             let pv = self.player_voxel();
             self.fx(6, pv, 0);
-            if next < total {
-                self.start_quest(next);
-            } else {
-                self.all_quests_done = true;
-            }
+            return true;
         }
+        if self.active_side_quest.is_some() {
+            self.toast("Finish your current side quest first.");
+            return true;
+        }
+        self.active_side_quest = Some(quest_i);
+        self.side_obj_progress = vec![0; extra.quests()[quest_i].objectives.len()];
+        self.side_quest_giver_npc = giver.0;
+        self.side_quest_home_x = giver.1;
+        self.side_quest_home_z = giver.2;
+        self.toast(&format!(
+            "Side quest accepted: {}",
+            extra.quests()[quest_i].title
+        ));
+        true
     }
 
     pub fn fill_quest_list(&self, out: &mut [bf_quest_entry]) -> u32 {
@@ -242,8 +342,19 @@ impl<'c> World<'c> {
                 progress: 0.0,
             };
             Self::cstr_copy(&mut e.title, &q.title);
-            let done = self.all_quests_done || (i as u32) < self.active_quest as u32;
-            let active = !self.all_quests_done && i == self.active_quest;
+            let (done, active, progress) = if q.arc == "side" {
+                (
+                    self.side_quests_done.contains(&q.id),
+                    self.active_side_quest == Some(i),
+                    &self.side_obj_progress,
+                )
+            } else {
+                (
+                    self.all_quests_done || i < self.active_quest,
+                    !self.all_quests_done && i == self.active_quest,
+                    &self.obj_progress,
+                )
+            };
             e.state = if done {
                 bf_quest_state::BF_QUEST_DONE as u8
             } else if active {
@@ -251,20 +362,26 @@ impl<'c> World<'c> {
             } else {
                 bf_quest_state::BF_QUEST_UPCOMING as u8
             };
-            if active && self.obj_progress.len() == q.objectives.len() {
+            if active && progress.len() == q.objectives.len() {
                 let mut cdone = 0u32;
                 let mut total = 0u32;
                 let mut objtext = "";
                 for (k, o) in q.objectives.iter().enumerate() {
                     total += o.count;
-                    cdone += self.obj_progress[k].min(o.count);
-                    if self.obj_progress[k] < o.count && objtext.is_empty() {
+                    cdone += progress[k].min(o.count);
+                    if progress[k] < o.count && objtext.is_empty() {
                         objtext = &o.text;
                     }
                 }
                 Self::cstr_copy(
                     &mut e.objective,
-                    if !objtext.is_empty() { objtext } else { "..." },
+                    if !objtext.is_empty() {
+                        objtext
+                    } else if q.arc == "side" {
+                        "Return to the quest giver."
+                    } else {
+                        "..."
+                    },
                 );
                 e.progress = if total != 0 {
                     cdone as f32 / total as f32
@@ -293,7 +410,46 @@ impl<'c> World<'c> {
             distance: 0.0,
             label: [0; 48],
         };
-        self.fill_creature_quest_target(out) || self.fill_growth_artisan_target(out)
+        self.fill_creature_quest_target(out)
+            || self.fill_side_quest_giver_target(out)
+            || self.fill_growth_artisan_target(out)
+    }
+
+    fn fill_side_quest_giver_target(&self, out: &mut bf_quest_target) -> bool {
+        let i = match self.active_side_quest {
+            Some(i) => i,
+            None => return false,
+        };
+        let q = match self.extra.and_then(|x| x.quests().get(i)) {
+            Some(q) if Self::quest_done(q, &self.side_obj_progress) => q,
+            _ => return false,
+        };
+        let hdx = Self::wrap_signed_f(self.pos.x - self.side_quest_home_x as f32);
+        let hdz = Self::wrap_signed_f(self.pos.z - self.side_quest_home_z as f32);
+        if hdx * hdx + hdz * hdz > 64.0 * 64.0 {
+            return false;
+        }
+        let giver = match self.creatures.iter().find(|c| {
+            c.model == 20
+                && c.npc_id == self.side_quest_giver_npc
+                && c.home_x == self.side_quest_home_x
+                && c.home_z == self.side_quest_home_z
+        }) {
+            Some(c) => c,
+            None => return false,
+        };
+        let dx = Self::wrap_signed_f(giver.pos.x - self.pos.x);
+        let dy = giver.pos.y - self.pos.y;
+        let dz = Self::wrap_signed_f(giver.pos.z - self.pos.z);
+        out.active = 1;
+        out.position = bf_vec3 {
+            x: self.pos.x + dx,
+            y: giver.pos.y,
+            z: self.pos.z + dz,
+        };
+        out.distance = (dx * dx + dy * dy + dz * dz).sqrt();
+        Self::cstr_copy(&mut out.label, &format!("Return: {}", q.title));
+        true
     }
 
     fn fill_creature_quest_target(&self, out: &mut bf_quest_target) -> bool {
@@ -425,5 +581,75 @@ impl<'c> World<'c> {
 
     pub fn debug_force_quest_done(&mut self) {
         self.quests_completed = 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CONTENT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../content");
+
+    #[test]
+    fn side_quest_is_villager_owned_persistent_and_not_part_of_main_arc() {
+        let mut content = ContentRegistry::new();
+        assert!(content.load(CONTENT));
+        let mut extra = ContentExtra::new();
+        assert!(extra.load(CONTENT));
+
+        let path = std::env::temp_dir().join(format!(
+            "blockfall-side-quest-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+
+        let mut world = World::new(None);
+        world.set_content(&content);
+        world.set_extra(&extra);
+        world.start_quest(0);
+        world.inv = Some(Inventory::new(BF_INVENTORY_SLOTS, Some(&content)));
+        let mut lena = Creature::default();
+        lena.model = 20;
+        lena.npc_id = 3;
+        lena.home_x = 100;
+        lena.home_z = 200;
+        lena.dialogue_held = true;
+        world.creatures.push(lena);
+
+        assert!(world.side_quest_talk(102));
+        assert_eq!(world.debug_active_quest(), 1, "main arc remains untouched");
+        for _ in 0..8 {
+            world.debug_notify("collect_item", "mushroom");
+        }
+        assert!(World::quest_done(
+            &extra.quests()[world.active_side_quest.unwrap()],
+            &world.side_obj_progress
+        ));
+        assert!(world.save(path.to_str().unwrap()));
+
+        let mut loaded = World::new(None);
+        loaded.set_content(&content);
+        loaded.set_extra(&extra);
+        loaded.inv = Some(Inventory::new(BF_INVENTORY_SLOTS, Some(&content)));
+        assert!(loaded.load(path.to_str().unwrap()));
+        assert_eq!(
+            loaded.active_side_quest.map(|i| extra.quests()[i].id),
+            Some(102)
+        );
+        assert_eq!(loaded.side_obj_progress, vec![8]);
+        let mut loaded_lena = Creature::default();
+        loaded_lena.model = 20;
+        loaded_lena.npc_id = 3;
+        loaded_lena.home_x = 100;
+        loaded_lena.home_z = 200;
+        loaded_lena.dialogue_held = true;
+        loaded.creatures.push(loaded_lena);
+        assert!(loaded.side_quest_talk(102));
+        assert!(loaded.side_quests_done.contains(&102));
+        assert!(loaded.active_side_quest.is_none());
+        assert_eq!(loaded.debug_active_quest(), 1);
+
+        let _ = std::fs::remove_dir_all(path);
     }
 }
