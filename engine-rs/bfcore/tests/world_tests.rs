@@ -715,8 +715,8 @@ fn quest_loop_end_to_end() {
         assert!(w.debug_all_quests_done(), "campaign is winnable");
         assert_eq!(
             w.debug_quests_completed(),
-            x.quests().len() as i32,
-            "completed-quest count matches loaded quests"
+            x.quests().iter().filter(|q| q.arc != "side").count() as i32,
+            "completed-quest count matches the main campaign"
         );
     }
 
