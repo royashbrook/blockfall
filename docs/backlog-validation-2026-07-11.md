@@ -1403,3 +1403,101 @@ For any visual or play failure, record:
 - whether save/reload changes it
 
 Do not reuse already-generated chunks to judge a worldgen change.
+
+## July 16 final backlog closure: villager side quests and armor
+
+- `282d96c`, `4efd2ab` / #324 — side quests are accepted, tracked, turned in,
+  persisted, and completed through their actual village giver without advancing or
+  blocking the 12-step restore-color campaign.
+- `3567c73` / #325 — six craftable armor pieces form padded and iron sets across
+  Head, Body, and Feet slots. Worn armor mitigates damage, loses durability,
+  persists, and is rendered on replicated player avatars.
+
+### Villager-owned side quests
+
+Use a village or city with Builder Tom and Herbalist Lena. Press `L` before the
+test and record the active main quest so it can be compared throughout.
+
+1. Ask Builder Tom about stone walls and accept **Mine a Chest Full**. The quest
+   log must mark it active while the recorded main quest remains at exactly the
+   same step and progress.
+2. Talk to Lena and try to accept one of her side quests while Tom's is active.
+   The toast must say to finish the current side quest first; the active quest
+   must not silently switch givers.
+3. Mine 32 stone, then craft 8 stone bricks. Progress must increase only for those
+   exact actions. Talking to Tom early reports that the quest is still in progress.
+4. After both objectives finish, confirm the toast says to return to the villager.
+   Within 64 blocks of Tom's home, the objective compass must point to Tom and read
+   **Return: Mine a Chest Full**. Leave that settlement range: the local return
+   marker must disappear rather than pointing across the world.
+5. Return and choose Tom's same dialogue response. The completion toast and reward
+   fire once. Choosing it again says the side quest was already completed and must
+   not duplicate rewards.
+6. Accept Lena's **The Herbalist Needs Mushrooms**, collect some but fewer than 8,
+   save, quit, and reload. The same giver, exact mushroom count, quest-log state,
+   and unchanged main campaign step must survive.
+7. Collect the eighth mushroom. Save and reload before turning it in. The quest
+   must still be ready and the local return marker must lead to the same Lena at
+   the same settlement. Turn it in once.
+8. Accept Lena's **A Home for the Lamb**. Befriend two Sky Neckers with berry
+   clusters and place four wool blocks. Return to Lena and turn it in. Generic
+   befriending, unrelated blocks, and talking to another Lena in another settlement
+   must not complete or redirect it.
+9. Press `L`: all three side quests should now read completed, while the main arc
+   still shows only its own progression. Save/reload once more to confirm completed
+   side quests remain completed.
+
+### Wearable armor, durability, persistence, and multiplayer
+
+The inventory screen is the equipment editor. Press `E`; the Head, Body, and Feet
+slots must appear to the left of the main grid without moving or clipping the
+inventory, crafting list, trash slot, or creative picker.
+
+1. In Creative (`C`), open the inventory and scroll the Creative Items panel to
+   the final rows. Confirm distinct icons and names for Padded Cap/Vest/Boots and
+   Iron Helmet/Chestplate/Boots. Return to Survival before testing damage.
+2. Pick up a padded piece, then click its matching equipment slot. The item must
+   leave the inventory and appear in the slot. A head piece dropped on Body or Feet
+   must not equip or disappear.
+3. Equip all three padded pieces. Replace one with the matching iron piece: the old
+   padded piece must return to the exact inventory source slot, never be destroyed.
+4. Click a worn piece with an empty cursor. It must unequip into the inventory. Fill
+   all inventory slots and repeat: the worn piece must stay equipped when there is
+   nowhere safe to put it.
+5. In Survival, take a controlled hit with no armor and note the health loss. Equip
+   the padded set and repeat after the hit cooldown; damage must be lower. Repeat
+   with iron; it must protect more, capped at 60%, rather than making the player
+   invulnerable. Drowning remains unmitigated.
+6. Repeated protected hits must lower the durability indicators. At zero, that
+   individual piece disappears and its visible avatar overlay is removed; other
+   slots keep working.
+7. Equip a mixed loadout, save, quit fully, and reload. Exact item choices and
+   durability values must remain in Head/Body/Feet. Unequip and re-equip once after
+   loading to catch stale UI state.
+8. Start LAN co-op (`H`) and join from a second release client (`J`). On the remote
+   client, inspect the equipped player while standing, walking, and performing an
+   action. Padded gear must read warm brown; iron must read blue-grey; helmet, torso
+   armor, and both boots must stay attached through the existing hose-limb animation.
+9. Swap one piece on the host. The remote avatar must update on the next network
+   snapshot without reconnecting. Break a worn piece through damage and confirm the
+   remote overlay also disappears. Disconnect/rejoin and confirm the saved loadout
+   is still the one replicated.
+
+### Closure build and machine evidence
+
+```bash
+cd /Users/roy/gh/blockfall
+./ci/check.sh
+./ci/build.sh release
+gh issue list --state open --limit 200
+```
+
+Required result for `3567c73` plus the final documentation commit: `check.sh GREEN`;
+186 Rust unit tests pass with six intentional worldgen ignores; 13 map tests and 79
+world tests pass; localhost co-op, schema validation, dialogue, renderer, lighting,
+and hitch probes pass; and `build/Blockfall.app` assembles and signs. The July 16
+five-second development-Mac gate measured 96.1 FPS median / 62.0 FPS 1%-low, 15.98
+ms frame p99, 20.40 ms maximum, and zero frames at or above 33.3 ms. The release UI
+was opened at 1182×760: the equipment targets and instruction line were centered,
+readable, and did not clip the inventory. The issue-list command must return no open
+issues after #324 and #325 are closed.
