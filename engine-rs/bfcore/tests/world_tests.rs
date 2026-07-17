@@ -11,7 +11,7 @@ use bfcore::worldgen::{self, TerrainGen};
 
 use std::os::raw::c_void;
 
-const CONTENT: &str = "/Users/roy/gh/blockfall/content";
+const CONTENT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../content");
 
 // ---- malloc-backed GPU allocator (handle == pointer bits, like the C++ tests) ----
 extern "C" fn alloc_fn(_user: *mut c_void, bytes: u32) -> bf_gpu_buffer {

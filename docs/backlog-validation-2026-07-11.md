@@ -330,7 +330,7 @@ fails if any expected colored bird area is missing or projected offscreen.
 Run from the repository root:
 
 ```bash
-cd /Users/roy/gh/blockfall
+cd /path/to/blockfall
 ./ci/check.sh
 ./ci/build.sh release
 ./build/Blockfall.app/Contents/MacOS/Blockfall --selftest
@@ -350,7 +350,7 @@ Required signals:
 The standalone release Rust gate used during development is:
 
 ```bash
-cd /Users/roy/gh/blockfall/engine-rs/bfcore
+cd engine-rs/bfcore
 cargo test --release
 ```
 
@@ -689,7 +689,7 @@ and dusk gate.
 After a fresh release build:
 
 ```bash
-cd /Users/roy/gh/blockfall
+cd /path/to/blockfall
 set -euo pipefail
 OUT="$(mktemp -d /private/tmp/blockfall-backlog-validation.XXXXXX)"
 BIN=./build/Blockfall.app/Contents/MacOS/Blockfall
@@ -908,7 +908,7 @@ Run from the repository root. Keep `OUT` from the visual-check terminal, or crea
 a new evidence directory here:
 
 ```bash
-cd /Users/roy/gh/blockfall
+cd /path/to/blockfall
 BIN=./build/Blockfall.app/Contents/MacOS/Blockfall
 OUT="${OUT:-$(mktemp -d /private/tmp/blockfall-backlog-perf.XXXXXX)}"
 ```
@@ -1052,7 +1052,7 @@ handoff:
 Start from a fresh build:
 
 ```bash
-cd /Users/roy/gh/blockfall
+cd /path/to/blockfall
 ./ci/build.sh
 BIN=./build/Blockfall.app/Contents/MacOS/Blockfall
 OUT="$(mktemp -d /private/tmp/blockfall-july15-validation.XXXXXX)"
@@ -1158,7 +1158,7 @@ or below the 29-part budget.
 ### Final automated and performance gates
 
 ```bash
-cd /Users/roy/gh/blockfall
+cd /path/to/blockfall
 ./ci/check.sh
 ./ci/build.sh
 
@@ -1284,7 +1284,7 @@ must use the same vocabulary. Quest 11 is **Captain of the Grey** and names the
 Dim Ramlord rather than the obsolete Dim Herald.
 
 ```bash
-cd /Users/roy/gh/blockfall
+cd /path/to/blockfall
 ./ci/build.sh release
 BIN=./build/Blockfall.app/Contents/MacOS/Blockfall
 OUT="$(mktemp -d /private/tmp/blockfall-grey-validation.XXXXXX)"
@@ -1486,7 +1486,7 @@ inventory, crafting list, trash slot, or creative picker.
 ### Closure build and machine evidence
 
 ```bash
-cd /Users/roy/gh/blockfall
+cd /path/to/blockfall
 ./ci/check.sh
 ./ci/build.sh release
 gh issue list --state open --limit 200

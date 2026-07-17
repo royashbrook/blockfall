@@ -25,6 +25,8 @@ PLIST="$ROOT/build/Blockfall.app/Contents/Info.plist"
 [ "$(plutil -extract CFBundleShortVersionString raw "$PLIST")" = "$VERSION" ] || FAIL=1
 [ "$(plutil -extract CFBundleVersion raw "$PLIST")" = "$BUILD_NUMBER" ] || FAIL=1
 [ -d "$ROOT/build/Blockfall.app/Contents/Frameworks/Sparkle.framework" ] || FAIL=1
+[ -f "$ROOT/build/Blockfall.app/Contents/Resources/LICENSE.txt" ] || FAIL=1
+[ -f "$ROOT/build/Blockfall.app/Contents/Resources/Sparkle-LICENSE.txt" ] || FAIL=1
 [ "$(plutil -extract SUFeedURL raw "$PLIST")" = \
   "https://github.com/royashbrook/blockfall/releases/latest/download/appcast.xml" ] || FAIL=1
 otool -l "$BIN" | grep '@executable_path/../Frameworks' >/dev/null || FAIL=1
