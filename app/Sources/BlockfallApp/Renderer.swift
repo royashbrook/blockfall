@@ -118,10 +118,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     // the terrain is) and (b) a cheap stylized CAST contact-shadow blob on the ground under each
     // entity, offset/stretched along the sun direction. Daylight-gated. Defaults ON.
     var gfxCharShadows = UserDefaults.standard.object(forKey: "gfxCharShadows") as? Bool ?? true
-    // #130 cel-shade: bold outlines + banded toon lighting + punchier palette. This is the
-    // new intended look so it defaults ON; OFF cleanly restores the prior smooth render for
-    // A/B comparison. Drives both the terrain banding (fmain) and the composite ink/edge pass.
-    var gfxCelShade = UserDefaults.standard.object(forKey: "gfxCelShade") as? Bool ?? true
+    // #338 cel-shade remains an optional bold-outline treatment, while the softer
+    // whimsical render is the primary look. Preserve an explicit saved preference,
+    // but keep the first-run/default presentation free of the cel post-process.
+    var gfxCelShade = UserDefaults.standard.object(forKey: "gfxCelShade") as? Bool ?? false
     // #136 per-effect intensity (0..1) for the effects that have a meaningful strength
     // knob, each beside its on/off checkbox in the pause menu and persisted alongside its
     // toggle. The fraction multiplies that effect's shader strength:

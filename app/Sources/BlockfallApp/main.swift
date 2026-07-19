@@ -488,10 +488,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                           enabled: renderer?.gfxGodRays ?? false)
         godRaySlider = grSlider
 
-        let celCb = gfxCheckbox("Cel Shading", tag: 5, on: renderer?.gfxCelShade ?? true)
+        let celCb = gfxCheckbox("Cel Shading", tag: 5, on: renderer?.gfxCelShade ?? false)
         let celSlider = gfxIntensitySlider(value: Double(renderer?.gfxCelOutlineStr ?? 1.0),
                                            sel: #selector(celOutlineStrChanged(_:)),
-                                           enabled: renderer?.gfxCelShade ?? true)
+                                           enabled: renderer?.gfxCelShade ?? false)
         celOutlineSlider = celSlider
 
         // #205: Bloom now has a checkbox like the other effects (was label-only).
