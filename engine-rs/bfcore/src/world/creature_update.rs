@@ -1056,7 +1056,8 @@ impl<'c> World<'c> {
                 None
             };
             let settlement_under_attack = assault_target.is_some();
-            let guard_role = match tier {
+            let dedicated_guard = c.npc_id == 7;
+            let guard_role = dedicated_guard || match tier {
                 3.. if fortified => matches!(c.npc_id, 2 | 4 | 5 | 6),
                 3.. => matches!(c.npc_id, 2 | 4 | 6),
                 2 => matches!(c.npc_id, 2 | 4),
@@ -1138,14 +1139,23 @@ impl<'c> World<'c> {
                 && assault_target.is_none()
                 && fortified
                 && guard_role
-                && Self::is_night_phase(Self::day_time(self.world_clock));
+                && (dedicated_guard || Self::is_night_phase(Self::day_time(self.world_clock)));
             let watch_decision = night_watch.then(|| {
                 let r = Self::FORTRESS_R - 3;
-                let (ox, oz) = match c.npc_id {
-                    4 => (0, -r),
-                    5 => (r, 0),
-                    6 => (0, r),
-                    _ => (-r, 0),
+                let (ox, oz) = if dedicated_guard {
+                    match c.guard_post % 4 {
+                        0 => (0, -r),
+                        1 => (r, 0),
+                        2 => (0, r),
+                        _ => (-r, 0),
+                    }
+                } else {
+                    match c.npc_id {
+                        4 => (0, -r),
+                        5 => (r, 0),
+                        6 => (0, r),
+                        _ => (-r, 0),
+                    }
                 };
                 let gx = Self::wrap_block(c.home_x + ox);
                 let gz = Self::wrap_block(c.home_z + oz);

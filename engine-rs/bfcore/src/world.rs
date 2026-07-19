@@ -317,6 +317,9 @@ struct Creature {
     npc_id: i32,
     home_x: i32,
     home_z: i32,
+    // Dedicated fortress guards use stable posts 0..3. Transient with the
+    // resident roster, which is deterministically rebuilt after load.
+    guard_post: u8,
     // Set for hostiles spawned at a procedural danger site. These ignore the
     // night/quest gate and are capped separately so they never overwhelm the world.
     from_ruin: bool,
@@ -473,6 +476,7 @@ impl Default for Creature {
             npc_id: 0,
             home_x: 0,
             home_z: 0,
+            guard_post: 0,
             from_ruin: false,
             from_assault: false,
             assault_goal: IVec3 {

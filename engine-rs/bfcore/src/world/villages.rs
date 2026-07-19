@@ -65,10 +65,11 @@ impl<'c> World<'c> {
     const IRON_GATE: BlockId = 53; // iron_bars
     const LAMP: BlockId = 35; // crystal_lamp
     const WOOD_BEAM: BlockId = 51;
-    const VILLAGER_GLOBAL_CAP: i32 = 6;
+    const VILLAGER_GLOBAL_CAP: i32 = 10;
     const VILLAGE_VILLAGERS: i32 = 3;
     const TOWN_VILLAGERS: i32 = 5;
     const CITY_VILLAGERS: i32 = 6;
+    const FORTRESS_GUARDS: i32 = 4;
     pub(super) const VILLAGE_WARD_LIGHTS: u8 = 8;
     const FORTRESS_IRON_NEEDED: i32 = 32;
 
@@ -1145,6 +1146,7 @@ impl<'c> World<'c> {
                         let state = self.village_state_mut(ax, az);
                         state.fortified = true;
                         state.progress = 0;
+                        self.villager_timer = 0.0;
                         self.toast("Blacksmith: fortress complete! Four gates, a full outer wall, and a garrison now guard every city street.");
                     } else {
                         self.stamp_iron_gate_and_lamps(ax, az);
@@ -1364,7 +1366,14 @@ impl<'c> World<'c> {
         let target = match class {
             SettlementClass::Village => Self::VILLAGE_VILLAGERS,
             SettlementClass::Town => Self::TOWN_VILLAGERS,
-            SettlementClass::City => Self::CITY_VILLAGERS,
+            SettlementClass::City => {
+                Self::CITY_VILLAGERS
+                    + if self.city_is_fortified(ax, az) {
+                        Self::FORTRESS_GUARDS
+                    } else {
+                        0
+                    }
+            }
         };
         (target - at_home)
             .min(Self::VILLAGER_GLOBAL_CAP - have)
@@ -1390,6 +1399,7 @@ impl<'c> World<'c> {
             4 => "Woodcutter",
             5 => "Stone Mason",
             6 => "Blacksmith",
+            7 => "Guard",
             _ => "",
         }
     }
@@ -1419,9 +1429,9 @@ impl<'c> World<'c> {
         let village_order = [4, 1, 5, 2, 6, 3];
         let order = if is_city { &city_order } else { &village_order };
         let i = if idx < 0 { 0 } else { idx as usize };
-        // Beyond the roster (a settlement bigger than 6 villagers) we cycle, which only
-        // ever repeats roles whose prerequisites are already present, so the prefix
-        // property still holds.
+        if i >= Self::CITY_VILLAGERS as usize {
+            return 7;
+        }
         order[i % order.len()]
     }
 
@@ -1478,6 +1488,7 @@ impl<'c> World<'c> {
             c.model = d.model;
             let vidx = idx_in_settlement;
             c.npc_id = Self::villager_npc_for_index(is_city, idx_in_settlement);
+            c.guard_post = (idx_in_settlement - Self::CITY_VILLAGERS).clamp(0, 3) as u8;
             c.home_x = Self::wrap_block(ax);
             c.home_z = Self::wrap_block(az);
             c.name = d.name.clone();
@@ -1624,6 +1635,7 @@ mod tests {
             let mut c = Creature::default();
             c.model = 20;
             c.npc_id = World::villager_npc_for_index(is_city, i);
+            c.guard_post = (i - World::CITY_VILLAGERS).clamp(0, 3) as u8;
             c.home_x = World::wrap_block(ax);
             c.home_z = World::wrap_block(az);
             w.creatures.push(c);
@@ -1664,11 +1676,40 @@ mod tests {
             "city fills the complete deterministic profession chain"
         );
 
+        city.villages.insert(
+            (
+                World::wrap_block(seam_home.0),
+                World::wrap_block(seam_home.1),
+            ),
+            VillageState {
+                tier: 3,
+                fortified: true,
+                ..VillageState::default()
+            },
+        );
+        assert_eq!(
+            city.villager_roster_budget(SettlementClass::City, seam_home.0, seam_home.1),
+            4,
+            "fortification adds four guards without replacing professions"
+        );
+        add_residents(&mut city, true, seam_home.0, seam_home.1, 4);
+        assert_eq!(
+            city.creatures.iter().map(|c| c.npc_id).collect::<Vec<_>>(),
+            vec![4, 5, 6, 1, 2, 3, 7, 7, 7, 7]
+        );
+        assert_eq!(
+            city.creatures[6..]
+                .iter()
+                .map(|c| c.guard_post)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+
         city.creatures.clear(); // load clears transient residents
         assert_eq!(
             city.villager_roster_budget(SettlementClass::City, seam_home.0, seam_home.1),
-            6,
-            "a loaded city refills its roster"
+            10,
+            "a loaded fortress refills professions and guards"
         );
 
         let mut village = World::new(None);

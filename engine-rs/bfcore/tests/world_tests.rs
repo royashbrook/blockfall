@@ -3266,6 +3266,26 @@ fn city_blacksmith_builds_persistent_full_footprint_fortress_sanctuary() {
     let patrol_move = (patrol_now.0 - patrol_start.0).abs() + (patrol_now.2 - patrol_start.2).abs();
     assert!(patrol_move > 0.25, "fortress guard did not begin its night patrol");
 
+    // Dedicated guards are visible on duty during the day; they do not borrow a
+    // profession or wait for an assault/night cycle before taking a post.
+    w.debug_set_day_time(0.50);
+    let guard = w.debug_spawn_villager_role(ax, az, 7);
+    assert!(
+        !w.debug_begin_villager_dialogue(guard),
+        "guards must not open profession dialogue"
+    );
+    let guard_start = w.debug_creature_pos(guard);
+    for _ in 0..30 {
+        w.debug_update_creatures(0.05);
+    }
+    let guard_now = w.debug_creature_pos(guard);
+    let guard_move =
+        (guard_now.0 - guard_start.0).abs() + (guard_now.2 - guard_start.2).abs();
+    assert!(
+        guard_move > 0.25,
+        "dedicated fortress guard did not begin its daylight patrol"
+    );
+
     // A hostile introduced inside by any exceptional path is removed before AI.
     let hostile_y = worldgen::worldgen_surface_height(ax, az, 11) as f32 + 1.0;
     w.debug_spawn_hostile_at(ax as f32 + 0.5, hostile_y, az as f32 + 0.5);

@@ -4189,6 +4189,7 @@ extension EntityRenderer {
             SIMD3(0.55, 0.28, 0.14), SIMD3(0.74, 0.74, 0.76), SIMD3(0.20, 0.14, 0.10),
         ]
         let player = curPlayerAppearance
+        let isGuard = player == nil && curEntityRole == 7
         let armorMask = player.map { $0._reserved.0 } ?? 0
         let armorTierBits = player.map { $0._reserved.1 } ?? 0
         func armorColor(_ slot: Int) -> SIMD3<Float> {
@@ -4204,16 +4205,19 @@ extension EntityRenderer {
             ?? skinPalette[Int(vs % UInt32(skinPalette.count))]
         // Clothing comes from the entity tint so villager/elder/trader differ.
         // Keep it bright and cheerful (lift toward a vivid mid-tone).
-        let tunicCol = player.map { CharacterAppearance.shirtPalette[Int($0.shirt) % CharacterAppearance.shirtPalette.count] }
+        let civilianTunic = player.map { CharacterAppearance.shirtPalette[Int($0.shirt) % CharacterAppearance.shirtPalette.count] }
             ?? SIMD3<Float>(min(1, tint.x * 0.60 + 0.22),
                             min(1, tint.y * 0.60 + 0.30),
                             min(1, tint.z * 0.60 + 0.34))
+        let tunicCol = isGuard ? SIMD3<Float>(0.20, 0.32, 0.58) : civilianTunic
         // Lighter collar/trim band.
-        let tunicTrim = SIMD3<Float>(min(1, tunicCol.x + 0.20),
-                                     min(1, tunicCol.y + 0.20),
-                                     min(1, tunicCol.z + 0.20))
+        let tunicTrim = isGuard ? SIMD3<Float>(0.94, 0.69, 0.24)
+            : SIMD3<Float>(min(1, tunicCol.x + 0.20),
+                           min(1, tunicCol.y + 0.20),
+                           min(1, tunicCol.z + 0.20))
         let beltCol  = SIMD3<Float>(0.40, 0.28, 0.16)   // brown belt
-        let pantsCol = SIMD3<Float>(0.34, 0.27, 0.20)   // muted brown trousers
+        let pantsCol = isGuard ? SIMD3<Float>(0.16, 0.22, 0.34)
+            : SIMD3<Float>(0.34, 0.27, 0.20)   // muted brown trousers
         let shoeCol  = SIMD3<Float>(0.22, 0.16, 0.12)   // dark shoes
         let hairCol = player.map { CharacterAppearance.hairPalette[Int($0.hair_color) % CharacterAppearance.hairPalette.count] }
             ?? hairPalette[Int((vs >> 9) % UInt32(hairPalette.count))]
@@ -4417,6 +4421,18 @@ extension EntityRenderer {
                                 SIMD3(tW * 1.10, tH * 0.76, tD * 1.12)),
                      rgb: armorColor(1), sat: sat, shape: .cylinder)
         }
+        if isGuard {
+            // A rounded bright breastplate and gold badge make the garrison role
+            // readable before the player notices its weapon or nameplate.
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(0, tH * 0.03, tD * 0.14),
+                                SIMD3(tW * 0.88, tH * 0.68, tD * 0.46)),
+                     rgb: SIMD3<Float>(0.58, 0.68, 0.80), sat: sat, shape: .cylinder)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: pw(SIMD3(0, tH * 0.12, tD * 0.39),
+                                SIMD3(s * 0.12, s * 0.12, s * 0.05)),
+                     rgb: tunicTrim, sat: sat, shape: .sphere)
+        }
 
         // ---- ARMS + HANDS ---- The forearm and hand are true child segments;
         // their phase lag supplies the loose cartoon follow-through.
@@ -4504,7 +4520,7 @@ extension EntityRenderer {
         drawCube(enc: enc, viewProj: viewProj,
                  model: handM(shoulderXR, armAngR, elbowR, wristR, armBowR),
                  rgb: skinCol, sat: sat, shape: .sphere)
-        if professionWorking || sweeping || guardActing {
+        if professionWorking || sweeping || guardActing || isGuard {
             // Finished held tools make every role readable in a still frame. Two
             // parts per tool preserve the 29-part villager cap.
             func toolM(_ offset: SIMD3<Float>, _ dims: SIMD3<Float>,
@@ -4522,7 +4538,7 @@ extension EntityRenderer {
             }
             let handleCol = SIMD3<Float>(0.46, 0.27, 0.12)
             let ironCol = SIMD3<Float>(0.48, 0.53, 0.58)
-            if guardActing {
+            if guardActing || isGuard {
                 // Settlement militia carry a readable two-part light staff. The orb
                 // brightens with the authored strike progress while staying inside
                 // the existing per-villager part budget.
@@ -4694,6 +4710,18 @@ extension EntityRenderer {
                      model: hpw(SIMD3(0, headY + hH * 0.31, -hD * 0.03),
                                 SIMD3(hW * 1.11, hH * 0.55, hD * 1.11)),
                      rgb: armorColor(0), sat: sat, shape: .sphere)
+        }
+        if isGuard {
+            // Soft domed helmet plus a jaunty gold crest: defensive but still
+            // storybook-friendly, not a generic recoloured villager.
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: hpw(SIMD3(0, headY + hH * 0.31, -hD * 0.03),
+                                SIMD3(hW * 1.13, hH * 0.56, hD * 1.13)),
+                     rgb: SIMD3<Float>(0.55, 0.65, 0.77), sat: sat, shape: .sphere)
+            drawCube(enc: enc, viewProj: viewProj,
+                     model: hpw(SIMD3(0, headY + hH * 0.67, -hD * 0.08),
+                                SIMD3(hW * 0.18, hH * 0.38, hD * 0.62)),
+                     rgb: tunicTrim, sat: sat, shape: .cone)
         }
 
         // ---- FACE (on the +Z front of the head, so it faces the heading dir) ----

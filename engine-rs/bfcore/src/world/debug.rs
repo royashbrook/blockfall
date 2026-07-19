@@ -464,6 +464,7 @@ impl<'c> World<'c> {
         if idx < 0
             || idx as usize >= self.creatures.len()
             || self.creatures[idx as usize].model != 20
+            || self.creatures[idx as usize].npc_id == 7
         {
             return false;
         }

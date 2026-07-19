@@ -52,7 +52,9 @@ impl<'c> World<'c> {
                             let looked = self.creature_in_view();
                             (looked >= 0).then_some(looked as usize)
                         });
-                    if let Some(idx) = idx.filter(|&i| self.creatures[i].model == 20) {
+                    if let Some(idx) = idx.filter(|&i| {
+                        self.creatures[i].model == 20 && self.creatures[i].npc_id != 7
+                    }) {
                         let _ = self.try_village_donation(idx);
                     }
                     return;
@@ -115,7 +117,10 @@ impl<'c> World<'c> {
                     }
                 }
                 let idx = self.creature_in_view();
-                if idx >= 0 && self.creatures[idx as usize].model == 20 {
+                if idx >= 0
+                    && self.creatures[idx as usize].model == 20
+                    && self.creatures[idx as usize].npc_id != 7
+                {
                     self.begin_villager_dialogue(idx as usize);
                     let pv = self.player_voxel();
                     let npc = self.creatures[idx as usize].npc_id;
@@ -199,7 +204,11 @@ impl<'c> World<'c> {
 
     pub(super) fn begin_villager_dialogue(&mut self, idx: usize) {
         self.end_villager_dialogue();
-        if let Some(c) = self.creatures.get_mut(idx).filter(|c| c.model == 20) {
+        if let Some(c) = self
+            .creatures
+            .get_mut(idx)
+            .filter(|c| c.model == 20 && c.npc_id != 7)
+        {
             c.dialogue_held = true;
         }
     }
