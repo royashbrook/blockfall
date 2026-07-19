@@ -3188,28 +3188,71 @@ fn city_blacksmith_builds_persistent_full_footprint_fortress_sanctuary() {
             let wx = ax + dx;
             let wz = az + dz;
             let surf = worldgen::worldgen_surface_height(wx, wz, 11);
-            let gate = (dx.abs() == r && dz.abs() <= 1)
-                || (dz.abs() == r && dx.abs() <= 1);
+            let gate = (dx.abs() == r && dz.abs() <= 2)
+                || (dz.abs() == r && dx.abs() <= 2);
             assert_eq!(
                 w.debug_block_at(wx, surf + 1, wz),
                 if gate { 53 } else { 8 },
                 "fortress ring gap at offset ({dx}, {dz})"
             );
+            if !gate {
+                assert_eq!(
+                    w.debug_block_at(wx, surf + 5, wz),
+                    8,
+                    "wall is five blocks tall"
+                );
+            }
         }
     }
     assert!(w.debug_village_protects(ax + r - 1, az + r - 1));
     assert!(!w.debug_village_protects(ax + r + 1, az));
 
-    // The three-wide south portcullis raises and lowers as one gate.
-    let gate_x = ax;
-    let gate_z = az + r;
-    let gate_y = worldgen::worldgen_surface_height(gate_x, gate_z, 11);
-    assert_eq!(w.debug_block_at(gate_x, gate_y + 1, gate_z), 53);
-    assert!(w.debug_toggle_fortress_gate(gate_x, gate_y + 1, gate_z));
-    assert_eq!(w.debug_block_at(gate_x, gate_y + 1, gate_z), 0);
-    assert_eq!(w.debug_block_at(gate_x, gate_y + 4, gate_z), 53);
-    assert!(w.debug_toggle_fortress_gate(gate_x, gate_y + 4, gate_z));
-    assert_eq!(w.debug_block_at(gate_x, gate_y + 1, gate_z), 53);
+    // Every five-wide gate can be operated by its stone frame. Bars visibly
+    // travel one row at a time, then leave five blocks of walking headroom.
+    for &(ox, oz, frame_ox, frame_oz) in &[
+        (0, -r, 3, -r),
+        (0, r, 3, r),
+        (-r, 0, -r, 3),
+        (r, 0, r, 3),
+    ] {
+        let gate_x = ax + ox;
+        let gate_z = az + oz;
+        let gate_y = worldgen::worldgen_surface_height(gate_x, gate_z, 11);
+        let frame_x = ax + frame_ox;
+        let frame_z = az + frame_oz;
+        let frame_y = worldgen::worldgen_surface_height(frame_x, frame_z, 11);
+        assert_eq!(w.debug_block_at(gate_x, gate_y + 1, gate_z), 53);
+        assert!(w.debug_toggle_fortress_gate(frame_x, frame_y + 2, frame_z));
+        w.debug_update_fortress_gate(0.09);
+        assert_eq!(
+            w.debug_block_at(gate_x, gate_y + 1, gate_z),
+            0,
+            "gate begins rising"
+        );
+        assert_eq!(
+            w.debug_block_at(gate_x, gate_y + 2, gate_z),
+            53,
+            "gate moves one row"
+        );
+        for _ in 0..5 {
+            w.debug_update_fortress_gate(0.09);
+        }
+        assert_eq!(
+            w.debug_block_at(gate_x, gate_y + 5, gate_z),
+            0,
+            "open gate has headroom"
+        );
+        assert_eq!(
+            w.debug_block_at(gate_x, gate_y + 7, gate_z),
+            53,
+            "raised gate stays visible"
+        );
+        assert!(w.debug_toggle_fortress_gate(frame_x, frame_y + 2, frame_z));
+        for _ in 0..6 {
+            w.debug_update_fortress_gate(0.09);
+        }
+        assert_eq!(w.debug_block_at(gate_x, gate_y + 1, gate_z), 53);
+    }
 
     // The garrison is visible behavior: four working professions take one gate
     // each and walk a night watch even before an assault reaches the wall.

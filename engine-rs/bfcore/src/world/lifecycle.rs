@@ -117,6 +117,7 @@ impl<'c> World<'c> {
             chests: HashMap::new(),
             last_chest_open: None,
             villages: HashMap::new(),
+            fortress_gate_animation: None,
             road_routes: Vec::new(),
             regrow_timer: 3.0,
             rng: 0x1234567,

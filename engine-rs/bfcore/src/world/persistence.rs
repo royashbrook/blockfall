@@ -466,6 +466,9 @@ impl<'c> World<'c> {
         // #319: saves made before the raised portcullis fix have solid bars in
         // the only city exit. Move that exact legacy layout overhead on load.
         self.repair_legacy_city_gates();
+        // #339: #327 fortresses used short walls and three-wide instant gates.
+        // Upgrade only that exact old ring signature to the larger gatehouses.
+        self.repair_legacy_fortresses();
         // #256 growth is tier-derived. Fresh chunks receive it during generation;
         // resident old-save chunks are refreshed only when their column has no saved
         // edits, preserving player builds and legacy plot changes conservatively.

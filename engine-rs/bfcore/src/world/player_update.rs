@@ -297,6 +297,7 @@ impl<'c> World<'c> {
         self.maintain_danger_sites(dtf);
         self.maintain_villagers(dtf);
         self.maintain_regrowth(dtf);
+        self.update_fortress_gate_animation(dtf);
         self.update_creatures(dtf);
         self.update_falling(dtf);
         self.update_debris(dtf);

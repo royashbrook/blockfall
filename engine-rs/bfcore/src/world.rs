@@ -74,7 +74,7 @@ use self::quests::K_ACHIEVEMENT_COUNT;
 use self::regions::RegionKey;
 use self::roads::RoadRoute;
 use self::shadows::ShadowVol;
-use self::villages::VillageState;
+use self::villages::{FortressGateAnimation, VillageState};
 
 // M1 block ids (engine/include/blockcore/world.hpp enum M1Block).
 pub const AIR: BlockId = 0;
@@ -668,6 +668,7 @@ pub struct World<'c> {
     // Living-villages (#95): per-settlement upgrade progress keyed by the settlement
     // anchor (ax, az). Player progress, persisted to villages.dat. See VillageState.
     villages: HashMap<(i32, i32), VillageState>,
+    fortress_gate_animation: Option<FortressGateAnimation>,
     // #255 roads are derived from seed + persisted settlement tiers. They are never
     // saved independently and are applied only as chunks become resident.
     road_routes: Vec<RoadRoute>,

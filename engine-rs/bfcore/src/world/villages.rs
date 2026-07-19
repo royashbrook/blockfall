@@ -11,6 +11,17 @@ pub(super) struct VillageState {
     pub(super) fortified: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct FortressGateAnimation {
+    ax: i32,
+    az: i32,
+    x_gate: bool,
+    side: i32,
+    step: i32,
+    opening: bool,
+    elapsed: f32,
+}
+
 /// #256: player-facing settlement size is derived, never separately saved.
 /// Procedural cities are complete from birth; upgraded villages keep their raw
 /// tier and original role order while growing through the same three classes.
@@ -44,6 +55,10 @@ impl<'c> World<'c> {
     pub(super) const PALISADE_R: i32 = 8;
     /// One block beyond the complete procedural City footprint (houses included).
     pub(super) const FORTRESS_R: i32 = 52;
+    const FORTRESS_WALL_HEIGHT: i32 = 5;
+    const FORTRESS_GATE_HALF_WIDTH: i32 = 2;
+    const FORTRESS_GATE_TRAVEL: i32 = 6;
+    const FORTRESS_GATE_STEP_SECONDS: f32 = 0.08;
     const PALISADE_CELLS: i32 = 8 * Self::PALISADE_R - 2;
     const WALL_WOOD: BlockId = 21; // oak_log
     const WALL_STONE: BlockId = 8; // stone_brick
@@ -284,7 +299,8 @@ impl<'c> World<'c> {
 
     fn fortress_gate_cell(dx: i32, dz: i32) -> bool {
         let r = Self::FORTRESS_R;
-        (dx.abs() == r && dz.abs() <= 1) || (dz.abs() == r && dx.abs() <= 1)
+        (dx.abs() == r && dz.abs() <= Self::FORTRESS_GATE_HALF_WIDTH)
+            || (dz.abs() == r && dx.abs() <= Self::FORTRESS_GATE_HALF_WIDTH)
     }
 
     fn stamp_fortress(&mut self, cx: i32, cz: i32) {
@@ -298,7 +314,7 @@ impl<'c> World<'c> {
                 let wz = Self::wrap_block(cz + dz);
                 let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
                 let gate = Self::fortress_gate_cell(dx, dz);
-                for dy in 1..=3 {
+                for dy in 1..=Self::FORTRESS_WALL_HEIGHT {
                     self.set_block_internal(
                         IVec3 {
                             x: wx,
@@ -312,7 +328,7 @@ impl<'c> World<'c> {
                     self.set_block_internal(
                         IVec3 {
                             x: wx,
-                            y: surf + 4,
+                            y: surf + Self::FORTRESS_WALL_HEIGHT + 1,
                             z: wz,
                         },
                         Self::WALL_STONE,
@@ -320,16 +336,62 @@ impl<'c> World<'c> {
                 }
             }
         }
-        // Lamps flank all four three-wide portcullises.
+        // A stone lintel and tall posts make each five-wide opening read as a
+        // gatehouse. The raised bars remain visible above the lintel.
+        for &(x_gate, side) in &[(true, -1), (true, 1), (false, -1), (false, 1)] {
+            for offset in -Self::FORTRESS_GATE_HALF_WIDTH..=Self::FORTRESS_GATE_HALF_WIDTH {
+                let (wx, wz) = if x_gate {
+                    (cx + side * r, cz + offset)
+                } else {
+                    (cx + offset, cz + side * r)
+                };
+                let wx = Self::wrap_block(wx);
+                let wz = Self::wrap_block(wz);
+                let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
+                self.set_block_internal(
+                    IVec3 {
+                        x: wx,
+                        y: surf + Self::FORTRESS_WALL_HEIGHT + 1,
+                        z: wz,
+                    },
+                    Self::WALL_STONE,
+                );
+            }
+            for offset in [
+                -Self::FORTRESS_GATE_HALF_WIDTH - 1,
+                Self::FORTRESS_GATE_HALF_WIDTH + 1,
+            ] {
+                let (wx, wz) = if x_gate {
+                    (cx + side * r, cz + offset)
+                } else {
+                    (cx + offset, cz + side * r)
+                };
+                let wx = Self::wrap_block(wx);
+                let wz = Self::wrap_block(wz);
+                let surf = worldgen::worldgen_surface_height(wx, wz, self.seed);
+                for dy in 1..=8 {
+                    self.set_block_internal(
+                        IVec3 {
+                            x: wx,
+                            y: surf + dy,
+                            z: wz,
+                        },
+                        Self::WALL_STONE,
+                    );
+                }
+            }
+        }
+
+        // Lamps flank all four gatehouses.
         for &(dx, dz) in &[
-            (-2, -r),
-            (2, -r),
-            (-2, r),
-            (2, r),
-            (-r, -2),
-            (-r, 2),
-            (r, -2),
-            (r, 2),
+            (-3, -r),
+            (3, -r),
+            (-3, r),
+            (3, r),
+            (-r, -3),
+            (-r, 3),
+            (r, -3),
+            (r, 3),
         ] {
             let wx = Self::wrap_block(cx + dx);
             let wz = Self::wrap_block(cz + dz);
@@ -337,7 +399,7 @@ impl<'c> World<'c> {
             self.set_block_internal(
                 IVec3 {
                     x: wx,
-                    y: surf + 5,
+                    y: surf + 9,
                     z: wz,
                 },
                 Self::LAMP,
@@ -360,28 +422,14 @@ impl<'c> World<'c> {
         }
     }
 
-    /// Toggle the complete three-wide portcullis containing `target`.
-    /// Closed bars occupy walking height; open bars lift overhead.
-    pub(super) fn toggle_fortress_gate(&mut self, target: IVec3) -> bool {
-        let gate = self.villages.iter().find_map(|(&(ax, az), state)| {
-            if !state.fortified {
-                return None;
-            }
-            let dx = Self::wrap_signed_block(target.x - ax);
-            let dz = Self::wrap_signed_block(target.z - az);
-            let r = Self::FORTRESS_R;
-            if dx.abs() == r && dz.abs() <= 1 {
-                Some((ax, az, true, dx.signum()))
-            } else if dz.abs() == r && dx.abs() <= 1 {
-                Some((ax, az, false, dz.signum()))
-            } else {
-                None
-            }
-        });
-        let Some((ax, az, x_gate, side)) = gate else {
-            return false;
-        };
-        let columns: Vec<(i32, i32, i32)> = (-1..=1)
+    fn fortress_gate_columns(
+        &self,
+        ax: i32,
+        az: i32,
+        x_gate: bool,
+        side: i32,
+    ) -> Vec<(i32, i32, i32)> {
+        (-Self::FORTRESS_GATE_HALF_WIDTH..=Self::FORTRESS_GATE_HALF_WIDTH)
             .map(|offset| {
                 let (x, z) = if x_gate {
                     (ax + side * Self::FORTRESS_R, az + offset)
@@ -392,21 +440,96 @@ impl<'c> World<'c> {
                 let z = Self::wrap_block(z);
                 (x, z, worldgen::worldgen_surface_height(x, z, self.seed))
             })
-            .collect();
-        let closed = columns.iter().any(|&(x, z, surf)| {
-            (1..=3).any(|dy| self.block_at(IVec3 { x, y: surf + dy, z }) == Self::IRON_GATE)
-        });
-        for &(x, z, surf) in &columns {
-            for dy in 1..=6 {
-                let p = IVec3 { x, y: surf + dy, z };
+            .collect()
+    }
+
+    fn apply_fortress_gate_step(&mut self, gate: FortressGateAnimation) {
+        for (x, z, surf) in
+            self.fortress_gate_columns(gate.ax, gate.az, gate.x_gate, gate.side)
+        {
+            for dy in 1..=(Self::FORTRESS_WALL_HEIGHT + Self::FORTRESS_GATE_TRAVEL) {
+                let p = IVec3 {
+                    x,
+                    y: surf + dy,
+                    z,
+                };
                 if self.block_at(p) == Self::IRON_GATE {
                     self.set_block_internal(p, AIR);
                 }
             }
-            for dy in if closed { 4..=6 } else { 1..=3 } {
-                self.set_block_internal(IVec3 { x, y: surf + dy, z }, Self::IRON_GATE);
+            let low = 1 + gate.step;
+            for dy in low..(low + Self::FORTRESS_WALL_HEIGHT) {
+                self.set_block_internal(
+                    IVec3 {
+                        x,
+                        y: surf + dy,
+                        z,
+                    },
+                    Self::IRON_GATE,
+                );
             }
         }
+    }
+
+    fn fortress_gate_occupied(&self, gate: FortressGateAnimation) -> bool {
+        let occupied = |x: f32, z: f32| {
+            let dx = Self::wrap_signed_f(x - gate.ax as f32);
+            let dz = Self::wrap_signed_f(z - gate.az as f32);
+            if gate.x_gate {
+                (dx - gate.side as f32 * Self::FORTRESS_R as f32).abs() < 1.1
+                    && dz.abs() < Self::FORTRESS_GATE_HALF_WIDTH as f32 + 0.8
+            } else {
+                (dz - gate.side as f32 * Self::FORTRESS_R as f32).abs() < 1.1
+                    && dx.abs() < Self::FORTRESS_GATE_HALF_WIDTH as f32 + 0.8
+            }
+        };
+        occupied(self.pos.x, self.pos.z)
+            || self.creatures.iter().any(|c| occupied(c.pos.x, c.pos.z))
+    }
+
+    /// Start moving the complete five-wide portcullis containing `target`.
+    /// The target may be a bar, lintel, or either gatepost, avoiding pixel hunting.
+    pub(super) fn toggle_fortress_gate(&mut self, target: IVec3) -> bool {
+        if self.fortress_gate_animation.is_some() {
+            return false;
+        }
+        let gate = self.villages.iter().find_map(|(&(ax, az), state)| {
+            if !state.fortified {
+                return None;
+            }
+            let dx = Self::wrap_signed_block(target.x - ax);
+            let dz = Self::wrap_signed_block(target.z - az);
+            let r = Self::FORTRESS_R;
+            let frame = Self::FORTRESS_GATE_HALF_WIDTH + 1;
+            if dx.abs() == r && dz.abs() <= frame {
+                Some((ax, az, true, dx.signum()))
+            } else if dz.abs() == r && dx.abs() <= frame {
+                Some((ax, az, false, dz.signum()))
+            } else {
+                None
+            }
+        });
+        let Some((ax, az, x_gate, side)) = gate else {
+            return false;
+        };
+        let columns = self.fortress_gate_columns(ax, az, x_gate, side);
+        let closed = columns.iter().any(|&(x, z, surf)| {
+            (1..=Self::FORTRESS_WALL_HEIGHT)
+                .any(|dy| self.block_at(IVec3 { x, y: surf + dy, z }) == Self::IRON_GATE)
+        });
+        self.fortress_gate_animation = Some(FortressGateAnimation {
+            ax,
+            az,
+            x_gate,
+            side,
+            step: if closed {
+                0
+            } else {
+                Self::FORTRESS_GATE_TRAVEL
+            },
+            opening: closed,
+            elapsed: 0.0,
+        });
         self.fx(1, target, 0);
         self.toast(if closed {
             "The fortress portcullis rises."
@@ -414,6 +537,63 @@ impl<'c> World<'c> {
             "The fortress portcullis lowers."
         });
         true
+    }
+
+    pub(super) fn update_fortress_gate_animation(&mut self, dt: f32) {
+        let Some(mut gate) = self.fortress_gate_animation.take() else {
+            return;
+        };
+        if !gate.opening && self.fortress_gate_occupied(gate) {
+            gate.opening = true;
+        }
+        gate.elapsed += dt;
+        while gate.elapsed >= Self::FORTRESS_GATE_STEP_SECONDS {
+            gate.elapsed -= Self::FORTRESS_GATE_STEP_SECONDS;
+            gate.step += if gate.opening { 1 } else { -1 };
+            gate.step = gate.step.clamp(0, Self::FORTRESS_GATE_TRAVEL);
+            self.apply_fortress_gate_step(gate);
+            if (gate.opening && gate.step == Self::FORTRESS_GATE_TRAVEL)
+                || (!gate.opening && gate.step == 0)
+            {
+                return;
+            }
+        }
+        self.fortress_gate_animation = Some(gate);
+    }
+
+    /// Upgrade the exact short-wall signature created by #327. This touches only
+    /// the fortress ring and leaves unrelated player construction alone.
+    pub(super) fn repair_legacy_fortresses(&mut self) {
+        let forts: Vec<(i32, i32)> = self
+            .villages
+            .iter()
+            .filter_map(|(&(ax, az), state)| state.fortified.then_some((ax, az)))
+            .collect();
+        for (ax, az) in forts {
+            let x = ax;
+            let z = az + Self::FORTRESS_R;
+            let surf = worldgen::worldgen_surface_height(x, z, self.seed);
+            let old_gate = (1..=6)
+                .any(|dy| self.block_at(IVec3 { x, y: surf + dy, z }) == Self::IRON_GATE)
+                && !(7..=11)
+                    .any(|dy| self.block_at(IVec3 { x, y: surf + dy, z }) == Self::IRON_GATE);
+            let wall_x = ax + Self::FORTRESS_R;
+            let wall_z = az + 10;
+            let wall_y = worldgen::worldgen_surface_height(wall_x, wall_z, self.seed);
+            let short_wall = self.block_at(IVec3 {
+                x: wall_x,
+                y: wall_y + 3,
+                z: wall_z,
+            }) == Self::WALL_STONE
+                && self.block_at(IVec3 {
+                    x: wall_x,
+                    y: wall_y + 5,
+                    z: wall_z,
+                }) != Self::WALL_STONE;
+            if old_gate || short_wall {
+                self.stamp_fortress(ax, az);
+            }
+        }
     }
 
     /// One-time old-save repair for the pre-#319 portcullis, which occupied the
@@ -1086,6 +1266,10 @@ impl<'c> World<'c> {
 
     pub fn debug_toggle_fortress_gate(&mut self, x: i32, y: i32, z: i32) -> bool {
         self.toggle_fortress_gate(IVec3 { x, y, z })
+    }
+
+    pub fn debug_update_fortress_gate(&mut self, dt: f32) {
+        self.update_fortress_gate_animation(dt);
     }
 
     pub fn debug_settlement_class(&self, ax: i32, az: i32) -> i32 {
