@@ -386,14 +386,40 @@ extension Renderer {
         return smoothstep(0.0, 0.15, edge);
     }
 
+    // #336 natural-material language. Terrain gets two readable scales without
+    // adding texture assets or mesh pieces:
+    //   1. broad world-space colour fields survive at mid/far distance;
+    //   2. sparse analytic marks identify the material up close.
+    // Both are pure functions of world position, so chunk rebuilds and camera
+    // turns reproduce the same pixels. Derivative-softened masks disappear
+    // cleanly before they can alias into distant shimmer.
+    static float terrainMacro(float2 uv, uint matID) {
+        float2 offset = float2(float(matID) * 1.73, float(matID) * -2.31);
+        return smoothDetail(uv * 0.085 + offset);
+    }
+    static float softMark(float distanceToMark, float radius) {
+        float aa = clamp(fwidth(distanceToMark) * 1.10, 0.004, 0.028);
+        return 1.0 - smoothstep(radius - aa, radius + aa, distanceToMark);
+    }
+    static float sparseRoundMark(float2 uv, float scale, uint salt, float radius) {
+        float2 grid = uv * scale;
+        int2 cell = int2(floor(grid));
+        uint h = (uint(cell.x) * 1597334677u) ^ (uint(cell.y) * 3812015801u) ^ salt;
+        float presence = step(0.55, uhash(h));
+        float2 jitter = float2(uhash(h ^ 0x68bc21ebu), uhash(h ^ 0x02e5be93u)) * 0.34 - 0.17;
+        float2 local = fract(grid) - 0.5 - jitter;
+        return softMark(length(local), radius * mix(0.76, 1.12, uhash(h ^ 0x9e3779b9u))) * presence;
+    }
+
     // ---- Per-material surface texture: returns float3 colour multiplier -------
     // Range roughly 0.78 .. 1.22.  Modulates base colour via multiply in fmain.
     // face: 2=top, 3=bottom, 0/1/4/5=sides.  worldPos is continuous across quads.
-    static float3 blockDetail(float3 worldPos, uint face, uint matID) {
+    static float3 blockDetail(float3 worldPos, uint face, uint matID, float cameraDistance) {
         float2 uv   = faceUV(worldPos, face);
         bool isTop  = (face == 2u);
         bool isBot  = (face == 3u);
         bool isSide = !isTop && !isBot;
+        float motifFade = 1.0 - smoothstep(28.0, 84.0, cameraDistance);
 
         // Per-voxel random seed (adds block-level variation so adjacent blocks differ)
         int3  vi    = int3(floor(worldPos));
@@ -444,66 +470,116 @@ extension Renderer {
             return clamp(col, 0.76, 1.26);
         }
 
-        // Mossy / decorated stone (15,16): soft organic overgrowth blotches.
+        // Grey stone/dirt (15,16): broad bruised patches with sparse cold seams.
+        // These used to share a green "moss" branch, which made Grey terrain look
+        // like ordinary overgrowth instead of its own material family.
         if (matID==15u||matID==16u) {
-            float blotch = smoothDetail(uv * 2.8 + float2(vH * 2.0, vH * 1.5));
-            float bri    = mix(0.82, 1.18, blotch);
-            float mossy  = clamp(1.0 - blotch, 0.0, 0.6) * 0.28;
-            float3 col   = float3(clamp(bri, 0.80, 1.16));
-            col.g       += mossy;
-            return clamp(col, 0.78, 1.22);
+            float macro = terrainMacro(uv, matID);
+            float bruising = smoothDetail(uv * (matID == 15u ? 1.7 : 1.25)
+                                          + float2(vH * 2.0, vH * 1.5));
+            float seamD = abs(sin(uv.x * 2.1 + sin(uv.y * 1.35) * 1.7));
+            float seam = (1.0 - smoothstep(0.0, 0.16, seamD)) * motifFade;
+            float bri = mix(0.78, 1.13, macro * 0.58 + bruising * 0.42);
+            float3 col = float3(bri, bri * 0.96, bri * 1.08);
+            col = mix(col, col * float3(0.68, 0.72, 0.92), seam * 0.42);
+            return clamp(col, 0.68, 1.18);
         }
 
         // ---- DIRT / GRAVEL / CLAY  (2, 11, 14) --------------------------------
-        if (matID==2u||matID==11u||matID==14u) {
-            // Soft coarse clumping, no fine grit / pebble speckle.
-            float coarse = smoothDetail(uv * 2.4 + float2(vH * 1.5, 0.7));
-            float bri    = mix(0.84, 1.12, coarse);
-            // Clay (14) gets a slight blue-grey desaturation
-            if (matID == 14u) {
-                return clamp(float3(bri, bri, bri * 1.04), 0.80, 1.16);
+        if (matID == 2u) {
+            float macro = terrainMacro(uv, matID);
+            float clod = sparseRoundMark(uv, 1.55, 0x2468ace1u, 0.27) * motifFade;
+            float bri = mix(0.82, 1.13, macro);
+            float3 col = float3(bri * 1.04, bri, bri * 0.93);
+            col = mix(col, col * float3(0.74, 0.76, 0.70), clod * 0.26);
+
+            // Low, exposed dirt reads damp: this is the shared surface material
+            // used by swamps, whose clay pockets and pools supply the larger cues.
+            if (isTop) {
+                float lowland = 1.0 - smoothstep(7.0, 9.5, worldPos.y);
+                float wet = smoothstep(0.18, 0.52, 1.0 - macro) * lowland;
+                col = mix(col, col * float3(0.72, 0.86, 0.78), wet * 0.38);
+            } else {
+                // A few curved, pale root threads distinguish an exposed soil bank.
+                float rootD = abs(sin(uv.x * 2.8 + sin(uv.y * 2.1) * 1.2));
+                float roots = (1.0 - smoothstep(0.0, 0.11, rootD))
+                            * step(0.57, vH) * motifFade;
+                col = mix(col, col * float3(1.18, 1.10, 0.88), roots * 0.32);
             }
-            return float3(clamp(bri, 0.80, 1.16));
+            return clamp(col, 0.68, 1.18);
+        }
+        if (matID == 11u) {
+            float macro = terrainMacro(uv, matID);
+            float pebbleA = sparseRoundMark(uv, 2.05, 0x31415926u, 0.31);
+            float pebbleB = sparseRoundMark(uv + float2(0.19, 0.31), 2.65,
+                                            0x27182818u, 0.22);
+            float pebble = max(pebbleA, pebbleB) * motifFade;
+            float bri = mix(0.82, 1.12, macro);
+            float3 col = float3(bri * 0.98, bri, bri * 1.03);
+            col = mix(col, float3(0.72, 0.76, 0.82), pebble * 0.31);
+            return clamp(col, 0.68, 1.18);
+        }
+        if (matID == 14u) {
+            float macro = terrainMacro(uv, matID);
+            float strataCoord = isSide ? uv.y : (uv.x * 0.82 + uv.y * 0.24);
+            float strataWave = sin(strataCoord * 9.5 + sin(uv.x * 1.45) * 1.25);
+            float strata = smoothstep(0.56, 0.72, strataWave)
+                         * (1.0 - smoothstep(0.78, 0.92, strataWave)) * motifFade;
+            float bri = mix(0.86, 1.12, macro);
+            float3 col = float3(bri * 0.94, bri, bri * 1.08);
+            col = mix(col, col * float3(0.80, 0.91, 1.13), strata * 0.27);
+            return clamp(col, 0.72, 1.20);
         }
 
         // ---- GRASS  (1) -------------------------------------------------------
         if (matID == 1u) {
             if (isTop) {
-                // Soft clumpy grass patches with a gentle green/yellow hue drift.
-                // One low-freq term for brightness, the same term reused for hue
-                // (no separate high-freq blade noise).
-                // #51: calmer brightness range so the bold green base carries the look,
-                // with the patch term steered into a clean green/yellow hue drift instead
-                // of a grey light/dark wash (keeps the toy palette saturated, not muddy).
-                float patch = smoothDetail(uv * 2.6 + float2(vH * 3.0, 0.9));
-                float bri   = mix(0.90, 1.12, patch);
-                float hue   = (patch - 0.5) * 0.16;   // lighter patches warm toward lime
-                float3 col  = float3(bri + hue * 0.06, bri + hue * 0.02, bri - hue * 0.06);
-                return clamp(col, 0.82, 1.18);
+                float macro = terrainMacro(uv, matID);
+                float2 tuftGrid = uv * 1.55;
+                int2 tuftCell = int2(floor(tuftGrid));
+                uint th = (uint(tuftCell.x) * 2246822519u)
+                        ^ (uint(tuftCell.y) * 3266489917u) ^ 0x9e3779b9u;
+                float2 p = fract(tuftGrid) - 0.5;
+                p.x += (uhash(th ^ 17u) - 0.5) * 0.24;
+                p.y += (uhash(th ^ 29u) - 0.5) * 0.24;
+                float bladeA = softMark(abs(p.x + p.y * 0.38), 0.034)
+                             * (1.0 - smoothstep(0.11, 0.32, length(p)));
+                float bladeB = softMark(abs(p.x - p.y * 0.42), 0.030)
+                             * (1.0 - smoothstep(0.10, 0.29, length(p)));
+                float tuft = max(bladeA, bladeB) * step(0.62, uhash(th)) * motifFade;
+
+                float bri = mix(0.85, 1.13, macro);
+                float3 col = float3(bri * mix(0.94, 1.05, macro),
+                                    bri * mix(0.96, 1.07, macro),
+                                    bri * mix(1.04, 0.88, macro));
+                col = mix(col, col * float3(0.58, 0.82, 0.52), tuft * 0.56);
+                return clamp(col, 0.72, 1.20);
             } else {
-                // Side: smooth dirt base with a grassy fringe at the top edge.
-                float dirt = smoothDetail(uv * 2.6 + float2(vH * 1.5, 0.7));
-                float bri  = mix(0.84, 1.12, dirt);
-                float localY = fract(worldPos.y);   // 0=bottom of block, 1=top
-                float fringe = smoothstep(0.70, 0.95, localY);
-                float3 col   = float3(bri);
-                col.g += fringe * 0.18;
-                col.r -= fringe * 0.08;
-                col.b -= fringe * 0.04;
-                return clamp(col, 0.80, 1.20);
+                // The old side was still multiplied by the green grass base, so
+                // cliffs looked like solid green cubes. Paint a warm soil bank
+                // (ratio against the grass albedo) with an irregular turf cap.
+                float macro = terrainMacro(uv, 2u);
+                float bri = mix(0.82, 1.12, macro);
+                float localY = fract(worldPos.y);
+                float fringeY = 0.73 + (smoothDetail(float2(uv.x * 1.8, 0.7)) - 0.5) * 0.18;
+                float fringe = smoothstep(fringeY, fringeY + 0.12, localY);
+                float3 soil = float3(1.46, 0.50, 0.74) * bri;
+                float3 turf = float3(bri * 0.94, bri * 1.07, bri * 0.88);
+                return clamp(mix(soil, turf, fringe), 0.62, 1.32);
             }
         }
 
         // ---- SAND  (6) --------------------------------------------------------
         if (matID == 6u) {
-            // Calm dune ripples (one sine band) over a soft low-freq tone. Cheaper
-            // than the prior two-sine + two-noise grain and reads cleaner.
-            // #51: tighter brightness range so the bold golden tan stays bold and clean;
-            // ripples weighted lower than tone so dunes read as a calm hint, not stripes.
-            float ripple = sin((uv.x * 0.95 + uv.y * 0.30) * 9.0) * 0.5 + 0.5;
-            float tone   = smoothDetail(uv * 2.2 + float2(vH * 4.0, 1.7));
-            float bri    = mix(0.90, 1.10, ripple * 0.4 + tone * 0.6);
-            return float3(clamp(bri, 0.86, 1.12));
+            float macro = terrainMacro(uv, matID);
+            float wave = sin((uv.x * 0.78 + uv.y * 0.24) * 8.2
+                             + sin(uv.y * 0.72) * 1.35);
+            float ripple = smoothstep(0.50, 0.70, wave)
+                         * (1.0 - smoothstep(0.77, 0.94, wave)) * motifFade;
+            float bri = mix(0.86, 1.10, macro);
+            float3 col = float3(bri * 1.04, bri, bri * 0.91);
+            col = mix(col, col * float3(0.82, 0.88, 0.91), ripple * 0.32);
+            return clamp(col, 0.76, 1.16);
         }
 
         // ---- WOOD LOGS  (21, 22) ----------------------------------------------
@@ -563,22 +639,31 @@ extension Renderer {
 
         // ---- SNOW  (12) -------------------------------------------------------
         if (matID == 12u) {
-            // Soft drift tone, no sparkle speckle (the high-freq specks read as noise
-            // under the flat cel palette). Gentle blue-white shading.
-            float base = smoothDetail(uv * 2.2 + float2(vH * 2.5, 1.3));
-            float bri  = mix(0.94, 1.10, base);
-            return clamp(float3(bri, bri, bri + 0.01), 0.90, 1.18);
+            float macro = terrainMacro(uv, matID);
+            float driftCoord = isSide ? uv.y : (uv.x * 0.72 + uv.y * 0.22);
+            float driftWave = sin(driftCoord * 6.3 + sin(uv.y * 0.55) * 1.1);
+            float drift = smoothstep(0.50, 0.68, driftWave)
+                        * (1.0 - smoothstep(0.76, 0.92, driftWave)) * motifFade;
+            float bri = mix(0.91, 1.07, macro);
+            float3 col = float3(bri * 0.98, bri, bri * 1.04);
+            col = mix(col, float3(1.06, 1.08, 1.14), drift * 0.18);
+            return clamp(col, 0.84, 1.16);
         }
 
         // ---- ICE  (13) --------------------------------------------------------
         if (matID == 13u) {
-            // Mostly smooth with a faint blue-tinted low-freq sheen (no Voronoi cracks).
-            float sheen = smoothDetail(uv * 1.8 + float2(vH * 1.5, 0.8));
-            float bri   = 1.0 + (sheen - 0.5) * 0.10;
-            float3 col  = float3(bri);
-            col.b      += (1.0 - sheen) * 0.05;
-            col.r      -= (1.0 - sheen) * 0.03;
-            return clamp(col, 0.86, 1.12);
+            float macro = terrainMacro(uv, matID);
+            float2 p = fract(uv) - 0.5;
+            float crackA = softMark(abs(p.y - p.x * 0.30 - sin(p.x * 8.0) * 0.025), 0.017);
+            float crackB = softMark(abs(p.x + 0.23 + p.y * 0.52), 0.014)
+                         * smoothstep(-0.34, 0.05, p.y);
+            float crackC = softMark(abs(p.x - 0.18 - p.y * 0.38), 0.012)
+                         * (1.0 - smoothstep(-0.02, 0.36, p.y));
+            float cracks = max(crackA, max(crackB, crackC)) * step(0.64, vH) * motifFade;
+            float bri = mix(0.93, 1.06, macro);
+            float3 col = float3(bri * 0.94, bri, bri * 1.07);
+            col = mix(col, float3(0.65, 0.84, 1.16), cracks * 0.42);
+            return clamp(col, 0.72, 1.18);
         }
 
         // ---- BRICKS  (8, 24) --------------------------------------------------
@@ -1307,7 +1392,10 @@ extension Renderer {
         }
 
         // ---- Standard block path ----
-        float3 detail = farLod ? float3(1.0) : blockDetail(in.worldPos, in.faceNorm, in.material);
+        float surfaceDistance = length(in.worldPos - UW_CAM_POS(wu));
+        float3 detail = farLod
+            ? float3(1.0)
+            : blockDetail(in.worldPos, in.faceNorm, in.material, surfaceDistance);
 
         // ---- Fake bump / normal perturbation from procedural height -----------
         // Derive a small per-fragment normal offset from finite-differencing the
@@ -1322,22 +1410,34 @@ extension Renderer {
         float bumpLight = 1.0;
         float3 specAdd = float3(0.0);   // #47 stylized PBR specular (float3 so metals can tint it)
         if (!farLod && !isEmissive) {
+            bool isNaturalTerrain = mat==1u || mat==2u || mat==3u || mat==6u
+                                 || mat==11u || mat==12u || mat==13u || mat==14u
+                                 || mat==15u || mat==16u;
+            float reliefFade = 1.0 - smoothstep(28.0, 84.0, surfaceDistance);
             // #134 cheaper relief: the visible #133 detail is now low-frequency and smooth,
             // so the bump height field is sampled at the matching low frequency and with TWO
             // taps instead of three (a centre sample plus one diagonal offset). The diagonal
             // delta drives both axes, which loses a little directionality but is invisible at
             // this amplitude and saves a per-fragment noise2 (four hashes) on every block.
-            const float eps = 0.10;   // finite-difference step in world units
-            float2 uv0 = faceUV(in.worldPos, in.faceNorm);
-            float h00  = noise2(uv0 * 2.6);
-            float hD   = noise2((uv0 + float2(eps, eps)) * 2.6);
-            float dH   = (hD - h00) / eps;
-            float dHdX = dH;
-            float dHdY = dH;
+            float dHdX = 0.0;
+            float dHdY = 0.0;
+            if (!isNaturalTerrain && reliefFade > 0.001) {
+                const float eps = 0.10;   // finite-difference step in world units
+                float2 uv0 = faceUV(in.worldPos, in.faceNorm);
+                float h00  = noise2(uv0 * 2.6);
+                float hD   = noise2((uv0 + float2(eps, eps)) * 2.6);
+                float dH   = (hD - h00) / eps;
+                dHdX = dH;
+                dHdY = dH;
+            }
             // bumpStrength reduced to 0.06 (was 0.09) so the perturbation stays subtle.
             // sunTilt clamped to [0.82, 1.00] — bump can darken corners but never
             // pushes lit surfaces above 1.0 HDR, preventing bloom wash-out.
-            float bumpStrength = 0.06;
+            // Natural terrain now carries authored #336 colour motifs; applying
+            // the old shared noise-normal on top stamped the same wormy relief
+            // into grass, snow, clay, and sand. Keep that legacy bump only for
+            // constructed/other blocks. This is also cheaper on screen-filling ground.
+            float bumpStrength = isNaturalTerrain ? 0.0 : (0.06 * reliefFade);
             float sunTilt = clamp(1.0 - (dHdX + dHdY) * bumpStrength, 0.82, 1.00);
             bumpLight = (in.faceNorm == 3u) ? 1.0 : sunTilt;
 
@@ -1415,7 +1515,7 @@ extension Renderer {
             // Day/sun + shadow + toggle gating. sunAbove keeps it ZERO at night (washout guard).
             specAdd = specTint * specAmt
                     * clamp(in.shade * 1.4, 0.0, 1.0) * shadowFactor
-                    * sunAbove * clamp(wu.pbrStr, 0.0, 1.0);
+                    * sunAbove * clamp(wu.pbrStr, 0.0, 1.0) * reliefFade;
         }
 
         // Combined: shade * AO * shadow * bump * detail

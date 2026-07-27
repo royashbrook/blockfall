@@ -1371,6 +1371,11 @@ if let idx = CommandLine.arguments.firstIndex(of: "--screenshot"), idx + 1 < Com
     let ok = runRenderSelfTest(savePath: CommandLine.arguments[idx + 1], width: 960, height: 720)
     exit(ok ? 0 : 1)
 }
+if let idx = CommandLine.arguments.firstIndex(of: "--materialshot"),
+   idx + 1 < CommandLine.arguments.count {
+    let ok = runTerrainMaterialFixture(savePath: CommandLine.arguments[idx + 1])
+    exit(ok ? 0 : 1)
+}
 // --shot <path>: headless gameplay screenshot — boots a real world, renders the
 // full scene (terrain + props + sky + shadows + bloom) offscreen, writes a PNG. (#52)
 if let idx = CommandLine.arguments.firstIndex(of: "--shot"), idx + 1 < CommandLine.arguments.count {

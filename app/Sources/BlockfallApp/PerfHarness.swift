@@ -50,6 +50,193 @@ private func writeTexturePNG(_ tex: MTLTexture, to path: String) {
     print("wrote shot: \(path)")
 }
 
+// #336 deterministic natural-material fixture. This bypasses asynchronous world
+// streaming: the shipping terrain shaders draw nine fixed greedy-style pads from
+// packed BFVertex data. BF_MATERIAL_VIEW selects near/mid/far,
+// BF_MATERIAL_YAW rotates around the same geometry, BF_MATERIAL_STRAFE translates
+// the camera parallel to the pads, and BF_CEL selects the look.
+func runTerrainMaterialFixture(savePath: String) -> Bool {
+    guard let device = MTLCreateSystemDefaultDevice(),
+          let queue = device.makeCommandQueue(),
+          let lib = try? device.makeLibrary(source: Renderer.shaderSource, options: nil) else {
+        print("material fixture: Metal unavailable or shader compile failed")
+        return false
+    }
+
+    let width = 960, height = 720
+    let colorDesc = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+    colorDesc.usage = [.renderTarget]
+    colorDesc.storageMode = .shared
+    let depthDesc = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .depth32Float, width: width, height: height, mipmapped: false)
+    depthDesc.usage = [.renderTarget]
+    depthDesc.storageMode = .private
+    guard let color = device.makeTexture(descriptor: colorDesc),
+          let depth = device.makeTexture(descriptor: depthDesc) else {
+        print("material fixture: texture allocation failed")
+        return false
+    }
+
+    let pipelineDesc = MTLRenderPipelineDescriptor()
+    pipelineDesc.vertexFunction = lib.makeFunction(name: "vmain")
+    pipelineDesc.fragmentFunction = lib.makeFunction(name: "fmain")
+    pipelineDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+    pipelineDesc.depthAttachmentPixelFormat = .depth32Float
+    guard let pipeline = try? device.makeRenderPipelineState(descriptor: pipelineDesc) else {
+        print("material fixture: terrain pipeline failed")
+        return false
+    }
+    let depthStateDesc = MTLDepthStencilDescriptor()
+    depthStateDesc.depthCompareFunction = .less
+    depthStateDesc.isDepthWriteEnabled = true
+    let depthState = device.makeDepthStencilState(descriptor: depthStateDesc)
+
+    struct PV {
+        var pos: UInt32
+        var normuv: UInt32
+        var material: UInt16
+        var sky: UInt8
+        var block: UInt8
+        var reserved: UInt32
+    }
+    func vertex(_ x: Int, _ y: Int, _ z: Int, _ normal: UInt32, _ material: UInt16) -> PV {
+        let pos = UInt32(x & 0x3f)
+            | (UInt32(y & 0x3f) << 6)
+            | (UInt32(z & 0x3f) << 12)
+        return PV(pos: pos, normuv: normal | (3 << 3), material: material,
+                  sky: 15, block: 0, reserved: 0)
+    }
+
+    struct Tile {
+        let left: UInt16
+        let right: UInt16
+        let saturation: Float
+    }
+    let tiles = [
+        Tile(left: 1,  right: 1,  saturation: 1),    // grass
+        Tile(left: 2,  right: 2,  saturation: 1),    // dirt
+        Tile(left: 6,  right: 6,  saturation: 1),    // sand
+        Tile(left: 11, right: 11, saturation: 1),    // gravel
+        Tile(left: 14, right: 14, saturation: 1),    // clay
+        Tile(left: 12, right: 12, saturation: 1),    // snow
+        Tile(left: 13, right: 13, saturation: 1),    // ice
+        Tile(left: 2,  right: 14, saturation: 1),    // swamp dirt + clay pockets
+        Tile(left: 15, right: 16, saturation: 0.18), // Grey stone + dirt
+    ]
+
+    var vertices: [PV] = []
+    var indices: [UInt32] = []
+    var ranges: [Range<Int>] = []
+    func quad(_ a: PV, _ b: PV, _ c: PV, _ d: PV) {
+        let base = UInt32(vertices.count)
+        vertices.append(contentsOf: [a, b, c, d])
+        indices.append(contentsOf: [base, base + 1, base + 2, base, base + 2, base + 3])
+    }
+    for (index, tile) in tiles.enumerated() {
+        let col = index % 3, row = index / 3
+        let x0 = 2 + col * 10, xMid = x0 + 3, x1 = x0 + 7
+        let z0 = 2 + row * 10, z1 = z0 + 7
+        let first = indices.count
+        quad(vertex(x0,   1, z0, 2, tile.left),  vertex(x0,   1, z1, 2, tile.left),
+             vertex(xMid, 1, z1, 2, tile.left),  vertex(xMid, 1, z0, 2, tile.left))
+        quad(vertex(xMid, 1, z0, 2, tile.right), vertex(xMid, 1, z1, 2, tile.right),
+             vertex(x1,   1, z1, 2, tile.right), vertex(x1,   1, z0, 2, tile.right))
+        // Exposed front/right banks exercise side-face and turf-contact language.
+        quad(vertex(x0, 0, z0, 5, tile.left), vertex(x0, 1, z0, 5, tile.left),
+             vertex(x1, 1, z0, 5, tile.left), vertex(x1, 0, z0, 5, tile.left))
+        quad(vertex(x1, 0, z0, 0, tile.right), vertex(x1, 1, z0, 0, tile.right),
+             vertex(x1, 1, z1, 0, tile.right), vertex(x1, 0, z1, 0, tile.right))
+        ranges.append(first..<indices.count)
+    }
+    guard let vertexBuffer = device.makeBuffer(
+              bytes: vertices, length: vertices.count * MemoryLayout<PV>.stride,
+              options: .storageModeShared),
+          let indexBuffer = device.makeBuffer(
+              bytes: indices, length: indices.count * MemoryLayout<UInt32>.stride,
+              options: .storageModeShared) else {
+        print("material fixture: geometry allocation failed")
+        return false
+    }
+
+    func lookView(_ eye: SIMD3<Float>, _ target: SIMD3<Float>) -> simd_float4x4 {
+        let forward = simd_normalize(target - eye)
+        let right = simd_normalize(simd_cross(forward, SIMD3<Float>(0, 1, 0)))
+        let up = simd_cross(right, forward)
+        return simd_float4x4(
+            SIMD4<Float>(right.x, up.x, -forward.x, 0),
+            SIMD4<Float>(right.y, up.y, -forward.y, 0),
+            SIMD4<Float>(right.z, up.z, -forward.z, 0),
+            SIMD4<Float>(-simd_dot(right, eye), -simd_dot(up, eye),
+                         simd_dot(forward, eye), 1))
+    }
+
+    let viewName = ProcessInfo.processInfo.environment["BF_MATERIAL_VIEW"] ?? "near"
+    let distance: Float = viewName == "far" ? 92 : (viewName == "mid" ? 58 : 36)
+    let yawDegrees = Float(ProcessInfo.processInfo.environment["BF_MATERIAL_YAW"] ?? "0") ?? 0
+    let yaw = yawDegrees * .pi / 180
+    let center = SIMD3<Float>(14.5, 0.5, 14.5)
+    let strafe = Float(ProcessInfo.processInfo.environment["BF_MATERIAL_STRAFE"] ?? "0") ?? 0
+    let strafeOffset = SIMD3<Float>(cos(yaw) * strafe, 0, sin(yaw) * strafe)
+    let target = center + strafeOffset
+    let eye = target + SIMD3<Float>(sin(yaw) * distance * 0.62,
+                                    distance * 0.58,
+                                    -cos(yaw) * distance * 0.62)
+    let viewProj = Renderer.perspective(fovy: 0.92, aspect: Float(width) / Float(height),
+                                        near: 0.05, far: 512) * lookView(eye, target)
+    let sun = simd_normalize(SIMD3<Float>(-0.45, -1.0, 0.38))
+
+    guard let command = queue.makeCommandBuffer() else { return false }
+    let pass = MTLRenderPassDescriptor()
+    pass.colorAttachments[0].texture = color
+    pass.colorAttachments[0].loadAction = .clear
+    pass.colorAttachments[0].storeAction = .store
+    pass.colorAttachments[0].clearColor = MTLClearColor(red: 0.16, green: 0.24, blue: 0.34, alpha: 1)
+    pass.depthAttachment.texture = depth
+    pass.depthAttachment.loadAction = .clear
+    pass.depthAttachment.storeAction = .dontCare
+    pass.depthAttachment.clearDepth = 1
+    guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return false }
+    encoder.setRenderPipelineState(pipeline)
+    encoder.setDepthStencilState(depthState)
+    encoder.setCullMode(.none)
+    encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
+    var wind = WindUniforms(wallClockSecs: 0, rainStrength: 0)
+    encoder.setVertexBytes(&wind, length: MemoryLayout<WindUniforms>.stride, index: 3)
+    encoder.setFragmentBytes(&wind, length: MemoryLayout<WindUniforms>.stride, index: 3)
+    var water = WaterUniforms(wallClockSecs: 0, underwater: 0, reflectScale: 0, shadowScale: 0,
+                              cameraPosW: SIMD4<Float>(eye.x, eye.y, eye.z, 0),
+                              sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, 0.25))
+    water.celShade = ProcessInfo.processInfo.environment["BF_CEL"] == "1" ? 1 : 0
+    water.pbrStr = 0
+    encoder.setFragmentBytes(&water, length: MemoryLayout<WaterUniforms>.stride, index: 2)
+    for (index, tile) in tiles.enumerated() {
+        var uniforms = Uniforms(
+            viewProj: viewProj,
+            chunkOrigin: SIMD4<Float>(0, 0, 0, tile.saturation),
+            sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, 0.25),
+            lightViewProj: matrix_identity_float4x4,
+            dimSatN: SIMD4<Float>(tile.saturation, tile.saturation, tile.saturation, 0))
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+        let range = ranges[index]
+        encoder.drawIndexedPrimitives(
+            type: .triangle, indexCount: range.count, indexType: .uint32,
+            indexBuffer: indexBuffer,
+            indexBufferOffset: range.lowerBound * MemoryLayout<UInt32>.stride)
+    }
+    encoder.endEncoding()
+    command.commit()
+    command.waitUntilCompleted()
+    guard command.status == .completed,
+          let image = cgImageFromTexture(color),
+          writeCGImagePNG(image, to: savePath) else {
+        print("material fixture: render or PNG write failed")
+        return false
+    }
+    print("material fixture: \(viewName), yaw=\(yawDegrees), strafe=\(strafe), cel=\(water.celShade) -> \(savePath)")
+    return true
+}
+
 // Maximum coherent horizontal/vertical step in the ray-only A/B difference over
 // the sky. The broken #274 shader scored ~0.60 byte levels because one boundary
 // continued for hundreds of pixels; the depth-radial path stays below 0.06 at the
