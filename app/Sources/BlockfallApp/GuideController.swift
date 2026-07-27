@@ -393,7 +393,7 @@ final class GuideController: NSObject {
             return "Crafting is easy! Gather wood, make a crafting table, and combine items on it. Try crafting sticks and planks into a pickaxe or axe first. 🛠️"
         }
         if has("night", "dark", "sleep", "shelter") {
-            return "When night comes, monsters appear! Quickly build a little shelter out of blocks, close it up, and stay safe until morning. ☀️ You can also dig into a hill to hide!"
+            return "When night comes, monsters appear! Right-click a bed to sleep until morning, or close up a shelter and wait safely for daylight. ☀️"
         }
         if has("monster", "scary", "zombie", "enemy", "fight") {
             return "Monsters only come out at night. The safest plan is to build a shelter before dark so they can't reach you. Stay cozy until the sun comes up! 🌙"

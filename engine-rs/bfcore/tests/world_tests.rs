@@ -412,6 +412,49 @@ fn doors_open_close() {
     );
 }
 
+#[test]
+fn interacting_with_either_bed_half_passes_the_night() {
+    let mut w = World::new(Some(TerrainGen::new()));
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.set_mode(bf_game_mode::BF_MODE_CREATIVE);
+    w.init_world(11);
+    let zero: bf_frame_input = unsafe { std::mem::zeroed() };
+    let (bx, by, bz) = (100, 145, 100);
+    w.debug_edit(bx, by, bz, world::BED);
+    w.debug_edit(bx + 1, by, bz, world::BED);
+    let use_bed = bf_action {
+        kind: bf_action_kind::BF_ACT_INTERACT,
+        arg_i: 0,
+        arg_j: 0,
+        arg_k: 0,
+    };
+
+    for x in [bx, bx + 1] {
+        w.debug_set_day_time(0.75);
+        w.debug_set_camera(
+            x as f32 + 0.5,
+            by as f32 + 5.0,
+            bz as f32 + 0.5,
+            0.0,
+            -1.5707,
+        );
+        w.update(&zero, 0.016);
+        assert!(w.debug_has_target(), "aimed at bed half x={x}");
+        w.action(&use_bed);
+        assert!(
+            (w.debug_day_time() - 0.02).abs() < 1e-4,
+            "bed half x={x} advances to dawn"
+        );
+        assert_eq!(w.debug_ach_toast(), "You sleep until morning.");
+    }
+
+    w.debug_set_day_time(0.25);
+    w.action(&use_bed);
+    assert!((w.debug_day_time() - 0.25).abs() < 1e-4);
+    assert_eq!(w.debug_ach_toast(), "You can only sleep at night.");
+}
+
 // ============================================================================
 // test_quest.cpp — quest engine: complete + chain, target compass, platypus ach.
 // ============================================================================

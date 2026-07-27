@@ -61,6 +61,28 @@ fn tick(w: &mut World) {
     w.update(&input, 0.016);
 }
 
+#[test]
+fn sleeping_advances_monotonically_to_dawn_and_clears_a_time_pin() {
+    let mut w = World::new(None);
+    w.world_clock =
+        World::DAY_CYCLE_SECS * 3.0 + World::clock_for_phase(World::TIME_PHASE_NIGHT);
+    w.time_mode = 2;
+    let before = w.world_clock;
+    assert!(w.sleep_until_dawn());
+    assert!(w.world_clock > before, "sleep never rewinds elapsed world days");
+    assert!(
+        (World::day_time(w.world_clock) - World::TIME_PHASE_DAWN).abs() < 1e-4,
+        "sleep lands at dawn"
+    );
+    assert_eq!(w.time_mode, 0, "normal time resumes after sleep");
+    assert_eq!(w.ach_toast, "You sleep until morning.");
+
+    let dawn_clock = w.world_clock;
+    assert!(!w.sleep_until_dawn(), "daytime bed use is refused");
+    assert_eq!(w.world_clock, dawn_clock);
+    assert_eq!(w.ach_toast, "You can only sleep at night.");
+}
+
 // #117 footprints: stepping on FRESH snow (12) compresses it to a TRODDEN print (54);
 // already-trodden snow and non-snow blocks are left alone, so a trail is stamped at
 // most once per cell (bounded, no growing print list). Snow stays walk-through.

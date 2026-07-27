@@ -108,6 +108,10 @@ impl<'c> World<'c> {
                         self.fx(1, target, 0);
                         return;
                     }
+                    if tb == BED {
+                        self.sleep_until_dawn();
+                        return;
+                    }
                     // #109 chests: open the container panel (right-click on a chest).
                     // Takes priority over place/befriend so a chest is always openable.
                     // Toggle: interacting the same open chest again closes it.

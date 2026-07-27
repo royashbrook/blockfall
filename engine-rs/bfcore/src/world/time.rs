@@ -8,6 +8,7 @@ impl<'c> World<'c> {
 
     pub(super) const TIME_PHASE_DAY: f32 = 0.25;
     pub(super) const TIME_PHASE_NIGHT: f32 = 0.75;
+    pub(super) const TIME_PHASE_DAWN: f32 = 0.02;
 
     pub(super) fn day_time(clock: f64) -> f32 {
         ((clock * Self::DAY_RATE + Self::DAY_START_PHASE) % 1.0) as f32
@@ -54,6 +55,23 @@ impl<'c> World<'c> {
     // morning, so night monsters never spawned at the T night pin (0.75).
     pub(super) fn is_night_phase(t: f32) -> bool {
         (t * 6.2831853).sin() < -0.25
+    }
+
+    pub(super) fn sleep_until_dawn(&mut self) -> bool {
+        if !Self::is_night_phase(Self::day_time(self.world_clock)) {
+            self.toast("You can only sleep at night.");
+            return false;
+        }
+        let cycle_start =
+            (self.world_clock / Self::DAY_CYCLE_SECS).floor() * Self::DAY_CYCLE_SECS;
+        let mut dawn = cycle_start + Self::clock_for_phase(Self::TIME_PHASE_DAWN);
+        if dawn <= self.world_clock {
+            dawn += Self::DAY_CYCLE_SECS;
+        }
+        self.world_clock = dawn;
+        self.time_mode = 0;
+        self.toast("You sleep until morning.");
+        true
     }
 
     pub(super) fn set_time_mode(&mut self, mode: i32) {
