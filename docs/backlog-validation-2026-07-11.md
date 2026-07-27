@@ -1404,6 +1404,14 @@ For any visual or play failure, record:
 
 Do not reuse already-generated chunks to judge a worldgen change.
 
+## Player sleep and shared-world multiplayer (#343)
+
+Interact with either half of a bed at night to advance the current world to the
+next dawn. Daytime bed use leaves the clock unchanged. In LAN multiplayer, time
+is host-authoritative and shared: any connected player who sleeps advances the
+world to dawn for everyone. Blockfall 0.1.0 does not require a vote or every
+player to be in bed.
+
 ## July 16 final backlog closure: villager side quests and armor
 
 - `282d96c`, `4efd2ab` / #324 — side quests are accepted, tracked, turned in,
