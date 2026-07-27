@@ -309,6 +309,35 @@ extension Renderer {
             default:  return hashColor(m);
         }
     }
+    // Roughness/metalness uses the same id-keyed jump-table shape as materialColor
+    // instead of a long per-fragment comparison chain. Most constructed surfaces
+    // are visible at once in settlements, so the compact lookup matters on M1.
+    static float2 materialResponse(uint m) {
+        switch (m) {
+            case 53u: return float2(0.32, 0.88); // forged iron
+            case 17u:
+            case 18u:
+            case 19u: return float2(0.46, 0.52); // ore flecks in stone
+            case 13u:
+            case 20u: return float2(0.18, 0.00); // ice / crystal ore
+            case 3u:
+            case 8u:
+            case 10u:
+            case 24u:
+            case 29u: return float2(0.68, 0.00); // stone / masonry
+            case 4u:
+            case 21u:
+            case 22u:
+            case 23u:
+            case 30u:
+            case 31u:
+            case 33u:
+            case 49u: return float2(0.76, 0.00); // timber / worked wood
+            case 28u:
+            case 52u: return float2(0.92, 0.00); // wool / quilt
+            default:  return float2(0.85, 0.00);
+        }
+    }
 
     // =========================================================
     // PROCEDURAL TEXTURE HELPERS
@@ -410,6 +439,16 @@ extension Renderer {
         float2 local = fract(grid) - 0.5 - jitter;
         return softMark(length(local), radius * mix(0.76, 1.12, uhash(h ^ 0x9e3779b9u))) * presence;
     }
+    // Side faces need an authored horizontal/vertical frame rather than faceUV's
+    // axis-dependent ordering. X-facing surfaces run along Z, Z-facing surfaces
+    // run along X, and top/bottom surfaces run along X. This keeps boards, bark,
+    // courses and brushed metal aligned with the object instead of rotating their
+    // motif when a structure turns a corner.
+    static float2 builtSurfaceUV(float3 wp, uint face) {
+        if (face == 0u || face == 1u) return float2(wp.z, wp.y);
+        if (face == 4u || face == 5u) return float2(wp.x, wp.y);
+        return wp.xz;
+    }
 
     // ---- Per-material surface texture: returns float3 colour multiplier -------
     // Range roughly 0.78 .. 1.22.  Modulates base colour via multiply in fmain.
@@ -441,17 +480,51 @@ extension Renderer {
             return float3(clamp(bri, 0.80, 1.16));
         }
 
-        // Cobblestone (10): broad rounded patches (low-freq) read as cobbles without
-        // the per-pixel Voronoi pebble loop.
+        // Cobblestone (10): offset, softly rounded stones with real recessed joints.
+        // One analytic rounded rectangle per fragment is much cheaper and steadier
+        // than the old 3x3 Voronoi search, while still reading as laid masonry.
         if (matID == 10u) {
-            float patch = smoothDetail(uv * 3.2 + float2(vH * 2.0, vH * 1.5));
-            float bri   = mix(0.80, 1.12, patch) + (isTop ? 0.04 : 0.0);
-            return float3(clamp(bri, 0.74, 1.16));
+            float2 cobbleUV = builtSurfaceUV(worldPos, face) * float2(1.35, 1.75);
+            float row = floor(cobbleUV.y);
+            cobbleUV.x += fmod(row, 2.0) * 0.5;
+            int2 cobbleCell = int2(floor(cobbleUV));
+            float2 cell = fract(cobbleUV);
+            float2 q = abs(cell - 0.5) - float2(0.38, 0.34);
+            float cobbleD = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - 0.09;
+            float aa = clamp(fwidth(cobbleD), 0.006, 0.040);
+            float stone = 1.0 - smoothstep(-aa, aa, cobbleD);
+            uint cellHash = (uint(cobbleCell.x) * 2246822519u)
+                          ^ (uint(cobbleCell.y) * 3266489917u) ^ 0x517cc1b7u;
+            float tone = mix(0.84, 1.15, uhash(cellHash));
+            float chipPresence = step(0.86, uhash(cellHash ^ 0x3c6ef372u));
+            float chip = softMark(length(cell - float2(0.20, 0.24)), 0.105)
+                       * chipPresence * stone * motifFade;
+            float bri = mix(0.64, tone + (isTop ? 0.035 : 0.0), stone);
+            bri *= mix(1.0, 0.78, chip);
+            return float3(clamp(bri, 0.62, 1.18));
         }
 
-        // Ores (17-20, 29): smooth stone base + a soft mineral vein in the ore hue
+        // Mossy stone (29): worked grey stone remains visible below localized moss.
+        // Tops collect soft pads; sides grow short downward stains. Ruin blocks now
+        // communicate age instead of reading as uniformly green ore.
+        if (matID == 29u) {
+            float2 builtUV = builtSurfaceUV(worldPos, face);
+            float stoneMot = smoothDetail(builtUV * 2.55 + float2(vH * 2.1, 0.9));
+            float mossField = smoothDetail(builtUV * 1.35 + float2(7.1, vH * 2.7));
+            float moss = smoothstep(isTop ? 0.44 : 0.60, isTop ? 0.64 : 0.78, mossField);
+            if (isSide) {
+                float drip = smoothstep(0.86, 0.30, fract(worldPos.y + vH * 0.38));
+                moss *= mix(0.55, 1.0, drip);
+            }
+            float bri = mix(0.84, 1.12, stoneMot);
+            float3 bareStone = float3(bri * 1.24, bri * 0.95, bri * 1.50);
+            float3 greenMoss = float3(bri * 0.78, bri * 0.96, bri * 0.74);
+            return clamp(mix(bareStone, greenMoss, moss * 0.70), 0.62, 1.48);
+        }
+
+        // Ores (17-20): smooth stone base + a soft mineral vein in the ore hue
         // (low-freq band instead of high-freq speckle dots).
-        if (matID==17u||matID==18u||matID==19u||matID==20u||matID==29u) {
+        if (matID==17u||matID==18u||matID==19u||matID==20u) {
             float mot   = smoothDetail(uv * 2.8 + float2(vH * 2.5, vH * 1.9));
             float stBase = mix(0.84, 1.14, mot);
             // Soft vein: a second low-freq term, thresholded gently into a vein region.
@@ -463,8 +536,7 @@ extension Renderer {
             if      (matID == 17u) oreHue = float3(0.32, 0.32, 0.36);  // coal: dark charcoal flecks
             else if (matID == 18u) oreHue = float3(0.95, 0.55, 0.28);  // copper: warm orange-bronze
             else if (matID == 19u) oreHue = float3(0.80, 0.74, 0.62);  // iron: pale warm metal
-            else if (matID == 20u) oreHue = float3(0.70, 0.45, 1.05);  // crystal: vivid amethyst
-            else                   oreHue = float3(0.45, 0.85, 0.45);  // mossy stone (29)
+            else                   oreHue = float3(0.70, 0.45, 1.05);  // crystal: vivid amethyst
             float3 col = float3(clamp(stBase, 0.80, 1.16));
             col = mix(col, col * oreHue * 1.30, vein * 0.55);
             return clamp(col, 0.76, 1.26);
@@ -582,39 +654,74 @@ extension Renderer {
             return clamp(col, 0.76, 1.16);
         }
 
-        // ---- WOOD LOGS  (21, 22) ----------------------------------------------
-        if (matID==21u||matID==22u) {
+        // ---- CONSTRUCTED MATERIAL LANGUAGE (#337) -----------------------------
+        // Authored motifs are world-position deterministic and derivative-softened.
+        // Custom furniture/workstations already emit these real material ids, so one
+        // shared pass reaches structures and sub-block props without new geometry,
+        // remeshing, collision changes, or camera-dependent selection.
+
+        // ---- WOOD LOGS  (21, 22, 49) ------------------------------------------
+        if (matID==21u||matID==22u||matID==49u) {
             if (isTop || isBot) {
-                // End grain: concentric rings centred on block centre
-                float2 ctr  = fract(worldPos.xz) - 0.5;   // -0.5..0.5 relative to block
-                float  r    = length(ctr);
-                // Ring spacing ~0.18 world units; noise wobbles the rings
-                float wobble = (noise2(ctr * 5.0 + float2(vH * 2.0, 1.1)) - 0.5) * 0.06;
-                float rings  = sin((r + wobble) * 28.0) * 0.5 + 0.5;
-                float grain  = noise2(uv * 14.0 + float2(vH * 3.0, 2.1)) * 0.25;
-                float bri    = mix(0.82, 1.18, rings * 0.65 + grain * 0.35);
-                return float3(clamp(bri, 0.80, 1.18));
+                // End grain: calm concentric growth rings and a darker heart.
+                float2 centreShift = float2(vH - 0.5, fract(vH * 7.13) - 0.5) * 0.12;
+                float2 ctr = fract(worldPos.xz) - 0.5 - centreShift;
+                float r = length(ctr);
+                float wobble = (smoothDetail(ctr * 5.0 + float2(vH * 2.0, 1.1)) - 0.5) * 0.055;
+                float rings = sin((r + wobble) * 29.0) * 0.5 + 0.5;
+                float heart = 1.0 - smoothstep(0.05, 0.15, r);
+                float bri = mix(0.82, 1.16, rings) * mix(1.0, 0.76, heart);
+                return float3(clamp(bri, 0.72, 1.17));
             } else {
-                // Side faces: vertical grain lines
-                float2 grainUV = float2(uv.x, worldPos.y);   // isolate X-axis for grain
-                float stripe = sin(grainUV.x * 22.0) * 0.5 + 0.5;
-                float vein   = noise2(float2(grainUV.x * 5.5, grainUV.y * 2.5 + vH * 3.0));
-                float knot   = (1.0 - smoothstep(0.05, 0.25, abs(noise2(grainUV * float2(2.0, 0.5) + vH) - 0.5)))
-                               * 0.15;
-                float bri    = mix(0.84, 1.16, stripe * 0.40 + vein * 0.60) + knot;
-                return float3(clamp(bri, 0.80, 1.18));
+                // Bark rhythm follows the trunk vertically on every side. Birch gets
+                // restrained dark scars; oak/pine get deeper bowed bark lanes.
+                float2 barkUV = builtSurfaceUV(worldPos, face);
+                float laneWave = sin((barkUV.x + sin(barkUV.y * 1.45) * 0.035) * 20.0)
+                               * 0.5 + 0.5;
+                float broad = smoothDetail(barkUV * float2(3.2, 0.58)
+                                           + float2(vH * 2.3, 1.7));
+                float2 scarCell = fract(barkUV * float2(0.72, 1.85)) - 0.5;
+                float scar = softMark(length(scarCell * float2(0.58, 1.0)), 0.14)
+                           * step(0.78, vH) * motifFade;
+                float bri = mix(0.80, 1.15, laneWave * 0.45 + broad * 0.55);
+                bri *= mix(1.0, matID == 22u ? 0.58 : 0.74, scar);
+                float3 tint = matID == 22u
+                    ? float3(bri * 1.03, bri, bri * 0.94)
+                    : (matID == 49u
+                       ? float3(bri * 1.05, bri * 0.98, bri * 0.92)
+                       : float3(bri * 1.03, bri, bri * 0.95));
+                return clamp(tint, 0.62, 1.20);
             }
         }
 
         // ---- PLANKS  (4, 23) --------------------------------------------------
         if (matID==4u||matID==23u) {
-            // Plank seams: vertical lines every 0.33 units on sides, horizontal on top
-            float plankU   = (isSide) ? uv.x : uv.x;
-            float seam     = 1.0 - step(0.93, fract(plankU * 3.0));       // dark gap at seam
-            float grain    = noise2(float2(uv.x * 4.0, worldPos.y * 0.8 + vH * 2.0)) * 0.55
-                           + noise2(float2(uv.x * 9.0, worldPos.y * 2.0 + vH * 1.3)) * 0.45;
-            float bri      = mix(0.85, 1.15, grain) * mix(0.82, 1.0, seam);
-            return float3(clamp(bri, 0.79, 1.16));
+            // Half-block board courses, staggered end joints, stable per-board tone,
+            // long grain and sparse knots. On floors/roofs the same authored rhythm
+            // becomes boards/shingles; on walls it becomes horizontal construction.
+            float2 boardUV = builtSurfaceUV(worldPos, face);
+            float rowCoord = boardUV.y * 2.0;
+            float row = floor(rowCoord);
+            float alongCoord = boardUV.x * 0.50 + fmod(row, 2.0) * 0.5;
+            float rowEdge = min(fract(rowCoord), 1.0 - fract(rowCoord));
+            float jointEdge = min(fract(alongCoord), 1.0 - fract(alongCoord));
+            float seam = max(1.0 - smoothstep(0.025, 0.075, rowEdge),
+                             1.0 - smoothstep(0.018, 0.050, jointEdge)) * motifFade;
+            int2 boardCell = int2(floor(alongCoord), row);
+            uint boardHash = (uint(boardCell.x) * 1597334677u)
+                           ^ (uint(boardCell.y) * 3812015801u)
+                           ^ (matID * 0x9e3779b9u);
+            float boardTone = mix(0.88, 1.11, uhash(boardHash));
+            float grain = smoothDetail(float2(boardUV.x * 0.72, boardUV.y * 8.0)
+                                       + float2(vH * 1.7, 2.3));
+            float2 knotCell = float2(fract(alongCoord), fract(rowCoord));
+            float knot = softMark(length((knotCell - float2(0.31, 0.53))
+                                         * float2(1.0, 1.45)), 0.085)
+                       * step(0.84, uhash(boardHash ^ 0x6a09e667u)) * motifFade;
+            float bri = boardTone * mix(0.91, 1.08, grain);
+            bri *= mix(1.0, 0.62, seam);
+            bri *= mix(1.0, 0.72, knot);
+            return float3(clamp(bri, 0.62, 1.18));
         }
 
         // ---- LEAVES  (5, 27) --------------------------------------------------
@@ -668,23 +775,29 @@ extension Renderer {
 
         // ---- BRICKS  (8, 24) --------------------------------------------------
         if (matID==8u||matID==24u) {
-            // Offset brick courses: stagger alternate rows by half a brick
-            float2 brickScale = float2(2.2, 1.1);
-            float2 brickUV    = uv * brickScale;
-            // Row offset: even rows stagger half a brick
+            // Offset courses with recessed mortar, stable unit-to-unit tone and
+            // occasional softened chips. Stone brick is broad and stately; clay
+            // brick is smaller and livelier, so towers and roofs do not share scale.
+            float2 builtUV = builtSurfaceUV(worldPos, face);
+            float2 brickScale = matID == 8u ? float2(1.55, 1.35) : float2(2.15, 1.75);
+            float2 brickUV = builtUV * brickScale;
             float row     = floor(brickUV.y);
             float offset  = fmod(row, 2.0) * 0.5;
             float2 cell   = fract(float2(brickUV.x + offset, brickUV.y));
-            // Mortar lines: thin gap at cell edges
-            float mortarX = smoothstep(0.0, 0.07, cell.x) * smoothstep(0.0, 0.07, 1.0 - cell.x);
-            float mortarY = smoothstep(0.0, 0.10, cell.y) * smoothstep(0.0, 0.10, 1.0 - cell.y);
-            float mortar  = mortarX * mortarY;  // 1=brick, 0=mortar
-            // Brick surface variation
-            uint  cellID  = uint(floor(brickUV.x + offset)) * 7u + uint(floor(brickUV.y)) * 13u;
-            float bGrain  = uhash(cellID + uint(matID) * 31u);
-            float surf    = (noise2(uv * 8.0) - 0.5) * 0.09;
-            float bri     = mix(0.68, 1.08, bGrain) * mix(0.72, 1.0, mortar) + surf;
-            return float3(clamp(bri, 0.70, 1.15));
+            float edge = min(min(cell.x, 1.0 - cell.x), min(cell.y, 1.0 - cell.y));
+            float aa = clamp(fwidth(edge), 0.004, 0.028);
+            float unit = smoothstep(0.055 - aa, 0.085 + aa, edge);
+            int2 brickCell = int2(floor(brickUV.x + offset), floor(brickUV.y));
+            uint cellID = (uint(brickCell.x) * 2246822519u)
+                        ^ (uint(brickCell.y) * 3266489917u) ^ (matID * 0x85ebca6bu);
+            float tone = mix(0.84, 1.12, uhash(cellID));
+            float surf = smoothDetail(builtUV * 5.0 + float2(vH * 1.7, 2.1));
+            float chip = softMark(length(cell - float2(0.18, 0.20)), 0.090)
+                       * step(0.88, uhash(cellID ^ 0x510e527fu))
+                       * unit * motifFade;
+            float bri = mix(0.66, tone * mix(0.95, 1.05, surf), unit);
+            bri *= mix(1.0, 0.72, chip);
+            return float3(clamp(bri, 0.60, 1.17));
         }
 
         // ---- GLASS  (25, 26) --------------------------------------------------
@@ -695,17 +808,49 @@ extension Renderer {
             return float3(clamp(bri, 0.94, 1.06));
         }
 
+        // ---- WOOL / UPHOLSTERY (28) ------------------------------------------
+        if (matID == 28u) {
+            float2 clothUV = builtSurfaceUV(worldPos, face);
+            float warp = sin(clothUV.x * 25.0) * 0.5 + 0.5;
+            float weft = sin(clothUV.y * 23.0 + 1.2) * 0.5 + 0.5;
+            float weave = (warp * 0.55 + weft * 0.45 - 0.5) * motifFade;
+            float soft = smoothDetail(clothUV * 1.4 + float2(vH * 1.3, 0.7));
+            float bri = mix(0.94, 1.06, soft) + weave * 0.055;
+            return float3(clamp(bri, 0.86, 1.12));
+        }
+
         // ---- BED QUILT (52) --------------------------------------------------
         // Broad stitched squares keep the blanket readable as soft fabric instead
         // of another noisy terrain block. Geometry supplies the mattress and folds.
         if (matID == 52u) {
-            float2 q       = uv * 4.0;
+            float2 clothUV = builtSurfaceUV(worldPos, face);
+            float2 q = float2(clothUV.x + clothUV.y, clothUV.x - clothUV.y) * 2.05;
             float2 cell    = fract(q);
             float edge     = min(min(cell.x, 1.0 - cell.x), min(cell.y, 1.0 - cell.y));
-            float interior = smoothstep(0.02, 0.09, edge);
+            float interior = smoothstep(0.035, 0.11, edge);
             float checker  = fmod(floor(q.x) + floor(q.y), 2.0);
-            float bri      = mix(0.82, 1.0, interior) * mix(0.94, 1.06, checker);
+            float diagonal = sin((clothUV.x + clothUV.y) * 18.0) * 0.5 + 0.5;
+            float stitch = (1.0 - interior) * smoothstep(0.48, 0.72, diagonal) * motifFade;
+            float bri = mix(0.79, 1.04, interior) * mix(0.93, 1.07, checker);
+            bri = mix(bri, 0.70, stitch * 0.42);
             return float3(bri, bri * 0.98, bri * 1.02);
+        }
+
+        // ---- WORKED IRON / GATES / FASTENERS (53) ----------------------------
+        // The mesher supplies rounded bars, hoops, blades and pegs. The surface adds
+        // cool forged variation, lengthwise brushing and sparse bright fasteners.
+        if (matID == 53u) {
+            float2 metalUV = builtSurfaceUV(worldPos, face);
+            float brushed = smoothDetail(float2(metalUV.x * 0.65, metalUV.y * 11.0)
+                                         + float2(vH * 2.0, 1.4));
+            float forgeBand = sin(metalUV.y * 8.0 + sin(metalUV.x * 1.7)) * 0.5 + 0.5;
+            float2 fastenerCell = fract(metalUV * 1.30) - 0.5;
+            float fastener = softMark(length(fastenerCell), 0.115)
+                           * step(0.82, vH) * motifFade;
+            float bri = mix(0.84, 1.12, brushed * 0.68 + forgeBand * 0.32);
+            float3 col = float3(bri * 0.94, bri, bri * 1.08);
+            col = mix(col, float3(1.18, 1.20, 1.25), fastener * 0.58);
+            return clamp(col, 0.68, 1.26);
         }
 
         // ---- CRAFTING TABLE (30) -----------------------------------------------
@@ -1437,7 +1582,12 @@ extension Renderer {
             // the old shared noise-normal on top stamped the same wormy relief
             // into grass, snow, clay, and sand. Keep that legacy bump only for
             // constructed/other blocks. This is also cheaper on screen-filling ground.
-            float bumpStrength = isNaturalTerrain ? 0.0 : (0.06 * reliefFade);
+            // Cel bands turn a tiny continuous bump into a hard dark contour at every
+            // threshold, which stamped wormy marks across authored boards and masonry.
+            // Their colour motifs already carry the relief, so keep the legacy fake
+            // bump for the soft primary look only.
+            float bumpStrength = (isNaturalTerrain || wu.celShade > 0.5)
+                ? 0.0 : (0.06 * reliefFade);
             float sunTilt = clamp(1.0 - (dHdX + dHdY) * bumpStrength, 0.82, 1.00);
             bumpLight = (in.faceNorm == 3u) ? 1.0 : sunTilt;
 
@@ -1480,19 +1630,13 @@ extension Renderer {
             // gradient that would flatten them.
             //   rough  : 1 = matte (broad/dim), 0 = glossy (tight/bright)
             //   metal  : 0 = dielectric (white-ish highlight), 1 = metal (albedo-tinted)
-            // Material families (ids from the block colour table):
-            //   water 9 / glass 25,26  -> handled elsewhere (discarded above)
-            //   metals/ore 13,14,15,33 -> glossy + metallic (tight albedo-tinted highlight)
-            //   stone/brick 3,4,5,28   -> medium-rough dielectric (soft sheen)
-            //   ice/gem 27,31          -> very glossy dielectric (wet/shiny)
-            //   wood/plank 6,11,12     -> rough-ish, faint sheen
-            //   default (grass/dirt..) -> matte (almost no highlight)
-            float rough = 0.85;   // matte by default — most of the toy world is matte
-            float metal = 0.0;
-            if (mat==13u || mat==14u || mat==15u || mat==33u) { rough = 0.30; metal = 0.85; } // metal/ore
-            else if (mat==27u || mat==31u)                     { rough = 0.16; metal = 0.0;  } // ice / gem (wet, shiny)
-            else if (mat==3u || mat==4u || mat==5u || mat==28u){ rough = 0.62; metal = 0.0;  } // stone / brick
-            else if (mat==6u || mat==11u || mat==12u)          { rough = 0.72; metal = 0.0;  } // wood
+            // Material families use the live block ids. Worked iron is the only
+            // strongly metallic constructed surface; laid stone stays chalky,
+            // timber/fabric stays matte, and the loot barrel no longer inherits
+            // the old "gem" gloss from a stale id table.
+            float2 response = materialResponse(mat);
+            float rough = response.x;
+            float metal = response.y;
             // Rain makes top faces wet -> temporarily glossier (lower roughness) for a slick sheen.
             if (in.faceNorm == 2u && wind.rainStrength > 0.01) {
                 rough = mix(rough, min(rough, 0.22), wind.rainStrength);

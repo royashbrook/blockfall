@@ -50,11 +50,14 @@ private func writeTexturePNG(_ tex: MTLTexture, to path: String) {
     print("wrote shot: \(path)")
 }
 
-// #336 deterministic natural-material fixture. This bypasses asynchronous world
+// #336/#337 deterministic material courtyard. This bypasses asynchronous world
 // streaming: the shipping terrain shaders draw nine fixed greedy-style pads from
-// packed BFVertex data. BF_MATERIAL_VIEW selects near/mid/far,
-// BF_MATERIAL_YAW rotates around the same geometry, BF_MATERIAL_STRAFE translates
-// the camera parallel to the pads, and BF_CEL selects the look.
+// packed BFVertex data. BF_MATERIAL_SET=constructed switches from natural terrain
+// to the shared materials used by village/city/ruin/tower/castle/utility meshes.
+// BF_MATERIAL_LIGHT selects day/dusk/interior/grey; BF_MATERIAL_VIEW selects
+// near/mid/far; BF_MATERIAL_YAW rotates around the same geometry;
+// BF_MATERIAL_STRAFE translates the camera parallel to the pads; BF_CEL selects
+// the look.
 func runTerrainMaterialFixture(savePath: String) -> Bool {
     guard let device = MTLCreateSystemDefaultDevice(),
           let queue = device.makeCommandQueue(),
@@ -100,12 +103,16 @@ func runTerrainMaterialFixture(savePath: String) -> Bool {
         var block: UInt8
         var reserved: UInt32
     }
+    let materialSet = ProcessInfo.processInfo.environment["BF_MATERIAL_SET"] ?? "natural"
+    let lightName = ProcessInfo.processInfo.environment["BF_MATERIAL_LIGHT"] ?? "day"
+    let fixtureSky: UInt8 = lightName == "interior" ? 3 : (lightName == "dusk" ? 8 : 15)
+    let fixtureBlock: UInt8 = lightName == "interior" ? 11 : (lightName == "dusk" ? 3 : 0)
     func vertex(_ x: Int, _ y: Int, _ z: Int, _ normal: UInt32, _ material: UInt16) -> PV {
         let pos = UInt32(x & 0x3f)
             | (UInt32(y & 0x3f) << 6)
             | (UInt32(z & 0x3f) << 12)
         return PV(pos: pos, normuv: normal | (3 << 3), material: material,
-                  sky: 15, block: 0, reserved: 0)
+                  sky: fixtureSky, block: fixtureBlock, reserved: 0)
     }
 
     struct Tile {
@@ -113,7 +120,17 @@ func runTerrainMaterialFixture(savePath: String) -> Bool {
         let right: UInt16
         let saturation: Float
     }
-    let tiles = [
+    let tiles: [Tile] = materialSet == "constructed" ? [
+        Tile(left: 21, right: 22, saturation: 1), // village: oak + birch log
+        Tile(left: 49, right: 4,  saturation: 1), // village roof: pine + oak boards
+        Tile(left: 4,  right: 23, saturation: 1), // floors/roofs: oak + birch boards
+        Tile(left: 3,  right: 10, saturation: 1), // tower: raw stone + laid cobble
+        Tile(left: 8,  right: 24, saturation: 1), // city/castle: stone + clay brick
+        Tile(left: 29, right: 8,  saturation: 1), // ruin: mossy stone + remaining wall
+        Tile(left: 28, right: 52, saturation: 1), // bed/bench: wool + stitched quilt
+        Tile(left: 31, right: 53, saturation: 1), // loot barrel + iron hoops/gates
+        Tile(left: 33, right: 30, saturation: 1), // door + crafting/workstand wood
+    ] : [
         Tile(left: 1,  right: 1,  saturation: 1),    // grass
         Tile(left: 2,  right: 2,  saturation: 1),    // dirt
         Tile(left: 6,  right: 6,  saturation: 1),    // sand
@@ -147,6 +164,16 @@ func runTerrainMaterialFixture(savePath: String) -> Bool {
              vertex(x1, 1, z0, 5, tile.left), vertex(x1, 0, z0, 5, tile.left))
         quad(vertex(x1, 0, z0, 0, tile.right), vertex(x1, 1, z0, 0, tile.right),
              vertex(x1, 1, z1, 0, tile.right), vertex(x1, 0, z1, 0, tile.right))
+        if materialSet == "constructed" {
+            // A four-block rear wall exposes the upright grain/course language at
+            // structure scale while the courtyard floor keeps top-face boards,
+            // end grain, roof courses, fabric, and wear visible in the same frame.
+            let yTop = 5
+            quad(vertex(x0,   1, z1, 5, tile.left),  vertex(x0,   yTop, z1, 5, tile.left),
+                 vertex(xMid, yTop, z1, 5, tile.left),  vertex(xMid, 1, z1, 5, tile.left))
+            quad(vertex(xMid, 1, z1, 5, tile.right), vertex(xMid, yTop, z1, 5, tile.right),
+                 vertex(x1,   yTop, z1, 5, tile.right), vertex(x1, 1, z1, 5, tile.right))
+        }
         ranges.append(first..<indices.count)
     }
     guard let vertexBuffer = device.makeBuffer(
@@ -184,14 +211,26 @@ func runTerrainMaterialFixture(savePath: String) -> Bool {
                                     -cos(yaw) * distance * 0.62)
     let viewProj = Renderer.perspective(fovy: 0.92, aspect: Float(width) / Float(height),
                                         near: 0.05, far: 512) * lookView(eye, target)
-    let sun = simd_normalize(SIMD3<Float>(-0.45, -1.0, 0.38))
+    let sunY: Float = lightName == "dusk" ? -0.22 : -1.0
+    let sun = simd_normalize(SIMD3<Float>(-0.45, sunY, 0.38))
+    let clear: MTLClearColor
+    switch lightName {
+    case "dusk":
+        clear = MTLClearColor(red: 0.28, green: 0.17, blue: 0.30, alpha: 1)
+    case "interior":
+        clear = MTLClearColor(red: 0.08, green: 0.07, blue: 0.09, alpha: 1)
+    case "grey":
+        clear = MTLClearColor(red: 0.15, green: 0.16, blue: 0.19, alpha: 1)
+    default:
+        clear = MTLClearColor(red: 0.16, green: 0.24, blue: 0.34, alpha: 1)
+    }
 
     guard let command = queue.makeCommandBuffer() else { return false }
     let pass = MTLRenderPassDescriptor()
     pass.colorAttachments[0].texture = color
     pass.colorAttachments[0].loadAction = .clear
     pass.colorAttachments[0].storeAction = .store
-    pass.colorAttachments[0].clearColor = MTLClearColor(red: 0.16, green: 0.24, blue: 0.34, alpha: 1)
+    pass.colorAttachments[0].clearColor = clear
     pass.depthAttachment.texture = depth
     pass.depthAttachment.loadAction = .clear
     pass.depthAttachment.storeAction = .dontCare
@@ -211,12 +250,13 @@ func runTerrainMaterialFixture(savePath: String) -> Bool {
     water.pbrStr = 0
     encoder.setFragmentBytes(&water, length: MemoryLayout<WaterUniforms>.stride, index: 2)
     for (index, tile) in tiles.enumerated() {
+        let saturation = lightName == "grey" ? 0.18 : tile.saturation
         var uniforms = Uniforms(
             viewProj: viewProj,
-            chunkOrigin: SIMD4<Float>(0, 0, 0, tile.saturation),
+            chunkOrigin: SIMD4<Float>(0, 0, 0, saturation),
             sunDirTime: SIMD4<Float>(sun.x, sun.y, sun.z, 0.25),
             lightViewProj: matrix_identity_float4x4,
-            dimSatN: SIMD4<Float>(tile.saturation, tile.saturation, tile.saturation, 0))
+            dimSatN: SIMD4<Float>(saturation, saturation, saturation, 0))
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
         let range = ranges[index]
         encoder.drawIndexedPrimitives(
@@ -233,7 +273,7 @@ func runTerrainMaterialFixture(savePath: String) -> Bool {
         print("material fixture: render or PNG write failed")
         return false
     }
-    print("material fixture: \(viewName), yaw=\(yawDegrees), strafe=\(strafe), cel=\(water.celShade) -> \(savePath)")
+    print("material fixture: set=\(materialSet), light=\(lightName), \(viewName), yaw=\(yawDegrees), strafe=\(strafe), cel=\(water.celShade) -> \(savePath)")
     return true
 }
 
