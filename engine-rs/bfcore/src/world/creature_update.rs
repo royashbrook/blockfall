@@ -6,9 +6,19 @@ const SOCIAL_GREET: u32 = 7;
 const SOCIAL_CHAT: u32 = 8;
 pub(super) const SOCIAL_SIT: u32 = 9;
 const SOCIAL_SWEEP: u32 = 10;
+pub(super) const SOCIAL_SLEEP: u32 = 12;
 const SOCIAL_HOME_RADIUS: i32 = 12;
 const SOCIAL_TRAVEL_SECONDS: f32 = 12.0;
 const GUARD_RANGE: f32 = 11.0;
+
+#[derive(Clone, Copy)]
+struct VillagerBedSpot {
+    low_x: i32,
+    y: i32,
+    low_z: i32,
+    axis_x: bool,
+    head_at_low: bool,
+}
 
 impl<'c> World<'c> {
     // The AI pathfinder asks the world about terrain through this thin shim; it never
@@ -208,12 +218,232 @@ impl<'c> World<'c> {
         let key = Self::villager_social_key(c);
         c.social.action = 0;
         c.social.timer = 0.0;
+        c.social.target_y = NO_FLOOR;
         c.social.partner = 0;
         c.social.arrived = false;
         c.social.cooldown = 2.0 + ((key >> 17) % 5) as f32 * 0.45;
         c.ai.path.clear();
         c.ai.path_idx = 0;
         c.ai.repath_cd = 0;
+    }
+
+    fn villager_bed_spots(&self, c: &Creature) -> Vec<VillagerBedSpot> {
+        const BED_SCAN_RADIUS: i32 = 20;
+        let mut beds = Vec::new();
+        for dx in -BED_SCAN_RADIUS..=BED_SCAN_RADIUS {
+            for dz in -BED_SCAN_RADIUS..=BED_SCAN_RADIUS {
+                let x = Self::wrap_block(c.home_x + dx);
+                let z = Self::wrap_block(c.home_z + dz);
+                let base = if self.gen.is_some() {
+                    worldgen::worldgen_surface_height(x, z, self.seed)
+                } else {
+                    self.floor_below(x, WORLD_Y_MAX_BLOCK + 1, z) - 1
+                };
+                for y in (base - 1)..=(base + 8) {
+                    if self.block_at(IVec3 { x, y, z }) != BED {
+                        continue;
+                    }
+                    let pair = if self.block_at(IVec3 { x: x + 1, y, z }) == BED {
+                        Some((true, x, z))
+                    } else if self.block_at(IVec3 { x, y, z: z + 1 }) == BED {
+                        Some((false, x, z))
+                    } else {
+                        None
+                    };
+                    let Some((axis_x, low_x, low_z)) = pair else {
+                        continue;
+                    };
+                    let (end_x, end_z) = if axis_x {
+                        (Self::wrap_block(low_x + 1), low_z)
+                    } else {
+                        (low_x, Self::wrap_block(low_z + 1))
+                    };
+                    let (behind_low_x, behind_low_z, behind_high_x, behind_high_z) = if axis_x {
+                        (
+                            Self::wrap_block(low_x - 1),
+                            low_z,
+                            Self::wrap_block(end_x + 1),
+                            end_z,
+                        )
+                    } else {
+                        (
+                            low_x,
+                            Self::wrap_block(low_z - 1),
+                            end_x,
+                            Self::wrap_block(end_z + 1),
+                        )
+                    };
+                    let low_wall = self.collide_solid(behind_low_x, y, behind_low_z);
+                    let high_wall = self.collide_solid(behind_high_x, y, behind_high_z);
+                    let head_at_low = low_wall || !high_wall;
+                    let approaches = if axis_x {
+                        [
+                            (low_x, Self::wrap_block(low_z - 1)),
+                            (end_x, Self::wrap_block(low_z - 1)),
+                            (low_x, Self::wrap_block(low_z + 1)),
+                            (end_x, Self::wrap_block(low_z + 1)),
+                        ]
+                    } else {
+                        [
+                            (Self::wrap_block(low_x - 1), low_z),
+                            (Self::wrap_block(low_x - 1), end_z),
+                            (Self::wrap_block(low_x + 1), low_z),
+                            (Self::wrap_block(low_x + 1), end_z),
+                        ]
+                    };
+                    if approaches.into_iter().any(|(ax, az)| {
+                        self.collide_solid(ax, y - 1, az)
+                            && !self.creature_body_blocked(
+                                ax as f32 + 0.5,
+                                y,
+                                az as f32 + 0.5,
+                                c.scale,
+                            )
+                    }) {
+                        beds.push(VillagerBedSpot {
+                            low_x,
+                            y,
+                            low_z,
+                            axis_x,
+                            head_at_low,
+                        });
+                    }
+                }
+            }
+        }
+        beds.sort_unstable_by_key(|bed| (bed.low_x, bed.low_z, bed.y));
+        beds
+    }
+
+    fn start_villager_sleep(&mut self, c: &mut Creature) {
+        if c.social.action != 0 {
+            Self::finish_villager_social(c);
+        }
+        let beds = self.villager_bed_spots(c);
+        let mut residents: Vec<u64> = self
+            .creatures
+            .iter()
+            .filter(|other| {
+                other.model == 20
+                    && other.npc_id != 7
+                    && other.home_x == c.home_x
+                    && other.home_z == c.home_z
+            })
+            .map(Self::villager_social_key)
+            .collect();
+        residents.sort_unstable();
+        residents.dedup();
+        let key = Self::villager_social_key(c);
+        let rank = residents.iter().position(|&candidate| candidate == key).unwrap_or(0);
+        Self::set_villager_social(c, SOCIAL_SLEEP, 1.0, NO_FLOOR, 0, false);
+        let Some(bed) = beds.get(rank % beds.len().max(1)).copied() else {
+            return;
+        };
+        c.social.target_x = bed.low_x;
+        c.social.target_y = bed.y;
+        c.social.target_z = bed.low_z;
+        c.social.partner = u64::from(bed.axis_x) | (u64::from(bed.head_at_low) << 1);
+        c.social.timer = SOCIAL_TRAVEL_SECONDS;
+    }
+
+    fn villager_sleep_decision(&mut self, c: &mut Creature) -> crate::creature_ai::Decision {
+        use crate::creature_ai::Decision;
+        if c.social.action != SOCIAL_SLEEP {
+            self.start_villager_sleep(c);
+        }
+        let stop = |heading| Decision {
+            desired_heading: heading,
+            speed_frac: 0.0,
+            path_goal: None,
+        };
+        if c.social.target_y == NO_FLOOR {
+            let Some((hx, _hy, hz)) = self.villager_home_cell(c) else {
+                return stop(c.ai.heading);
+            };
+            let dx = Self::wrap_signed_f(hx as f32 + 0.5 - c.pos.x);
+            let dz = Self::wrap_signed_f(hz as f32 + 0.5 - c.pos.z);
+            return Decision {
+                desired_heading: dx.atan2(dz),
+                speed_frac: if dx * dx + dz * dz > 0.5 { 0.7 } else { 0.0 },
+                path_goal: Some(Self::villager_nearest_goal(c.pos.x, c.pos.z, hx, hz)),
+            };
+        }
+
+        let axis_x = c.social.partner & 1 != 0;
+        let head_at_low = c.social.partner & 2 != 0;
+        let bed_x = c.social.target_x;
+        let bed_y = c.social.target_y;
+        let bed_z = c.social.target_z;
+        let (end_x, end_z) = if axis_x {
+            (Self::wrap_block(bed_x + 1), bed_z)
+        } else {
+            (bed_x, Self::wrap_block(bed_z + 1))
+        };
+        if self.block_at(IVec3 { x: bed_x, y: bed_y, z: bed_z }) != BED
+            || self.block_at(IVec3 { x: end_x, y: bed_y, z: end_z }) != BED
+        {
+            Self::finish_villager_social(c);
+            self.start_villager_sleep(c);
+            return stop(c.ai.heading);
+        }
+
+        let approaches = if axis_x {
+            [
+                (bed_x, Self::wrap_block(bed_z - 1)),
+                (end_x, Self::wrap_block(bed_z - 1)),
+                (bed_x, Self::wrap_block(bed_z + 1)),
+                (end_x, Self::wrap_block(bed_z + 1)),
+            ]
+        } else {
+            [
+                (Self::wrap_block(bed_x - 1), bed_z),
+                (Self::wrap_block(bed_x - 1), end_z),
+                (Self::wrap_block(bed_x + 1), bed_z),
+                (Self::wrap_block(bed_x + 1), end_z),
+            ]
+        };
+        let Some((approach_x, approach_z)) = approaches.into_iter().find(|&(ax, az)| {
+            self.collide_solid(ax, bed_y - 1, az)
+                && !self.creature_body_blocked(
+                    ax as f32 + 0.5,
+                    bed_y,
+                    az as f32 + 0.5,
+                    c.scale,
+                )
+        }) else {
+            return stop(c.ai.heading);
+        };
+        let dx = Self::wrap_signed_f(approach_x as f32 + 0.5 - c.pos.x);
+        let dz = Self::wrap_signed_f(approach_z as f32 + 0.5 - c.pos.z);
+        let face = match (axis_x, head_at_low) {
+            (true, true) => -std::f32::consts::FRAC_PI_2,
+            (true, false) => std::f32::consts::FRAC_PI_2,
+            (false, true) => std::f32::consts::PI,
+            (false, false) => 0.0,
+        };
+        if dx * dx + dz * dz > 0.75 * 0.75 {
+            c.social.arrived = false;
+            return Decision {
+                desired_heading: dx.atan2(dz),
+                speed_frac: 0.75,
+                path_goal: Some(Self::villager_nearest_goal(
+                    c.pos.x,
+                    c.pos.z,
+                    approach_x,
+                    approach_z,
+                )),
+            };
+        }
+        c.pos.x = Self::wrap_pos_f(approach_x as f32 + 0.5);
+        c.pos.y = bed_y as f32;
+        c.pos.z = Self::wrap_pos_f(approach_z as f32 + 0.5);
+        c.vy = 0.0;
+        c.climb = 0.0;
+        c.yaw = face;
+        c.ai.heading = face;
+        c.ai.speed = 0.0;
+        c.social.arrived = true;
+        stop(face)
     }
 
     #[inline]
@@ -1057,6 +1287,7 @@ impl<'c> World<'c> {
             };
             let settlement_under_attack = assault_target.is_some();
             let dedicated_guard = c.npc_id == 7;
+            let night_phase = Self::is_night_phase(Self::day_time(self.world_clock));
             let guard_role = dedicated_guard || match tier {
                 3.. if fortified => matches!(c.npc_id, 2 | 4 | 5 | 6),
                 3.. => matches!(c.npc_id, 2 | 4 | 6),
@@ -1139,7 +1370,7 @@ impl<'c> World<'c> {
                 && assault_target.is_none()
                 && fortified
                 && guard_role
-                && (dedicated_guard || Self::is_night_phase(Self::day_time(self.world_clock)));
+                && (dedicated_guard || night_phase);
             let watch_decision = night_watch.then(|| {
                 let r = Self::FORTRESS_R - 3;
                 let (ox, oz) = if dedicated_guard {
@@ -1169,8 +1400,15 @@ impl<'c> World<'c> {
                 }
             });
             let settlement_defense_active = settlement_under_attack || night_watch;
+            let sleep_allowed = !dialogue_held
+                && !settlement_defense_active
+                && c.model == 20
+                && !dedicated_guard
+                && night_phase;
+            let sleep_decision = sleep_allowed.then(|| self.villager_sleep_decision(&mut c));
             let tether_decision = if !dialogue_held
                 && !settlement_defense_active
+                && !sleep_allowed
                 && c.model == 20
                 && (!artisan || c.routine.state == VillagerRoutineState::Idle)
             {
@@ -1180,10 +1418,11 @@ impl<'c> World<'c> {
             };
             let social_allowed = !dialogue_held
                 && !settlement_defense_active
+                && !night_phase
                 && c.model == 20
                 && tether_decision.is_none()
                 && Self::villager_social_window(&c);
-            if !social_allowed && c.social.action != 0 {
+            if !social_allowed && !sleep_allowed && c.social.action != 0 {
                 Self::finish_villager_social(&mut c);
             }
             let social_decision = if social_allowed {
@@ -1199,6 +1438,7 @@ impl<'c> World<'c> {
             let routine_driven = artisan
                 && !dialogue_held
                 && !settlement_defense_active
+                && !sleep_allowed
                 && !social_driven
                 && !tether_driven;
             let dec = if dialogue_held {
@@ -1212,6 +1452,8 @@ impl<'c> World<'c> {
             } else if let Some(dec) = assault_decision {
                 dec
             } else if let Some(dec) = watch_decision {
+                dec
+            } else if let Some(dec) = sleep_decision {
                 dec
             } else if let Some(dec) = social_decision {
                 dec

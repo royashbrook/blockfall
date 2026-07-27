@@ -2422,6 +2422,62 @@ fn villager_social_loop_is_visible_home_bound_and_cancels_failed_prop_paths() {
 }
 
 #[test]
+fn villagers_use_real_beds_at_night_and_wake_at_dawn() {
+    let mut w = World::new(None);
+    w.debug_set_sync_streaming(true);
+    w.set_allocator(allocator());
+    w.generate_test_world();
+    w.debug_set_camera(8.5, 12.0, 8.5, 0.0, 0.0);
+    w.debug_edit(10, 8, 8, world::BED);
+    w.debug_edit(11, 8, 8, world::BED);
+
+    let elder = w.debug_spawn_villager_role(8, 8, 1);
+    w.debug_set_creature_pos(elder, 10.5, 8.0, 7.5);
+    w.debug_set_day_time(0.75);
+    w.debug_update_creatures(0.05);
+    assert_eq!(
+        w.debug_villager_social_action(elder),
+        12,
+        "civilian settles into the sleep pose"
+    );
+
+    let mut frame = empty_frame();
+    let mut draws = Vec::new();
+    let mut shadows = Vec::new();
+    let mut props = Vec::new();
+    w.build_frame(&mut frame, &mut draws, &mut shadows, &mut props, 0.0);
+    let elder_draw_index = w
+        .entity_role_actions()
+        .iter()
+        .position(|entry| entry.role == 1)
+        .expect("elder sidecar entry");
+    assert_eq!(w.entity_role_actions()[elder_draw_index].action, 12);
+    let entities =
+        unsafe { std::slice::from_raw_parts(frame.entities, frame.entity_count as usize) };
+    let sleeping = &entities[elder_draw_index];
+    assert!((sleeping.position.x - 11.0).abs() < 0.01);
+    assert!((sleeping.position.y - 8.82).abs() < 0.01);
+    assert!((sleeping.position.z - 8.5).abs() < 0.01);
+
+    let guard = w.debug_spawn_villager_role(8, 8, 7);
+    w.debug_set_creature_pos(guard, 9.5, 8.0, 7.5);
+    w.debug_update_creatures(0.05);
+    assert_ne!(
+        w.debug_villager_social_action(guard),
+        12,
+        "dedicated fortress guards remain awake"
+    );
+
+    w.debug_set_day_time(0.25);
+    w.debug_update_creatures(0.05);
+    assert_ne!(
+        w.debug_villager_social_action(elder),
+        12,
+        "villager wakes after dawn"
+    );
+}
+
+#[test]
 fn dialogue_holds_only_the_addressed_villager_until_close() {
     let mut w = World::new(None);
     w.debug_set_sync_streaming(true);

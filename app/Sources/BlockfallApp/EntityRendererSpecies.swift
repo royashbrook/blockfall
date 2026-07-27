@@ -4238,7 +4238,8 @@ extension EntityRenderer {
         // Three deterministic tool strokes span a shift; no wall-clock guess is
         // involved, so stills and motion strips reproduce the same pose.
         let professionWorking = curEntityAction == 3 && (2...6).contains(curEntityRole)
-        let socialPose = (5...10).contains(curEntityAction)
+        let sleeping = e.kind != 100 && curEntityAction == 12
+        let socialPose = (5...10).contains(curEntityAction) || sleeping
         let playerActing = e.kind == 100 && curEntityAction == 11
         let guardActing = e.kind != 100 && curEntityAction == 11
         let sweeping = curEntityAction == 10
@@ -4276,6 +4277,7 @@ extension EntityRenderer {
                 case 9: return (-0.18, 0.18, -0.06) // hands relaxed while seated
                 case 10: return (-0.88 + workSweep * 0.34,
                                  -1.18 - workSweep * 0.34, 0.28) // two-hand sweep
+                case 12: return (-0.12, 0.12, 0.0) // loose arms while asleep
                 default: return (0.02, -0.02, 0.0) // look around
                 }
             }
@@ -4303,12 +4305,14 @@ extension EntityRenderer {
         let stepSquash = walk.squash * walkAmt + actionSquash
         let cartoonLift = walk.lift * s * walkAmt
 
-        let breatheY   = breatheYOffset(breathPhase, scale: s)
-        let eyeBlinkSY = blinkScale(blinkPhase)
+        let breatheY   = sleeping ? 0 : breatheYOffset(breathPhase, scale: s)
+        let eyeBlinkSY: Float = sleeping ? 0.045 : blinkScale(blinkPhase)
         let walkLean   = walk.bodyRoll * walkAmt
         let workLean: Float = poseActive ? workArms.2 : 0
-        let bodyLean   = EntityRenderer.rotZ(leanAngle + walkLean)
-            * EntityRenderer.rotX(walk.bodyPitch * walkAmt + workLean)
+        let bodyLean = sleeping
+            ? EntityRenderer.rotX(.pi * 0.5)
+            : EntityRenderer.rotZ(leanAngle + walkLean)
+                * EntityRenderer.rotX(walk.bodyPitch * walkAmt + workLean)
 
         // ---- PROPORTIONS (cute, slightly stocky person) ----
         // #212: a per-villager vertical stretch (from the stable seed) on legs + torso,
@@ -4336,8 +4340,10 @@ extension EntityRenderer {
 
         // ---- WORLD CENTRE (at torso mid) ----
         let groundY = pos.y
-        let bodyY   = groundY + legTotalH + tH * 0.5 + breatheY + cartoonLift
-            - (sitting ? s * 0.20 : 0)
+        let bodyY = sleeping
+            ? groundY + s * 0.27
+            : groundY + legTotalH + tH * 0.5 + breatheY + cartoonLift
+                - (sitting ? s * 0.20 : 0)
         let wc      = SIMD3<Float>(pos.x, bodyY, pos.z)
         // A brief ground-pivoted landing squash makes each planted step read
         // without sliding or sinking the feet.

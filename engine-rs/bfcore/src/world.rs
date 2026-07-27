@@ -96,6 +96,7 @@ pub const TRODDEN_SNOW: BlockId = 54;
 // fixed per-chest slot count. A small fixed number keeps the panel kid-simple and
 // avoids a generic container framework (ponytail). 9 slots = one panel row.
 pub const CHEST: BlockId = 31;
+pub const BED: BlockId = 52;
 pub const CHEST_SLOTS: usize = 9;
 
 const KCHUNK_DIM: i32 = CHUNK_DIM as i32;
@@ -421,6 +422,8 @@ struct VillagerSocial {
     cooldown: f32,
     sequence: u32,
     target_y: i32,
+    target_x: i32,
+    target_z: i32,
     partner: u64,
     initialized: bool,
     arrived: bool,
@@ -435,6 +438,8 @@ impl Default for VillagerSocial {
             cooldown: 0.0,
             sequence: 0,
             target_y: NO_FLOOR,
+            target_x: 0,
+            target_z: 0,
             partner: 0,
             initialized: false,
             arrived: false,
@@ -448,7 +453,11 @@ impl VillagerSocial {
     }
 
     fn visible_action(&self) -> u32 {
-        if matches!(self.action, 8..=10) && !self.arrived { 2 } else { self.action }
+        if (matches!(self.action, 8..=10) || self.action == 12) && !self.arrived {
+            2
+        } else {
+            self.action
+        }
     }
 }
 

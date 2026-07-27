@@ -341,7 +341,18 @@ impl<'c> World<'c> {
             // because shaped props occupy a full voxel in the shadow volume. The
             // approach yaw points into the bench, so the visible rig turns back
             // toward the room with the backrest behind it.
-            let visual_pos = if social == super::creature_update::SOCIAL_SIT {
+            let visual_pos = if social == super::creature_update::SOCIAL_SLEEP {
+                let axis_x = cr.social.partner & 1 != 0;
+                V3::new(
+                    Self::wrap_pos_f(
+                        cr.social.target_x as f32 + if axis_x { 1.0 } else { 0.5 },
+                    ),
+                    cr.social.target_y as f32 + 0.82,
+                    Self::wrap_pos_f(
+                        cr.social.target_z as f32 + if axis_x { 0.5 } else { 1.0 },
+                    ),
+                )
+            } else if social == super::creature_update::SOCIAL_SIT {
                 V3::new(
                     Self::wrap_pos_f(cr.pos.x + cr.yaw.sin()),
                     cr.pos.y + 0.35,
