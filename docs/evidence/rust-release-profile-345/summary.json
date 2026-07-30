@@ -1,0 +1,73 @@
+{
+  "issue": 345,
+  "date": "2026-07-30",
+  "toolchain": "rustc 1.96.0 aarch64-apple-darwin",
+  "candidate": {
+    "lto": "thin",
+    "codegen_units": 1,
+    "panic": "abort"
+  },
+  "cpu_microbench_ms": {
+    "default": {
+      "mesh_flat_avg": 0.249,
+      "mesh_checker_avg": 1.411,
+      "world_frame_remesh": 2.486,
+      "world_frame_clean_avg": 0.867
+    },
+    "tuned": {
+      "mesh_flat_avg": 0.220,
+      "mesh_checker_avg": 1.245,
+      "world_frame_remesh": 2.495,
+      "world_frame_clean_avg": 0.806
+    }
+  },
+  "fixed_camera_metal_three_run_medians": {
+    "fixture": {
+      "seed": 2026,
+      "camera": "32597,23,28441,5.497787,-0.35",
+      "settle_frames": 600,
+      "measured_seconds_per_run": 20
+    },
+    "default": {
+      "fps_median": 151.6,
+      "fps_1pct_low": 109.1,
+      "frame_ms_p99": 9.146,
+      "engine_ms_p99": 1.343,
+      "acquire_ms_p99": 1.324,
+      "gpu_ms_median": 4.011,
+      "peak_mem_mb": 662,
+      "draws_median": 1887,
+      "terrain_indices_median": 2135196
+    },
+    "tuned": {
+      "fps_median": 158.6,
+      "fps_1pct_low": 109.8,
+      "frame_ms_p99": 9.103,
+      "engine_ms_p99": 1.319,
+      "acquire_ms_p99": 1.283,
+      "gpu_ms_median": 3.997,
+      "peak_mem_mb": 640,
+      "draws_median": 1878,
+      "terrain_indices_median": 2074368
+    }
+  },
+  "artifact_bytes": {
+    "default": {
+      "macos_staticlib": 19908056,
+      "ios_staticlib": 19600472,
+      "ios_sim_staticlib": 19593288,
+      "macos_app_executable": 4010048
+    },
+    "tuned": {
+      "macos_staticlib": 22504440,
+      "ios_staticlib": 22203120,
+      "ios_sim_staticlib": 22195336,
+      "macos_app_executable": 3767456
+    }
+  },
+  "observed_cold_three_slice_build_seconds": {
+    "default": 19.61,
+    "tuned": 42.10
+  },
+  "decision": "keep"
+}
