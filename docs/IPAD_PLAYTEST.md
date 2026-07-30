@@ -36,13 +36,14 @@ way to start device testing; it is not a public App Store/TestFlight build.
 ## Controls
 
 - Left thumb joystick: move; push it far to sprint.
-- Drag the right side of the world: look.
-- Hold **MINE**: mine or attack.
-- **USE**: place, open, or talk.
+- Drag an empty part of the world: look.
+- Tap the world: place, open, use, or talk at the crosshair.
+- Press and hold the world: mine or attack until you release.
 - Hold **JUMP** / **▼**: jump or fly up / descend or sneak.
 - Tap hotbar slots to equip them. **PACK** opens inventory, crafting, and
   armor controls.
-- **Ⅱ** pauses. The pause card can switch modes or host/join a LAN game.
+- **Ⅱ** pauses. The pause card can change touch-control size, switch modes,
+  or host/join a LAN game.
 - An Xbox/PlayStation-style controller is also supported: sticks move/look,
   A/B jump/descend, triggers mine/use, Y opens the pack, D-pad changes slots,
   and Menu pauses.
@@ -55,7 +56,10 @@ Use a fresh iPad World and check each item:
    black frame, missing content, or clipped controls appears in either
    landscape orientation.
 2. **Touch:** walk, turn, sprint, jump, mine a block, place/use a block, and
-   change hotbar slots. Hold buttons must stop immediately when released.
+   change hotbar slots. Verify that a quick world tap uses but does not mine,
+   a hold mines continuously and stops immediately on release, and a look drag
+   performs neither action. Repeat while holding the movement joystick with
+   the other thumb. Try all three touch-control sizes from the pause card.
 3. **Interfaces:** open/close the pack, craft an available item, equip armor,
    open/take from/close a loot barrel, and finish a villager dialogue without
    trapping input.

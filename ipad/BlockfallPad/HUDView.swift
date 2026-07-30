@@ -34,14 +34,6 @@ final class HUDView: UIView {
 
     private let lookPad = LookPad()
     private let joystick = VirtualJoystick()
-    private let mineButton = TouchActionButton(
-        title: "MINE",
-        tint: UIColor(red: 0.78, green: 0.34, blue: 0.20, alpha: 1)
-    )
-    private let useButton = TouchActionButton(
-        title: "USE",
-        tint: UIColor(red: 0.20, green: 0.62, blue: 0.42, alpha: 1)
-    )
     private let jumpButton = TouchActionButton(
         title: "JUMP",
         tint: UIColor(red: 0.24, green: 0.50, blue: 0.86, alpha: 1)
@@ -61,6 +53,14 @@ final class HUDView: UIView {
     private let hotbar = UIStackView()
     private var hotbarButtons: [UIButton] = []
     private var hotbarSlots: [bf_hud_slot] = []
+    private var touchControlSize = TouchControlSize.saved
+    private var joystickWidth: NSLayoutConstraint!
+    private var joystickHeight: NSLayoutConstraint!
+    private var jumpWidth: NSLayoutConstraint!
+    private var jumpHeight: NSLayoutConstraint!
+    private var downWidth: NSLayoutConstraint!
+    private var downHeight: NSLayoutConstraint!
+    private var hotbarHeight: NSLayoutConstraint!
 
     private let inventoryPanel = UIView()
     private var inventoryButtons: [UIButton] = []
@@ -124,6 +124,7 @@ final class HUDView: UIView {
             self.inventoryVisible = state.inventory_open != 0
             self.inventoryPanel.isHidden = !self.inventoryVisible
             self.inventoryButton.configuration?.title = self.inventoryVisible ? "CLOSE" : "PACK"
+            self.refreshWorldTouchAvailability()
         }
     }
 
@@ -149,6 +150,7 @@ final class HUDView: UIView {
         onMain { [weak self] in
             guard let self else { return }
             self.chestPanel.isHidden = false
+            self.refreshWorldTouchAvailability()
             for (index, button) in self.chestButtons.enumerated() {
                 self.configure(button, slot: slots[index], prefix: "\(index + 1)")
             }
@@ -156,7 +158,10 @@ final class HUDView: UIView {
     }
 
     func setChestClosed() {
-        onMain { [weak self] in self?.chestPanel.isHidden = true }
+        onMain { [weak self] in
+            self?.chestPanel.isHidden = true
+            self?.refreshWorldTouchAvailability()
+        }
     }
 
     func setVillage(_ village: bf_village_view?) {
@@ -178,6 +183,7 @@ final class HUDView: UIView {
 
     func resetTouchControls() {
         joystick.reset()
+        lookPad.reset()
         input?.setJumping(false)
         input?.setDescending(false)
         input?.endMine()
@@ -187,9 +193,34 @@ final class HUDView: UIView {
         inventoryTapped()
     }
 
+    func setTouchControlSize(_ size: TouchControlSize, animated: Bool = true) {
+        touchControlSize = size
+        size.save()
+        let apply = {
+            let scale = size.scale
+            self.joystickWidth.constant = 160 * scale
+            self.joystickHeight.constant = 160 * scale
+            self.jumpWidth.constant = 104 * scale
+            self.jumpHeight.constant = 92 * scale
+            self.downWidth.constant = 86 * scale
+            self.downHeight.constant = 76 * scale
+            self.hotbarHeight.constant = 66 * scale
+            self.layoutIfNeeded()
+        }
+        if animated {
+            UIView.animate(withDuration: 0.2, animations: apply)
+        } else {
+            apply()
+        }
+    }
+
     private func buildControls() {
         lookPad.translatesAutoresizingMaskIntoConstraints = false
         lookPad.onLook = { [weak self] dx, dy in self?.input?.addTouchLook(dx: dx, dy: dy) }
+        lookPad.onTap = { [weak self] in self?.input?.interact() }
+        lookPad.onHoldChanged = { [weak self] held in
+            if held { self?.input?.beginMine() } else { self?.input?.endMine() }
+        }
         addSubview(lookPad)
 
         for label in [statusLabel, questLabel, targetLabel, villageLabel] {
@@ -216,16 +247,6 @@ final class HUDView: UIView {
             self?.input?.setTouchMovement(strafe: strafe, forward: forward)
         }
         addSubview(joystick)
-
-        mineButton.translatesAutoresizingMaskIntoConstraints = false
-        mineButton.onHoldChanged = { [weak self] held in
-            if held { self?.input?.beginMine() } else { self?.input?.endMine() }
-        }
-        addSubview(mineButton)
-
-        useButton.translatesAutoresizingMaskIntoConstraints = false
-        useButton.addTarget(self, action: #selector(useTapped), for: .touchUpInside)
-        addSubview(useButton)
 
         jumpButton.translatesAutoresizingMaskIntoConstraints = false
         jumpButton.onHoldChanged = { [weak self] held in self?.input?.setJumping(held) }
@@ -271,9 +292,17 @@ final class HUDView: UIView {
             hotbarButtons.append(button)
         }
 
+        joystickWidth = joystick.widthAnchor.constraint(equalToConstant: 160)
+        joystickHeight = joystick.heightAnchor.constraint(equalToConstant: 160)
+        jumpWidth = jumpButton.widthAnchor.constraint(equalToConstant: 104)
+        jumpHeight = jumpButton.heightAnchor.constraint(equalToConstant: 92)
+        downWidth = downButton.widthAnchor.constraint(equalToConstant: 86)
+        downHeight = downButton.heightAnchor.constraint(equalToConstant: 76)
+        hotbarHeight = hotbar.heightAnchor.constraint(equalToConstant: 66)
+
         let safe = safeAreaLayoutGuide
         NSLayoutConstraint.activate([
-            lookPad.leadingAnchor.constraint(equalTo: centerXAnchor),
+            lookPad.leadingAnchor.constraint(equalTo: leadingAnchor),
             lookPad.trailingAnchor.constraint(equalTo: trailingAnchor),
             lookPad.topAnchor.constraint(equalTo: topAnchor),
             lookPad.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -313,31 +342,24 @@ final class HUDView: UIView {
 
             joystick.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 24),
             joystick.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -22),
-            joystick.widthAnchor.constraint(equalToConstant: 132),
-            joystick.heightAnchor.constraint(equalToConstant: 132),
+            joystickWidth,
+            joystickHeight,
 
-            mineButton.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -24),
-            mineButton.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -24),
-            mineButton.widthAnchor.constraint(equalToConstant: 88),
-            mineButton.heightAnchor.constraint(equalToConstant: 88),
-            useButton.trailingAnchor.constraint(equalTo: mineButton.leadingAnchor, constant: -12),
-            useButton.bottomAnchor.constraint(equalTo: mineButton.bottomAnchor, constant: -4),
-            useButton.widthAnchor.constraint(equalToConstant: 76),
-            useButton.heightAnchor.constraint(equalToConstant: 76),
-            jumpButton.trailingAnchor.constraint(equalTo: mineButton.trailingAnchor, constant: -4),
-            jumpButton.bottomAnchor.constraint(equalTo: mineButton.topAnchor, constant: -10),
-            jumpButton.widthAnchor.constraint(equalToConstant: 78),
-            jumpButton.heightAnchor.constraint(equalToConstant: 68),
+            jumpButton.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -26),
+            jumpButton.bottomAnchor.constraint(equalTo: hotbar.topAnchor, constant: -16),
+            jumpWidth,
+            jumpHeight,
             downButton.trailingAnchor.constraint(equalTo: jumpButton.leadingAnchor, constant: -10),
             downButton.centerYAnchor.constraint(equalTo: jumpButton.centerYAnchor),
-            downButton.widthAnchor.constraint(equalToConstant: 66),
-            downButton.heightAnchor.constraint(equalToConstant: 56),
+            downWidth,
+            downHeight,
 
             hotbar.centerXAnchor.constraint(equalTo: centerXAnchor),
             hotbar.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -12),
             hotbar.widthAnchor.constraint(equalToConstant: 510),
-            hotbar.heightAnchor.constraint(equalToConstant: 58),
+            hotbarHeight,
         ])
+        setTouchControlSize(touchControlSize, animated: false)
     }
 
     private func buildInventoryPanel() {
@@ -530,7 +552,6 @@ final class HUDView: UIView {
     }
 
     @objc private func pauseTapped() { onPause?() }
-    @objc private func useTapped() { input?.interact() }
     @objc private func modeTapped() { input?.toggleMode() }
     @objc private func hotbarTapped(_ sender: UIButton) { input?.selectHotbar(sender.tag) }
 
@@ -540,6 +561,7 @@ final class HUDView: UIView {
         inventoryPanel.isHidden = !open
         inventoryButton.configuration?.title = open ? "CLOSE" : "PACK"
         input?.toggleInventory(open: open)
+        refreshWorldTouchAvailability()
     }
 
     @objc private func inventorySlotTapped(_ sender: UIButton) {
@@ -556,6 +578,10 @@ final class HUDView: UIView {
     @objc private func craftTapped(_ sender: UIButton) { input?.craft(sender.tag) }
     @objc private func chestSlotTapped(_ sender: UIButton) { onChestTake?(sender.tag) }
     @objc private func chestCloseTapped() { onChestClose?() }
+
+    private func refreshWorldTouchAvailability() {
+        lookPad.isUserInteractionEnabled = !inventoryVisible && chestPanel.isHidden
+    }
 
     private func cardinal(_ yaw: Float) -> String {
         let names = ["S", "SW", "W", "NW", "N", "NE", "E", "SE"]

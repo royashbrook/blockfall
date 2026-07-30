@@ -5,8 +5,10 @@ final class PauseOverlay: UIView {
     var onMode: (() -> Void)?
     var onHost: (() -> Void)?
     var onJoin: (() -> Void)?
+    var onTouchSize: ((TouchControlSize) -> Void)?
 
     private let status = UILabel()
+    private let touchSize = UISegmentedControl(items: TouchControlSize.allCases.map(\.title))
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -29,11 +31,27 @@ final class PauseOverlay: UIView {
         let instructions = UILabel()
         instructions.text =
             "Left thumb: move · Drag the world: look\n"
-            + "Hold MINE to dig or attack · USE places, opens, and talks"
+            + "Tap the world: use · Hold the world: mine or attack"
         instructions.textColor = UIColor.white.withAlphaComponent(0.78)
         instructions.font = .systemFont(ofSize: 16, weight: .semibold)
         instructions.textAlignment = .center
         instructions.numberOfLines = 0
+
+        let touchSizeLabel = UILabel()
+        touchSizeLabel.text = "Touch control size"
+        touchSizeLabel.textColor = .white
+        touchSizeLabel.font = .boldSystemFont(ofSize: 16)
+        touchSize.setTitleTextAttributes([.foregroundColor: UIColor.white], for: .normal)
+        touchSize.setTitleTextAttributes([.foregroundColor: UIColor.black], for: .selected)
+        touchSize.selectedSegmentIndex = TouchControlSize.saved.rawValue
+        touchSize.addTarget(self, action: #selector(touchSizeChanged), for: .valueChanged)
+        let touchSizeRow = UIStackView(arrangedSubviews: [touchSizeLabel, touchSize])
+        touchSizeRow.axis = .horizontal
+        touchSizeRow.alignment = .center
+        touchSizeRow.distribution = .fill
+        touchSizeRow.spacing = 16
+        touchSize.widthAnchor.constraint(equalToConstant: 230).isActive = true
+        touchSize.heightAnchor.constraint(equalToConstant: 40).isActive = true
 
         status.textColor = UIColor.systemYellow
         status.font = .boldSystemFont(ofSize: 15)
@@ -49,7 +67,9 @@ final class PauseOverlay: UIView {
         let join = makeButton("Join Nearby Game", color: UIColor(red: 0.78, green: 0.48, blue: 0.22, alpha: 1))
         join.addTarget(self, action: #selector(joinTapped), for: .touchUpInside)
 
-        let stack = UIStackView(arrangedSubviews: [title, instructions, resume, mode, host, join, status])
+        let stack = UIStackView(arrangedSubviews: [
+            title, instructions, touchSizeRow, resume, mode, host, join, status,
+        ])
         stack.axis = .vertical
         stack.alignment = .fill
         stack.spacing = 12
@@ -97,4 +117,8 @@ final class PauseOverlay: UIView {
     @objc private func modeTapped() { onMode?() }
     @objc private func hostTapped() { onHost?() }
     @objc private func joinTapped() { onJoin?() }
+    @objc private func touchSizeChanged() {
+        guard let size = TouchControlSize(rawValue: touchSize.selectedSegmentIndex) else { return }
+        onTouchSize?(size)
+    }
 }

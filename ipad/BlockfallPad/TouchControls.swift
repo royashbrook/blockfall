@@ -1,5 +1,39 @@
 import UIKit
 
+enum TouchControlSize: Int, CaseIterable {
+    case compact
+    case large
+    case extraLarge
+
+    private static let defaultsKey = "ipadTouchControlSize"
+
+    static var saved: TouchControlSize {
+        guard UserDefaults.standard.object(forKey: defaultsKey) != nil else { return .large }
+        return TouchControlSize(rawValue: UserDefaults.standard.integer(forKey: defaultsKey))
+            ?? .large
+    }
+
+    var title: String {
+        switch self {
+        case .compact: "Compact"
+        case .large: "Large"
+        case .extraLarge: "XL"
+        }
+    }
+
+    var scale: CGFloat {
+        switch self {
+        case .compact: 0.82
+        case .large: 1
+        case .extraLarge: 1.18
+        }
+    }
+
+    func save() {
+        UserDefaults.standard.set(rawValue, forKey: Self.defaultsKey)
+    }
+}
+
 final class VirtualJoystick: UIView {
     var onChange: ((Float, Float) -> Void)?
 
@@ -98,24 +132,93 @@ final class VirtualJoystick: UIView {
 
 final class LookPad: UIView {
     var onLook: ((Float, Float) -> Void)?
+    var onTap: (() -> Void)?
+    var onHoldChanged: ((Bool) -> Void)?
 
-    private lazy var pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
+    private weak var trackedTouch: UITouch?
+    private var startPoint = CGPoint.zero
+    private var lastPoint = CGPoint.zero
+    private var movedToLook = false
+    private var mining = false
+    private var holdWorkItem: DispatchWorkItem?
+    private let holdDelay: TimeInterval = 0.30
+    private let lookThreshold: CGFloat = 14
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
-        pan.maximumNumberOfTouches = 1
-        pan.cancelsTouchesInView = false
-        addGestureRecognizer(pan)
-        accessibilityLabel = "Look around"
+        isMultipleTouchEnabled = false
+        accessibilityLabel = "World controls"
+        accessibilityHint = "Drag to look, tap to use, or hold to mine"
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    @objc private func panned(_ recognizer: UIPanGestureRecognizer) {
-        let delta = recognizer.translation(in: self)
-        recognizer.setTranslation(.zero, in: self)
-        onLook?(Float(delta.x), Float(delta.y))
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard trackedTouch == nil, let touch = touches.first else { return }
+        trackedTouch = touch
+        startPoint = touch.location(in: self)
+        lastPoint = startPoint
+        movedToLook = false
+        mining = false
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.trackedTouch != nil, !self.movedToLook else { return }
+            self.mining = true
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            self.onHoldChanged?(true)
+        }
+        holdWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + holdDelay, execute: work)
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first(where: { $0 === trackedTouch }) else { return }
+        let point = touch.location(in: self)
+        if hypot(point.x - startPoint.x, point.y - startPoint.y) >= lookThreshold {
+            movedToLook = true
+            holdWorkItem?.cancel()
+            holdWorkItem = nil
+            stopMining()
+        }
+        let delta = CGPoint(x: point.x - lastPoint.x, y: point.y - lastPoint.y)
+        lastPoint = point
+        if abs(delta.x) > 0.1 || abs(delta.y) > 0.1 {
+            onLook?(Float(delta.x), Float(delta.y))
+        }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard touches.contains(where: { $0 === trackedTouch }) else { return }
+        holdWorkItem?.cancel()
+        holdWorkItem = nil
+        let wasMining = mining
+        stopMining()
+        if !wasMining && !movedToLook { onTap?() }
+        clearTracking()
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard trackedTouch != nil else { return }
+        reset()
+    }
+
+    func reset() {
+        holdWorkItem?.cancel()
+        holdWorkItem = nil
+        stopMining()
+        clearTracking()
+    }
+
+    private func stopMining() {
+        guard mining else { return }
+        mining = false
+        onHoldChanged?(false)
+    }
+
+    private func clearTracking() {
+        trackedTouch = nil
+        movedToLook = false
     }
 }
 

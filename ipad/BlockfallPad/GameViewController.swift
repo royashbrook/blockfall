@@ -72,6 +72,10 @@ final class GameViewController: UIViewController {
             self?.renderer?.joinLAN()
             self?.pauseOverlay.showStatus("Looking for a nearby Blockfall game…")
         }
+        pauseOverlay.onTouchSize = { [weak self] size in
+            self?.hud.setTouchControlSize(size)
+            self?.pauseOverlay.showStatus("Touch controls: \(size.title)")
+        }
         view.addSubview(pauseOverlay)
 
         NSLayoutConstraint.activate([
