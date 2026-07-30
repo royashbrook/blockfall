@@ -16,6 +16,16 @@ This creates and validates unsigned arm64 apps for both Apple Silicon iPad
 Simulator and a generic iPadOS device. It does not need access to anyone's
 signing account.
 
+## Simulator cleanup
+
+Always shut down the simulated device and quit Simulator immediately after
+playtesting so Blockfall's audio does not remain connected to hearing devices:
+
+```bash
+xcrun simctl shutdown all
+osascript -e 'tell application "Simulator" to quit'
+```
+
 ## Install on your iPad
 
 1. Run the release build above, then open `ipad/BlockfallPad.xcodeproj` in
