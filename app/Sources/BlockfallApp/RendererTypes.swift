@@ -1,6 +1,20 @@
 import MetalKit
 import simd
 
+// MARK: - Particle/sprite PODs shared by live and verification renderers
+
+/// Matches MSL AmbientSprite (48 bytes).
+struct AmbientSpritePod {
+    var posW: SIMD4<Float>
+    var color: SIMD4<Float>
+    var motion: SIMD4<Float>
+}
+
+/// Matches MSL PrecipParticle (16 bytes).
+struct PrecipParticlePod {
+    var seed: SIMD4<Float>
+}
+
 // MARK: - Uniforms (must match the MSL struct byte layout)
 
 /// Terrain pass uniforms (64 bytes).

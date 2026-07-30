@@ -16,6 +16,13 @@
 import MetalKit
 import simd
 import CBlockcore
+#if os(macOS)
+import AppKit
+typealias BlockfallColor = NSColor
+#else
+import UIKit
+typealias BlockfallColor = UIColor
+#endif
 #if canImport(MetalFX)
 import MetalFX
 #endif
@@ -438,7 +445,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     // If MetalFX is unavailable the composite writes straight to the drawable (bilinear fallback).
     private var compositeLowRes: MTLTexture?
 #if canImport(MetalFX)
-    @available(macOS 13.0, *)
+    @available(macOS 13.0, iOS 16.0, *)
     private var _spatialScaler: MTLFXSpatialScaler?
 #endif
     // True when the scaler was successfully created and can be used this frame.
@@ -524,7 +531,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         super.init()
         view.depthStencilPixelFormat = .depth32Float
 #if canImport(MetalFX)
-        if #available(macOS 13.0, *) {
+        if #available(macOS 13.0, iOS 16.0, *) {
             // MTLFXSpatialScaler writes to the drawable via a compute kernel that
             // requires MTLTextureUsageShaderWrite. MTKView's default framebufferOnly=true
             // restricts drawable textures to renderTarget-only usage, blocking the
@@ -973,7 +980,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         metalFXEnabled = false
         compositeLowRes = nil
 #if canImport(MetalFX)
-        if #available(macOS 13.0, *) {
+        if #available(macOS 13.0, iOS 16.0, *) {
             // Only build the scaler when the scene is actually smaller than the drawable
             // (if already 1:1 the spatial scaler would be a no-op but still costs memory).
             let needsUpscale = SW < DW || SH < DH
@@ -1014,9 +1021,16 @@ final class Renderer: NSObject, MTKViewDelegate {
         cfg.role = BF_ROLE_SINGLEPLAYER
         cfg.start_mode = BF_MODE_SURVIVAL
         // #85 streaming radius (chunks), persisted + adjustable via the pause-menu slider.
-        let rd = UserDefaults.standard.object(forKey: "gfxRenderDist") as? Int ?? 24
+        #if os(iOS)
+        let defaultRenderDistance = 16
+        let memoryBudget: UInt64 = 3 * 1024 * 1024 * 1024
+        #else
+        let defaultRenderDistance = 24
+        let memoryBudget: UInt64 = 10 * 1024 * 1024 * 1024
+        #endif
+        let rd = UserDefaults.standard.object(forKey: "gfxRenderDist") as? Int ?? defaultRenderDistance
         cfg.render_distance_chunks = UInt32(max(8, min(40, rd)))
-        cfg.memory_budget_bytes = 10 * 1024 * 1024 * 1024
+        cfg.memory_budget_bytes = memoryBudget
         // Content is bundled at Resources/content (build.sh copies it there).
         // The registry loads <dir>/blocks, <dir>/items, … so point at that folder,
         // not Resources itself — otherwise NO blocks/items/recipes load and there
@@ -1791,7 +1805,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // =====================================================================
 #if canImport(MetalFX)
         let useMetalFX: Bool
-        if #available(macOS 13.0, *) {
+        if #available(macOS 13.0, iOS 16.0, *) {
             useMetalFX = metalFXEnabled && _spatialScaler != nil && compositeLowRes != nil
         } else {
             useMetalFX = false
@@ -1821,7 +1835,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             }
 #if canImport(MetalFX)
             // --- PASS 4b: MetalFX spatial upscale → drawable ---
-            if #available(macOS 13.0, *), let scaler = _spatialScaler {
+            if #available(macOS 13.0, iOS 16.0, *), let scaler = _spatialScaler {
                 scaler.colorTexture  = lowResTarget
                 scaler.outputTexture = drawable.texture
                 scaler.encode(commandBuffer: cmd)
@@ -1855,6 +1869,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // real frame, not an approximation. The HUD overlay is added on the CPU after
         // the GPU finishes (see captureScreenshot). Needs no Screen Recording
         // permission and uses no deprecated API.
+        #if os(macOS)
         let wantShot = gameView?.consumeScreenshotRequest() ?? false
         if wantShot {
             let rb = screenshotTexture(width: drawable.texture.width, height: drawable.texture.height)
@@ -1878,6 +1893,9 @@ final class Renderer: NSObject, MTKViewDelegate {
                 }
             }
         }
+        #else
+        let wantShot = false
+        #endif
 
         // Present inside the Core Animation transaction so the AppKit HUD overlay
         // (hotbar, hearts, inventory) composites ON TOP of the Metal layer. With
@@ -1901,10 +1919,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Finish the screenshot once the GPU has produced the readback texture. We
         // only block on completion for the (rare) screenshot frame, so normal frames
         // keep their async-present timing.
+        #if os(macOS)
         if wantShot, let rb = screenshotReadback {
             cmd.waitUntilCompleted()
             captureScreenshot(gameTexture: rb, meta: shotMetaString(frame.camera, frame.hud))
         }
+        #endif
 
         // Audio: drive day/evening music + splash when entering water.
         audio?.setTimeOfDay(Renderer.clockPhase(frame.camera.time_of_day))
@@ -1968,6 +1988,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
     }
 
+    #if os(macOS)
     // ---- In-game screenshot (backslash key) ---------------------------------
     // Directory every screenshot is written to. A stable absolute path under the
     // user's home directory (~/blockfall-shots) so it is the same no matter how the
@@ -2074,6 +2095,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             NSLog("Blockfall: screenshot failed to encode PNG at %@", path)
         }
     }
+    #endif
 
     // ---- #13: Multiplayer compass builder -----------------------------------
     // Scans frame.entities for remote players (kind == 100). For each it decides
@@ -2110,7 +2132,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // inside the viewport, else an off-screen edge-arrow direction. Edge direction
         // uses raw right/up dot products (not w-divided clip) so it stays stable when
         // the target is behind the camera.
-        func marker(at worldPos: SIMD3<Float>, color: NSColor, label: String) -> HUDView.PeerMarker {
+        func marker(at worldPos: SIMD3<Float>, color: BlockfallColor, label: String) -> HUDView.PeerMarker {
             let to = worldPos - camPos
             let distM = Int(simd_length(to).rounded())
             let clip = viewProj * SIMD4<Float>(worldPos.x, worldPos.y, worldPos.z, 1)
@@ -2144,9 +2166,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             let e = ents[i]
             guard e.kind == 100 else { continue }
             let head = SIMD3<Float>(e.position.x, e.position.y + e.scale * 0.9, e.position.z)
-            let color = NSColor(srgbRed: CGFloat(max(0, min(1, e.color.x))),
-                                green:   CGFloat(max(0, min(1, e.color.y))),
-                                blue:    CGFloat(max(0, min(1, e.color.z))), alpha: 1)
+            let color = BlockfallColor(red: CGFloat(max(0, min(1, e.color.x))),
+                                       green: CGFloat(max(0, min(1, e.color.y))),
+                                       blue: CGFloat(max(0, min(1, e.color.z))), alpha: 1)
             markers.append(marker(at: head, color: color, label: "Player"))
         }
 
@@ -2157,8 +2179,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             if bf_quest_target_get(e, &qt) == 1 && qt.active == 1 {
                 let pos = SIMD3<Float>(qt.position.x, qt.position.y + 1.0, qt.position.z)
                 let color = qt.is_boss == 1
-                    ? NSColor(srgbRed: 0.95, green: 0.25, blue: 0.20, alpha: 1)   // fight
-                    : NSColor(srgbRed: 1.0,  green: 0.80, blue: 0.20, alpha: 1)   // befriend
+                    ? BlockfallColor(red: 0.95, green: 0.25, blue: 0.20, alpha: 1)   // fight
+                    : BlockfallColor(red: 1.0,  green: 0.80, blue: 0.20, alpha: 1)   // befriend
                 let label = withUnsafeBytes(of: qt.label) { raw in
                     String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
                 }

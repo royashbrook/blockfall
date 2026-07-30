@@ -6,6 +6,9 @@
 // M4 acceptance — two+ Airs on one network.)
 // ============================================================================
 import Foundation
+#if os(iOS)
+import UIKit
+#endif
 
 final class NetDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
     static let serviceType = "_blockfall._udp."
@@ -15,7 +18,11 @@ final class NetDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegat
     var onHostFound: ((String, UInt16) -> Void)?
 
     func publish(port: Int32) {
+        #if os(iOS)
+        let name = UIDevice.current.name.isEmpty ? "Blockfall iPad" : UIDevice.current.name
+        #else
         let name = Host.current().localizedName ?? "Blockfall Host"
+        #endif
         let s = NetService(domain: "local.", type: NetDiscovery.serviceType, name: name, port: port)
         s.delegate = self
         s.publish()

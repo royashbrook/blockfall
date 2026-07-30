@@ -2,22 +2,6 @@ import MetalKit
 import simd
 import CBlockcore
 
-// MARK: - Ambient sprite POD (matches MSL AmbientSprite, 48 bytes)
-/// 48 bytes per sprite, written by Swift, read by MSL ambientLifeVert.
-struct AmbientSpritePod {
-    var posW:    SIMD4<Float>   // xyz = world pos; w = bird world radius or tiny-mote size
-    var color:   SIMD4<Float>   // rgb = HDR colour (>1 allowed for bloom), a = alpha
-    var motion:  SIMD4<Float>   // xyz = bird heading; w = bird mode (0..4)
-}
-
-// MARK: - Precipitation particle POD (matches MSL PrecipParticle, 16 bytes)
-/// One per particle. seed = a stable per-particle offset within the spawn box +
-/// a phase, written ONCE at init; the vertex shader derives the animated world
-/// position from it each frame (no per-frame CPU update — cheap & recycling-free).
-struct PrecipParticlePod {
-    var seed: SIMD4<Float>   // xyz = offset within box [-0.5..0.5]^3, w = per-particle phase 0..1
-}
-
 // MARK: - Offscreen render self-test (CI: proves terrain pixels actually draw)
 
 func runRenderSelfTest(savePath: String? = nil, width: Int = 320, height: Int = 240) -> Bool {

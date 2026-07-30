@@ -3,7 +3,11 @@
 // numbers that persist in UserDefaults and (later, Phase 2) replicate to co-op peers. The
 // The same presets drive the 2D editor portrait, local arm, and replicated 3D avatar.
 // At least 10 options per trait, and a Randomize/Save flow in the editor.
+import Foundation
+import CoreGraphics
+#if os(macOS)
 import AppKit
+#endif
 import simd
 import CBlockcore
 
@@ -373,6 +377,7 @@ struct CharacterAppearance: Equatable {
         ctx.restoreGState()   // end head-shape transform (#90)
     }
 
+    #if os(macOS)
     @discardableResult
     func writePortraitPNG(to path: String, size: Int = 256) -> Bool {
         let cs = CGColorSpace(name: CGColorSpace.sRGB)!
@@ -385,8 +390,10 @@ struct CharacterAppearance: Equatable {
         guard let data = rep.representation(using: .png, properties: [:]) else { return false }
         return (try? data.write(to: URL(fileURLWithPath: path))) != nil
     }
+    #endif
 }
 
+#if os(macOS)
 final class CharacterPreviewView: NSView {
     var character = CharacterAppearance() { didSet { needsDisplay = true } }
     override var isFlipped: Bool { false }
@@ -395,3 +402,4 @@ final class CharacterPreviewView: NSView {
         character.drawPortrait(in: ctx, rect: bounds)
     }
 }
+#endif

@@ -11,11 +11,6 @@ import QuartzCore
 import CBlockcore
 import Sparkle
 
-// Keep C strings alive for the engine's lifetime (process-scoped).
-func persistentCString(_ s: String) -> UnsafePointer<CChar> {
-    return UnsafePointer(strdup(s))!
-}
-
 // #261: choose the pause layout from only the available width and the shared
 // text scale. Keeping this pure makes the responsive breakpoints cheap to guard
 // in the existing headless self-test.
