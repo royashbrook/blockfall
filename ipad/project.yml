@@ -33,6 +33,7 @@ targets:
       - path: ../app/Sources/BlockfallApp/EntityRendererSpecies.swift
       - path: ../app/Sources/BlockfallApp/EntityRendererTypes.swift
       - path: ../app/Sources/BlockfallApp/GameAudio.swift
+      - path: ../app/Sources/BlockfallApp/HUDItems.swift
       - path: ../app/Sources/BlockfallApp/NetDiscovery.swift
       - path: ../app/Sources/BlockfallApp/ParticleSystem.swift
       - path: ../app/Sources/BlockfallApp/Renderer.swift

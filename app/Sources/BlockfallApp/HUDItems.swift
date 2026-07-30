@@ -1,10 +1,16 @@
+#if os(macOS)
 import AppKit
+typealias HUDItemColor = NSColor
+#else
+import UIKit
+typealias HUDItemColor = UIColor
+#endif
 
 // Item id -> (display name, chip colour). Mirrors content/items so the HUD can
 // label and colour items without an ABI change. Keep in sync with content.
-private struct ItemInfo { let name: String; let color: NSColor }
-func itemColor(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor {
-    NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
+private struct ItemInfo { let name: String; let color: HUDItemColor }
+func itemColor(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> HUDItemColor {
+    HUDItemColor(red: r, green: g, blue: b, alpha: 1)
 }
 private let kItemTable: [UInt16: ItemInfo] = [
     1:  .init(name: "Dirt",          color: itemColor(0.55, 0.40, 0.26)),
@@ -85,7 +91,10 @@ private let kItemTable: [UInt16: ItemInfo] = [
     109: .init(name: "Iron Boots", color: itemColor(0.54, 0.61, 0.70)),
 ]
 func itemName(_ id: UInt16) -> String { kItemTable[id]?.name ?? "Item \(id)" }
-func itemChipColor(_ id: UInt16) -> NSColor { kItemTable[id]?.color ?? NSColor(hue: CGFloat(id % 12)/12, saturation: 0.6, brightness: 0.9, alpha: 1) }
+func itemChipColor(_ id: UInt16) -> HUDItemColor {
+    kItemTable[id]?.color
+        ?? HUDItemColor(hue: CGFloat(id % 12) / 12, saturation: 0.6, brightness: 0.9, alpha: 1)
+}
 func allItemIds() -> [UInt16] { kItemTable.keys.sorted() }
 
 // Kid-friendly descriptions for every item a player is likely to encounter.

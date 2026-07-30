@@ -1,3 +1,4 @@
+import GameController
 import MetalKit
 import UIKit
 
@@ -6,9 +7,14 @@ final class GameViewController: UIViewController {
     private var renderer: Renderer?
     private let hud = HUDView()
     private let loadingLabel = UILabel()
+    private let pauseOverlay = PauseOverlay()
+    private var controllerObservers: [NSObjectProtocol] = []
+    private var dialoguePresented = false
 
     override var prefersHomeIndicatorAutoHidden: Bool { true }
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { [.left, .right] }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
+    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { .landscapeRight }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -25,12 +31,17 @@ final class GameViewController: UIViewController {
         metalView.preferredFramesPerSecond = 60
         metalView.enableSetNeedsDisplay = false
         metalView.isPaused = false
-        metalView.presentsWithTransaction = false
+        // Keep UIKit controls composited above the asynchronously rendered Metal
+        // layer. Without the transaction, portions of labels/buttons can be
+        // overwritten by a late drawable present on iPad.
+        metalView.presentsWithTransaction = true
         view.addSubview(metalView)
 
         hud.translatesAutoresizingMaskIntoConstraints = false
-        hud.isUserInteractionEnabled = false
+        hud.isUserInteractionEnabled = true
         hud.backgroundColor = .clear
+        hud.input = metalView
+        hud.onPause = { [weak self] in self?.setPaused(true) }
         view.addSubview(hud)
 
         loadingLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -42,6 +53,23 @@ final class GameViewController: UIViewController {
         loadingLabel.layer.cornerRadius = 18
         loadingLabel.clipsToBounds = true
         view.addSubview(loadingLabel)
+
+        pauseOverlay.translatesAutoresizingMaskIntoConstraints = false
+        pauseOverlay.isHidden = true
+        pauseOverlay.onResume = { [weak self] in self?.setPaused(false) }
+        pauseOverlay.onMode = { [weak self] in
+            self?.gameView.toggleMode()
+            self?.pauseOverlay.showStatus("Mode toggled.")
+        }
+        pauseOverlay.onHost = { [weak self] in
+            self?.renderer?.startHost()
+            self?.pauseOverlay.showStatus("Hosting on this local network.")
+        }
+        pauseOverlay.onJoin = { [weak self] in
+            self?.renderer?.joinLAN()
+            self?.pauseOverlay.showStatus("Looking for a nearby Blockfall game…")
+        }
+        view.addSubview(pauseOverlay)
 
         NSLayoutConstraint.activate([
             metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -56,6 +84,10 @@ final class GameViewController: UIViewController {
             loadingLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             loadingLabel.widthAnchor.constraint(equalToConstant: 290),
             loadingLabel.heightAnchor.constraint(equalToConstant: 76),
+            pauseOverlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            pauseOverlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            pauseOverlay.topAnchor.constraint(equalTo: view.topAnchor),
+            pauseOverlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
         gameView = metalView
@@ -68,6 +100,11 @@ final class GameViewController: UIViewController {
                 audio: nil
             )
             renderer.hud = hud
+            hud.onChestTake = { [weak renderer] slot in renderer?.enqueueChestTake(slot) }
+            hud.onChestClose = { [weak renderer] in renderer?.closeChest() }
+            renderer.onDialogue = { [weak self] npcId in
+                DispatchQueue.main.async { self?.showDialogue(npcId: npcId) }
+            }
             renderer.onReady = { [weak self] in
                 UIView.animate(withDuration: 0.25) {
                     self?.loadingLabel.alpha = 0
@@ -75,14 +112,127 @@ final class GameViewController: UIViewController {
             }
             metalView.delegate = renderer
             self.renderer = renderer
+            installControllerSupport()
         } catch {
             showFatal("Could not create the Blockfall save: \(error.localizedDescription)")
         }
     }
 
     deinit {
+        for observer in controllerObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
         gameView?.delegate = nil
         renderer?.shutdown()
+    }
+
+    private func setPaused(_ paused: Bool) {
+        hud.resetTouchControls()
+        gameView.setPaused(paused)
+        pauseOverlay.showStatus("")
+        pauseOverlay.isHidden = !paused
+        if paused { view.bringSubviewToFront(pauseOverlay) }
+    }
+
+    private func installControllerSupport() {
+        let center = NotificationCenter.default
+        controllerObservers.append(center.addObserver(
+            forName: .GCControllerDidConnect,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let controller = note.object as? GCController else { return }
+            self?.configure(controller)
+        })
+        controllerObservers.append(center.addObserver(
+            forName: .GCControllerDidDisconnect,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.gameView.setControllerMovement(strafe: 0, forward: 0)
+            self?.gameView.setControllerLook(x: 0, y: 0)
+            self?.gameView.endMine()
+        })
+        GCController.controllers().forEach(configure)
+        GCController.startWirelessControllerDiscovery()
+    }
+
+    private func configure(_ controller: GCController) {
+        guard let pad = controller.extendedGamepad else { return }
+        controller.playerIndex = .index1
+        pad.leftThumbstick.valueChangedHandler = { [weak gameView] _, x, y in
+            gameView?.setControllerMovement(strafe: x, forward: y)
+        }
+        pad.rightThumbstick.valueChangedHandler = { [weak gameView] _, x, y in
+            gameView?.setControllerLook(x: x, y: y)
+        }
+        pad.buttonA.valueChangedHandler = { [weak gameView] _, _, pressed in
+            gameView?.setJumping(pressed)
+        }
+        pad.buttonB.valueChangedHandler = { [weak gameView] _, _, pressed in
+            gameView?.setDescending(pressed)
+        }
+        pad.leftTrigger.valueChangedHandler = { [weak gameView] _, _, pressed in
+            if pressed { gameView?.beginMine() } else { gameView?.endMine() }
+        }
+        pad.rightTrigger.valueChangedHandler = { [weak gameView] _, _, pressed in
+            if pressed { gameView?.interact() }
+        }
+        pad.buttonX.valueChangedHandler = { [weak gameView] _, _, pressed in
+            if pressed { gameView?.interact() }
+        }
+        pad.buttonY.valueChangedHandler = { [weak self] _, _, pressed in
+            if pressed { self?.hud.toggleInventoryFromExternalControl() }
+        }
+        pad.dpad.left.valueChangedHandler = { [weak gameView] _, _, pressed in
+            if pressed { gameView?.scrollHotbar(-1) }
+        }
+        pad.dpad.right.valueChangedHandler = { [weak gameView] _, _, pressed in
+            if pressed { gameView?.scrollHotbar(1) }
+        }
+        pad.buttonMenu.valueChangedHandler = { [weak self] _, _, pressed in
+            if pressed, let self { self.setPaused(self.pauseOverlay.isHidden) }
+        }
+    }
+
+    private func showDialogue(npcId: Int) {
+        guard !dialoguePresented, presentedViewController == nil else { return }
+        dialoguePresented = true
+        hud.resetTouchControls()
+        gameView.setInterfaceBlocked(true)
+
+        let lookedName = renderer?.lookName ?? ""
+        let name = lookedName.isEmpty ? "Villager" : lookedName
+        let alert = UIAlertController(
+            title: name,
+            message: "How can we help this town?",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Donate what is needed", style: .default) {
+            [weak self] _ in
+            self?.gameView.requestDonate()
+            self?.finishDialogue()
+        })
+        if let offers = renderer?.tradeOffers(npcId: Int32(npcId)) {
+            for (index, offer) in offers.prefix(4).enumerated() {
+                let title = "\(offer.giveCount) \(itemName(offer.giveItem)) → "
+                    + "\(offer.getCount) \(itemName(offer.getItem))"
+                alert.addAction(UIAlertAction(title: title, style: .default) { [weak self] _ in
+                    _ = self?.renderer?.tradeExecute(npcId: Int32(npcId), index: UInt32(index))
+                    self?.finishDialogue()
+                })
+            }
+        }
+        alert.addAction(UIAlertAction(title: "Done", style: .cancel) { [weak self] _ in
+            self?.finishDialogue()
+        })
+        present(alert, animated: true)
+    }
+
+    private func finishDialogue() {
+        gameView.requestDialogueEnd()
+        gameView.setInterfaceBlocked(false)
+        dialoguePresented = false
     }
 
     private static func defaultSaveDirectory() throws -> URL {
