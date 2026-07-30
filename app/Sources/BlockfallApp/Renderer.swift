@@ -1125,6 +1125,19 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     func spawnBreakParticles(_ pos: bf_ivec3, blockId: Int = 0) { particles.spawn(at: pos, blockId: blockId) }
 
+    /// Write an explicit checkpoint without tearing down the renderer. iPadOS
+    /// calls this before the scene becomes inactive because the process may be
+    /// suspended without receiving a later termination callback.
+    @discardableResult
+    func saveWorld() -> Bool {
+        guard let e = engine else { return false }
+        let result = bf_world_save(e)
+        if result != BF_OK {
+            NSLog("Blockfall: world checkpoint failed (%d)", result.rawValue)
+        }
+        return result == BF_OK
+    }
+
     func shutdown() {
         guard let e = engine else { return }
         engine = nil   // stop draw(in:) from touching the engine from here on
@@ -1135,7 +1148,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         // when quitting to the menu mid-frame).
         let fence = queue.makeCommandBuffer()
         fence?.commit(); fence?.waitUntilCompleted()
-        _ = bf_world_save(e); bf_engine_destroy(e)
+        _ = bf_world_save(e)
+        bf_engine_destroy(e)
     }
     deinit { shutdown() }
 

@@ -28,7 +28,7 @@ implementations would create needless packaging and integration drift.
 - The C ABI remains the narrow, stable language boundary. It is a calling
   convention and data contract, not a C implementation layer.
 - Platform shells remain native: AppKit for the existing macOS app and
-  UIKit/MetalKit for the future iPadOS app.
+  UIKit/MetalKit for the iPadOS app.
 
 ## Consequences
 
@@ -40,5 +40,7 @@ implementations would create needless packaging and integration drift.
   standard-library targets after the one-time rustup setup.
 - `CBlockcore.xcframework` is generated and ignored. A source checkout must
   build it before invoking SwiftPM directly.
-- The iPadOS application shell, touch controls, responsive HUD, lifecycle,
-  audio-session behavior, and App Store packaging remain separate work.
+- The iPadOS application shell, touch/controller controls, responsive HUD,
+  lifecycle checkpoints, and audio-session behavior consume the same artifact
+  without changing this boundary.
+- App Store metadata and distribution remain separate from engine packaging.

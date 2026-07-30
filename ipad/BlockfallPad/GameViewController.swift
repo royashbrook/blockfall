@@ -1,3 +1,4 @@
+import AVFoundation
 import GameController
 import MetalKit
 import UIKit
@@ -5,11 +6,13 @@ import UIKit
 final class GameViewController: UIViewController {
     private var gameView: GameView!
     private var renderer: Renderer?
+    private var audio: GameAudio?
     private let hud = HUDView()
     private let loadingLabel = UILabel()
     private let pauseOverlay = PauseOverlay()
     private var controllerObservers: [NSObjectProtocol] = []
     private var dialoguePresented = false
+    private var sceneIsActive = false
 
     override var prefersHomeIndicatorAutoHidden: Bool { true }
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { [.left, .right] }
@@ -93,11 +96,12 @@ final class GameViewController: UIViewController {
         gameView = metalView
         do {
             let saveDir = try Self.defaultSaveDirectory()
+            let audio = GameAudio()
             let renderer = Renderer(
                 view: metalView,
                 device: device,
                 saveDir: saveDir.path,
-                audio: nil
+                audio: audio
             )
             renderer.hud = hud
             hud.onChestTake = { [weak renderer] slot in renderer?.enqueueChestTake(slot) }
@@ -111,8 +115,10 @@ final class GameViewController: UIViewController {
                 }
             }
             metalView.delegate = renderer
+            self.audio = audio
             self.renderer = renderer
             installControllerSupport()
+            installAudioInterruptionSupport()
         } catch {
             showFatal("Could not create the Blockfall save: \(error.localizedDescription)")
         }
@@ -122,8 +128,44 @@ final class GameViewController: UIViewController {
         for observer in controllerObservers {
             NotificationCenter.default.removeObserver(observer)
         }
+        audio?.stop()
+        deactivateAudioSession()
         gameView?.delegate = nil
         renderer?.shutdown()
+    }
+
+    func handleSceneDidBecomeActive() {
+        sceneIsActive = true
+        gameView?.isPaused = false
+        gameView?.setPaused(!pauseOverlay.isHidden)
+        activateAudioSession()
+    }
+
+    func handleSceneWillResignActive() {
+        sceneIsActive = false
+        suspendForSystem()
+    }
+
+    func handleSceneDidEnterBackground() {
+        // Resigning active normally checkpointed already. Save again here so
+        // unusual scene transitions still have a durable boundary.
+        _ = renderer?.saveWorld()
+    }
+
+    func handleSceneDidDisconnect() {
+        suspendForSystem()
+        gameView?.delegate = nil
+        renderer?.shutdown()
+        renderer = nil
+    }
+
+    override func didReceiveMemoryWarning() {
+        super.didReceiveMemoryWarning()
+        // Shed future chunk pressure immediately, then preserve the current
+        // world in case iPadOS subsequently reclaims the process.
+        renderer?.setRenderDistance(8)
+        _ = renderer?.saveWorld()
+        NSLog("Blockfall: memory warning; render distance reduced to 8 chunks")
     }
 
     private func setPaused(_ paused: Bool) {
@@ -132,6 +174,53 @@ final class GameViewController: UIViewController {
         pauseOverlay.showStatus("")
         pauseOverlay.isHidden = !paused
         if paused { view.bringSubviewToFront(pauseOverlay) }
+    }
+
+    private func suspendForSystem() {
+        hud.resetTouchControls()
+        gameView?.setPaused(true)
+        _ = renderer?.saveWorld()
+        gameView?.isPaused = true
+        audio?.stop()
+        deactivateAudioSession()
+    }
+
+    private func installAudioInterruptionSupport() {
+        let observer = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] note in
+            guard let self,
+                  let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            if type == .began {
+                self.audio?.stop()
+            } else if self.sceneIsActive {
+                self.activateAudioSession()
+            }
+        }
+        controllerObservers.append(observer)
+    }
+
+    private func activateAudioSession() {
+        guard sceneIsActive else { return }
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
+            try session.setActive(true)
+            audio?.start()
+        } catch {
+            // Audio is optional; a route/session failure must never stop play.
+            NSLog("Blockfall: audio session unavailable: %@", "\(error)")
+        }
+    }
+
+    private func deactivateAudioSession() {
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: [.notifyOthersOnDeactivation]
+        )
     }
 
     private func installControllerSupport() {
@@ -244,6 +333,10 @@ final class GameViewController: UIViewController {
         )
         let save = base.appendingPathComponent("Blockfall/Worlds/iPad World", isDirectory: true)
         try FileManager.default.createDirectory(at: save, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: save.path
+        )
         return save
     }
 

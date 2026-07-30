@@ -59,6 +59,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.blockfall.game
         PRODUCT_NAME: Blockfall
         SUPPORTS_MACCATALYST: false
+        TARGETED_DEVICE_FAMILY: "2"
         SWIFT_OBJC_BRIDGING_HEADER: ""
         LD_RUNPATH_SEARCH_PATHS:
           - "$(inherited)"

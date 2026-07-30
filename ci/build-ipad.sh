@@ -58,6 +58,10 @@ for app in "$SIM_APP" "$DEVICE_APP"; do
     echo "ERROR: $app is missing arm64" >&2
     exit 1
   }
+  [ "$(plutil -extract UIDeviceFamily json -o - "$app/Info.plist")" = "[2]" ] || {
+    echo "ERROR: $app is not iPad-only (expected UIDeviceFamily [2])" >&2
+    exit 1
+  }
 done
 
 echo "==> simulator: $SIM_APP"

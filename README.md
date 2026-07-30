@@ -62,9 +62,17 @@ The engine can also be built by itself:
 ```
 
 That one command produces `app/Artifacts/CBlockcore.xcframework` with macOS,
-iPadOS-device, and Apple Silicon iPad-simulator slices. The future iPad app
-will consume the same Rust engine artifact; only its native Swift UI shell is
-separate. Technical notes and release instructions live in [`docs/`](docs/).
+iPadOS-device, and Apple Silicon iPad-simulator slices. The native iPad app
+uses that same Rust engine with a UIKit touch/controller shell:
+
+```bash
+./ci/build-ipad.sh Release
+open ipad/BlockfallPad.xcodeproj
+```
+
+See the [iPad playtest guide](docs/IPAD_PLAYTEST.md) for signing, installing,
+and validating on an M1-or-newer iPad. Technical notes and release instructions
+live in [`docs/`](docs/).
 
 ## License
 
