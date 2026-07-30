@@ -2,6 +2,20 @@
 
 Blockfall releases are Apple Silicon-only and require macOS 14 or newer.
 
+## Build prerequisites
+
+Install Xcode with the macOS and iPadOS SDKs plus the rustup target manager:
+
+```bash
+brew install rustup
+./ci/build-xcframework.sh
+```
+
+The first framework build installs Blockfall's pinned Rust toolchain and target
+standard libraries. Later builds are incremental. The resulting
+`app/Artifacts/CBlockcore.xcframework` is one generated artifact containing
+macOS, iPadOS-device, and Apple Silicon iPad-simulator engine slices.
+
 ## One-time Apple setup
 
 1. Install a **Developer ID Application** certificate and its private key in

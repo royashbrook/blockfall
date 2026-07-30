@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Blockfall — check.sh : the green-bar gate (spec §5).
-# Rust engine tests + content validation + app build + Swift self-test + lint.
+# Rust engine tests + content validation + Apple engine artifact + app build +
+# Swift self-test + lint.
 # The engine is Rust (bfcore); the C++ engine was retired (#101). Nothing is
 # "done" until this is green on a clean checkout (spec §5).
 set -euo pipefail
@@ -20,6 +21,7 @@ python3 "$ROOT/tests/content/validate.py" || FAIL=1
 
 step "3. app build + Swift<->Rust self-test (headless)"
 "$ROOT/ci/build.sh" debug >/dev/null
+"$ROOT/ci/verify-xcframework.sh"
 BIN="$ROOT/build/Blockfall.app/Contents/MacOS/Blockfall"
 PLIST="$ROOT/build/Blockfall.app/Contents/Info.plist"
 [ "$(plutil -extract CFBundleShortVersionString raw "$PLIST")" = "$VERSION" ] || FAIL=1

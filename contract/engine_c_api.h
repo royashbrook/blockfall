@@ -1,8 +1,8 @@
 /* ============================================================================
  * Blockfall — Engine C ABI  (contract/engine_c_api.h)
  * ----------------------------------------------------------------------------
- * FROZEN after Phase 0. This is the ONLY surface across which the Swift app
- * shell (window/event loop/Metal/HUD) talks to the C++ core (`blockcore`).
+ * FROZEN after Phase 0. This is the ONLY surface across which an Apple Swift
+ * shell (window/event loop/Metal/HUD) talks to the Rust core (`bfcore`).
  *
  * RULES (hard):
  *   - Pure C. No C++ types, no STL, no exceptions cross this boundary.

@@ -19,11 +19,11 @@ cargo build --release
 BF_PERF_SAMPLES="$RUST_SAMPLES" cargo test --release perf_meshing_render_baseline -- --ignored --nocapture
 
 echo "== metal headless perf =="
+"$ROOT/ci/build-xcframework.sh"
 cd "$ROOT/app"
 mkdir -p "$ROOT/app/.build/clang-module-cache" "$ROOT/app/.build/swiftpm-home"
 export CLANG_MODULE_CACHE_PATH="$ROOT/app/.build/clang-module-cache"
 export SWIFTPM_HOME="$ROOT/app/.build/swiftpm-home"
-BLOCKCORE_LIB_DIR="$ROOT/engine-rs/bfcore/target/release" \
 BF_PERF_SAVE_DIR="$METAL_SAVE_DIR" \
 BF_METAL_PERF_JSON="$METAL_JSON" \
 swift run -c release BlockfallApp --perftest "$METAL_SECONDS"

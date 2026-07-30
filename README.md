@@ -46,7 +46,8 @@ inside the app.
 
 ## Build from source
 
-Developers need an Apple Silicon Mac, Xcode, and Rust. From a checkout:
+Developers need an Apple Silicon Mac, Xcode with the macOS and iPadOS SDKs, and
+rustup (`brew install rustup`). From a checkout:
 
 ```bash
 ./ci/check.sh
@@ -54,7 +55,16 @@ Developers need an Apple Silicon Mac, Xcode, and Rust. From a checkout:
 open build/Blockfall.app
 ```
 
-Technical notes and release instructions live in [`docs/`](docs/).
+The engine can also be built by itself:
+
+```bash
+./ci/build-xcframework.sh
+```
+
+That one command produces `app/Artifacts/CBlockcore.xcframework` with macOS,
+iPadOS-device, and Apple Silicon iPad-simulator slices. The future iPad app
+will consume the same Rust engine artifact; only its native Swift UI shell is
+separate. Technical notes and release instructions live in [`docs/`](docs/).
 
 ## License
 

@@ -4,3 +4,4 @@
 # floods the build with "object file was built for newer macOS version" ld warnings.
 [env]
 MACOSX_DEPLOYMENT_TARGET = "14.0"
+IPHONEOS_DEPLOYMENT_TARGET = "17.0"

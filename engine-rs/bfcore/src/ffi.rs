@@ -1,10 +1,9 @@
 //! bfcore: the `bf_*` C ABI implementation (the Swift app's only entry point).
 //!
-//! This is a faithful Rust port of `engine/src/engine_stub.cpp`, implementing
-//! every function declared in the frozen `contract/engine_c_api.h` as a
-//! `#[no_mangle] pub extern "C"` symbol. It wraps the pure-Rust `world::World`
-//! sim behind the same POD ABI the C++ core exposes, so the Swift/Metal app can
-//! link `libbfcore.a` in place of `libblockcore.a` with no source changes.
+//! Every function declared in the frozen `contract/engine_c_api.h` is exported
+//! as a `#[no_mangle] pub extern "C"` symbol. It wraps the pure-Rust
+//! `world::World` simulation behind a stable POD ABI so Swift/Metal shells can
+//! consume the same Rust engine on macOS and iPadOS.
 //!
 //! Networking (co-op) is implemented: the reliable-UDP transport lives in
 //! `net.rs` and the replication session in `session.rs`. The `bf_net_*` calls

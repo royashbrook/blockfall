@@ -1,6 +1,0 @@
-module CBlockcore {
-    // engine_c_api.h is copied here from /contract by ci/build.sh.
-    // Single source of truth remains /contract/engine_c_api.h.
-    header "engine_c_api.h"
-    export *
-}

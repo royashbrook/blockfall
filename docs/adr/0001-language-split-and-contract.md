@@ -1,19 +1,19 @@
 # ADR 0001 — Language split and the C ABI contract
 
-Status: Accepted (Phase 0)
+Status: Superseded in part by ADR 0008
 
 ## Context
 Blockfall needs a high-performance simulation/world/meshing/net core and a
-native macOS shell (window, Metal, input, HUD). Spec §4.1 fixes the split.
+native Apple shell (window, Metal, input, HUD). Spec §4.1 fixes the split.
 
 ## Decision
-- **Core** (sim, world, meshing, net, jobs, gameplay) → **C++23**, built as a
-  CMake static library `blockcore`.
-- **App shell** (window/event loop, Metal setup, input, HUD/UI) → **Swift +
-  AppKit/MetalKit**, linking `blockcore`.
-- The **only** boundary is a pure **C ABI**, `contract/engine_c_api.h`. No C++
-  types cross into Swift. C++ internal interfaces live in
-  `contract/blockcore_interfaces.hpp` and never reach Swift.
+- **Core** (sim, world, meshing, net, jobs, gameplay) was originally **C++23**.
+  It has since been replaced by Rust `bfcore`; ADR 0008 records the current
+  build and distribution decision.
+- **App shell** (window/event loop, Metal setup, input, HUD/UI) → native
+  **Swift + MetalKit**: AppKit on macOS and UIKit on iPadOS.
+- The **only** boundary is a pure **C ABI**, `contract/engine_c_api.h`. No
+  Rust-native types cross into Swift.
 - ABI is versioned (`BF_ABI_VERSION`); the app refuses to run on a mismatch.
 
 ## Consequences
@@ -24,5 +24,5 @@ native macOS shell (window, Metal, input, HUD). Spec §4.1 fixes the split.
 - Changing the ABI or internal interface layout requires a new ADR.
 
 ## Breakage if wrong
-A leaky boundary (C++ types in Swift) would couple the two toolchains and break
-the installer's clean linkage; the versioned ABI guards against silent drift.
+A leaky boundary (Rust-native types in Swift) would couple the two toolchains
+and break clean linkage; the versioned ABI guards against silent drift.

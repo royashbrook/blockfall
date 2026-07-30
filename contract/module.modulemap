@@ -1,0 +1,4 @@
+module CBlockcore {
+    header "engine_c_api.h"
+    export *
+}
