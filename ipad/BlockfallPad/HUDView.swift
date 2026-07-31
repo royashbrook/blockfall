@@ -65,6 +65,7 @@ final class HUDView: UIView {
     private let inventoryPanel = UIView()
     private var inventoryButtons: [UIButton] = []
     private var craftButtons: [UIButton] = []
+    private let craftTitleLabel = HUDView.makeLabel(size: 14, alignment: .left)
     private var inventoryVisible = false
 
     private let chestPanel = UIView()
@@ -398,19 +399,24 @@ final class HUDView: UIView {
             }
         }
 
-        let craftTitle = HUDView.makeLabel(size: 14, alignment: .left)
-        craftTitle.text = "Craft now"
-        craftTitle.translatesAutoresizingMaskIntoConstraints = false
-        inventoryPanel.addSubview(craftTitle)
+        craftTitleLabel.text = "Craft now"
+        craftTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        inventoryPanel.addSubview(craftTitleLabel)
+        let craftScroll = UIScrollView()
+        craftScroll.alwaysBounceHorizontal = true
+        craftScroll.showsHorizontalScrollIndicator = true
+        craftScroll.translatesAutoresizingMaskIntoConstraints = false
+        inventoryPanel.addSubview(craftScroll)
         let craftRow = UIStackView()
         craftRow.axis = .horizontal
         craftRow.spacing = 6
-        craftRow.distribution = .fillEqually
+        craftRow.distribution = .fill
         craftRow.translatesAutoresizingMaskIntoConstraints = false
-        inventoryPanel.addSubview(craftRow)
-        for index in 0..<6 {
+        craftScroll.addSubview(craftRow)
+        for index in 0..<24 {
             let button = inventorySlotButton(tag: index)
             button.addTarget(self, action: #selector(craftTapped(_:)), for: .touchUpInside)
+            button.widthAnchor.constraint(equalToConstant: 98).isActive = true
             craftRow.addArrangedSubview(button)
             craftButtons.append(button)
         }
@@ -430,12 +436,17 @@ final class HUDView: UIView {
             grid.trailingAnchor.constraint(equalTo: inventoryPanel.trailingAnchor, constant: -18),
             grid.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 12),
             grid.heightAnchor.constraint(equalToConstant: 248),
-            craftTitle.leadingAnchor.constraint(equalTo: grid.leadingAnchor),
-            craftTitle.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 9),
-            craftRow.leadingAnchor.constraint(equalTo: grid.leadingAnchor),
-            craftRow.trailingAnchor.constraint(equalTo: grid.trailingAnchor),
-            craftRow.topAnchor.constraint(equalTo: craftTitle.bottomAnchor, constant: 4),
-            craftRow.heightAnchor.constraint(equalToConstant: 64),
+            craftTitleLabel.leadingAnchor.constraint(equalTo: grid.leadingAnchor),
+            craftTitleLabel.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 9),
+            craftScroll.leadingAnchor.constraint(equalTo: grid.leadingAnchor),
+            craftScroll.trailingAnchor.constraint(equalTo: grid.trailingAnchor),
+            craftScroll.topAnchor.constraint(equalTo: craftTitleLabel.bottomAnchor, constant: 4),
+            craftScroll.heightAnchor.constraint(equalToConstant: 68),
+            craftRow.leadingAnchor.constraint(equalTo: craftScroll.contentLayoutGuide.leadingAnchor),
+            craftRow.trailingAnchor.constraint(equalTo: craftScroll.contentLayoutGuide.trailingAnchor),
+            craftRow.topAnchor.constraint(equalTo: craftScroll.contentLayoutGuide.topAnchor),
+            craftRow.bottomAnchor.constraint(equalTo: craftScroll.contentLayoutGuide.bottomAnchor),
+            craftRow.heightAnchor.constraint(equalTo: craftScroll.frameLayoutGuide.heightAnchor),
         ])
     }
 
@@ -500,13 +511,18 @@ final class HUDView: UIView {
         }
         for (index, button) in craftButtons.enumerated() {
             if index < craftable.count {
+                button.isHidden = false
                 configure(button, slot: craftable[index], prefix: "CRAFT")
                 button.isEnabled = true
+                button.accessibilityLabel = "Craft \(itemName(craftable[index].item))"
             } else {
-                button.configuration?.title = "—"
+                button.isHidden = true
                 button.isEnabled = false
             }
         }
+        craftTitleLabel.text = craftable.isEmpty
+            ? "Nothing craftable yet — gather wood and stone"
+            : "Craft now — swipe sideways to see all \(craftable.count)"
     }
 
     private func configure(_ button: UIButton, slot: bf_hud_slot, prefix: String) {
