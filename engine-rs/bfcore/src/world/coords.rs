@@ -139,8 +139,41 @@ impl<'c> World<'c> {
         ))
     }
 
+    /// Interaction direction: normally the crosshair, temporarily the point on
+    /// the iPad world view that the player tapped or held.
+    pub(super) fn interaction_dir(&self) -> V3 {
+        let forward = self.forward_dir();
+        let Some((right_offset, up_offset)) = self.touch_aim else {
+            return forward;
+        };
+        let flat = normalize(V3::new(forward.x, 0.0, forward.z));
+        let right = normalize(cross(flat, V3::new(0.0, 1.0, 0.0)));
+        let up = normalize(cross(right, forward));
+        normalize(forward + right * right_offset + up * up_offset)
+    }
+
     pub(super) fn rand01(&mut self) -> f32 {
         self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223);
         (self.rng >> 8) as f32 / 16777216.0
+    }
+}
+
+#[cfg(test)]
+mod touch_aim_tests {
+    use super::*;
+
+    #[test]
+    fn touch_aim_center_matches_crosshair_and_right_edge_points_right() {
+        let mut world = World::new(None);
+        world.touch_aim = Some((0.0, 0.0));
+        let center = world.interaction_dir();
+        let forward = world.forward_dir();
+        assert!((center.x - forward.x).abs() < 0.0001);
+        assert!((center.y - forward.y).abs() < 0.0001);
+        assert!((center.z - forward.z).abs() < 0.0001);
+
+        world.touch_aim = Some((0.8, 0.0));
+        // At the default yaw, camera-right is negative world X.
+        assert!(world.interaction_dir().x < -0.1);
     }
 }

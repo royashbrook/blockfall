@@ -310,7 +310,7 @@ impl<'c> World<'c> {
     pub(super) fn raycast_target(&mut self) {
         self.has_target = false;
         let o = self.pos;
-        let d = self.forward_dir();
+        let d = self.interaction_dir();
         let mut v = IVec3 {
             x: Self::ifloor(o.x),
             y: Self::ifloor(o.y),

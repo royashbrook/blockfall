@@ -1,7 +1,7 @@
 //! Blockfall engine C ABI, ported to Rust #[repr(C)].
 //!
 //! This is a faithful, byte-for-byte port of `contract/engine_c_api.h` (the
-//! frozen C ABI, currently BF_ABI_VERSION 30). Every typedef, enum, and struct here
+//! frozen C ABI, currently BF_ABI_VERSION 31). Every typedef, enum, and struct here
 //! mirrors the C declaration: same field names, same types, same order. The
 //! layout must match the C structs exactly so the Swift app reads the same
 //! bytes whether the engine is the C++ core or this Rust port.
@@ -40,7 +40,8 @@ use core::ffi::{c_char, c_void};
 ///      (#254). bf_entity_draw remains frozen at 44 bytes.
 /// v29: replicated player appearance setter + entity sidecar (#264).
 /// v30: appended equipment action + three HUD equipment slots (#325).
-pub const BF_ABI_VERSION: u32 = 30;
+/// v31: appended temporary touch-point interaction aim action (#352).
+pub const BF_ABI_VERSION: u32 = 31;
 
 // ---------------------------------------------------------------------------
 // Primitive types
@@ -189,6 +190,9 @@ pub enum bf_action_kind {
     /// v30 (#325): arg_i >= 0 equips from that inventory slot; arg_i < 0
     /// unequips arg_j (0=head, 1=body, 2=feet).
     BF_ACT_EQUIP = 16,
+    /// v31 (#352): arg_i=1 sets a temporary touch ray; arg_j/arg_k are
+    /// camera-right/up tangent offsets * 1e6. arg_i=0 clears it.
+    BF_ACT_TOUCH_AIM = 17,
 }
 
 #[repr(C)]

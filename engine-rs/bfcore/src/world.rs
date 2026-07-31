@@ -727,6 +727,9 @@ pub struct World<'c> {
     has_target: bool,
     target: IVec3,
     place: IVec3,
+    // #352 iPad touch interaction ray. These are camera-right/up tangent
+    // offsets, so touch can target the visible point without rotating the camera.
+    touch_aim: Option<(f32, f32)>,
 
     // Streaming.
     stream_r: i32,

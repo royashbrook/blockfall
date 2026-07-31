@@ -218,9 +218,17 @@ final class HUDView: UIView {
     private func buildControls() {
         lookPad.translatesAutoresizingMaskIntoConstraints = false
         lookPad.onLook = { [weak self] dx, dy in self?.input?.addTouchLook(dx: dx, dy: dy) }
-        lookPad.onTap = { [weak self] in self?.input?.interact() }
-        lookPad.onHoldChanged = { [weak self] held in
-            if held { self?.input?.beginMine() } else { self?.input?.endMine() }
+        lookPad.onTap = { [weak self, weak lookPad] point in
+            guard let lookPad else { return }
+            self?.input?.interact(at: point, in: lookPad.bounds.size)
+        }
+        lookPad.onHoldChanged = { [weak self, weak lookPad] held, point in
+            guard let lookPad else { return }
+            if held {
+                self?.input?.beginMine(at: point, in: lookPad.bounds.size)
+            } else {
+                self?.input?.endMine(clearTouchAim: true)
+            }
         }
         addSubview(lookPad)
 

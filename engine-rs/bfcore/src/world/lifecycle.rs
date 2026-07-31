@@ -152,6 +152,7 @@ impl<'c> World<'c> {
             has_target: false,
             target: IVec3::default(),
             place: IVec3::default(),
+            touch_aim: None,
             stream_r: render_units_to_chunk_radius(6),
             stream_active_r: 2,
             hyperspeed: false,

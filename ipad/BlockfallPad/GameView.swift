@@ -82,23 +82,33 @@ final class GameView: MTKView {
         inputLock.performLocked { descendHeld = held }
     }
 
-    func beginMine() {
+    func beginMine(at point: CGPoint? = nil, in viewSize: CGSize? = nil) {
         inputLock.performLocked {
             guard !mineHeld, !gamePaused, !interfaceBlocked, !chestOpen else { return }
             mineHeld = true
+            if let point, let viewSize { appendTouchAim(point: point, viewSize: viewSize) }
             appendAction(BF_ACT_MINE_START)
         }
     }
 
-    func endMine() {
+    func endMine(clearTouchAim: Bool = false) {
         inputLock.performLocked {
             guard mineHeld else { return }
             mineHeld = false
             appendAction(BF_ACT_MINE_STOP)
+            if clearTouchAim { appendAction(BF_ACT_TOUCH_AIM, 0) }
         }
     }
 
     func interact() { enqueue(BF_ACT_INTERACT) }
+    func interact(at point: CGPoint, in viewSize: CGSize) {
+        inputLock.performLocked {
+            guard !gamePaused, !interfaceBlocked, !chestOpen else { return }
+            appendTouchAim(point: point, viewSize: viewSize)
+            appendAction(BF_ACT_INTERACT)
+            appendAction(BF_ACT_TOUCH_AIM, 0)
+        }
+    }
     func selectHotbar(_ slot: Int) { enqueue(BF_ACT_HOTBAR_SELECT, Int32(slot)) }
     func scrollHotbar(_ direction: Int) { enqueue(BF_ACT_HOTBAR_SCROLL, Int32(direction)) }
     func toggleMode() { enqueue(BF_ACT_MODE_TOGGLE) }
@@ -160,6 +170,22 @@ final class GameView: MTKView {
         action.arg_j = j
         action.arg_k = k
         actions.append(action)
+    }
+
+    private func appendTouchAim(point: CGPoint, viewSize: CGSize) {
+        guard viewSize.width > 0, viewSize.height > 0 else { return }
+        let ndcX = Float(point.x / viewSize.width * 2 - 1)
+        let ndcY = Float(1 - point.y / viewSize.height * 2)
+        let tanHalfFov = tan(Float(1.20) * 0.5)
+        let aspect = Float(viewSize.width / viewSize.height)
+        let rightOffset = ndcX * tanHalfFov * aspect
+        let upOffset = ndcY * tanHalfFov
+        appendAction(
+            BF_ACT_TOUCH_AIM,
+            1,
+            Int32((rightOffset * 1_000_000).rounded()),
+            Int32((upOffset * 1_000_000).rounded())
+        )
     }
 
     private func cancelContinuousInput() {

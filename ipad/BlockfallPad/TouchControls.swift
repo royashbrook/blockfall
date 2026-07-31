@@ -132,8 +132,8 @@ final class VirtualJoystick: UIView {
 
 final class LookPad: UIView {
     var onLook: ((Float, Float) -> Void)?
-    var onTap: (() -> Void)?
-    var onHoldChanged: ((Bool) -> Void)?
+    var onTap: ((CGPoint) -> Void)?
+    var onHoldChanged: ((Bool, CGPoint) -> Void)?
 
     private weak var trackedTouch: UITouch?
     private var startPoint = CGPoint.zero
@@ -166,7 +166,7 @@ final class LookPad: UIView {
             guard let self, self.trackedTouch != nil, !self.movedToLook else { return }
             self.mining = true
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            self.onHoldChanged?(true)
+            self.onHoldChanged?(true, self.startPoint)
         }
         holdWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + holdDelay, execute: work)
@@ -194,7 +194,7 @@ final class LookPad: UIView {
         holdWorkItem = nil
         let wasMining = mining
         stopMining()
-        if !wasMining && !movedToLook { onTap?() }
+        if !wasMining && !movedToLook { onTap?(startPoint) }
         clearTracking()
     }
 
@@ -213,7 +213,7 @@ final class LookPad: UIView {
     private func stopMining() {
         guard mining else { return }
         mining = false
-        onHoldChanged?(false)
+        onHoldChanged?(false, startPoint)
     }
 
     private func clearTracking() {

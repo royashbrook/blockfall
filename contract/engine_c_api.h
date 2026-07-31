@@ -30,7 +30,7 @@ extern "C" {
 
 /* Bumped on ANY breaking change to this header. App refuses to run on a
  * mismatch (engine reports its compiled-in value via bf_abi_version()). */
-#define BF_ABI_VERSION 30u  /* v30: visible persistent armor (#325) */
+#define BF_ABI_VERSION 31u  /* v31: iPad touch-point world aiming (#352) */
 
 #if defined(_WIN32)
 #  define BF_API __declspec(dllexport)
@@ -174,7 +174,11 @@ typedef enum bf_action_kind {
     BF_ACT_GIVE_ITEM    = 13, /* creative only: arg_i = item id to grant      */
     BF_ACT_SET_TIME_MODE= 14, /* arg_i = 0 auto, 1 always-day, 2 always-night */
     BF_ACT_SET_HYPERSPEED=15, /* v24: arg_i 0/1, creative-only 100x flight (testing) */
-    BF_ACT_EQUIP        = 16  /* v30: arg_i=inventory slot; arg_i<0 unequips arg_j */
+    BF_ACT_EQUIP        = 16, /* v30: arg_i=inventory slot; arg_i<0 unequips arg_j */
+    /* v31: temporary ray direction for touch interaction without moving camera.
+     * arg_i=1 sets it; arg_j/arg_k are camera-right/up tangent offsets * 1e6.
+     * arg_i=0 clears it. App queues set, interaction, clear in that order. */
+    BF_ACT_TOUCH_AIM    = 17
 } bf_action_kind;
 
 typedef struct bf_action {

@@ -203,6 +203,19 @@ impl<'c> World<'c> {
                     self.unequip(a.arg_j as usize);
                 }
             }
+            BF_ACT_TOUCH_AIM => {
+                if a.arg_i == 0 {
+                    self.touch_aim = None;
+                } else {
+                    let right = (a.arg_j as f32 / 1_000_000.0).clamp(-2.0, 2.0);
+                    let up = (a.arg_k as f32 / 1_000_000.0).clamp(-2.0, 2.0);
+                    self.touch_aim = Some((right, up));
+                }
+                // Actions are processed after the frame's normal raycast. Refresh
+                // now so the interaction queued immediately after this action uses
+                // the touched block instead of the old center-screen target.
+                self.raycast_target();
+            }
         }
     }
 

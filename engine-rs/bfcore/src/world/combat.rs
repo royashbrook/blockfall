@@ -3,7 +3,7 @@ use super::*;
 impl<'c> World<'c> {
     pub(super) fn creature_in_view(&self) -> i32 {
         let o = self.pos;
-        let d = self.forward_dir();
+        let d = self.interaction_dir();
         let mut best = -1i32;
         let mut best_t = 6.0f32;
         for (i, c) in self.creatures.iter().enumerate() {
