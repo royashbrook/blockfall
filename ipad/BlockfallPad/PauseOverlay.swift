@@ -6,6 +6,7 @@ final class PauseOverlay: UIView {
     var onHost: (() -> Void)?
     var onJoin: (() -> Void)?
     var onTouchSize: ((TouchControlSize) -> Void)?
+    var onWorlds: (() -> Void)?
 
     private let status = UILabel()
     private let touchSize = UISegmentedControl(items: TouchControlSize.allCases.map(\.title))
@@ -66,9 +67,11 @@ final class PauseOverlay: UIView {
         host.addTarget(self, action: #selector(hostTapped), for: .touchUpInside)
         let join = makeButton("Join Nearby Game", color: UIColor(red: 0.78, green: 0.48, blue: 0.22, alpha: 1))
         join.addTarget(self, action: #selector(joinTapped), for: .touchUpInside)
+        let worlds = makeButton("Save & Choose World", color: UIColor(red: 0.42, green: 0.45, blue: 0.54, alpha: 1))
+        worlds.addTarget(self, action: #selector(worldsTapped), for: .touchUpInside)
 
         let stack = UIStackView(arrangedSubviews: [
-            title, instructions, touchSizeRow, resume, mode, host, join, status,
+            title, instructions, touchSizeRow, resume, mode, host, join, worlds, status,
         ])
         stack.axis = .vertical
         stack.alignment = .fill
@@ -88,6 +91,7 @@ final class PauseOverlay: UIView {
             mode.heightAnchor.constraint(equalToConstant: 48),
             host.heightAnchor.constraint(equalToConstant: 48),
             join.heightAnchor.constraint(equalToConstant: 48),
+            worlds.heightAnchor.constraint(equalToConstant: 48),
         ])
     }
 
@@ -117,6 +121,7 @@ final class PauseOverlay: UIView {
     @objc private func modeTapped() { onMode?() }
     @objc private func hostTapped() { onHost?() }
     @objc private func joinTapped() { onJoin?() }
+    @objc private func worldsTapped() { onWorlds?() }
     @objc private func touchSizeChanged() {
         guard let size = TouchControlSize(rawValue: touchSize.selectedSegmentIndex) else { return }
         onTouchSize?(size)

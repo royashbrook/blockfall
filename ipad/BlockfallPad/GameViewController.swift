@@ -4,6 +4,11 @@ import MetalKit
 import UIKit
 
 final class GameViewController: UIViewController {
+    var onExitToWorlds: (() -> Void)?
+
+    private let saveDir: URL
+    private let freshWorld: Bool
+    private let worldSeed: UInt64
     private var gameView: GameView!
     private var renderer: Renderer?
     private var audio: GameAudio?
@@ -13,6 +18,15 @@ final class GameViewController: UIViewController {
     private var controllerObservers: [NSObjectProtocol] = []
     private var dialoguePresented = false
     private var sceneIsActive = false
+
+    init(saveDir: URL, freshWorld: Bool = false, worldSeed: UInt64 = 0) {
+        self.saveDir = saveDir
+        self.freshWorld = freshWorld
+        self.worldSeed = worldSeed
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     override var prefersHomeIndicatorAutoHidden: Bool { true }
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { [.left, .right] }
@@ -76,6 +90,7 @@ final class GameViewController: UIViewController {
             self?.hud.setTouchControlSize(size)
             self?.pauseOverlay.showStatus("Touch controls: \(size.title)")
         }
+        pauseOverlay.onWorlds = { [weak self] in self?.exitToWorlds() }
         view.addSubview(pauseOverlay)
 
         NSLayoutConstraint.activate([
@@ -99,13 +114,15 @@ final class GameViewController: UIViewController {
 
         gameView = metalView
         do {
-            let saveDir = try Self.defaultSaveDirectory()
+            try Self.prepareSaveDirectory(saveDir)
             let audio = GameAudio()
             let renderer = Renderer(
                 view: metalView,
                 device: device,
                 saveDir: saveDir.path,
-                audio: audio
+                audio: audio,
+                fresh: freshWorld,
+                seed: worldSeed
             )
             renderer.hud = hud
             hud.onChestTake = { [weak renderer] slot in renderer?.enqueueChestTake(slot) }
@@ -187,6 +204,19 @@ final class GameViewController: UIViewController {
         gameView?.isPaused = true
         audio?.stop()
         deactivateAudioSession()
+    }
+
+    private func exitToWorlds() {
+        hud.resetTouchControls()
+        gameView?.setPaused(true)
+        _ = renderer?.saveWorld()
+        gameView?.isPaused = true
+        gameView?.delegate = nil
+        renderer?.shutdown()
+        renderer = nil
+        audio?.stop()
+        deactivateAudioSession()
+        onExitToWorlds?()
     }
 
     private func installAudioInterruptionSupport() {
@@ -328,20 +358,12 @@ final class GameViewController: UIViewController {
         dialoguePresented = false
     }
 
-    private static func defaultSaveDirectory() throws -> URL {
-        let base = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let save = base.appendingPathComponent("Blockfall/Worlds/iPad World", isDirectory: true)
+    private static func prepareSaveDirectory(_ save: URL) throws {
         try FileManager.default.createDirectory(at: save, withIntermediateDirectories: true)
         try FileManager.default.setAttributes(
             [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
             ofItemAtPath: save.path
         )
-        return save
     }
 
     private func showFatal(_ message: String) {
