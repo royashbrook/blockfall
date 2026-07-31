@@ -29,6 +29,7 @@ final class HUDView: UIView {
 
     weak var input: GameView?
     var onPause: (() -> Void)?
+    var onMap: (() -> Void)?
     var onChestTake: ((Int) -> Void)?
     var onChestClose: (() -> Void)?
 
@@ -50,6 +51,8 @@ final class HUDView: UIView {
     private let pauseButton = HUDView.makeTopButton(title: "Ⅱ")
     private let inventoryButton = HUDView.makeTopButton(title: "PACK")
     private let modeButton = HUDView.makeTopButton(title: "MODE")
+    private let mapButton = HUDView.makeTopButton(title: "MAP")
+    private let minimap = IPadMinimapView()
     private let hotbar = UIStackView()
     private var hotbarButtons: [UIButton] = []
     private var hotbarSlots: [bf_hud_slot] = []
@@ -215,6 +218,17 @@ final class HUDView: UIView {
         }
     }
 
+    func setMapRenderer(_ renderer: Renderer) {
+        minimap.renderer = renderer
+        minimap.start()
+        setMinimapVisible(UserDefaults.standard.object(forKey: "minimap") as? Bool ?? true)
+    }
+
+    func setMinimapVisible(_ visible: Bool) {
+        UserDefaults.standard.set(visible, forKey: "minimap")
+        minimap.isHidden = !visible
+    }
+
     private func buildControls() {
         lookPad.translatesAutoresizingMaskIntoConstraints = false
         lookPad.onLook = { [weak self] dx, dy in self?.input?.addTouchLook(dx: dx, dy: dy) }
@@ -231,6 +245,10 @@ final class HUDView: UIView {
             }
         }
         addSubview(lookPad)
+
+        minimap.translatesAutoresizingMaskIntoConstraints = false
+        minimap.isUserInteractionEnabled = false
+        insertSubview(minimap, aboveSubview: lookPad)
 
         for label in [statusLabel, questLabel, targetLabel, villageLabel] {
             label.numberOfLines = 0
@@ -274,6 +292,9 @@ final class HUDView: UIView {
         modeButton.translatesAutoresizingMaskIntoConstraints = false
         modeButton.addTarget(self, action: #selector(modeTapped), for: .touchUpInside)
         addSubview(modeButton)
+        mapButton.translatesAutoresizingMaskIntoConstraints = false
+        mapButton.addTarget(self, action: #selector(mapTapped), for: .touchUpInside)
+        addSubview(mapButton)
 
         hotbar.axis = .horizontal
         hotbar.spacing = 5
@@ -340,6 +361,15 @@ final class HUDView: UIView {
             modeButton.centerYAnchor.constraint(equalTo: pauseButton.centerYAnchor),
             modeButton.widthAnchor.constraint(equalToConstant: 70),
             modeButton.heightAnchor.constraint(equalToConstant: 44),
+            mapButton.trailingAnchor.constraint(equalTo: modeButton.leadingAnchor, constant: -8),
+            mapButton.centerYAnchor.constraint(equalTo: pauseButton.centerYAnchor),
+            mapButton.widthAnchor.constraint(equalToConstant: 64),
+            mapButton.heightAnchor.constraint(equalToConstant: 44),
+
+            minimap.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -14),
+            minimap.topAnchor.constraint(equalTo: pauseButton.bottomAnchor, constant: 12),
+            minimap.widthAnchor.constraint(equalToConstant: 150),
+            minimap.heightAnchor.constraint(equalToConstant: 150),
 
             crosshair.centerXAnchor.constraint(equalTo: centerXAnchor),
             crosshair.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -576,6 +606,7 @@ final class HUDView: UIView {
     }
 
     @objc private func pauseTapped() { onPause?() }
+    @objc private func mapTapped() { onMap?() }
     @objc private func modeTapped() { input?.toggleMode() }
     @objc private func hotbarTapped(_ sender: UIButton) { input?.selectHotbar(sender.tag) }
 
@@ -721,5 +752,378 @@ enum TradeView {
         let giveCount: UInt16
         let getItem: UInt16
         let getCount: UInt16
+    }
+}
+
+/// Lightweight, display-only navigation chart for iPad play.
+final class IPadMinimapView: UIView {
+    weak var renderer: Renderer?
+
+    private var markers: [MapView.Marker] = []
+    private var period = 32768
+    private var playerX: Float = 0
+    private var playerZ: Float = 0
+    private var facing: Float = 0
+    private var timer: Timer?
+    private var markerTick = 0
+    private let worldRadius: Float = 1_400
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func start() {
+        refreshMarkers()
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 15.0, repeats: true) { [weak self] _ in
+            guard let self, !self.isHidden, let renderer = self.renderer else { return }
+            self.playerX = renderer.playerWorldX
+            self.playerZ = renderer.playerWorldZ
+            self.facing = renderer.playerWorldFacing
+            self.markerTick += 1
+            if self.markerTick >= 30 {
+                self.markerTick = 0
+                self.refreshMarkers()
+            }
+            self.setNeedsDisplay()
+        }
+    }
+
+    deinit { timer?.invalidate() }
+
+    private func refreshMarkers() {
+        guard let snapshot = renderer?.mapQuery() else { return }
+        markers = snapshot.markers
+        period = snapshot.period
+    }
+
+    private func wrapSigned(_ value: Int) -> Int {
+        ((value + period / 2) % period + period) % period - period / 2
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let radius = min(bounds.width, bounds.height) / 2 - 10
+        let disc = UIBezierPath(ovalIn: CGRect(
+            x: center.x - radius,
+            y: center.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        ))
+        UIColor(red: 0.07, green: 0.09, blue: 0.14, alpha: 0.80).setFill()
+        disc.fill()
+
+        context.saveGState()
+        disc.addClip()
+        UIColor.white.withAlphaComponent(0.10).setStroke()
+        let middleRing = UIBezierPath(ovalIn: CGRect(
+            x: center.x - radius / 2,
+            y: center.y - radius / 2,
+            width: radius,
+            height: radius
+        ))
+        middleRing.lineWidth = 1
+        middleRing.stroke()
+
+        let scale = radius / CGFloat(worldRadius)
+        for marker in markers {
+            let dx = CGFloat(wrapSigned(Int(marker.x) - Int(playerX.rounded()))) * scale
+            let dz = CGFloat(wrapSigned(Int(marker.z) - Int(playerZ.rounded()))) * scale
+            let point = CGPoint(x: center.x + dx, y: center.y - dz)
+            guard hypot(point.x - center.x, point.y - center.y) < radius - 3 else { continue }
+            markerColor(marker.kind).setFill()
+            UIColor.black.withAlphaComponent(0.75).setStroke()
+            let size: CGFloat = marker.kind == 5 ? 12 : 9
+            let dot = UIBezierPath(ovalIn: CGRect(
+                x: point.x - size / 2,
+                y: point.y - size / 2,
+                width: size,
+                height: size
+            ))
+            dot.lineWidth = 1.5
+            dot.fill()
+            dot.stroke()
+        }
+        context.restoreGState()
+
+        UIColor(red: 0.75, green: 0.58, blue: 0.28, alpha: 0.95).setStroke()
+        disc.lineWidth = 4
+        disc.stroke()
+
+        drawText("N", at: CGPoint(x: center.x, y: center.y - radius - 1), color: .systemRed)
+        drawText("E", at: CGPoint(x: center.x + radius + 2, y: center.y), color: .white)
+        drawText("S", at: CGPoint(x: center.x, y: center.y + radius + 1), color: .white)
+        drawText("W", at: CGPoint(x: center.x - radius - 2, y: center.y), color: .white)
+
+        context.saveGState()
+        context.translateBy(x: center.x, y: center.y)
+        context.rotate(by: CGFloat(-facing))
+        let arrow = UIBezierPath()
+        arrow.move(to: CGPoint(x: 0, y: -11))
+        arrow.addLine(to: CGPoint(x: 8, y: 9))
+        arrow.addLine(to: CGPoint(x: 0, y: 4))
+        arrow.addLine(to: CGPoint(x: -8, y: 9))
+        arrow.close()
+        UIColor.white.setFill()
+        UIColor.black.setStroke()
+        arrow.lineWidth = 2
+        arrow.fill()
+        arrow.stroke()
+        context.restoreGState()
+    }
+
+    private func markerColor(_ kind: UInt32) -> UIColor {
+        switch kind {
+        case 0: .systemRed
+        case 1: UIColor(red: 0.74, green: 0.55, blue: 0.25, alpha: 1)
+        case 3: .systemGray
+        case 4: .systemOrange
+        case 5: .systemYellow
+        default: .systemPurple
+        }
+    }
+
+    private func drawText(_ text: String, at point: CGPoint, color: UIColor) {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 13, weight: .black),
+            .foregroundColor: color,
+            .strokeColor: UIColor.black,
+            .strokeWidth: -3,
+        ]
+        let size = (text as NSString).size(withAttributes: attributes)
+        (text as NSString).draw(
+            at: CGPoint(x: point.x - size.width / 2, y: point.y - size.height / 2),
+            withAttributes: attributes
+        )
+    }
+}
+
+/// Full explored-world map. The renderer supplies one immutable snapshot while
+/// the game is paused; zooming and marker selection stay entirely in UIKit.
+final class IPadWorldMapView: UIView {
+    var snapshot: Renderer.MapSnapshot? {
+        didSet {
+            viewSpan = max(minSpan, min(viewSpan, snapshot?.period ?? viewSpan))
+            rebuildImage()
+        }
+    }
+    var biomes: [UInt8] = [] { didSet { rebuildImage() } }
+    var onMarkerTapped: ((MapView.Marker) -> Void)?
+
+    private(set) var viewSpan = UserDefaults.standard.object(forKey: "mapViewSpan") as? Int ?? 4096
+    private var mapImage: UIImage?
+    private var markerPoints: [(CGPoint, MapView.Marker)] = []
+    private let minSpan = 1024
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func zoomIn() {
+        viewSpan = max(minSpan, viewSpan / 2)
+        saveZoomAndRebuild()
+    }
+
+    func zoomOut() {
+        guard let snapshot else { return }
+        viewSpan = min(snapshot.period, viewSpan * 2)
+        saveZoomAndRebuild()
+    }
+
+    private func saveZoomAndRebuild() {
+        UserDefaults.standard.set(viewSpan, forKey: "mapViewSpan")
+        rebuildImage()
+    }
+
+    private var chartRect: CGRect { bounds.insetBy(dx: 16, dy: 16) }
+
+    private var anchored: Bool {
+        guard let snapshot else { return false }
+        return viewSpan >= snapshot.period
+    }
+
+    private func anchor(for snapshot: Renderer.MapSnapshot) -> (Int, Int) {
+        if anchored, let home = snapshot.markers.first(where: { $0.kind == 0 }) {
+            return (Int(home.x), Int(home.z))
+        }
+        return (Int(snapshot.playerX.rounded()), Int(snapshot.playerZ.rounded()))
+    }
+
+    private func wrapSigned(_ value: Int, period: Int) -> Int {
+        ((value + period / 2) % period + period) % period - period / 2
+    }
+
+    private func mapPoint(x: Int32, z: Int32, snapshot: Renderer.MapSnapshot) -> CGPoint {
+        let chart = chartRect
+        let (anchorX, anchorZ) = anchor(for: snapshot)
+        let scale = chart.width / CGFloat(viewSpan)
+        let dx = CGFloat(wrapSigned(Int(x) - anchorX, period: snapshot.period))
+        let dz = CGFloat(wrapSigned(Int(z) - anchorZ, period: snapshot.period))
+        return CGPoint(x: chart.midX + dx * scale, y: chart.midY - dz * scale)
+    }
+
+    private func rebuildImage() {
+        guard let snapshot else { mapImage = nil; setNeedsDisplay(); return }
+        let total = snapshot.cells
+        let count = max(2, min(total, viewSpan / snapshot.cellSize))
+        guard total > 0, snapshot.explored.count >= total * total / 8 else {
+            mapImage = nil
+            setNeedsDisplay()
+            return
+        }
+        let (anchorX, anchorZ) = anchor(for: snapshot)
+        let pcx = ((anchorX % snapshot.period) + snapshot.period) % snapshot.period / snapshot.cellSize
+        let pcz = ((anchorZ % snapshot.period) + snapshot.period) % snapshot.period / snapshot.cellSize
+        var pixels = [UInt8](repeating: 0, count: count * count * 4)
+        for row in 0..<count {
+            let cz = ((pcz - count / 2 + row) % total + total) % total
+            for column in 0..<count {
+                let cx = ((pcx - count / 2 + column) % total + total) % total
+                let bit = cz * total + cx
+                let explored = snapshot.explored[bit >> 3] & (1 << (bit & 7)) != 0
+                let checker = (cx ^ cz) & 1 == 0
+                let offset = (row * count + column) * 4
+                let color = explored ? biomeColor(bit: bit, checker: checker) : (
+                    checker ? (UInt8(24), UInt8(27), UInt8(38)) : (UInt8(20), UInt8(23), UInt8(34))
+                )
+                pixels[offset] = color.0
+                pixels[offset + 1] = color.1
+                pixels[offset + 2] = color.2
+                pixels[offset + 3] = 255
+            }
+        }
+        let data = Data(pixels) as CFData
+        let provider = CGDataProvider(data: data)
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        if let provider, let image = CGImage(
+            width: count,
+            height: count,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: count * 4,
+            space: colorSpace,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        ) {
+            mapImage = UIImage(cgImage: image)
+        }
+        setNeedsDisplay()
+    }
+
+    private func biomeColor(bit: Int, checker: Bool) -> (UInt8, UInt8, UInt8) {
+        let base: (UInt8, UInt8, UInt8)
+        switch bit < biomes.count ? biomes[bit] : 0 {
+        case 1: base = (96, 168, 88)
+        case 2: base = (150, 148, 152)
+        case 3: base = (232, 204, 130)
+        case 4: base = (236, 240, 246)
+        case 5: base = (110, 142, 110)
+        case 6: base = (238, 222, 170)
+        default: base = (150, 196, 110)
+        }
+        guard !checker else { return base }
+        return (
+            UInt8(Float(base.0) * 0.93),
+            UInt8(Float(base.1) * 0.93),
+            UInt8(Float(base.2) * 0.93)
+        )
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let snapshot else { return }
+        let chart = chartRect
+        let frame = UIBezierPath(roundedRect: chart.insetBy(dx: -10, dy: -10), cornerRadius: 16)
+        UIColor(red: 0.36, green: 0.27, blue: 0.16, alpha: 1).setFill()
+        frame.fill()
+        UIColor(red: 0.08, green: 0.10, blue: 0.15, alpha: 1).setFill()
+        UIRectFill(chart)
+        mapImage?.draw(in: chart, blendMode: .normal, alpha: 1)
+
+        markerPoints.removeAll(keepingCapacity: true)
+        for marker in snapshot.markers {
+            let point = mapPoint(x: marker.x, z: marker.z, snapshot: snapshot)
+            guard chart.insetBy(dx: -5, dy: -5).contains(point) else { continue }
+            markerPoints.append((point, marker))
+            drawMarker(marker, at: point)
+        }
+
+        let playerPoint = anchored
+            ? mapPoint(x: Int32(snapshot.playerX.rounded()), z: Int32(snapshot.playerZ.rounded()), snapshot: snapshot)
+            : CGPoint(x: chart.midX, y: chart.midY)
+        drawPlayer(at: playerPoint, facing: snapshot.facing)
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let point = touches.first?.location(in: self) else { return }
+        guard let hit = markerPoints.min(by: {
+            hypot($0.0.x - point.x, $0.0.y - point.y) < hypot($1.0.x - point.x, $1.0.y - point.y)
+        }), hypot(hit.0.x - point.x, hit.0.y - point.y) <= 34 else { return }
+        onMarkerTapped?(hit.1)
+    }
+
+    private func drawMarker(_ marker: MapView.Marker, at point: CGPoint) {
+        let color: UIColor
+        let glyph: String
+        switch marker.kind {
+        case 0: color = .systemRed; glyph = "⌂"
+        case 1: color = UIColor(red: 0.72, green: 0.51, blue: 0.23, alpha: 1); glyph = "⌂"
+        case 3: color = .systemGray; glyph = "♜"
+        case 4: color = .systemOrange; glyph = "⌂"
+        case 5: color = .systemYellow; glyph = "⚔"
+        default: color = .systemPurple; glyph = "◆"
+        }
+        color.setFill()
+        UIColor.black.withAlphaComponent(0.8).setStroke()
+        let icon = UIBezierPath(ovalIn: CGRect(x: point.x - 14, y: point.y - 14, width: 28, height: 28))
+        icon.lineWidth = 2
+        icon.fill()
+        icon.stroke()
+        drawLabel(glyph, at: point, size: 15, color: .white)
+        drawLabel(marker.name, at: CGPoint(x: point.x, y: point.y + 23), size: 11, color: .white)
+    }
+
+    private func drawPlayer(at point: CGPoint, facing: Float) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        context.saveGState()
+        context.translateBy(x: point.x, y: point.y)
+        context.rotate(by: CGFloat(-facing))
+        let arrow = UIBezierPath()
+        arrow.move(to: CGPoint(x: 0, y: -15))
+        arrow.addLine(to: CGPoint(x: 10, y: 11))
+        arrow.addLine(to: CGPoint(x: 0, y: 5))
+        arrow.addLine(to: CGPoint(x: -10, y: 11))
+        arrow.close()
+        UIColor.white.setFill()
+        UIColor.black.setStroke()
+        arrow.lineWidth = 3
+        arrow.fill()
+        arrow.stroke()
+        context.restoreGState()
+    }
+
+    private func drawLabel(_ text: String, at point: CGPoint, size: CGFloat, color: UIColor) {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: size, weight: .black),
+            .foregroundColor: color,
+            .strokeColor: UIColor.black.withAlphaComponent(0.9),
+            .strokeWidth: -3,
+        ]
+        let dimensions = (text as NSString).size(withAttributes: attributes)
+        (text as NSString).draw(
+            at: CGPoint(x: point.x - dimensions.width / 2, y: point.y - dimensions.height / 2),
+            withAttributes: attributes
+        )
     }
 }

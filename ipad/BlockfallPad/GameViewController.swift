@@ -59,6 +59,7 @@ final class GameViewController: UIViewController {
         hud.backgroundColor = .clear
         hud.input = metalView
         hud.onPause = { [weak self] in self?.setPaused(true) }
+        hud.onMap = { [weak self] in self?.showWorldMap() }
         view.addSubview(hud)
 
         loadingLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -126,6 +127,7 @@ final class GameViewController: UIViewController {
                 seed: worldSeed
             )
             renderer.hud = hud
+            hud.setMapRenderer(renderer)
             hud.onChestTake = { [weak renderer] slot in renderer?.enqueueChestTake(slot) }
             hud.onChestClose = { [weak renderer] in renderer?.closeChest() }
             renderer.onDialogue = { [weak self] npcId in
@@ -159,7 +161,8 @@ final class GameViewController: UIViewController {
     func handleSceneDidBecomeActive() {
         sceneIsActive = true
         gameView?.isPaused = false
-        gameView?.setPaused(!pauseOverlay.isHidden)
+        let modalPause = presentedViewController is IPadWorldMapViewController
+        gameView?.setPaused(!pauseOverlay.isHidden || modalPause)
         activateAudioSession()
     }
 
@@ -223,7 +226,27 @@ final class GameViewController: UIViewController {
     private func showGraphicsSettings() {
         guard let renderer, presentedViewController == nil else { return }
         hud.resetTouchControls()
-        present(GraphicsSettingsViewController(renderer: renderer), animated: true)
+        present(GraphicsSettingsViewController(renderer: renderer) { [weak self] visible in
+            self?.hud.setMinimapVisible(visible)
+        }, animated: true)
+    }
+
+    private func showWorldMap() {
+        guard let renderer, let snapshot = renderer.mapQuery(), presentedViewController == nil else { return }
+        hud.resetTouchControls()
+        gameView.setPaused(true)
+        let map = IPadWorldMapViewController(
+            renderer: renderer,
+            snapshot: snapshot,
+            biomes: renderer.mapBiomes(cells: snapshot.cells) ?? []
+        )
+        map.onClose = { [weak self] in
+            self?.dismiss(animated: true) {
+                guard let self, self.sceneIsActive else { return }
+                self.gameView.setPaused(false)
+            }
+        }
+        present(map, animated: true)
     }
 
     private func installAudioInterruptionSupport() {

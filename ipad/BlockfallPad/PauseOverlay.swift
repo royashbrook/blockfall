@@ -136,9 +136,11 @@ final class PauseOverlay: UIView {
 /// Live iPad graphics controls backed by the same preferences as the Mac app.
 final class GraphicsSettingsViewController: UIViewController {
     private weak var renderer: Renderer?
+    private let onMinimapChanged: (Bool) -> Void
 
-    init(renderer: Renderer) {
+    init(renderer: Renderer, onMinimapChanged: @escaping (Bool) -> Void) {
         self.renderer = renderer
+        self.onMinimapChanged = onMinimapChanged
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .fullScreen
     }
@@ -227,6 +229,10 @@ final class GraphicsSettingsViewController: UIViewController {
         }
         addToggle(to: content, title: "Volumetric clouds", detail: "Full fluffy clouds (heavier)", key: "gfxClouds", initial: renderer.gfxClouds) {
             renderer.gfxClouds = $0
+        }
+        let minimapVisible = UserDefaults.standard.object(forKey: "minimap") as? Bool ?? true
+        addToggle(to: content, title: "Minimap", detail: "Nearby places and your heading", key: "minimap", initial: minimapVisible) { [weak self] visible in
+            self?.onMinimapChanged(visible)
         }
 
         let savedDistance = UserDefaults.standard.object(forKey: "gfxRenderDist") as? Int ?? 16
@@ -360,4 +366,133 @@ final class GraphicsSettingsViewController: UIViewController {
     }
 
     @objc private func doneTapped() { dismiss(animated: true) }
+}
+
+final class IPadWorldMapViewController: UIViewController {
+    var onClose: (() -> Void)?
+
+    private weak var renderer: Renderer?
+    private let mapView = IPadWorldMapView()
+
+    init(renderer: Renderer, snapshot: Renderer.MapSnapshot, biomes: [UInt8]) {
+        self.renderer = renderer
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .fullScreen
+        mapView.snapshot = snapshot
+        mapView.biomes = biomes
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = UIColor(red: 0.045, green: 0.055, blue: 0.09, alpha: 1)
+
+        let title = UILabel()
+        title.text = "World Map"
+        title.textColor = .white
+        title.font = .systemFont(ofSize: 32, weight: .black)
+        title.textAlignment = .center
+        title.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(title)
+
+        let close = mapButton("Done", color: .systemGreen)
+        close.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+        close.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(close)
+
+        mapView.translatesAutoresizingMaskIntoConstraints = false
+        mapView.onMarkerTapped = { [weak self] marker in self?.confirmTravel(to: marker) }
+        view.addSubview(mapView)
+
+        let zoomIn = mapButton("＋", color: .systemBlue)
+        zoomIn.addTarget(self, action: #selector(zoomInTapped), for: .touchUpInside)
+        let zoomOut = mapButton("−", color: .systemBlue)
+        zoomOut.addTarget(self, action: #selector(zoomOutTapped), for: .touchUpInside)
+        let zoomStack = UIStackView(arrangedSubviews: [zoomIn, zoomOut])
+        zoomStack.axis = .vertical
+        zoomStack.spacing = 14
+        zoomStack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(zoomStack)
+        [zoomIn, zoomOut].forEach {
+            $0.widthAnchor.constraint(equalToConstant: 58).isActive = true
+            $0.heightAnchor.constraint(equalToConstant: 58).isActive = true
+        }
+
+        let hint = UILabel()
+        hint.text = "Tap a place to travel · explored land is colored · dark land is still unknown"
+        hint.textColor = UIColor.white.withAlphaComponent(0.72)
+        hint.font = .systemFont(ofSize: 14, weight: .semibold)
+        hint.textAlignment = .center
+        hint.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(hint)
+
+        let safe = view.safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: safe.topAnchor, constant: 12),
+            title.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            close.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 24),
+            close.centerYAnchor.constraint(equalTo: title.centerYAnchor),
+            close.widthAnchor.constraint(equalToConstant: 110),
+            close.heightAnchor.constraint(equalToConstant: 46),
+
+            mapView.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
+            mapView.bottomAnchor.constraint(equalTo: hint.topAnchor, constant: -4),
+            mapView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            mapView.widthAnchor.constraint(equalTo: mapView.heightAnchor),
+            mapView.leadingAnchor.constraint(greaterThanOrEqualTo: safe.leadingAnchor, constant: 100),
+            mapView.trailingAnchor.constraint(lessThanOrEqualTo: safe.trailingAnchor, constant: -100),
+
+            zoomStack.leadingAnchor.constraint(equalTo: mapView.trailingAnchor, constant: 18),
+            zoomStack.centerYAnchor.constraint(equalTo: mapView.centerYAnchor),
+            hint.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -8),
+            hint.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+        ])
+    }
+
+    private func mapButton(_ title: String, color: UIColor) -> UIButton {
+        let button = UIButton(type: .system)
+        var config = UIButton.Configuration.filled()
+        config.title = title
+        config.baseForegroundColor = .white
+        config.baseBackgroundColor = color
+        config.cornerStyle = .capsule
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = .systemFont(ofSize: 18, weight: .black)
+            return outgoing
+        }
+        button.configuration = config
+        return button
+    }
+
+    private func confirmTravel(to marker: MapView.Marker) {
+        let alert = UIAlertController(
+            title: marker.name,
+            message: "Travel here now?",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Stay Here", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Travel", style: .default) { [weak self] _ in
+            guard let self else { return }
+            if self.renderer?.mapTeleport(marker.id) == true {
+                self.onClose?()
+            } else {
+                let error = UIAlertController(
+                    title: "Could not travel",
+                    message: "Try this marker again in a moment.",
+                    preferredStyle: .alert
+                )
+                error.addAction(UIAlertAction(title: "OK", style: .default))
+                self.present(error, animated: true)
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    @objc private func closeTapped() { onClose?() }
+    @objc private func zoomInTapped() { mapView.zoomIn() }
+    @objc private func zoomOutTapped() { mapView.zoomOut() }
 }
