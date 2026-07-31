@@ -441,9 +441,11 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // ---- MetalFX spatial upscaler (optional — macOS 13+, Apple GPU) ---------
     // compositeLowRes: ACES composite writes here at sceneSize (LDR bgra8Unorm).
-    // spatialScaler:   upscales compositeLowRes → full drawable texture.
+    // spatialOutput:   private full-resolution MetalFX output; copied to drawable.
+    // spatialScaler:   upscales compositeLowRes → spatialOutput.
     // If MetalFX is unavailable the composite writes straight to the drawable (bilinear fallback).
     private var compositeLowRes: MTLTexture?
+    private var spatialOutput: MTLTexture?
 #if canImport(MetalFX)
     @available(macOS 13.0, iOS 16.0, *)
     private var _spatialScaler: MTLFXSpatialScaler?
@@ -975,12 +977,15 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // ---- MetalFX spatial upscaler setup ---------------------------------
         // compositeLowRes is the ACES composite output at sceneSize (LDR bgra8Unorm).
-        // MetalFX requires its input texture to have .shaderRead + .renderTarget usage.
-        // The scaler then writes to the full-resolution drawable texture.
+        // MetalFX reports the usage flags its input and output require. Its output must
+        // use private storage, which a physical iPad CAMetalDrawable does not, so the
+        // scaler writes to spatialOutput and a blit copies that image to the drawable.
         metalFXEnabled = false
         compositeLowRes = nil
+        spatialOutput = nil
 #if canImport(MetalFX)
         if #available(macOS 13.0, iOS 16.0, *) {
+            _spatialScaler = nil
             // Only build the scaler when the scene is actually smaller than the drawable
             // (if already 1:1 the spatial scaler would be a no-op but still costs memory).
             let needsUpscale = SW < DW || SH < DH
@@ -998,13 +1003,18 @@ final class Renderer: NSObject, MTKViewDelegate {
 
                 if let scaler = scalerDesc.makeSpatialScaler(device: device) {
                     _spatialScaler = scaler
-                    // compositeLowRes: MetalFX input — needs .shaderRead for the scaler to read it.
-                    let td = MTLTextureDescriptor.texture2DDescriptor(
+                    let inputDesc = MTLTextureDescriptor.texture2DDescriptor(
                         pixelFormat: .bgra8Unorm, width: SW, height: SH, mipmapped: false)
-                    td.usage        = [.renderTarget, .shaderRead]
-                    td.storageMode  = .private
-                    compositeLowRes = device.makeTexture(descriptor: td)
-                    if compositeLowRes != nil {
+                    inputDesc.usage = scaler.colorTextureUsage.union(.renderTarget)
+                    inputDesc.storageMode = .private
+                    compositeLowRes = device.makeTexture(descriptor: inputDesc)
+
+                    let outputDesc = MTLTextureDescriptor.texture2DDescriptor(
+                        pixelFormat: .bgra8Unorm, width: DW, height: DH, mipmapped: false)
+                    outputDesc.usage = scaler.outputTextureUsage
+                    outputDesc.storageMode = .private
+                    spatialOutput = device.makeTexture(descriptor: outputDesc)
+                    if compositeLowRes != nil && spatialOutput != nil {
                         metalFXEnabled = true
                     }
                 }
@@ -1171,7 +1181,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         registry.collect()
 
         // Lazy texture init / resize check
-        let dSize = view.drawableSize
+        // The drawable is authoritative. During rotation, view.drawableSize can briefly
+        // describe the next drawable while currentDrawable still has the prior size.
+        let dSize = CGSize(width: drawable.texture.width, height: drawable.texture.height)
         if currentDrawableSize != dSize { rebuildHDRTextures(size: dSize) }
         guard let hdrColor = hdrColor, let hdrDepth = hdrDepth,
               let bloomBright = bloomBright, let bloomBlurA = bloomBlurA else { return }
@@ -1820,7 +1832,11 @@ final class Renderer: NSObject, MTKViewDelegate {
 #if canImport(MetalFX)
         let useMetalFX: Bool
         if #available(macOS 13.0, iOS 16.0, *) {
-            useMetalFX = metalFXEnabled && _spatialScaler != nil && compositeLowRes != nil
+            useMetalFX = metalFXEnabled
+                && _spatialScaler != nil
+                && compositeLowRes != nil
+                && spatialOutput?.width == drawable.texture.width
+                && spatialOutput?.height == drawable.texture.height
         } else {
             useMetalFX = false
         }
@@ -1828,7 +1844,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         let useMetalFX = false
 #endif
 
-        if useMetalFX, let lowResTarget = compositeLowRes {
+        if useMetalFX,
+           let lowResTarget = compositeLowRes,
+           let upscaledTarget = spatialOutput {
             // --- Composite to the low-res intermediate ---
             let lowResRP = MTLRenderPassDescriptor()
             lowResRP.colorAttachments[0].texture    = lowResTarget
@@ -1851,8 +1869,27 @@ final class Renderer: NSObject, MTKViewDelegate {
             // --- PASS 4b: MetalFX spatial upscale → drawable ---
             if #available(macOS 13.0, iOS 16.0, *), let scaler = _spatialScaler {
                 scaler.colorTexture  = lowResTarget
-                scaler.outputTexture = drawable.texture
+                scaler.inputContentWidth = lowResTarget.width
+                scaler.inputContentHeight = lowResTarget.height
+                scaler.outputTexture = upscaledTarget
                 scaler.encode(commandBuffer: cmd)
+
+                if let blit = cmd.makeBlitCommandEncoder() {
+                    blit.copy(
+                        from: upscaledTarget,
+                        sourceSlice: 0,
+                        sourceLevel: 0,
+                        sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                        sourceSize: MTLSize(
+                            width: upscaledTarget.width,
+                            height: upscaledTarget.height,
+                            depth: 1),
+                        to: drawable.texture,
+                        destinationSlice: 0,
+                        destinationLevel: 0,
+                        destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+                    blit.endEncoding()
+                }
             }
 #endif
         } else {
