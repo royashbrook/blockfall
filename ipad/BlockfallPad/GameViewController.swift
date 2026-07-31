@@ -91,6 +91,7 @@ final class GameViewController: UIViewController {
             self?.pauseOverlay.showStatus("Touch controls: \(size.title)")
         }
         pauseOverlay.onWorlds = { [weak self] in self?.exitToWorlds() }
+        pauseOverlay.onGraphics = { [weak self] in self?.showGraphicsSettings() }
         view.addSubview(pauseOverlay)
 
         NSLayoutConstraint.activate([
@@ -217,6 +218,12 @@ final class GameViewController: UIViewController {
         audio?.stop()
         deactivateAudioSession()
         onExitToWorlds?()
+    }
+
+    private func showGraphicsSettings() {
+        guard let renderer, presentedViewController == nil else { return }
+        hud.resetTouchControls()
+        present(GraphicsSettingsViewController(renderer: renderer), animated: true)
     }
 
     private func installAudioInterruptionSupport() {
