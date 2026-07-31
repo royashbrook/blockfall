@@ -42,10 +42,10 @@ final class HUDView: UIView {
         title: "▼",
         tint: UIColor(red: 0.42, green: 0.38, blue: 0.62, alpha: 1)
     )
-    private let statusLabel = HUDView.makeLabel(size: 15, alignment: .left)
-    private let questLabel = HUDView.makeLabel(size: 15, alignment: .center)
-    private let targetLabel = HUDView.makeLabel(size: 14, alignment: .center)
-    private let villageLabel = HUDView.makeLabel(size: 14, alignment: .left)
+    private let statusLabel = HUDView.makeLabel(size: 15, alignment: .left, padded: true)
+    private let questLabel = HUDView.makeLabel(size: 15, alignment: .center, padded: true)
+    private let targetLabel = HUDView.makeLabel(size: 14, alignment: .center, padded: true)
+    private let villageLabel = HUDView.makeLabel(size: 14, alignment: .left, padded: true)
     private let crosshair = UILabel()
     private let pauseButton = HUDView.makeTopButton(title: "Ⅱ")
     private let inventoryButton = HUDView.makeTopButton(title: "PACK")
@@ -632,8 +632,13 @@ final class HUDView: UIView {
         if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
 
-    private static func makeLabel(size: CGFloat, alignment: NSTextAlignment) -> UILabel {
-        let label = UILabel()
+    private static func makeLabel(
+        size: CGFloat,
+        alignment: NSTextAlignment,
+        padded: Bool = false
+    ) -> UILabel {
+        let label = InsetLabel()
+        if padded { label.textInsets = UIEdgeInsets(top: 7, left: 10, bottom: 7, right: 10) }
         label.font = .boldSystemFont(ofSize: size)
         label.textColor = .white
         label.textAlignment = alignment
@@ -658,6 +663,37 @@ final class HUDView: UIView {
         button.layer.borderWidth = 2
         button.layer.borderColor = UIColor.white.withAlphaComponent(0.55).cgColor
         return button
+    }
+}
+
+/// UILabel does not include interior margins in its drawing or intrinsic size.
+private final class InsetLabel: UILabel {
+    var textInsets = UIEdgeInsets.zero {
+        didSet { invalidateIntrinsicContentSize() }
+    }
+
+    override func drawText(in rect: CGRect) {
+        super.drawText(in: rect.inset(by: textInsets))
+    }
+
+    override var intrinsicContentSize: CGSize {
+        let size = super.intrinsicContentSize
+        return CGSize(
+            width: size.width + textInsets.left + textInsets.right,
+            height: size.height + textInsets.top + textInsets.bottom
+        )
+    }
+
+    override func sizeThatFits(_ size: CGSize) -> CGSize {
+        let inner = CGSize(
+            width: max(0, size.width - textInsets.left - textInsets.right),
+            height: max(0, size.height - textInsets.top - textInsets.bottom)
+        )
+        let fitted = super.sizeThatFits(inner)
+        return CGSize(
+            width: fitted.width + textInsets.left + textInsets.right,
+            height: fitted.height + textInsets.top + textInsets.bottom
+        )
     }
 }
 
