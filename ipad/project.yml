@@ -11,7 +11,7 @@ settings:
   base:
     ARCHS: arm64
     CURRENT_PROJECT_VERSION: 100
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: 44Y2L8A2CV
     ENABLE_USER_SCRIPT_SANDBOXING: true
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     MARKETING_VERSION: "0.1.0"
@@ -20,6 +20,7 @@ settings:
     TARGETED_DEVICE_FAMILY: "2"
 targets:
   BlockfallPad:
+    productName: Blockfall
     type: application
     platform: iOS
     sources:

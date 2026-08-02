@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "5DE5E61FE8BA972CB7EBE47B"
-               BuildableName = "BlockfallPad.app"
+               BuildableName = "Blockfall.app"
                BlueprintName = "BlockfallPad"
                ReferencedContainer = "container:BlockfallPad.xcodeproj">
             </BuildableReference>
@@ -33,7 +33,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "5DE5E61FE8BA972CB7EBE47B"
-            BuildableName = "BlockfallPad.app"
+            BuildableName = "Blockfall.app"
             BlueprintName = "BlockfallPad"
             ReferencedContainer = "container:BlockfallPad.xcodeproj">
          </BuildableReference>
@@ -56,7 +56,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "5DE5E61FE8BA972CB7EBE47B"
-            BuildableName = "BlockfallPad.app"
+            BuildableName = "Blockfall.app"
             BlueprintName = "BlockfallPad"
             ReferencedContainer = "container:BlockfallPad.xcodeproj">
          </BuildableReference>
@@ -75,7 +75,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "5DE5E61FE8BA972CB7EBE47B"
-            BuildableName = "BlockfallPad.app"
+            BuildableName = "Blockfall.app"
             BlueprintName = "BlockfallPad"
             ReferencedContainer = "container:BlockfallPad.xcodeproj">
          </BuildableReference>
